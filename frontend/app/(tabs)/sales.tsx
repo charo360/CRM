@@ -429,14 +429,6 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 2,
   },
-  addButton: {
-    width: 44,
-    height: 44,
-    backgroundColor: '#25D366',
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   statsCard: {
     backgroundColor: '#1A2942',
     marginHorizontal: 20,
