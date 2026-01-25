@@ -1,22 +1,26 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "WhatsApp CRM",
+    "slug": "whatsapp-crm",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "whatsappcrm",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSContactsUsageDescription": "Import customers from your contacts"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "backgroundColor": "#0A1628"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": ["android.permission.READ_CONTACTS"]
     },
     "web": {
       "bundler": "metro",
@@ -31,7 +35,13 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#000"
+          "backgroundColor": "#0A1628"
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow WhatsApp CRM to access your contacts to import customers."
         }
       ]
     ],
