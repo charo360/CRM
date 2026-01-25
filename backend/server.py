@@ -1099,6 +1099,313 @@ async def get_stats(user = Depends(get_current_user)):
         "revenue_this_month": total_sales
     }
 
+# ============ AI-POWERED ENDPOINTS ============
+
+async def analyze_customer_with_ai(customer: dict, messages: list, user: dict) -> dict:
+    """Use Gemini AI to analyze customer conversation and generate insights"""
+    if not GEMINI_API_KEY:
+        # Fallback if no API key
+        return {
+            "summary": "Unable to analyze - AI not configured",
+            "follow_up_reason": "Customer hasn't been contacted recently",
+            "suggested_message": f"Hi {customer.get('name', 'there')}! Just checking in. How can I help you today?",
+            "interests": [],
+            "sentiment": "neutral"
+        }
+    
+    try:
+        # Build conversation context
+        conversation_text = ""
+        if messages:
+            for msg in messages[-20:]:  # Last 20 messages
+                direction = "Customer" if msg.get("direction") == "incoming" else "You"
+                conversation_text += f"{direction}: {msg.get('content', '')}\n"
+        
+        notes = customer.get("notes", "") or ""
+        tags = ", ".join(customer.get("tags", []))
+        last_message = customer.get("last_message", "") or ""
+        days_since = ""
+        if customer.get("last_contacted"):
+            days = (datetime.utcnow() - customer["last_contacted"]).days
+            days_since = f"{days} days ago"
+        else:
+            days_since = "Never contacted"
+        
+        business_name = user.get("business_name", "the business")
+        
+        prompt = f"""You are an AI assistant for a small business CRM in Kenya. Analyze this customer data and provide actionable insights.
+
+CUSTOMER INFO:
+- Name: {customer.get('name', 'Unknown')}
+- Phone: {customer.get('phone_number', 'Unknown')}
+- Tags: {tags}
+- Notes: {notes}
+- Last message from customer: {last_message}
+- Last contacted: {days_since}
+
+RECENT CONVERSATION:
+{conversation_text if conversation_text else "No conversation history available"}
+
+Based on this information, provide:
+1. A brief summary of this customer (1-2 sentences)
+2. A specific reason why they need follow-up now (be specific, e.g., "Asked about iPhone 15 pricing but didn't purchase" or "New customer, hasn't received welcome message")
+3. A suggested WhatsApp message to send (casual, friendly Kenyan business style, keep it short)
+4. List any products/services they showed interest in
+5. Their sentiment (positive, neutral, negative, or unknown)
+
+Respond in this exact JSON format:
+{{"summary": "...", "follow_up_reason": "...", "suggested_message": "...", "interests": ["item1", "item2"], "sentiment": "..."}}
+"""
+
+        chat = LlmChat(
+            api_key=GEMINI_API_KEY,
+            session_id=f"analyze_{customer['_id']}",
+            system_message="You are a helpful CRM assistant. Always respond with valid JSON only."
+        ).with_model("gemini", "gemini-2.5-flash")
+        
+        response = await chat.send_message(UserMessage(text=prompt))
+        
+        # Parse JSON response
+        import re
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            return result
+        else:
+            raise ValueError("No JSON found in response")
+            
+    except Exception as e:
+        logging.error(f"AI analysis error: {e}")
+        # Return fallback
+        days_text = ""
+        if customer.get("last_contacted"):
+            days = (datetime.utcnow() - customer["last_contacted"]).days
+            days_text = f"Last contacted {days} days ago"
+        else:
+            days_text = "Never contacted"
+            
+        return {
+            "summary": f"Customer since {customer.get('created_at', datetime.utcnow()).strftime('%b %Y')}",
+            "follow_up_reason": days_text,
+            "suggested_message": f"Hi {customer.get('name', 'there')}! Hope you're doing well. Is there anything I can help you with today?",
+            "interests": [],
+            "sentiment": "neutral"
+        }
+
+async def generate_notes_from_messages(customer: dict, messages: list) -> str:
+    """Use AI to generate notes from conversation history"""
+    if not GEMINI_API_KEY or not messages:
+        return customer.get("notes", "") or "No conversation to analyze"
+    
+    try:
+        conversation_text = ""
+        for msg in messages[-30:]:
+            direction = "Customer" if msg.get("direction") == "incoming" else "Business"
+            conversation_text += f"{direction}: {msg.get('content', '')}\n"
+        
+        prompt = f"""Analyze this WhatsApp business conversation and extract key information as CRM notes.
+
+CONVERSATION:
+{conversation_text}
+
+Create brief, useful CRM notes that include:
+- What products/services the customer is interested in
+- Any specific requirements or preferences mentioned
+- Price points discussed
+- Any commitments or next steps agreed
+- Customer's tone/attitude
+
+Keep it concise (max 3-4 bullet points). Use simple language."""
+
+        chat = LlmChat(
+            api_key=GEMINI_API_KEY,
+            session_id=f"notes_{customer['_id']}",
+            system_message="You are a CRM assistant. Generate concise, actionable notes."
+        ).with_model("gemini", "gemini-2.5-flash")
+        
+        response = await chat.send_message(UserMessage(text=prompt))
+        return response.strip()
+        
+    except Exception as e:
+        logging.error(f"Notes generation error: {e}")
+        return customer.get("notes", "") or "Could not generate notes"
+
+@api_router.get("/customers/{customer_id}/ai-analysis")
+async def get_customer_ai_analysis(customer_id: str, user = Depends(get_current_user)):
+    """Get AI-powered analysis for a customer"""
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Get customer's messages
+    messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", 1).to_list(50)
+    
+    analysis = await analyze_customer_with_ai(customer, messages, user)
+    
+    return {
+        "customer_id": customer_id,
+        **analysis
+    }
+
+@api_router.post("/customers/{customer_id}/generate-notes")
+async def generate_customer_notes(customer_id: str, user = Depends(get_current_user)):
+    """Generate AI notes from customer conversations"""
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", 1).to_list(50)
+    
+    notes = await generate_notes_from_messages(customer, messages)
+    
+    # Update customer notes
+    await db.customers.update_one(
+        {"_id": customer_id},
+        {"$set": {"notes": notes, "notes_generated_at": datetime.utcnow()}}
+    )
+    
+    return {"customer_id": customer_id, "notes": notes}
+
+@api_router.get("/customers/cold-with-reasons")
+async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
+    """
+    Get cold customers with AI-generated follow-up reasons
+    """
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    
+    customers = await db.customers.find({
+        "user_id": user["_id"],
+        "$or": [
+            {"last_contacted": {"$lt": cutoff_date}},
+            {"last_contacted": None}
+        ]
+    }).sort("last_contacted", 1).to_list(50)
+    
+    result = []
+    for c in customers:
+        pending_followup = await db.followups.find_one({
+            "customer_id": c["_id"],
+            "status": "pending"
+        })
+        
+        days_since_contact = None
+        if c.get("last_contacted"):
+            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
+        
+        # Get messages for AI analysis
+        messages = await db.messages.find({"customer_id": c["_id"]}).sort("created_at", -1).to_list(20)
+        
+        # Generate AI reason (simplified for performance)
+        ai_reason = await generate_quick_reason(c, messages)
+        
+        result.append({
+            "id": c["_id"],
+            "name": c["name"],
+            "phone_number": c["phone_number"],
+            "notes": c.get("notes"),
+            "tags": c.get("tags", []),
+            "last_message": c.get("last_message"),
+            "last_contacted": c.get("last_contacted"),
+            "days_since_contact": days_since_contact,
+            "has_pending_followup": pending_followup is not None,
+            "ai_reason": ai_reason,
+            "created_at": c["created_at"]
+        })
+    
+    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
+    
+    return result
+
+async def generate_quick_reason(customer: dict, messages: list) -> str:
+    """Generate a quick follow-up reason without full AI call for performance"""
+    last_message = customer.get("last_message", "")
+    notes = customer.get("notes", "")
+    tags = customer.get("tags", [])
+    days_since = None
+    
+    if customer.get("last_contacted"):
+        days_since = (datetime.utcnow() - customer["last_contacted"]).days
+    
+    # Quick rule-based reasons first
+    if not customer.get("last_contacted"):
+        if "New" in tags:
+            return "New customer - send welcome message"
+        return "Never contacted - introduce your services"
+    
+    if days_since and days_since > 30:
+        return f"Inactive for {days_since} days - re-engage with offer"
+    
+    if "VIP" in tags and days_since and days_since > 7:
+        return f"VIP customer not contacted in {days_since} days"
+    
+    # Check last message for context
+    if last_message:
+        lower_msg = last_message.lower()
+        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
+            return "Asked about pricing - follow up on quote"
+        if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
+            return "Was considering purchase - check decision"
+        if any(word in lower_msg for word in ["thank", "thanks", "asante"]):
+            return "Previous transaction - check satisfaction"
+    
+    # Default with days
+    if days_since:
+        return f"No contact in {days_since} days - check in"
+    
+    return "Due for follow-up"
+
+# ============ MESSAGE STORAGE ENDPOINTS ============
+
+@api_router.get("/customers/{customer_id}/messages")
+async def get_customer_messages(customer_id: str, limit: int = 50, user = Depends(get_current_user)):
+    """Get messages for a customer"""
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", -1).to_list(limit)
+    
+    return [
+        {
+            "id": m["_id"],
+            "customer_id": m["customer_id"],
+            "direction": m["direction"],
+            "content": m["content"],
+            "message_type": m.get("message_type", "text"),
+            "created_at": m["created_at"]
+        }
+        for m in messages
+    ]
+
+@api_router.post("/customers/{customer_id}/messages")
+async def add_customer_message(customer_id: str, message: MessageCreate, user = Depends(get_current_user)):
+    """Manually add a message to customer history"""
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    message_id = str(uuid.uuid4())
+    message_doc = {
+        "_id": message_id,
+        "customer_id": customer_id,
+        "user_id": user["_id"],
+        "direction": message.direction,
+        "content": message.content,
+        "message_type": message.message_type,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.messages.insert_one(message_doc)
+    
+    # Update customer's last message and contacted time
+    update_data = {"last_contacted": datetime.utcnow()}
+    if message.direction == "incoming":
+        update_data["last_message"] = message.content[:200]
+    
+    await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
+    
+    return {"id": message_id, "status": "success"}
+
 # ============ MAIN APP SETUP ============
 
 app.include_router(api_router)
