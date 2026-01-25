@@ -176,9 +176,6 @@ export default function CustomersScreen() {
       <View style={styles.customerInfo}>
         <Text style={styles.customerName}>{item.name}</Text>
         <Text style={styles.customerPhone}>{item.phone_number}</Text>
-        {item.notes && (
-          <Text style={styles.customerNotes} numberOfLines={1}>{item.notes}</Text>
-        )}
         <View style={styles.tagsContainer}>
           {item.tags.map((tag, index) => (
             <View key={index} style={[styles.tag, tag === 'VIP' && styles.tagVip, tag === 'Returning' && styles.tagReturning]}>
@@ -187,9 +184,17 @@ export default function CustomersScreen() {
           ))}
         </View>
       </View>
-      <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.deleteButton}>
-        <Ionicons name="trash-outline" size={20} color="#FF4444" />
-      </TouchableOpacity>
+      <View style={styles.customerRight}>
+        {item.notes && (
+          <View style={styles.notesPreview}>
+            <Ionicons name="document-text-outline" size={12} color="#25D366" />
+            <Text style={styles.notesPreviewText} numberOfLines={2}>{item.notes}</Text>
+          </View>
+        )}
+        <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.deleteButton}>
+          <Ionicons name="trash-outline" size={20} color="#FF4444" />
+        </TouchableOpacity>
+      </View>
     </TouchableOpacity>
   );
 
