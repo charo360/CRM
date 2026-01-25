@@ -212,6 +212,52 @@ export default function FollowupsScreen() {
     );
   };
 
+  const handleMessageColdCustomer = (customer: ColdCustomer) => {
+    const message = `Hi ${customer.name}! Just checking in to see how you're doing. Let me know if you need anything!`;
+    const url = `whatsapp://send?phone=${customer.phone_number.replace(/\+/g, '')}&text=${encodeURIComponent(message)}`;
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Error', 'WhatsApp is not installed on this device');
+    });
+  };
+
+  const renderColdCustomer = (customer: ColdCustomer) => (
+    <View key={customer.id} style={styles.coldCustomerCard}>
+      <View style={styles.coldCustomerInfo}>
+        <View style={styles.coldCustomerHeader}>
+          <View style={styles.coldAvatar}>
+            <Text style={styles.coldAvatarText}>{customer.name.charAt(0)}</Text>
+          </View>
+          <View style={styles.coldCustomerDetails}>
+            <Text style={styles.coldCustomerName}>{customer.name}</Text>
+            <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
+          </View>
+        </View>
+        {customer.notes && (
+          <Text style={styles.coldCustomerNotes} numberOfLines={1}>{customer.notes}</Text>
+        )}
+        <View style={styles.coldCustomerMeta}>
+          <Ionicons name="time-outline" size={14} color="#FF6B6B" />
+          <Text style={styles.coldDaysText}>
+            {customer.days_since_contact !== null 
+              ? `${customer.days_since_contact} days ago`
+              : 'Never contacted'}
+          </Text>
+          {customer.has_pending_followup && (
+            <View style={styles.hasFollowupBadge}>
+              <Text style={styles.hasFollowupText}>Has reminder</Text>
+            </View>
+          )}
+        </View>
+      </View>
+      <TouchableOpacity 
+        style={styles.coldWhatsappButton} 
+        onPress={() => handleMessageColdCustomer(customer)}
+      >
+        <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
+      </TouchableOpacity>
+    </View>
+  );
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -229,45 +275,94 @@ export default function FollowupsScreen() {
         <Text style={styles.headerSubtitle}>Never miss a sale</Text>
       </View>
 
-      <View style={styles.filterContainer}>
-        {(['all', 'today', 'tomorrow', 'later'] as const).map((f) => (
-          <TouchableOpacity
-            key={f}
-            style={[styles.filterChip, filter === f && styles.filterChipActive]}
-            onPress={() => setFilter(f)}
-          >
-            <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-              {f.charAt(0).toUpperCase() + f.slice(1)}
-            </Text>
-          </TouchableOpacity>
-        ))}
+      {/* Stats Cards */}
+      {suggestions && (
+        <View style={styles.statsRow}>
+          <View style={[styles.statCard, styles.statCardWarning]}>
+            <Text style={styles.statNumber}>{suggestions.neglected_week}</Text>
+            <Text style={styles.statLabel}>Need attention</Text>
+          </View>
+          <View style={[styles.statCard, styles.statCardDanger]}>
+            <Text style={styles.statNumber}>{suggestions.neglected_month}</Text>
+            <Text style={styles.statLabel}>30+ days cold</Text>
+          </View>
+        </View>
+      )}
+
+      {/* Tab Switcher */}
+      <View style={styles.tabContainer}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'needs_attention' && styles.tabActive]}
+          onPress={() => setActiveTab('needs_attention')}
+        >
+          <Ionicons 
+            name="alert-circle" 
+            size={18} 
+            color={activeTab === 'needs_attention' ? '#FFFFFF' : '#666'} 
+          />
+          <Text style={[styles.tabText, activeTab === 'needs_attention' && styles.tabTextActive]}>
+            Needs Attention ({coldCustomers.filter(c => !c.has_pending_followup).length})
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'reminders' && styles.tabActive]}
+          onPress={() => setActiveTab('reminders')}
+        >
+          <Ionicons 
+            name="notifications" 
+            size={18} 
+            color={activeTab === 'reminders' ? '#FFFFFF' : '#666'} 
+          />
+          <Text style={[styles.tabText, activeTab === 'reminders' && styles.tabTextActive]}>
+            Reminders ({followups.length})
+          </Text>
+        </TouchableOpacity>
       </View>
 
-      <FlatList
-        data={[1]} // Single item to render all sections
-        renderItem={() => (
-          <>
-            {renderSection('Overdue', groupedFollowups.overdue, '#FF4444')}
-            {renderSection('Today', groupedFollowups.today, '#25D366')}
-            {renderSection('Tomorrow', groupedFollowups.tomorrow, '#4A90D9')}
-            {renderSection('Later', groupedFollowups.later, '#666')}
-          </>
-        )}
-        keyExtractor={() => 'sections'}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
-        }
-        ListEmptyComponent={
-          filteredFollowups.length === 0 ? (
+      {activeTab === 'needs_attention' ? (
+        <FlatList
+          data={coldCustomers.filter(c => !c.has_pending_followup)}
+          renderItem={({ item }) => renderColdCustomer(item)}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
+          }
+          ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Ionicons name="notifications-off-outline" size={64} color="#666" />
-              <Text style={styles.emptyText}>No follow-ups</Text>
-              <Text style={styles.emptySubtext}>Set reminders from customer profiles</Text>
+              <Ionicons name="checkmark-circle-outline" size={64} color="#25D366" />
+              <Text style={styles.emptyText}>All caught up!</Text>
+              <Text style={styles.emptySubtext}>No customers need immediate attention</Text>
             </View>
-          ) : null
-        }
-      />
+          }
+        />
+      ) : (
+        <FlatList
+          data={[1]}
+          renderItem={() => (
+            <>
+              {renderSection('Overdue', groupedFollowups.overdue, '#FF4444')}
+              {renderSection('Today', groupedFollowups.today, '#25D366')}
+              {renderSection('Tomorrow', groupedFollowups.tomorrow, '#4A90D9')}
+              {renderSection('Later', groupedFollowups.later, '#666')}
+            </>
+          )}
+          keyExtractor={() => 'sections'}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
+          }
+          ListEmptyComponent={
+            followups.length === 0 ? (
+              <View style={styles.emptyContainer}>
+                <Ionicons name="notifications-off-outline" size={64} color="#666" />
+                <Text style={styles.emptyText}>No reminders</Text>
+                <Text style={styles.emptySubtext}>Set follow-up reminders from customer profiles</Text>
+              </View>
+            ) : null
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }
