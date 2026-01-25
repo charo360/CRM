@@ -9,10 +9,15 @@ import {
   ActivityIndicator,
   RefreshControl,
   Linking,
+  Modal,
+  TextInput,
+  ScrollView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { apiClient } from '../context/api';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 interface FollowUp {
   id: string;
@@ -35,6 +40,13 @@ interface ColdCustomer {
   last_contacted: string | null;
   days_since_contact: number | null;
   has_pending_followup: boolean;
+  ai_reason?: string;
+}
+
+interface Customer {
+  id: string;
+  name: string;
+  phone_number: string;
 }
 
 interface Suggestions {
@@ -45,24 +57,40 @@ interface Suggestions {
   total_needing_attention: number;
 }
 
+type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week';
+
 export default function FollowupsScreen() {
   const [followups, setFollowups] = useState<FollowUp[]>([]);
   const [coldCustomers, setColdCustomers] = useState<ColdCustomer[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestions | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'reminders' | 'needs_attention'>('needs_attention');
+  const [filter, setFilter] = useState<FilterType>('all');
+  
+  // Add Reminder Modal State
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [reminderDate, setReminderDate] = useState(new Date());
+  const [reminderMessage, setReminderMessage] = useState('');
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [showCustomerList, setShowCustomerList] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
-      const [followupsRes, coldRes, suggestionsRes] = await Promise.all([
+      const [followupsRes, coldRes, suggestionsRes, customersRes] = await Promise.all([
         apiClient.get('/followups?status=pending'),
-        apiClient.get('/customers/cold?days=14'),
+        apiClient.get('/customers/cold-with-reasons?days=14').catch(() => apiClient.get('/customers/cold?days=14')),
         apiClient.get('/stats/followup-suggestions'),
+        apiClient.get('/customers'),
       ]);
       setFollowups(followupsRes.data);
       setColdCustomers(coldRes.data);
       setSuggestions(suggestionsRes.data);
+      setCustomers(customersRes.data);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -80,23 +108,39 @@ export default function FollowupsScreen() {
     fetchData();
   };
 
-  const getDateCategory = (dateStr: string) => {
+  const getDateCategory = (dateStr: string): string => {
     const date = new Date(dateStr);
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    const endOfWeek = new Date(today);
+    endOfWeek.setDate(endOfWeek.getDate() + 7);
+    
+    const dateOnly = new Date(date);
+    dateOnly.setHours(0, 0, 0, 0);
 
-    if (date.toDateString() === today.toDateString()) return 'today';
-    if (date.toDateString() === tomorrow.toDateString()) return 'tomorrow';
-    if (date < today) return 'overdue';
+    if (dateOnly < today) return 'overdue';
+    if (dateOnly.getTime() === today.getTime()) return 'today';
+    if (dateOnly.getTime() === tomorrow.getTime()) return 'tomorrow';
+    if (dateOnly <= endOfWeek) return 'this_week';
     return 'later';
   };
 
+  const filteredFollowups = followups.filter(f => {
+    if (filter === 'all') return true;
+    const category = getDateCategory(f.reminder_date);
+    return category === filter;
+  });
+
   const groupedFollowups = {
-    overdue: followups.filter(f => getDateCategory(f.reminder_date) === 'overdue'),
-    today: followups.filter(f => getDateCategory(f.reminder_date) === 'today'),
-    tomorrow: followups.filter(f => getDateCategory(f.reminder_date) === 'tomorrow'),
-    later: followups.filter(f => getDateCategory(f.reminder_date) === 'later'),
+    overdue: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'overdue'),
+    today: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'today'),
+    tomorrow: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'tomorrow'),
+    this_week: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'this_week'),
+    later: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'later'),
   };
 
   const handleComplete = async (followup: FollowUp) => {
@@ -130,13 +174,64 @@ export default function FollowupsScreen() {
     );
   };
 
-  const handleSendMessage = (followup: FollowUp) => {
-    const message = followup.message || `Hi ${followup.customer_name}, just checking in!`;
-    const url = `whatsapp://send?phone=${followup.customer_phone.replace(/\+/g, '')}&text=${encodeURIComponent(message)}`;
+  const handleSendMessage = (phone: string, name: string, message?: string | null) => {
+    const text = message || `Hi ${name}, just checking in!`;
+    const url = `whatsapp://send?phone=${phone.replace(/\+/g, '')}&text=${encodeURIComponent(text)}`;
     Linking.openURL(url).catch(() => {
       Alert.alert('Error', 'WhatsApp is not installed on this device');
     });
   };
+
+  const handleAddReminder = async () => {
+    if (!selectedCustomer) {
+      Alert.alert('Error', 'Please select a customer');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const response = await apiClient.post('/followups', {
+        customer_id: selectedCustomer.id,
+        reminder_date: reminderDate.toISOString(),
+        message: reminderMessage || null,
+      });
+      
+      // Add to local state
+      setFollowups([...followups, {
+        ...response.data,
+        customer_name: selectedCustomer.name,
+        customer_phone: selectedCustomer.phone_number,
+      }]);
+      
+      // Reset modal
+      setShowAddModal(false);
+      setSelectedCustomer(null);
+      setReminderDate(new Date());
+      setReminderMessage('');
+      setCustomerSearch('');
+      
+      Alert.alert('Success', 'Reminder added!');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to create reminder');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreateFollowupFromCold = async (customer: ColdCustomer) => {
+    setSelectedCustomer({
+      id: customer.id,
+      name: customer.name,
+      phone_number: customer.phone_number,
+    });
+    setReminderMessage(customer.ai_reason || '');
+    setShowAddModal(true);
+  };
+
+  const filteredCustomerList = customers.filter(c => 
+    c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
+    c.phone_number.includes(customerSearch)
+  );
 
   const renderFollowup = (item: FollowUp) => {
     const category = getDateCategory(item.reminder_date);
@@ -169,7 +264,7 @@ export default function FollowupsScreen() {
         <View style={styles.actions}>
           <TouchableOpacity 
             style={styles.whatsappButton} 
-            onPress={() => handleSendMessage(item)}
+            onPress={() => handleSendMessage(item.customer_phone, item.customer_name, item.message)}
           >
             <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
           </TouchableOpacity>
@@ -205,14 +300,6 @@ export default function FollowupsScreen() {
     );
   };
 
-  const handleMessageColdCustomer = (customer: ColdCustomer) => {
-    const message = `Hi ${customer.name}! Just checking in to see how you're doing. Let me know if you need anything!`;
-    const url = `whatsapp://send?phone=${customer.phone_number.replace(/\+/g, '')}&text=${encodeURIComponent(message)}`;
-    Linking.openURL(url).catch(() => {
-      Alert.alert('Error', 'WhatsApp is not installed on this device');
-    });
-  };
-
   const renderColdCustomer = (customer: ColdCustomer) => (
     <View key={customer.id} style={styles.coldCustomerCard}>
       <View style={styles.coldCustomerInfo}>
@@ -225,15 +312,29 @@ export default function FollowupsScreen() {
             <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
           </View>
         </View>
-        {customer.notes && (
-          <Text style={styles.coldCustomerNotes} numberOfLines={1}>{customer.notes}</Text>
+        
+        {/* AI-Generated Reason */}
+        <View style={styles.aiReasonContainer}>
+          <Ionicons name="bulb" size={14} color="#FFD700" />
+          <Text style={styles.aiReasonText}>
+            {customer.ai_reason || (customer.days_since_contact !== null 
+              ? `No contact in ${customer.days_since_contact} days`
+              : 'Never contacted')}
+          </Text>
+        </View>
+        
+        {customer.last_message && (
+          <Text style={styles.coldLastMessage} numberOfLines={1}>
+            Last: "{customer.last_message}"
+          </Text>
         )}
+        
         <View style={styles.coldCustomerMeta}>
           <Ionicons name="time-outline" size={14} color="#FF6B6B" />
           <Text style={styles.coldDaysText}>
             {customer.days_since_contact !== null 
               ? `${customer.days_since_contact} days ago`
-              : 'Never contacted'}
+              : 'Never'}
           </Text>
           {customer.has_pending_followup && (
             <View style={styles.hasFollowupBadge}>
@@ -242,14 +343,33 @@ export default function FollowupsScreen() {
           )}
         </View>
       </View>
-      <TouchableOpacity 
-        style={styles.coldWhatsappButton} 
-        onPress={() => handleMessageColdCustomer(customer)}
-      >
-        <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
-      </TouchableOpacity>
+      
+      <View style={styles.coldActions}>
+        <TouchableOpacity 
+          style={styles.coldWhatsappButton} 
+          onPress={() => handleSendMessage(customer.phone_number, customer.name)}
+        >
+          <Ionicons name="logo-whatsapp" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+        {!customer.has_pending_followup && (
+          <TouchableOpacity 
+            style={styles.addReminderButton} 
+            onPress={() => handleCreateFollowupFromCold(customer)}
+          >
+            <Ionicons name="alarm-outline" size={20} color="#4A90D9" />
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
+
+  const filters: { key: FilterType; label: string }[] = [
+    { key: 'all', label: 'All' },
+    { key: 'overdue', label: 'Overdue' },
+    { key: 'today', label: 'Today' },
+    { key: 'tomorrow', label: 'Tomorrow' },
+    { key: 'this_week', label: 'This Week' },
+  ];
 
   if (loading) {
     return (
@@ -264,8 +384,18 @@ export default function FollowupsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Follow-ups</Text>
-        <Text style={styles.headerSubtitle}>Never miss a sale</Text>
+        <View style={styles.headerTop}>
+          <View>
+            <Text style={styles.headerTitle}>Follow-ups</Text>
+            <Text style={styles.headerSubtitle}>Never miss a sale</Text>
+          </View>
+          <TouchableOpacity 
+            style={styles.addButton}
+            onPress={() => setShowAddModal(true)}
+          >
+            <Ionicons name="add" size={28} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Stats Cards */}
@@ -312,6 +442,28 @@ export default function FollowupsScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Filter Chips - Only show for Reminders tab */}
+      {activeTab === 'reminders' && (
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false} 
+          style={styles.filterContainer}
+          contentContainerStyle={styles.filterContent}
+        >
+          {filters.map(f => (
+            <TouchableOpacity
+              key={f.key}
+              style={[styles.filterChip, filter === f.key && styles.filterChipActive]}
+              onPress={() => setFilter(f.key)}
+            >
+              <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
+                {f.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
       {activeTab === 'needs_attention' ? (
         <FlatList
           data={coldCustomers.filter(c => !c.has_pending_followup)}
@@ -334,10 +486,17 @@ export default function FollowupsScreen() {
           data={[1]}
           renderItem={() => (
             <>
-              {renderSection('Overdue', groupedFollowups.overdue, '#FF4444')}
-              {renderSection('Today', groupedFollowups.today, '#25D366')}
-              {renderSection('Tomorrow', groupedFollowups.tomorrow, '#4A90D9')}
-              {renderSection('Later', groupedFollowups.later, '#666')}
+              {filter === 'all' ? (
+                <>
+                  {renderSection('Overdue', groupedFollowups.overdue, '#FF4444')}
+                  {renderSection('Today', groupedFollowups.today, '#25D366')}
+                  {renderSection('Tomorrow', groupedFollowups.tomorrow, '#4A90D9')}
+                  {renderSection('This Week', groupedFollowups.this_week, '#FFD700')}
+                  {renderSection('Later', groupedFollowups.later, '#666')}
+                </>
+              ) : (
+                filteredFollowups.map(item => renderFollowup(item))
+              )}
             </>
           )}
           keyExtractor={() => 'sections'}
@@ -346,16 +505,200 @@ export default function FollowupsScreen() {
             <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
           }
           ListEmptyComponent={
-            followups.length === 0 ? (
+            filteredFollowups.length === 0 ? (
               <View style={styles.emptyContainer}>
                 <Ionicons name="notifications-off-outline" size={64} color="#666" />
                 <Text style={styles.emptyText}>No reminders</Text>
-                <Text style={styles.emptySubtext}>Set follow-up reminders from customer profiles</Text>
+                <Text style={styles.emptySubtext}>
+                  {filter === 'all' 
+                    ? 'Tap + to create a follow-up reminder' 
+                    : `No reminders for ${filter.replace('_', ' ')}`}
+                </Text>
               </View>
             ) : null
           }
         />
       )}
+
+      {/* Add Reminder Modal */}
+      <Modal
+        visible={showAddModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowAddModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Add Reminder</Text>
+              <TouchableOpacity onPress={() => setShowAddModal(false)}>
+                <Ionicons name="close" size={28} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Customer Selection */}
+            <Text style={styles.inputLabel}>Customer</Text>
+            {selectedCustomer ? (
+              <TouchableOpacity 
+                style={styles.selectedCustomer}
+                onPress={() => {
+                  setSelectedCustomer(null);
+                  setShowCustomerList(true);
+                }}
+              >
+                <View style={styles.selectedCustomerInfo}>
+                  <View style={styles.selectedAvatar}>
+                    <Text style={styles.selectedAvatarText}>{selectedCustomer.name.charAt(0)}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
+                    <Text style={styles.selectedPhone}>{selectedCustomer.phone_number}</Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-down" size={20} color="#666" />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity 
+                style={styles.customerSelectButton}
+                onPress={() => setShowCustomerList(true)}
+              >
+                <Ionicons name="person-add-outline" size={20} color="#666" />
+                <Text style={styles.customerSelectText}>Select Customer</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Customer Search List */}
+            {showCustomerList && (
+              <View style={styles.customerListContainer}>
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search customers..."
+                  placeholderTextColor="#666"
+                  value={customerSearch}
+                  onChangeText={setCustomerSearch}
+                  autoFocus
+                />
+                <ScrollView style={styles.customerList}>
+                  {filteredCustomerList.slice(0, 10).map(c => (
+                    <TouchableOpacity
+                      key={c.id}
+                      style={styles.customerListItem}
+                      onPress={() => {
+                        setSelectedCustomer(c);
+                        setShowCustomerList(false);
+                        setCustomerSearch('');
+                      }}
+                    >
+                      <View style={styles.customerListAvatar}>
+                        <Text style={styles.customerListAvatarText}>{c.name.charAt(0)}</Text>
+                      </View>
+                      <View>
+                        <Text style={styles.customerListName}>{c.name}</Text>
+                        <Text style={styles.customerListPhone}>{c.phone_number}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                <TouchableOpacity 
+                  style={styles.closeListButton}
+                  onPress={() => setShowCustomerList(false)}
+                >
+                  <Text style={styles.closeListText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Date Selection */}
+            <Text style={styles.inputLabel}>Reminder Date</Text>
+            <TouchableOpacity 
+              style={styles.dateButton}
+              onPress={() => setShowDatePicker(true)}
+            >
+              <Ionicons name="calendar-outline" size={20} color="#25D366" />
+              <Text style={styles.dateButtonText}>
+                {reminderDate.toLocaleDateString('en-KE', {
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                })}
+              </Text>
+            </TouchableOpacity>
+
+            {showDatePicker && (
+              <DateTimePicker
+                value={reminderDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(event, date) => {
+                  setShowDatePicker(Platform.OS === 'ios');
+                  if (date) setReminderDate(date);
+                }}
+                minimumDate={new Date()}
+                themeVariant="dark"
+              />
+            )}
+
+            {/* Message */}
+            <Text style={styles.inputLabel}>Note (Optional)</Text>
+            <TextInput
+              style={styles.messageInput}
+              placeholder="What should you follow up about?"
+              placeholderTextColor="#666"
+              value={reminderMessage}
+              onChangeText={setReminderMessage}
+              multiline
+              numberOfLines={3}
+            />
+
+            {/* Quick Date Buttons */}
+            <View style={styles.quickDates}>
+              <TouchableOpacity 
+                style={styles.quickDateButton}
+                onPress={() => setReminderDate(new Date())}
+              >
+                <Text style={styles.quickDateText}>Today</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.quickDateButton}
+                onPress={() => {
+                  const tomorrow = new Date();
+                  tomorrow.setDate(tomorrow.getDate() + 1);
+                  setReminderDate(tomorrow);
+                }}
+              >
+                <Text style={styles.quickDateText}>Tomorrow</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.quickDateButton}
+                onPress={() => {
+                  const nextWeek = new Date();
+                  nextWeek.setDate(nextWeek.getDate() + 7);
+                  setReminderDate(nextWeek);
+                }}
+              >
+                <Text style={styles.quickDateText}>Next Week</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Save Button */}
+            <TouchableOpacity 
+              style={[styles.saveButton, (!selectedCustomer || saving) && styles.saveButtonDisabled]}
+              onPress={handleAddReminder}
+              disabled={!selectedCustomer || saving}
+            >
+              {saving ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="alarm" size={20} color="#FFFFFF" />
+                  <Text style={styles.saveButtonText}>Set Reminder</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -374,6 +717,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
   },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   headerTitle: {
     fontSize: 28,
     fontWeight: 'bold',
@@ -383,6 +731,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#25D366',
     marginTop: 4,
+  },
+  addButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   statsRow: {
     flexDirection: 'row',
@@ -421,7 +777,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1A2942',
     borderRadius: 12,
     padding: 4,
-    marginBottom: 16,
+    marginBottom: 12,
   },
   tab: {
     flex: 1,
@@ -444,9 +800,12 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   filterContainer: {
-    flexDirection: 'row',
+    maxHeight: 44,
+    marginBottom: 12,
+  },
+  filterContent: {
     paddingHorizontal: 20,
-    marginBottom: 16,
+    gap: 8,
   },
   filterChip: {
     paddingHorizontal: 16,
@@ -468,7 +827,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingBottom: 100,
   },
   section: {
     marginBottom: 24,
@@ -580,6 +939,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 8,
+    textAlign: 'center',
   },
   coldCustomerCard: {
     flexDirection: 'row',
@@ -624,9 +984,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#666',
   },
-  coldCustomerNotes: {
+  aiReasonContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 215, 0, 0.1)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  aiReasonText: {
+    fontSize: 12,
+    color: '#FFD700',
+    marginLeft: 6,
+    flex: 1,
+  },
+  coldLastMessage: {
     fontSize: 12,
     color: '#888',
+    fontStyle: 'italic',
     marginBottom: 8,
   },
   coldCustomerMeta: {
@@ -650,13 +1026,214 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '600',
   },
+  coldActions: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
   coldWhatsappButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
-    alignSelf: 'center',
+  },
+  addReminderButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(74, 144, 217, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#1A2942',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    maxHeight: '90%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  inputLabel: {
+    fontSize: 14,
+    color: '#888',
+    marginBottom: 8,
+    marginTop: 16,
+  },
+  customerSelectButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0A1628',
+    borderRadius: 12,
+    padding: 16,
+    gap: 12,
+  },
+  customerSelectText: {
+    fontSize: 16,
+    color: '#666',
+  },
+  selectedCustomer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0A1628',
+    borderRadius: 12,
+    padding: 12,
+  },
+  selectedCustomerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  selectedAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  selectedAvatarText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  selectedName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  selectedPhone: {
+    fontSize: 13,
+    color: '#666',
+  },
+  customerListContainer: {
+    backgroundColor: '#0A1628',
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 8,
+    maxHeight: 300,
+  },
+  searchInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  customerList: {
+    maxHeight: 200,
+  },
+  customerListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
+  },
+  customerListAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  customerListAvatarText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  customerListName: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#FFFFFF',
+  },
+  customerListPhone: {
+    fontSize: 12,
+    color: '#666',
+  },
+  closeListButton: {
+    alignItems: 'center',
+    paddingTop: 12,
+  },
+  closeListText: {
+    fontSize: 14,
+    color: '#FF4444',
+  },
+  dateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0A1628',
+    borderRadius: 12,
+    padding: 16,
+    gap: 12,
+  },
+  dateButtonText: {
+    fontSize: 16,
+    color: '#FFFFFF',
+  },
+  messageInput: {
+    backgroundColor: '#0A1628',
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    color: '#FFFFFF',
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  quickDates: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 16,
+  },
+  quickDateButton: {
+    flex: 1,
+    backgroundColor: '#0A1628',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  quickDateText: {
+    fontSize: 13,
+    color: '#4A90D9',
+    fontWeight: '500',
+  },
+  saveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 24,
+    gap: 8,
+  },
+  saveButtonDisabled: {
+    backgroundColor: '#1A2942',
+  },
+  saveButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });
