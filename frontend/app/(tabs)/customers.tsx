@@ -476,17 +476,121 @@ export default function CustomersScreen() {
         }
       />
 
-      {/* WhatsApp-style Floating Action Button */}
-      <TouchableOpacity 
-        style={styles.fab} 
-        onPress={() => setModalVisible(true)}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="add" size={28} color="#FFFFFF" />
-      </TouchableOpacity>
+      {/* WhatsApp-style Floating Action Button with Menu */}
+      <View style={styles.fabContainer}>
+        <TouchableOpacity 
+          style={styles.fabSecondary} 
+          onPress={() => {
+            setContactsModalVisible(true);
+            loadPhoneContacts();
+          }}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="cloud-upload" size={22} color="#FFFFFF" />
+          <Text style={styles.fabSecondaryText}>Import</Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={styles.fab} 
+          onPress={() => setModalVisible(true)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="add" size={28} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
 
       {renderModal(false)}
       {renderModal(true)}
+
+      {/* Import Contacts Modal */}
+      <Modal
+        visible={contactsModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setContactsModalVisible(false);
+          setPhoneContacts([]);
+          setContactSearch('');
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => {
+              setContactsModalVisible(false);
+              setPhoneContacts([]);
+              setContactSearch('');
+            }}>
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Import Contacts</Text>
+            <TouchableOpacity onPress={importSelectedContacts} disabled={importingContacts || selectedCount === 0}>
+              <Text style={[styles.modalSave, (importingContacts || selectedCount === 0) && styles.modalSaveDisabled]}>
+                {importingContacts ? 'Importing...' : `Import (${selectedCount})`}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.contactsSearchContainer}>
+            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={contactSearch}
+              onChangeText={setContactSearch}
+              placeholder="Search contacts..."
+              placeholderTextColor="#666"
+            />
+          </View>
+
+          <TouchableOpacity style={styles.selectAllButton} onPress={selectAllContacts}>
+            <Ionicons 
+              name={filteredPhoneContacts.length > 0 && filteredPhoneContacts.every(c => c.selected) ? "checkbox" : "square-outline"} 
+              size={24} 
+              color="#25D366" 
+            />
+            <Text style={styles.selectAllText}>Select All</Text>
+            <Text style={styles.contactCount}>{filteredPhoneContacts.length} contacts</Text>
+          </TouchableOpacity>
+
+          {loadingContacts ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#25D366" />
+              <Text style={styles.loadingText}>Loading contacts...</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredPhoneContacts}
+              renderItem={({ item }) => (
+                <TouchableOpacity 
+                  style={styles.contactItem} 
+                  onPress={() => toggleContactSelection(item.id)}
+                >
+                  <Ionicons 
+                    name={item.selected ? "checkbox" : "square-outline"} 
+                    size={24} 
+                    color={item.selected ? "#25D366" : "#666"} 
+                  />
+                  <View style={styles.contactInfo}>
+                    <Text style={styles.contactName}>{item.name}</Text>
+                    <Text style={styles.contactPhone}>{item.phoneNumber}</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.contactsList}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="people-outline" size={48} color="#666" />
+                  <Text style={styles.emptyText}>No contacts found</Text>
+                  <Text style={styles.emptySubtext}>
+                    {Platform.OS === 'web' 
+                      ? 'Contact import is available on mobile devices only' 
+                      : 'Allow contact access to import'}
+                  </Text>
+                </View>
+              }
+            />
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
