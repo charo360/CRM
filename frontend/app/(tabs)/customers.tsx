@@ -461,6 +461,27 @@ const styles = StyleSheet.create({
   customerInfo: {
     flex: 1,
   },
+  customerRight: {
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    marginLeft: 8,
+    maxWidth: 120,
+  },
+  notesPreview: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#0D2137',
+    borderRadius: 8,
+    padding: 8,
+    marginBottom: 8,
+  },
+  notesPreviewText: {
+    fontSize: 11,
+    color: '#25D366',
+    marginLeft: 4,
+    flex: 1,
+    lineHeight: 14,
+  },
   customerName: {
     fontSize: 16,
     fontWeight: '600',
