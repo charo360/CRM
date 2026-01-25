@@ -228,4 +228,36 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  otpBox: {
+    backgroundColor: '#1E3A5F',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 24,
+    borderWidth: 2,
+    borderColor: '#25D366',
+  },
+  otpBoxHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  otpBoxTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#25D366',
+  },
+  otpBoxCode: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    letterSpacing: 8,
+    marginVertical: 8,
+  },
+  otpBoxHint: {
+    fontSize: 12,
+    color: '#888',
+    textAlign: 'center',
+  },
 });
