@@ -85,3 +85,7 @@ android-sdk/
 
 # Git backup refs
 .git/refs/original/
+-e 
+# Environment files
+*.env
+*.env.*
