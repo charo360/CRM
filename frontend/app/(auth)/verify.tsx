@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 
 export default function VerifyScreen() {
   const { phone, devOtp } = useLocalSearchParams<{ phone: string; devOtp: string }>();

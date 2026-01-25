@@ -5,7 +5,6 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Modal,
   Alert,
   ActivityIndicator,
   RefreshControl,
@@ -13,8 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { apiClient } from '../../src/utils/api';
-import DateTimePicker from '@react-native-community/datetimepicker';
+import { apiClient } from '../context/api';
 
 interface FollowUp {
   id: string;
@@ -119,12 +117,12 @@ export default function FollowupsScreen() {
     later: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'later'),
   };
 
-  const renderFollowup = ({ item }: { item: FollowUp }) => {
+  const renderFollowup = (item: FollowUp) => {
     const category = getDateCategory(item.reminder_date);
     const isOverdue = category === 'overdue';
 
     return (
-      <View style={[styles.followupCard, isOverdue && styles.followupCardOverdue]}>
+      <View key={item.id} style={[styles.followupCard, isOverdue && styles.followupCardOverdue]}>
         <View style={styles.followupInfo}>
           <View style={styles.followupHeader}>
             <Ionicons 
@@ -181,11 +179,7 @@ export default function FollowupsScreen() {
           <Text style={styles.sectionTitle}>{title}</Text>
           <Text style={styles.sectionCount}>{data.length}</Text>
         </View>
-        {data.map(item => (
-          <View key={item.id}>
-            {renderFollowup({ item })}
-          </View>
-        ))}
+        {data.map(item => renderFollowup(item))}
       </View>
     );
   };
@@ -237,11 +231,13 @@ export default function FollowupsScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
         }
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Ionicons name="notifications-off-outline" size={64} color="#666" />
-            <Text style={styles.emptyText}>No follow-ups</Text>
-            <Text style={styles.emptySubtext}>Set reminders from customer profiles</Text>
-          </View>
+          filteredFollowups.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="notifications-off-outline" size={64} color="#666" />
+              <Text style={styles.emptyText}>No follow-ups</Text>
+              <Text style={styles.emptySubtext}>Set reminders from customer profiles</Text>
+            </View>
+          ) : null
         }
       />
     </SafeAreaView>

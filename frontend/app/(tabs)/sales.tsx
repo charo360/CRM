@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { apiClient } from '../../src/utils/api';
+import { apiClient } from '../context/api';
 
 interface Customer {
   id: string;
