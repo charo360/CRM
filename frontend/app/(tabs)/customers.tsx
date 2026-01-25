@@ -296,9 +296,7 @@ export default function CustomersScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Customers</Text>
-        <TouchableOpacity style={styles.addButton} onPress={() => setModalVisible(true)}>
-          <Ionicons name="add" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
+        <Text style={styles.headerCount}>{customers.length} contacts</Text>
       </View>
 
       <View style={styles.searchContainer}>
@@ -346,6 +344,15 @@ export default function CustomersScreen() {
           </View>
         }
       />
+
+      {/* WhatsApp-style Floating Action Button */}
+      <TouchableOpacity 
+        style={styles.fab} 
+        onPress={() => setModalVisible(true)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="add" size={28} color="#FFFFFF" />
+      </TouchableOpacity>
 
       {renderModal(false)}
       {renderModal(true)}
