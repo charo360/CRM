@@ -210,6 +210,15 @@ export default function SalesScreen() {
         }
       />
 
+      {/* WhatsApp-style Floating Action Button */}
+      <TouchableOpacity 
+        style={styles.fab} 
+        onPress={() => setModalVisible(true)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="add" size={28} color="#FFFFFF" />
+      </TouchableOpacity>
+
       {/* New Sale Modal */}
       <Modal
         visible={modalVisible}
