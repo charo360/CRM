@@ -917,6 +917,7 @@ async def whatsapp_webhook(request: Request):
     """
     Receive incoming WhatsApp messages from Twilio
     Auto-creates customers when new numbers message us
+    Stores all messages for AI analysis
     """
     try:
         form_data = await request.form()
@@ -945,7 +946,10 @@ async def whatsapp_webhook(request: Request):
             "phone_number": from_number
         })
         
+        customer_id = None
+        
         if customer:
+            customer_id = customer["_id"]
             # Update existing customer with last message
             await db.customers.update_one(
                 {"_id": customer["_id"]},
@@ -975,6 +979,22 @@ async def whatsapp_webhook(request: Request):
                 "auto_created": True
             })
             logging.info(f"Auto-created customer: {customer_name} ({from_number})")
+        
+        # Store the message for AI analysis
+        if customer_id and body:
+            message_id = str(uuid.uuid4())
+            await db.messages.insert_one({
+                "_id": message_id,
+                "customer_id": customer_id,
+                "user_id": user["_id"],
+                "direction": "incoming",
+                "content": body,
+                "message_type": "text",
+                "from_number": from_number,
+                "to_number": to_number,
+                "created_at": datetime.utcnow()
+            })
+            logging.info(f"Stored incoming message from {from_number}")
         
         return {"status": "ok"}
         
