@@ -55,6 +55,13 @@ export default function CustomersScreen() {
   const [newTags, setNewTags] = useState<string[]>(['New']);
   const [saving, setSaving] = useState(false);
 
+  // Contact import
+  const [contactsModalVisible, setContactsModalVisible] = useState(false);
+  const [phoneContacts, setPhoneContacts] = useState<PhoneContact[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [importingContacts, setImportingContacts] = useState(false);
+  const [contactSearch, setContactSearch] = useState('');
+
   const { user } = useAuth();
 
   const fetchCustomers = useCallback(async () => {
