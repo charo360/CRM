@@ -30,10 +30,14 @@ next-env.d.ts
 dist/
 dist
 
-# Environment files (comprehensive coverage)
-
-*token.json*
-*credentials.json*
+# Environment files - IMPORTANT: Keep credentials safe!
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+**/token.json*
+**/credentials.json*
 
 # Logs and debug files
 npm-debug.log*
@@ -77,27 +81,7 @@ agenthub/agents/youtube/db
 .cache/
 
 # Mobile development
-android-sdk/ -e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
+android-sdk/
+
+# Git backup refs
+.git/refs/original/
