@@ -16,9 +16,13 @@ import hmac
 import hashlib
 import json
 from twilio.rest import Client as TwilioClient
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Gemini API Key
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
