@@ -230,9 +230,6 @@ export default function BroadcastScreen() {
           <Text style={styles.headerTitle}>Broadcast</Text>
           <Text style={styles.headerSubtitle}>Send promotions to customers</Text>
         </View>
-        <TouchableOpacity style={styles.addButton} onPress={() => setModalVisible(true)}>
-          <Ionicons name="add" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
       </View>
 
       <View style={styles.statsRow}>
