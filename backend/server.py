@@ -231,6 +231,43 @@ def generate_otp() -> str:
     import random
     return str(random.randint(100000, 999999))
 
+async def generate_quick_reason(customer: dict, messages: list) -> str:
+    """Generate a quick follow-up reason without full AI call for performance"""
+    last_message = customer.get("last_message", "")
+    tags = customer.get("tags", [])
+    days_since = None
+    
+    if customer.get("last_contacted"):
+        days_since = (datetime.utcnow() - customer["last_contacted"]).days
+    
+    # Quick rule-based reasons first
+    if not customer.get("last_contacted"):
+        if "New" in tags:
+            return "New customer - send welcome message"
+        return "Never contacted - introduce your services"
+    
+    if days_since and days_since > 30:
+        return f"Inactive for {days_since} days - re-engage with offer"
+    
+    if "VIP" in tags and days_since and days_since > 7:
+        return f"VIP customer not contacted in {days_since} days"
+    
+    # Check last message for context
+    if last_message:
+        lower_msg = last_message.lower()
+        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
+            return "Asked about pricing - follow up on quote"
+        if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
+            return "Was considering purchase - check decision"
+        if any(word in lower_msg for word in ["thank", "thanks", "asante"]):
+            return "Previous transaction - check satisfaction"
+    
+    # Default with days
+    if days_since:
+        return f"No contact in {days_since} days - check in"
+    
+    return "Due for follow-up"
+
 # ============ AUTH ENDPOINTS ============
 
 @api_router.post("/auth/send-otp")
