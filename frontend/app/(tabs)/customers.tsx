@@ -162,6 +162,116 @@ export default function CustomersScreen() {
     setSelectedCustomer(null);
   };
 
+  // Import contacts from phone
+  const loadPhoneContacts = async () => {
+    setLoadingContacts(true);
+    try {
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow access to contacts to import customers');
+        setContactsModalVisible(false);
+        return;
+      }
+
+      const { data } = await Contacts.getContactsAsync({
+        fields: [Contacts.Fields.Name, Contacts.Fields.PhoneNumbers],
+      });
+
+      if (data.length > 0) {
+        const contactsWithPhones = data
+          .filter(contact => contact.phoneNumbers && contact.phoneNumbers.length > 0)
+          .map(contact => ({
+            id: contact.id || Math.random().toString(),
+            name: contact.name || 'Unknown',
+            phoneNumber: formatPhoneNumber(contact.phoneNumbers![0].number || ''),
+            selected: false,
+          }));
+        setPhoneContacts(contactsWithPhones);
+      } else {
+        Alert.alert('No Contacts', 'No contacts with phone numbers found');
+      }
+    } catch (error) {
+      console.error('Error loading contacts:', error);
+      Alert.alert('Error', 'Failed to load contacts');
+    } finally {
+      setLoadingContacts(false);
+    }
+  };
+
+  const formatPhoneNumber = (phone: string) => {
+    // Remove all non-digit characters
+    let cleaned = phone.replace(/\D/g, '');
+    
+    // If starts with 0, replace with +254 (Kenya)
+    if (cleaned.startsWith('0')) {
+      cleaned = '254' + cleaned.substring(1);
+    }
+    
+    // Add + if not present
+    if (!cleaned.startsWith('+')) {
+      cleaned = '+' + cleaned;
+    }
+    
+    return cleaned;
+  };
+
+  const toggleContactSelection = (contactId: string) => {
+    setPhoneContacts(phoneContacts.map(c => 
+      c.id === contactId ? { ...c, selected: !c.selected } : c
+    ));
+  };
+
+  const selectAllContacts = () => {
+    const allSelected = filteredPhoneContacts.every(c => c.selected);
+    setPhoneContacts(phoneContacts.map(c => ({
+      ...c,
+      selected: filteredPhoneContacts.some(fc => fc.id === c.id) ? !allSelected : c.selected
+    })));
+  };
+
+  const importSelectedContacts = async () => {
+    const selected = phoneContacts.filter(c => c.selected);
+    if (selected.length === 0) {
+      Alert.alert('No Selection', 'Please select contacts to import');
+      return;
+    }
+
+    setImportingContacts(true);
+    let imported = 0;
+    let failed = 0;
+
+    for (const contact of selected) {
+      try {
+        await apiClient.post('/customers', {
+          name: contact.name,
+          phone_number: contact.phoneNumber,
+          notes: null,
+          tags: ['New'],
+        });
+        imported++;
+      } catch (error) {
+        failed++;
+      }
+    }
+
+    setImportingContacts(false);
+    setContactsModalVisible(false);
+    setPhoneContacts([]);
+    fetchCustomers();
+
+    Alert.alert(
+      'Import Complete',
+      `Successfully imported ${imported} contact${imported !== 1 ? 's' : ''}${failed > 0 ? `\n${failed} failed (may already exist)` : ''}`
+    );
+  };
+
+  const filteredPhoneContacts = phoneContacts.filter(c =>
+    c.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
+    c.phoneNumber.includes(contactSearch)
+  );
+
+  const selectedCount = phoneContacts.filter(c => c.selected).length;
+
   const openEditModal = (customer: Customer) => {
     setSelectedCustomer(customer);
     setNewName(customer.name);
