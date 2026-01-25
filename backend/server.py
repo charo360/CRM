@@ -214,19 +214,26 @@ async def send_otp(request: OTPRequest):
         "expires": datetime.utcnow() + timedelta(minutes=10)
     }
     
-    try:
-        # Send SMS via Twilio
-        message = twilio_client.messages.create(
-            body=f"Your WhatsApp CRM verification code is: {otp}",
-            from_=os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006'),  # Use test number if not set
-            to=phone
-        )
-        return {"status": "success", "message": "OTP sent successfully"}
-    except Exception as e:
-        # For development, still store OTP but log error
-        logging.error(f"Twilio error: {e}")
-        # Return success for testing (OTP is stored)
-        return {"status": "success", "message": "OTP sent (dev mode)", "dev_otp": otp}
+    # Check if we have a real Twilio phone number configured
+    twilio_phone = os.environ.get('TWILIO_PHONE_NUMBER')
+    
+    if twilio_phone and not twilio_phone.startswith('+1500'):  # Not a test number
+        try:
+            # Send SMS via Twilio (LIVE MODE)
+            message = twilio_client.messages.create(
+                body=f"Your WhatsApp CRM verification code is: {otp}",
+                from_=twilio_phone,
+                to=phone
+            )
+            return {"status": "success", "message": "OTP sent successfully"}
+        except Exception as e:
+            logging.error(f"Twilio error: {e}")
+            # Fall back to sandbox mode
+            return {"status": "success", "message": "OTP sent (sandbox)", "dev_otp": otp}
+    else:
+        # SANDBOX MODE - Show OTP in response for testing
+        logging.info(f"SANDBOX MODE: OTP for {phone} is {otp}")
+        return {"status": "success", "message": "OTP sent (sandbox)", "dev_otp": otp}
 
 @api_router.post("/auth/verify-otp")
 async def verify_otp(request: OTPVerify):
