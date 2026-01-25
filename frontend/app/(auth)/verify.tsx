@@ -93,6 +93,20 @@ export default function VerifyScreen() {
           <Text style={styles.phone}>{phone}</Text>
         </View>
 
+        {/* SANDBOX MODE - Show OTP on screen */}
+        {devOtp && showOtp && (
+          <View style={styles.otpBox}>
+            <View style={styles.otpBoxHeader}>
+              <Text style={styles.otpBoxTitle}>🧪 SANDBOX MODE</Text>
+              <TouchableOpacity onPress={() => setShowOtp(false)}>
+                <Ionicons name="close" size={20} color="#666" />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.otpBoxCode}>{devOtp}</Text>
+            <Text style={styles.otpBoxHint}>Use this code to verify (SMS not sent)</Text>
+          </View>
+        )}
+
         <View style={styles.codeContainer}>
           {code.map((digit, index) => (
             <TextInput
