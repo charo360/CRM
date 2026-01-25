@@ -25,6 +25,26 @@ interface FollowUp {
   created_at: string;
 }
 
+interface ColdCustomer {
+  id: string;
+  name: string;
+  phone_number: string;
+  notes: string | null;
+  tags: string[];
+  last_message: string | null;
+  last_contacted: string | null;
+  days_since_contact: number | null;
+  has_pending_followup: boolean;
+}
+
+interface Suggestions {
+  neglected_week: number;
+  neglected_month: number;
+  new_no_followup: number;
+  vip_neglected: number;
+  total_needing_attention: number;
+}
+
 export default function FollowupsScreen() {
   const [followups, setFollowups] = useState<FollowUp[]>([]);
   const [loading, setLoading] = useState(true);
