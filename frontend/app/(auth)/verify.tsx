@@ -271,4 +271,16 @@ const styles = StyleSheet.create({
     color: '#888',
     textAlign: 'center',
   },
+  autoFillButton: {
+    backgroundColor: '#25D366',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  autoFillText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
 });
