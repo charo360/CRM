@@ -493,11 +493,6 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 4,
   },
-  customerNotes: {
-    fontSize: 12,
-    color: '#888',
-    marginBottom: 6,
-  },
   tagsContainer: {
     flexDirection: 'row',
   },
