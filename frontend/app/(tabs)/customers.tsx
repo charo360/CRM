@@ -29,6 +29,13 @@ interface Customer {
   created_at: string;
 }
 
+interface PhoneContact {
+  id: string;
+  name: string;
+  phoneNumber: string;
+  selected: boolean;
+}
+
 const TAGS = ['New', 'Returning', 'VIP'];
 
 export default function CustomersScreen() {
