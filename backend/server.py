@@ -168,6 +168,33 @@ class PaymentInitRequest(BaseModel):
 class PaymentVerifyRequest(BaseModel):
     reference: str
 
+# Message Models (for storing WhatsApp messages)
+class MessageCreate(BaseModel):
+    customer_id: str
+    direction: str  # incoming, outgoing
+    content: str
+    message_type: str = "text"  # text, image, document
+
+class MessageResponse(BaseModel):
+    id: str
+    customer_id: str
+    direction: str
+    content: str
+    message_type: str
+    created_at: datetime
+
+# AI Analysis Models
+class AIAnalysisRequest(BaseModel):
+    customer_id: str
+
+class AIAnalysisResponse(BaseModel):
+    customer_id: str
+    summary: str
+    follow_up_reason: str
+    suggested_message: str
+    interests: List[str]
+    sentiment: str
+
 # ============ HELPER FUNCTIONS ============
 
 def create_token(user_id: str, phone_number: str) -> str:
