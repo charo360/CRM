@@ -104,6 +104,17 @@ export default function VerifyScreen() {
             </View>
             <Text style={styles.otpBoxCode}>{devOtp}</Text>
             <Text style={styles.otpBoxHint}>Use this code to verify (SMS not sent)</Text>
+            <TouchableOpacity 
+              style={styles.autoFillButton}
+              onPress={() => {
+                const digits = devOtp.split('');
+                setCode(digits);
+                // Auto verify after filling
+                setTimeout(() => handleVerify(devOtp), 500);
+              }}
+            >
+              <Text style={styles.autoFillText}>Tap to Auto-Fill & Verify</Text>
+            </TouchableOpacity>
           </View>
         )}
 
