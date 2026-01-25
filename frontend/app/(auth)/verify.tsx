@@ -18,16 +18,10 @@ export default function VerifyScreen() {
   const { phone, devOtp } = useLocalSearchParams<{ phone: string; devOtp: string }>();
   const [code, setCode] = useState(['', '', '', '', '', '']);
   const [loading, setLoading] = useState(false);
+  const [showOtp, setShowOtp] = useState(true);
   const inputRefs = useRef<TextInput[]>([]);
   const router = useRouter();
   const { verifyOTP } = useAuth();
-
-  useEffect(() => {
-    // Show dev OTP if available
-    if (devOtp) {
-      Alert.alert('Dev Mode', `Your OTP code is: ${devOtp}`);
-    }
-  }, [devOtp]);
 
   const handleCodeChange = (text: string, index: number) => {
     const newCode = [...code];
