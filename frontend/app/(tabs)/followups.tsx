@@ -47,16 +47,24 @@ interface Suggestions {
 
 export default function FollowupsScreen() {
   const [followups, setFollowups] = useState<FollowUp[]>([]);
+  const [coldCustomers, setColdCustomers] = useState<ColdCustomer[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestions | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'today' | 'tomorrow' | 'later'>('all');
+  const [activeTab, setActiveTab] = useState<'reminders' | 'needs_attention'>('needs_attention');
 
-  const fetchFollowups = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const response = await apiClient.get('/followups?status=pending');
-      setFollowups(response.data);
+      const [followupsRes, coldRes, suggestionsRes] = await Promise.all([
+        apiClient.get('/followups?status=pending'),
+        apiClient.get('/customers/cold?days=14'),
+        apiClient.get('/stats/followup-suggestions'),
+      ]);
+      setFollowups(followupsRes.data);
+      setColdCustomers(coldRes.data);
+      setSuggestions(suggestionsRes.data);
     } catch (error) {
-      console.error('Error fetching followups:', error);
+      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -64,12 +72,12 @@ export default function FollowupsScreen() {
   }, []);
 
   useEffect(() => {
-    fetchFollowups();
-  }, [fetchFollowups]);
+    fetchData();
+  }, [fetchData]);
 
   const handleRefresh = () => {
     setRefreshing(true);
-    fetchFollowups();
+    fetchData();
   };
 
   const handleComplete = async (followup: FollowUp) => {
