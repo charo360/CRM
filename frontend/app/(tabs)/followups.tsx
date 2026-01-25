@@ -138,32 +138,6 @@ export default function FollowupsScreen() {
     });
   };
 
-  const getDateCategory = (dateStr: string) => {
-    const date = new Date(dateStr);
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    if (date.toDateString() === today.toDateString()) return 'today';
-    if (date.toDateString() === tomorrow.toDateString()) return 'tomorrow';
-    if (date < today) return 'overdue';
-    return 'later';
-  };
-
-  const filteredFollowups = followups.filter(f => {
-    if (filter === 'all') return true;
-    const category = getDateCategory(f.reminder_date);
-    if (filter === 'today') return category === 'today' || category === 'overdue';
-    return category === filter;
-  });
-
-  const groupedFollowups = {
-    overdue: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'overdue'),
-    today: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'today'),
-    tomorrow: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'tomorrow'),
-    later: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'later'),
-  };
-
   const renderFollowup = (item: FollowUp) => {
     const category = getDateCategory(item.reminder_date);
     const isOverdue = category === 'overdue';
