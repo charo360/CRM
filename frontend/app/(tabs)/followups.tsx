@@ -607,4 +607,82 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 8,
   },
+  coldCustomerCard: {
+    flexDirection: 'row',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FF6B6B',
+  },
+  coldCustomerInfo: {
+    flex: 1,
+  },
+  coldCustomerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  coldAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FF6B6B',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  coldAvatarText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  coldCustomerDetails: {
+    flex: 1,
+  },
+  coldCustomerName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  coldCustomerPhone: {
+    fontSize: 13,
+    color: '#666',
+  },
+  coldCustomerNotes: {
+    fontSize: 12,
+    color: '#888',
+    marginBottom: 8,
+  },
+  coldCustomerMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  coldDaysText: {
+    fontSize: 12,
+    color: '#FF6B6B',
+    marginLeft: 4,
+  },
+  hasFollowupBadge: {
+    backgroundColor: '#25D366',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 8,
+  },
+  hasFollowupText: {
+    fontSize: 10,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  coldWhatsappButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+    alignSelf: 'center',
+  },
 });
