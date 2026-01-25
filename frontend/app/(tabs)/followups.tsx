@@ -80,6 +80,25 @@ export default function FollowupsScreen() {
     fetchData();
   };
 
+  const getDateCategory = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    if (date.toDateString() === today.toDateString()) return 'today';
+    if (date.toDateString() === tomorrow.toDateString()) return 'tomorrow';
+    if (date < today) return 'overdue';
+    return 'later';
+  };
+
+  const groupedFollowups = {
+    overdue: followups.filter(f => getDateCategory(f.reminder_date) === 'overdue'),
+    today: followups.filter(f => getDateCategory(f.reminder_date) === 'today'),
+    tomorrow: followups.filter(f => getDateCategory(f.reminder_date) === 'tomorrow'),
+    later: followups.filter(f => getDateCategory(f.reminder_date) === 'later'),
+  };
+
   const handleComplete = async (followup: FollowUp) => {
     try {
       await apiClient.put(`/followups/${followup.id}`, { status: 'completed' });
