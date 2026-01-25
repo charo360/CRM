@@ -1,0 +1,223 @@
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+  ActivityIndicator,
+} from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '../../src/context/AuthContext';
+
+export default function VerifyScreen() {
+  const { phone, devOtp } = useLocalSearchParams<{ phone: string; devOtp: string }>();
+  const [code, setCode] = useState(['', '', '', '', '', '']);
+  const [loading, setLoading] = useState(false);
+  const inputRefs = useRef<TextInput[]>([]);
+  const router = useRouter();
+  const { verifyOTP } = useAuth();
+
+  useEffect(() => {
+    // Show dev OTP if available
+    if (devOtp) {
+      Alert.alert('Dev Mode', `Your OTP code is: ${devOtp}`);
+    }
+  }, [devOtp]);
+
+  const handleCodeChange = (text: string, index: number) => {
+    const newCode = [...code];
+    newCode[index] = text;
+    setCode(newCode);
+
+    // Auto-focus next input
+    if (text && index < 5) {
+      inputRefs.current[index + 1]?.focus();
+    }
+
+    // Auto-submit when all digits entered
+    if (index === 5 && text) {
+      const fullCode = newCode.join('');
+      if (fullCode.length === 6) {
+        handleVerify(fullCode);
+      }
+    }
+  };
+
+  const handleKeyPress = (e: any, index: number) => {
+    if (e.nativeEvent.key === 'Backspace' && !code[index] && index > 0) {
+      inputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleVerify = async (otp?: string) => {
+    const fullCode = otp || code.join('');
+    if (fullCode.length !== 6) {
+      Alert.alert('Error', 'Please enter the 6-digit code');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await verifyOTP(phone!, fullCode);
+      if (result.success) {
+        if (result.isNewUser) {
+          router.replace({
+            pathname: '/(auth)/register',
+            params: { phone: phone },
+          });
+        } else {
+          router.replace('/(tabs)/customers');
+        }
+      } else {
+        Alert.alert('Error', result.message || 'Invalid OTP');
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <View style={styles.content}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+        </TouchableOpacity>
+
+        <View style={styles.header}>
+          <Text style={styles.title}>Verify Phone</Text>
+          <Text style={styles.subtitle}>Enter the 6-digit code sent to</Text>
+          <Text style={styles.phone}>{phone}</Text>
+        </View>
+
+        <View style={styles.codeContainer}>
+          {code.map((digit, index) => (
+            <TextInput
+              key={index}
+              ref={(ref) => (inputRefs.current[index] = ref!)}
+              style={[
+                styles.codeInput,
+                digit && styles.codeInputFilled,
+              ]}
+              value={digit}
+              onChangeText={(text) => handleCodeChange(text.slice(-1), index)}
+              onKeyPress={(e) => handleKeyPress(e, index)}
+              keyboardType="number-pad"
+              maxLength={1}
+              selectTextOnFocus
+            />
+          ))}
+        </View>
+
+        <TouchableOpacity
+          style={[styles.button, loading && styles.buttonDisabled]}
+          onPress={() => handleVerify()}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <Text style={styles.buttonText}>Verify</Text>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.resendButton}>
+          <Text style={styles.resendText}>Didn't receive code? </Text>
+          <Text style={styles.resendLink}>Resend</Text>
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0A1628',
+  },
+  content: {
+    flex: 1,
+    padding: 24,
+  },
+  backButton: {
+    marginTop: 48,
+    marginBottom: 24,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+  },
+  header: {
+    marginBottom: 48,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: '#666',
+  },
+  phone: {
+    fontSize: 16,
+    color: '#25D366',
+    fontWeight: '600',
+  },
+  codeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 32,
+  },
+  codeInput: {
+    width: 48,
+    height: 56,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  codeInputFilled: {
+    backgroundColor: '#25D366',
+  },
+  button: {
+    backgroundColor: '#25D366',
+    borderRadius: 12,
+    height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 24,
+  },
+  buttonDisabled: {
+    opacity: 0.7,
+  },
+  buttonText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  resendButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  resendText: {
+    color: '#666',
+    fontSize: 14,
+  },
+  resendLink: {
+    color: '#25D366',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+});
