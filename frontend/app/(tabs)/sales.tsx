@@ -183,9 +183,6 @@ export default function SalesScreen() {
           <Text style={styles.headerTitle}>Sales</Text>
           <Text style={styles.headerSubtitle}>{sales.length} receipts this month</Text>
         </View>
-        <TouchableOpacity style={styles.addButton} onPress={() => setModalVisible(true)}>
-          <Ionicons name="add" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
       </View>
 
       <View style={styles.statsCard}>
