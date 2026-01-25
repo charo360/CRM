@@ -414,6 +414,57 @@ async def get_customers(tag: Optional[str] = None, user = Depends(get_current_us
         for c in customers
     ]
 
+@api_router.get("/customers/cold")
+async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
+    """
+    Get customers who haven't been contacted in X days
+    These are potential follow-up opportunities
+    """
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    
+    # Find customers not contacted recently
+    customers = await db.customers.find({
+        "user_id": user["_id"],
+        "$or": [
+            {"last_contacted": {"$lt": cutoff_date}},
+            {"last_contacted": None}
+        ]
+    }).sort("last_contacted", 1).to_list(100)
+    
+    # Check which ones don't have pending follow-ups
+    result = []
+    for c in customers:
+        pending_followup = await db.followups.find_one({
+            "customer_id": c["_id"],
+            "status": "pending"
+        })
+        
+        days_since_contact = None
+        if c.get("last_contacted"):
+            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
+        
+        # Generate quick reason
+        ai_reason = await generate_quick_reason(c, [])
+        
+        result.append({
+            "id": c["_id"],
+            "name": c["name"],
+            "phone_number": c["phone_number"],
+            "notes": c.get("notes"),
+            "tags": c.get("tags", []),
+            "last_message": c.get("last_message"),
+            "last_contacted": c.get("last_contacted"),
+            "days_since_contact": days_since_contact,
+            "has_pending_followup": pending_followup is not None,
+            "ai_reason": ai_reason,
+            "created_at": c["created_at"]
+        })
+    
+    # Sort by days since contact (most neglected first)
+    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
+    
+    return result
+
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse)
 async def get_customer(customer_id: str, user = Depends(get_current_user)):
     """Get a specific customer"""
