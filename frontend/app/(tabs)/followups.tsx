@@ -410,6 +410,65 @@ const styles = StyleSheet.create({
     color: '#25D366',
     marginTop: 4,
   },
+  statsRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    marginBottom: 16,
+    gap: 12,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+  statCardWarning: {
+    borderLeftWidth: 3,
+    borderLeftColor: '#FFD700',
+  },
+  statCardDanger: {
+    borderLeftWidth: 3,
+    borderLeftColor: '#FF4444',
+  },
+  statNumber: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 16,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 6,
+  },
+  tabActive: {
+    backgroundColor: '#25D366',
+  },
+  tabText: {
+    fontSize: 13,
+    color: '#666',
+    fontWeight: '500',
+  },
+  tabTextActive: {
+    color: '#FFFFFF',
+  },
   filterContainer: {
     flexDirection: 'row',
     paddingHorizontal: 20,
