@@ -384,18 +384,8 @@ export default function FollowupsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <View>
-            <Text style={styles.headerTitle}>Follow-ups</Text>
-            <Text style={styles.headerSubtitle}>Never miss a sale</Text>
-          </View>
-          <TouchableOpacity 
-            style={styles.addButton}
-            onPress={() => setShowAddModal(true)}
-          >
-            <Ionicons name="add" size={28} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
+        <Text style={styles.headerTitle}>Follow-ups</Text>
+        <Text style={styles.headerSubtitle}>Never miss a sale</Text>
       </View>
 
       {/* Stats Cards */}
