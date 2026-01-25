@@ -879,6 +879,171 @@ async def paystack_webhook(request: Request, background_tasks: BackgroundTasks):
     
     return {"status": "ok"}
 
+# ============ WHATSAPP WEBHOOK ENDPOINTS ============
+
+@api_router.post("/webhooks/whatsapp")
+async def whatsapp_webhook(request: Request):
+    """
+    Receive incoming WhatsApp messages from Twilio
+    Auto-creates customers when new numbers message us
+    """
+    try:
+        form_data = await request.form()
+        
+        from_number = form_data.get("From", "").replace("whatsapp:", "")
+        to_number = form_data.get("To", "").replace("whatsapp:", "")
+        body = form_data.get("Body", "")
+        profile_name = form_data.get("ProfileName", "")
+        
+        if not from_number:
+            return {"status": "ok"}
+        
+        # Find the business owner by their WhatsApp number
+        user = await db.users.find_one({"phone_number": to_number})
+        if not user:
+            # Try without country code variations
+            user = await db.users.find_one({})  # For testing, get first user
+        
+        if not user:
+            logging.warning(f"No user found for number {to_number}")
+            return {"status": "ok"}
+        
+        # Check if customer already exists
+        customer = await db.customers.find_one({
+            "user_id": user["_id"],
+            "phone_number": from_number
+        })
+        
+        if customer:
+            # Update existing customer with last message
+            await db.customers.update_one(
+                {"_id": customer["_id"]},
+                {
+                    "$set": {
+                        "last_message": body[:200] if body else None,
+                        "last_contacted": datetime.utcnow()
+                    }
+                }
+            )
+            logging.info(f"Updated customer {customer['name']} with new message")
+        else:
+            # Auto-create new customer
+            customer_id = str(uuid.uuid4())
+            customer_name = profile_name if profile_name else f"Customer {from_number[-4:]}"
+            
+            await db.customers.insert_one({
+                "_id": customer_id,
+                "user_id": user["_id"],
+                "name": customer_name,
+                "phone_number": from_number,
+                "notes": f"Auto-added from WhatsApp chat",
+                "tags": ["New"],
+                "last_message": body[:200] if body else None,
+                "last_contacted": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+                "auto_created": True
+            })
+            logging.info(f"Auto-created customer: {customer_name} ({from_number})")
+        
+        return {"status": "ok"}
+        
+    except Exception as e:
+        logging.error(f"WhatsApp webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
+# ============ SMART FOLLOW-UP ENDPOINTS ============
+
+@api_router.get("/customers/cold")
+async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
+    """
+    Get customers who haven't been contacted in X days
+    These are potential follow-up opportunities
+    """
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    
+    # Find customers not contacted recently
+    customers = await db.customers.find({
+        "user_id": user["_id"],
+        "$or": [
+            {"last_contacted": {"$lt": cutoff_date}},
+            {"last_contacted": None}
+        ]
+    }).sort("last_contacted", 1).to_list(100)
+    
+    # Check which ones don't have pending follow-ups
+    result = []
+    for c in customers:
+        pending_followup = await db.followups.find_one({
+            "customer_id": c["_id"],
+            "status": "pending"
+        })
+        
+        days_since_contact = None
+        if c.get("last_contacted"):
+            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
+        
+        result.append({
+            "id": c["_id"],
+            "name": c["name"],
+            "phone_number": c["phone_number"],
+            "notes": c.get("notes"),
+            "tags": c.get("tags", []),
+            "last_message": c.get("last_message"),
+            "last_contacted": c.get("last_contacted"),
+            "days_since_contact": days_since_contact,
+            "has_pending_followup": pending_followup is not None,
+            "created_at": c["created_at"]
+        })
+    
+    # Sort by days since contact (most neglected first)
+    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
+    
+    return result
+
+@api_router.get("/stats/followup-suggestions")
+async def get_followup_suggestions(user = Depends(get_current_user)):
+    """
+    Get smart follow-up suggestions based on customer activity
+    """
+    now = datetime.utcnow()
+    
+    # Customers not contacted in 7+ days
+    week_ago = now - timedelta(days=7)
+    neglected_week = await db.customers.count_documents({
+        "user_id": user["_id"],
+        "last_contacted": {"$lt": week_ago}
+    })
+    
+    # Customers not contacted in 30+ days
+    month_ago = now - timedelta(days=30)
+    neglected_month = await db.customers.count_documents({
+        "user_id": user["_id"],
+        "last_contacted": {"$lt": month_ago}
+    })
+    
+    # New customers (never followed up)
+    new_no_followup = await db.customers.count_documents({
+        "user_id": user["_id"],
+        "tags": "New",
+        "last_contacted": None
+    })
+    
+    # VIP customers not contacted in 14+ days
+    two_weeks_ago = now - timedelta(days=14)
+    vip_neglected = await db.customers.count_documents({
+        "user_id": user["_id"],
+        "tags": "VIP",
+        "last_contacted": {"$lt": two_weeks_ago}
+    })
+    
+    return {
+        "neglected_week": neglected_week,
+        "neglected_month": neglected_month,
+        "new_no_followup": new_no_followup,
+        "vip_neglected": vip_neglected,
+        "total_needing_attention": neglected_week + new_no_followup
+    }
+
 # ============ STATS ENDPOINTS ============
 
 @api_router.get("/stats")
