@@ -643,4 +643,93 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 20,
   },
+  // Product Catalog Styles
+  catalogHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  catalogHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  catalogIcon: {
+    fontSize: 20,
+  },
+  catalogContent: {
+    marginTop: 12,
+  },
+  uploadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+    marginBottom: 16,
+  },
+  uploadButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  productCount: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 12,
+  },
+  productGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  productCard: {
+    width: '31%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  productImage: {
+    width: '100%',
+    height: 100,
+    backgroundColor: '#F5F5F5',
+  },
+  productInfo: {
+    padding: 8,
+  },
+  productName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 4,
+  },
+  productPrice: {
+    fontSize: 11,
+    color: '#25D366',
+    fontWeight: '600',
+  },
+  deleteButton: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 4,
+  },
+  emptyText: {
+    textAlign: 'center',
+    color: '#999',
+    fontSize: 14,
+    paddingVertical: 20,
+  },
 });

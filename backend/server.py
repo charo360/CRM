@@ -2027,8 +2027,8 @@ app.include_router(api_router)
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
 
-@app.on_event("startup")
-async def startup_event():
+# Startup event - recalculate customer totals
+async def startup_tasks():
     """Run startup tasks"""
     # Recalculate customer totals from sales (Self-Healing)
     try:
