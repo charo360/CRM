@@ -10,13 +10,16 @@ import {
   Linking,
   Switch,
   Modal,
+  Image,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient, settingsAPI } from '../../context/api';
+import { apiClient, settingsAPI, productsAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
+import * as ImagePicker from 'expo-image-picker';
 
 interface SubscriptionPlan {
   id: string;
@@ -34,11 +37,25 @@ interface Stats {
   revenue_this_month: number;
 }
 
+interface Product {
+  id: string;
+  name: string;
+  price: number;
+  image_url: string;
+  category: string;
+  in_stock: boolean;
+}
+
 export default function AccountScreen() {
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [subscribing, setSubscribing] = useState(false);
+
+  // Product catalog state
+  const [showCatalog, setShowCatalog] = useState(false);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
@@ -119,6 +136,84 @@ export default function AccountScreen() {
     );
   };
 
+  const handleUploadProducts = async () => {
+    try {
+      // Request permission
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Please allow access to your photos');
+        return;
+      }
+
+      // Pick multiple images
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets.length > 0) {
+        setUploading(true);
+
+        try {
+          const response = await productsAPI.uploadProducts(result.assets);
+
+          Alert.alert(
+            'Success!',
+            `Uploaded ${response.products_created} products. AI has suggested names and prices - you can edit them.`,
+            [{ text: 'OK', onPress: () => fetchProducts() }]
+          );
+        } catch (error) {
+          console.error('Upload error:', error);
+          Alert.alert('Error', 'Failed to upload products');
+        } finally {
+          setUploading(false);
+        }
+      }
+    } catch (error) {
+      console.error('Image picker error:', error);
+      Alert.alert('Error', 'Failed to open image picker');
+    }
+  };
+
+  const fetchProducts = async () => {
+    try {
+      const data = await productsAPI.getProducts();
+      setProducts(data);
+    } catch (error) {
+      console.error('Error fetching products:', error);
+    }
+  };
+
+  const handleDeleteProduct = (productId: string) => {
+    Alert.alert(
+      'Delete Product',
+      'Are you sure you want to delete this product?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await productsAPI.deleteProduct(productId);
+              fetchProducts();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete product');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Fetch products when catalog is expanded
+  useEffect(() => {
+    if (showCatalog && products.length === 0) {
+      fetchProducts();
+    }
+  }, [showCatalog]);
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -190,6 +285,76 @@ export default function AccountScreen() {
             </View>
           </View>
         )}
+
+        {/* Product Catalog */}
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.catalogHeader}
+            onPress={() => setShowCatalog(!showCatalog)}
+          >
+            <View style={styles.catalogHeaderLeft}>
+              <Text style={styles.catalogIcon}>📦</Text>
+              <Text style={styles.sectionTitle}>Product Catalog</Text>
+            </View>
+            <Ionicons
+              name={showCatalog ? "chevron-up" : "chevron-down"}
+              size={20}
+              color="#666"
+            />
+          </TouchableOpacity>
+
+          {showCatalog && (
+            <View style={styles.catalogContent}>
+              <TouchableOpacity
+                style={styles.uploadButton}
+                onPress={handleUploadProducts}
+                disabled={uploading}
+              >
+                <Ionicons name="cloud-upload-outline" size={24} color="#FFFFFF" />
+                <Text style={styles.uploadButtonText}>
+                  {uploading ? 'Uploading...' : 'Upload Products'}
+                </Text>
+              </TouchableOpacity>
+
+              {products.length > 0 ? (
+                <>
+                  <Text style={styles.productCount}>
+                    {products.length} product{products.length !== 1 ? 's' : ''}
+                  </Text>
+                  <View style={styles.productGrid}>
+                    {products.map((product) => (
+                      <View key={product.id} style={styles.productCard}>
+                        <Image
+                          source={{ uri: `${process.env.EXPO_PUBLIC_BACKEND_URL}${product.image_url}` }}
+                          style={styles.productImage}
+                          resizeMode="cover"
+                        />
+                        <View style={styles.productInfo}>
+                          <Text style={styles.productName} numberOfLines={1}>
+                            {product.name}
+                          </Text>
+                          <Text style={styles.productPrice}>
+                            KES {product.price.toLocaleString()}
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.deleteButton}
+                          onPress={() => handleDeleteProduct(product.id)}
+                        >
+                          <Ionicons name="trash-outline" size={16} color="#FF4444" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.emptyText}>
+                  No products yet. Upload some to get started!
+                </Text>
+              )}
+            </View>
+          )}
+        </View>
 
         {/* Subscription Plans */}
         <View style={styles.section}>

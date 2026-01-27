@@ -176,3 +176,81 @@ export const messagesAPI = {
     return response.data;
   }
 };
+
+// ============ Products API Methods ============
+
+export const productsAPI = {
+  /**
+   * Upload multiple product images with AI analysis
+   */
+  uploadProducts: async (files: any[]) => {
+    const formData = new FormData();
+
+    files.forEach((file, index) => {
+      formData.append('files', {
+        uri: file.uri,
+        type: file.type || 'image/jpeg',
+        name: file.fileName || `product_${index}.jpg`,
+      } as any);
+    });
+
+    const response = await apiClient.post('/products/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  /**
+   * Get all products
+   */
+  getProducts: async (category?: string, inStock?: boolean) => {
+    const params: any = {};
+    if (category) params.category = category;
+    if (inStock !== undefined) params.in_stock = inStock;
+
+    const response = await apiClient.get('/products', { params });
+    return response.data;
+  },
+
+  /**
+   * Get single product
+   */
+  getProduct: async (productId: string) => {
+    const response = await apiClient.get(`/products/${productId}`);
+    return response.data;
+  },
+
+  /**
+   * Update product
+   */
+  updateProduct: async (productId: string, updates: {
+    name?: string;
+    price?: number;
+    category?: string;
+    description?: string;
+    in_stock?: boolean;
+  }) => {
+    const response = await apiClient.put(`/products/${productId}`, updates);
+    return response.data;
+  },
+
+  /**
+   * Delete product
+   */
+  deleteProduct: async (productId: string) => {
+    const response = await apiClient.delete(`/products/${productId}`);
+    return response.data;
+  },
+
+  /**
+   * Send product to customer
+   */
+  sendProductToCustomer: async (productId: string, customerId: string) => {
+    const response = await apiClient.post(`/products/${productId}/send`, null, {
+      params: { customer_id: customerId }
+    });
+    return response.data;
+  }
+};
