@@ -20,6 +20,10 @@ from twilio.rest import Client as TwilioClient
 from ai_message_drafter import get_drafter
 from daily_analyzer import DailyCustomerAnalyzer
 from notification_service import get_notification_service
+from image_handler import ImageUploadHandler
+from product_organizer import get_organizer
+from fastapi import UploadFile, File
+from fastapi.staticfiles import StaticFiles
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -234,6 +238,46 @@ class UserSettingsUpdate(BaseModel):
     daily_alert_count: Optional[int] = None
     message_tone: Optional[str] = None
     push_token: Optional[str] = None
+
+# Business Knowledge Model
+class BusinessKnowledge(BaseModel):
+    products_services: Optional[str] = None  # What you sell/offer
+    pricing_info: Optional[str] = None  # Price ranges, payment methods
+    business_hours: Optional[str] = None  # When you're available
+    delivery_info: Optional[str] = None  # Delivery areas, costs, timing
+    faqs: Optional[str] = None  # Common questions and answers
+    special_offers: Optional[str] = None  # Current promotions
+    business_description: Optional[str] = None  # What makes you unique
+
+# Product Catalog Models
+class Product(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    price: float
+    image_url: str
+    category: Optional[str] = "Other"
+    description: Optional[str] = None
+    in_stock: bool = True
+    ai_suggested_name: Optional[str] = None
+    ai_confidence: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+class ProductCreate(BaseModel):
+    name: str
+    price: float
+    image_url: str
+    category: Optional[str] = "Other"
+    description: Optional[str] = None
+    in_stock: bool = True
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    in_stock: Optional[bool] = None
 
 # ============ HELPER FUNCTIONS ============
 
@@ -1467,6 +1511,56 @@ async def add_customer_message(customer_id: str, message: MessageCreate, user = 
 
 # ============ AI ENDPOINTS ============
 
+@api_router.get("/business-knowledge")
+async def get_business_knowledge(user = Depends(get_current_user)):
+    """Get business knowledge for AI context"""
+    knowledge = user.get('business_knowledge', {})
+    
+    return {
+        "products_services": knowledge.get('products_services', ''),
+        "pricing_info": knowledge.get('pricing_info', ''),
+        "business_hours": knowledge.get('business_hours', ''),
+        "delivery_info": knowledge.get('delivery_info', ''),
+        "faqs": knowledge.get('faqs', ''),
+        "special_offers": knowledge.get('special_offers', ''),
+        "business_description": knowledge.get('business_description', ''),
+    }
+
+@api_router.put("/business-knowledge")
+async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends(get_current_user)):
+    """Update business knowledge for AI to use in conversations"""
+    
+    update_data = {}
+    
+    if knowledge.products_services is not None:
+        update_data['business_knowledge.products_services'] = knowledge.products_services
+    
+    if knowledge.pricing_info is not None:
+        update_data['business_knowledge.pricing_info'] = knowledge.pricing_info
+    
+    if knowledge.business_hours is not None:
+        update_data['business_knowledge.business_hours'] = knowledge.business_hours
+    
+    if knowledge.delivery_info is not None:
+        update_data['business_knowledge.delivery_info'] = knowledge.delivery_info
+    
+    if knowledge.faqs is not None:
+        update_data['business_knowledge.faqs'] = knowledge.faqs
+    
+    if knowledge.special_offers is not None:
+        update_data['business_knowledge.special_offers'] = knowledge.special_offers
+    
+    if knowledge.business_description is not None:
+        update_data['business_knowledge.business_description'] = knowledge.business_description
+    
+    if update_data:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": update_data}
+        )
+    
+    return {"status": "success", "message": "Business knowledge updated"}
+
 @api_router.post("/ai/draft-message", response_model=DraftMessageResponse)
 async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
     """Generate AI-drafted follow-up message for a customer"""
@@ -1488,6 +1582,38 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
     user_settings = user.get('settings', {})
     tone = user_settings.get('message_tone', request.tone)
     
+    # Build business knowledge context
+    business_knowledge_data = user.get('business_knowledge', {})
+    business_knowledge = None
+    
+    if business_knowledge_data:
+        # Format business knowledge for AI
+        knowledge_parts = []
+        
+        if business_knowledge_data.get('business_description'):
+            knowledge_parts.append(f"About us: {business_knowledge_data['business_description']}")
+        
+        if business_knowledge_data.get('products_services'):
+            knowledge_parts.append(f"Products/Services: {business_knowledge_data['products_services']}")
+        
+        if business_knowledge_data.get('pricing_info'):
+            knowledge_parts.append(f"Pricing: {business_knowledge_data['pricing_info']}")
+        
+        if business_knowledge_data.get('business_hours'):
+            knowledge_parts.append(f"Hours: {business_knowledge_data['business_hours']}")
+        
+        if business_knowledge_data.get('delivery_info'):
+            knowledge_parts.append(f"Delivery: {business_knowledge_data['delivery_info']}")
+        
+        if business_knowledge_data.get('special_offers'):
+            knowledge_parts.append(f"Current Offers: {business_knowledge_data['special_offers']}")
+        
+        if business_knowledge_data.get('faqs'):
+            knowledge_parts.append(f"FAQs: {business_knowledge_data['faqs']}")
+        
+        if knowledge_parts:
+            business_knowledge = "\n".join(knowledge_parts)
+    
     # Draft message using AI
     drafter = get_drafter()
     result = await drafter.draft_followup_message(
@@ -1495,7 +1621,8 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         customer_data=customer,
         messages=messages,
         business_name=business_name,
-        tone=tone
+        tone=tone,
+        business_knowledge=business_knowledge
     )
     
     return DraftMessageResponse(
@@ -1668,9 +1795,237 @@ async def send_test_notification(user = Depends(get_current_user)):
     else:
         raise HTTPException(status_code=500, detail="Failed to send notification")
 
+# ============ PRODUCT CATALOG ENDPOINTS ============
+
+@api_router.post("/products/upload")
+async def upload_products(
+    files: List[UploadFile] = File(...),
+    user = Depends(get_current_user)
+):
+    """Bulk upload product images with AI analysis"""
+    
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    # Save images
+    upload_handler = ImageUploadHandler()
+    saved_images = await upload_handler.save_multiple_images(files)
+    
+    # Filter successful uploads
+    successful_uploads = [img for img in saved_images if 'error' not in img]
+    
+    if not successful_uploads:
+        raise HTTPException(status_code=400, detail="No images could be saved")
+    
+    # Analyze images with AI
+    organizer = get_organizer()
+    image_paths = [
+        upload_handler.get_image_path(img['filename']) 
+        for img in successful_uploads
+    ]
+    
+    ai_analyses = await organizer.analyze_multiple_images([str(p) for p in image_paths])
+    
+    # Create product documents
+    products = []
+    now = datetime.utcnow()
+    
+    for i, (img_data, ai_data) in enumerate(zip(successful_uploads, ai_analyses)):
+        if 'error' in ai_data:
+            continue
+        
+        product_id = str(uuid.uuid4())
+        product_doc = {
+            "_id": product_id,
+            "user_id": user["_id"],
+            "name": ai_data.get('name', f'Product {i+1}'),
+            "price": ai_data.get('suggested_price', 0.0),
+            "image_url": img_data['image_url'],
+            "category": ai_data.get('category', 'Other'),
+            "description": ai_data.get('description', ''),
+            "in_stock": True,
+            "ai_suggested_name": ai_data.get('name'),
+            "ai_confidence": ai_data.get('confidence', 0.5),
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        await db.products.insert_one(product_doc)
+        products.append(product_doc)
+    
+    return {
+        "status": "success",
+        "uploaded_count": len(successful_uploads),
+        "products_created": len(products),
+        "products": [
+            {
+                "id": p["_id"],
+                "name": p["name"],
+                "price": p["price"],
+                "category": p["category"],
+                "image_url": p["image_url"],
+                "ai_confidence": p["ai_confidence"]
+            }
+            for p in products
+        ]
+    }
+
+@api_router.get("/products")
+async def get_products(
+    category: Optional[str] = None,
+    in_stock: Optional[bool] = None,
+    user = Depends(get_current_user)
+):
+    """Get all products for the user"""
+    
+    query = {"user_id": user["_id"]}
+    
+    if category:
+        query["category"] = category
+    
+    if in_stock is not None:
+        query["in_stock"] = in_stock
+    
+    products = await db.products.find(query).sort("created_at", -1).to_list(100)
+    
+    return [
+        {
+            "id": p["_id"],
+            "name": p["name"],
+            "price": p["price"],
+            "image_url": p["image_url"],
+            "category": p.get("category", "Other"),
+            "description": p.get("description", ""),
+            "in_stock": p.get("in_stock", True),
+            "created_at": p["created_at"].isoformat()
+        }
+        for p in products
+    ]
+
+@api_router.get("/products/{product_id}")
+async def get_product(product_id: str, user = Depends(get_current_user)):
+    """Get a single product"""
+    
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return {
+        "id": product["_id"],
+        "name": product["name"],
+        "price": product["price"],
+        "image_url": product["image_url"],
+        "category": product.get("category", "Other"),
+        "description": product.get("description", ""),
+        "in_stock": product.get("in_stock", True),
+        "ai_suggested_name": product.get("ai_suggested_name"),
+        "ai_confidence": product.get("ai_confidence"),
+        "created_at": product["created_at"].isoformat()
+    }
+
+@api_router.put("/products/{product_id}")
+async def update_product(
+    product_id: str,
+    product_update: ProductUpdate,
+    user = Depends(get_current_user)
+):
+    """Update product details"""
+    
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    update_data = {"updated_at": datetime.utcnow()}
+    
+    if product_update.name is not None:
+        update_data["name"] = product_update.name
+    
+    if product_update.price is not None:
+        update_data["price"] = product_update.price
+    
+    if product_update.category is not None:
+        update_data["category"] = product_update.category
+    
+    if product_update.description is not None:
+        update_data["description"] = product_update.description
+    
+    if product_update.in_stock is not None:
+        update_data["in_stock"] = product_update.in_stock
+    
+    await db.products.update_one(
+        {"_id": product_id},
+        {"$set": update_data}
+    )
+    
+    return {"status": "success", "message": "Product updated"}
+
+@api_router.delete("/products/{product_id}")
+async def delete_product(product_id: str, user = Depends(get_current_user)):
+    """Delete a product"""
+    
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Delete image file
+    if product.get("image_url"):
+        filename = product["image_url"].split("/")[-1]
+        ImageUploadHandler.delete_image(filename)
+    
+    # Delete from database
+    await db.products.delete_one({"_id": product_id})
+    
+    return {"status": "success", "message": "Product deleted"}
+
+@api_router.post("/products/{product_id}/send")
+async def send_product_to_customer(
+    product_id: str,
+    customer_id: str,
+    user = Depends(get_current_user)
+):
+    """Send product image to customer via WhatsApp"""
+    
+    # Get product
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Get customer
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # TODO: Send via WhatsApp API when integrated
+    # For now, just log the message
+    message_id = str(uuid.uuid4())
+    message_doc = {
+        "_id": message_id,
+        "customer_id": customer_id,
+        "user_id": user["_id"],
+        "direction": "outgoing",
+        "content": f"{product['name']} - KES {product['price']:,.0f}",
+        "message_type": "image",
+        "image_url": product["image_url"],
+        "timestamp": datetime.utcnow()
+    }
+    
+    await db.messages.insert_one(message_doc)
+    
+    return {
+        "status": "success",
+        "message_id": message_id,
+        "note": "Product logged. WhatsApp integration pending."
+    }
+
 # ============ MAIN APP SETUP ============
 
 app.include_router(api_router)
+
+# Serve static files (product images)
+app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
 
 @app.on_event("startup")
 async def startup_event():

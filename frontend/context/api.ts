@@ -125,6 +125,30 @@ export const settingsAPI = {
   sendTestNotification: async () => {
     const response = await apiClient.post('/notifications/send-test');
     return response.data;
+  },
+
+  /**
+   * Get business knowledge
+   */
+  getBusinessKnowledge: async () => {
+    const response = await apiClient.get('/business-knowledge');
+    return response.data;
+  },
+
+  /**
+   * Update business knowledge
+   */
+  updateBusinessKnowledge: async (knowledge: {
+    products_services?: string;
+    pricing_info?: string;
+    business_hours?: string;
+    delivery_info?: string;
+    faqs?: string;
+    special_offers?: string;
+    business_description?: string;
+  }) => {
+    const response = await apiClient.put('/business-knowledge', knowledge);
+    return response.data;
   }
 };
 

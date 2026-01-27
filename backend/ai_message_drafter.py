@@ -28,7 +28,8 @@ class AIMessageDrafter:
         customer_data: Dict,
         messages: List[Dict],
         business_name: str = "Your Business",
-        tone: str = "friendly"
+        tone: str = "friendly",
+        business_knowledge: str = None
     ) -> Dict[str, any]:
         """
         Draft a personalized follow-up message for a customer
@@ -39,6 +40,7 @@ class AIMessageDrafter:
             messages: List of recent messages with the customer
             business_name: Name of the business
             tone: Message tone (professional, friendly, casual)
+            business_knowledge: Business context (products, services, FAQs)
         
         Returns:
             Dict with 'message', 'confidence', and 'reason'
@@ -54,7 +56,7 @@ class AIMessageDrafter:
         context = self._build_customer_context(customer_name, customer_data, messages)
         
         # Create AI prompt
-        prompt = self._create_prompt(context, business_name, tone)
+        prompt = self._create_prompt(context, business_name, tone, business_knowledge)
         
         # Call Gemini API
         try:
@@ -137,8 +139,8 @@ class AIMessageDrafter:
         
         return topics
     
-    def _create_prompt(self, context: Dict, business_name: str, tone: str) -> str:
-        """Create prompt for Gemini AI"""
+    def _create_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None) -> str:
+        """Create prompt for Gemini AI with business knowledge and language detection"""
         
         # Build context description
         context_parts = []
@@ -167,30 +169,66 @@ class AIMessageDrafter:
         
         context_str = "\n- ".join(context_parts)
         
+        # Detect language from last message
+        language_hint = ""
+        if context['last_message']:
+            msg = context['last_message'].lower()
+            # Check for Swahili keywords
+            swahili_words = ['habari', 'sawa', 'asante', 'tafadhali', 'bei', 'ngapi', 'nini', 'vipi', 'poa', 'mambo']
+            if any(word in msg for word in swahili_words):
+                language_hint = "\n- Customer seems to prefer Swahili - respond in Swahili if you're confident"
+            else:
+                language_hint = "\n- Respond in the same language as the customer (English or Swahili)"
+        
         # Tone instructions
         tone_instructions = {
-            'professional': 'professional and respectful',
-            'friendly': 'warm and friendly',
-            'casual': 'casual and conversational'
+            'professional': 'professional but warm, like a trusted business advisor',
+            'friendly': 'warm and friendly, like talking to a regular customer you know well',
+            'casual': 'casual and conversational, like chatting with a friend'
         }
         tone_desc = tone_instructions.get(tone, 'friendly')
         
-        prompt = f"""You are a helpful business assistant for {business_name}, a Kenyan business. 
-Draft a personalized WhatsApp follow-up message for customer {context['name']}.
+        # Business knowledge section
+        business_context = ""
+        if business_knowledge:
+            business_context = f"""
+Business Information:
+{business_knowledge}
+
+Use this information to answer questions and provide relevant details about products/services.
+"""
+        
+        prompt = f"""You are the owner of {business_name}, a Kenyan business. You're reaching out to your customer {context['name']} via WhatsApp.
 
 Customer Context:
-- {context_str}
+- {context_str}{language_hint}
 
-Instructions:
-1. Write a {tone_desc} message in English (you can use Swahili greetings if appropriate)
-2. Reference their last interaction naturally if relevant
-3. Keep it SHORT (1-3 sentences max)
-4. Make it personal and contextual, not generic
-5. Include a clear call-to-action or question
-6. DO NOT use emojis excessively (max 1-2)
-7. Sound natural, like a real person texting
+{business_context}
 
-Write ONLY the message text, nothing else. No quotes, no explanations."""
+CRITICAL INSTRUCTIONS:
+1. Write as if YOU are the business owner - use "I" and "we", be personal
+2. Sound NATURAL - like you're texting a customer, not writing a formal email
+3. Be BRIEF - 1-3 sentences maximum (WhatsApp style)
+4. Reference their last interaction if relevant
+5. If they asked a question, ANSWER it directly
+6. Detect the language they used and respond in the SAME language
+7. For Swahili, use natural Kenyan Swahili (mix with English is fine - "Sheng")
+8. Be {tone_desc}
+9. Include a clear next step or question
+10. NO emojis unless it fits naturally (max 1-2)
+11. If you don't have enough information to answer their question, say you'll check and get back to them
+
+Examples of GOOD messages:
+- "Hi John! Saw you were asking about the price last week. It's KES 2,500. Still interested?"
+- "Habari Mary! That product is back in stock. Unataka nikudelivery?"
+- "Hey! Been a while 😊 We have a new offer - 20% off this week. Want details?"
+
+Examples of BAD messages (too formal/generic):
+- "Dear valued customer, we hope this message finds you well..."
+- "Thank you for your interest in our products and services..."
+- "We would like to follow up on your previous inquiry..."
+
+Write ONLY the message text. No quotes, no explanations, no subject lines."""
 
         return prompt
     
