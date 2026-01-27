@@ -8,12 +8,15 @@ import {
   Alert,
   ActivityIndicator,
   Linking,
+  Switch,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useAuth } from '../context/AuthContext';
-import { apiClient } from '../context/api';
+import { useAuth } from '../../context/AuthContext';
+import { apiClient, settingsAPI } from '../../context/api';
+import { NotificationHandler } from '../../utils/notification-handler';
 
 interface SubscriptionPlan {
   id: string;
@@ -36,7 +39,7 @@ export default function AccountScreen() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [subscribing, setSubscribing] = useState(false);
-  
+
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
 
@@ -192,8 +195,8 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Subscription Plans</Text>
           {plans.map((plan) => (
-            <View 
-              key={plan.id} 
+            <View
+              key={plan.id}
               style={[
                 styles.planCard,
                 user?.subscription_plan === plan.id && styles.planCardActive,

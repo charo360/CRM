@@ -11,11 +11,13 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
+  ScrollView,
+  Linking,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../context/AuthContext';
-import { apiClient } from '../context/api';
+import { useAuth } from '../../context/AuthContext';
+import { apiClient } from '../../context/api';
 import * as Contacts from 'expo-contacts';
 
 interface Customer {
@@ -24,6 +26,8 @@ interface Customer {
   phone_number: string;
   notes: string | null;
   tags: string[];
+  purchase_count: number;
+  total_spent: number;
   last_message: string | null;
   last_contacted: string | null;
   created_at: string;
@@ -47,7 +51,7 @@ export default function CustomersScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
-  
+
   // New customer form
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('+254');
@@ -63,10 +67,27 @@ export default function CustomersScreen() {
   const [contactSearch, setContactSearch] = useState('');
 
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
 
   const fetchCustomers = useCallback(async () => {
     try {
-      const params = selectedTag ? `?tag=${selectedTag}` : '';
+      let params = '';
+
+      // Intelligent Search Logic
+      const queryLower = searchQuery.toLowerCase().trim();
+
+      if (queryLower.includes('top') || queryLower.includes('best') || queryLower.includes('highest')) {
+        params = '?sort_by=purchases';
+      } else if (queryLower.includes('new')) {
+        params = '?tag=New';
+      } else if (queryLower.includes('vip')) {
+        params = '?tag=VIP';
+      } else if (queryLower.includes('returning')) {
+        params = '?tag=Returning';
+      } else if (selectedTag) {
+        params = `?tag=${selectedTag}`;
+      }
+
       const response = await apiClient.get(`/customers${params}`);
       setCustomers(response.data);
     } catch (error) {
@@ -75,10 +96,14 @@ export default function CustomersScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedTag]);
+  }, [selectedTag, searchQuery]);
 
   useEffect(() => {
-    fetchCustomers();
+    // Debounce search to prevent too many API calls
+    const timeoutId = setTimeout(() => {
+      fetchCustomers();
+    }, 500);
+    return () => clearTimeout(timeoutId);
   }, [fetchCustomers]);
 
   const handleRefresh = () => {
@@ -100,7 +125,7 @@ export default function CustomersScreen() {
         notes: newNotes || null,
         tags: newTags,
       });
-      
+
       setCustomers([response.data, ...customers]);
       setModalVisible(false);
       resetForm();
@@ -121,7 +146,7 @@ export default function CustomersScreen() {
         notes: newNotes || null,
         tags: newTags,
       });
-      
+
       setCustomers(customers.map(c => c.id === selectedCustomer.id ? response.data : c));
       setEditModalVisible(false);
       resetForm();
@@ -201,22 +226,22 @@ export default function CustomersScreen() {
   const formatPhoneNumber = (phone: string) => {
     // Remove all non-digit characters
     let cleaned = phone.replace(/\D/g, '');
-    
+
     // If starts with 0, replace with +254 (Kenya)
     if (cleaned.startsWith('0')) {
       cleaned = '254' + cleaned.substring(1);
     }
-    
+
     // Add + if not present
     if (!cleaned.startsWith('+')) {
       cleaned = '+' + cleaned;
     }
-    
+
     return cleaned;
   };
 
   const toggleContactSelection = (contactId: string) => {
-    setPhoneContacts(phoneContacts.map(c => 
+    setPhoneContacts(phoneContacts.map(c =>
       c.id === contactId ? { ...c, selected: !c.selected } : c
     ));
   };
@@ -281,10 +306,18 @@ export default function CustomersScreen() {
     setEditModalVisible(true);
   };
 
-  const filteredCustomers = customers.filter(c =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.phone_number.includes(searchQuery)
-  );
+  const filteredCustomers = customers.filter(c => {
+    // If search query is a "command" (handled by backend), don't filter client-side
+    const queryLower = searchQuery.toLowerCase();
+    if (queryLower.includes('top') || queryLower.includes('best') ||
+      queryLower.includes('highest') || queryLower.includes('vip') ||
+      queryLower.includes('returning') || (queryLower.includes('new') && !queryLower.includes('news'))) { // simple check
+      return true;
+    }
+
+    return c.name.toLowerCase().includes(queryLower) ||
+      c.phone_number.includes(queryLower);
+  });
 
   const toggleTag = (tag: string) => {
     if (newTags.includes(tag)) {
@@ -292,6 +325,13 @@ export default function CustomersScreen() {
     } else {
       setNewTags([...newTags, tag]);
     }
+  };
+
+  const handleWhatsApp = (phone: string) => {
+    const url = `https://wa.me/${phone.replace(/\D/g, '')}`;
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Error', 'Could not open WhatsApp');
+    });
   };
 
   const renderCustomer = ({ item }: { item: Customer }) => (
@@ -303,6 +343,16 @@ export default function CustomersScreen() {
         <Text style={styles.customerName}>{item.name}</Text>
         <Text style={styles.customerPhone}>{item.phone_number}</Text>
         <View style={styles.tagsContainer}>
+          {item.purchase_count > 0 && (
+            <View style={[styles.tag, styles.tagCount]}>
+              <Text style={styles.tagText}>{item.purchase_count} {item.purchase_count === 1 ? 'Sale' : 'Sales'}</Text>
+            </View>
+          )}
+          {item.total_spent > 0 && (
+            <View style={[styles.tag, styles.tagMoney]}>
+              <Text style={[styles.tagText, styles.tagMoneyText]}>KES {item.total_spent.toLocaleString()}</Text>
+            </View>
+          )}
           {item.tags.map((tag, index) => (
             <View key={index} style={[styles.tag, tag === 'VIP' && styles.tagVip, tag === 'Returning' && styles.tagReturning]}>
               <Text style={styles.tagText}>{tag}</Text>
@@ -317,9 +367,14 @@ export default function CustomersScreen() {
             <Text style={styles.notesPreviewText} numberOfLines={2}>{item.notes}</Text>
           </View>
         )}
-        <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.deleteButton}>
-          <Ionicons name="trash-outline" size={20} color="#FF4444" />
-        </TouchableOpacity>
+        <View style={styles.actionButtons}>
+          <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
+            <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
+            <Ionicons name="trash-outline" size={20} color="#FF4444" />
+          </TouchableOpacity>
+        </View>
       </View>
     </TouchableOpacity>
   );
@@ -477,9 +532,9 @@ export default function CustomersScreen() {
       />
 
       {/* WhatsApp-style Floating Action Button with Menu */}
-      <View style={styles.fabContainer}>
-        <TouchableOpacity 
-          style={styles.fabSecondary} 
+      <View style={[styles.fabContainer, { bottom: insets.bottom + 90 }]}>
+        <TouchableOpacity
+          style={styles.fabSecondary}
           onPress={() => {
             setContactsModalVisible(true);
             loadPhoneContacts();
@@ -489,8 +544,8 @@ export default function CustomersScreen() {
           <Ionicons name="cloud-upload" size={22} color="#FFFFFF" />
           <Text style={styles.fabSecondaryText}>Import</Text>
         </TouchableOpacity>
-        <TouchableOpacity 
-          style={styles.fab} 
+        <TouchableOpacity
+          style={styles.fab}
           onPress={() => setModalVisible(true)}
           activeOpacity={0.8}
         >
@@ -541,10 +596,10 @@ export default function CustomersScreen() {
           </View>
 
           <TouchableOpacity style={styles.selectAllButton} onPress={selectAllContacts}>
-            <Ionicons 
-              name={filteredPhoneContacts.length > 0 && filteredPhoneContacts.every(c => c.selected) ? "checkbox" : "square-outline"} 
-              size={24} 
-              color="#25D366" 
+            <Ionicons
+              name={filteredPhoneContacts.length > 0 && filteredPhoneContacts.every(c => c.selected) ? "checkbox" : "square-outline"}
+              size={24}
+              color="#25D366"
             />
             <Text style={styles.selectAllText}>Select All</Text>
             <Text style={styles.contactCount}>{filteredPhoneContacts.length} contacts</Text>
@@ -559,14 +614,14 @@ export default function CustomersScreen() {
             <FlatList
               data={filteredPhoneContacts}
               renderItem={({ item }) => (
-                <TouchableOpacity 
-                  style={styles.contactItem} 
+                <TouchableOpacity
+                  style={styles.contactItem}
                   onPress={() => toggleContactSelection(item.id)}
                 >
-                  <Ionicons 
-                    name={item.selected ? "checkbox" : "square-outline"} 
-                    size={24} 
-                    color={item.selected ? "#25D366" : "#666"} 
+                  <Ionicons
+                    name={item.selected ? "checkbox" : "square-outline"}
+                    size={24}
+                    color={item.selected ? "#25D366" : "#666"}
                   />
                   <View style={styles.contactInfo}>
                     <Text style={styles.contactName}>{item.name}</Text>
@@ -581,8 +636,8 @@ export default function CustomersScreen() {
                   <Ionicons name="people-outline" size={48} color="#666" />
                   <Text style={styles.emptyText}>No contacts found</Text>
                   <Text style={styles.emptySubtext}>
-                    {Platform.OS === 'web' 
-                      ? 'Contact import is available on mobile devices only' 
+                    {Platform.OS === 'web'
+                      ? 'Contact import is available on mobile devices only'
                       : 'Allow contact access to import'}
                   </Text>
                 </View>
@@ -664,7 +719,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingBottom: 150,
   },
   customerCard: {
     flexDirection: 'row',
@@ -743,6 +798,27 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  tagCount: {
+    backgroundColor: '#1A2942',
+    borderWidth: 1,
+    borderColor: '#4A90D9',
+  },
+  tagMoney: {
+    backgroundColor: '#1A2942',
+    borderWidth: 1,
+    borderColor: '#25D366',
+  },
+  tagMoneyText: {
+    color: '#25D366',
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  iconButton: {
+    padding: 8,
   },
   deleteButton: {
     padding: 8,
@@ -856,7 +932,6 @@ const styles = StyleSheet.create({
   },
   fabContainer: {
     position: 'absolute',
-    bottom: 24,
     right: 24,
     alignItems: 'flex-end',
     gap: 12,

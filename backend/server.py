@@ -16,7 +16,10 @@ import hmac
 import hashlib
 import json
 from twilio.rest import Client as TwilioClient
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+# from emergentintegrations.llm.chat import LlmChat, UserMessage
+from ai_message_drafter import get_drafter
+from daily_analyzer import DailyCustomerAnalyzer
+from notification_service import get_notification_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -46,6 +49,15 @@ PAYSTACK_BASE_URL = "https://api.paystack.co"
 app = FastAPI(title="WhatsApp CRM Kenya")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
+
+# Configure CORS to allow mobile app connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ============ PYDANTIC MODELS ============
 
@@ -90,6 +102,8 @@ class CustomerResponse(BaseModel):
     phone_number: str
     notes: Optional[str] = None
     tags: List[str] = []
+    purchase_count: int = 0
+    total_spent: float = 0.0
     last_message: Optional[str] = None
     last_contacted: Optional[datetime] = None
     created_at: datetime
@@ -99,11 +113,13 @@ class FollowUpCreate(BaseModel):
     customer_id: str
     reminder_date: datetime
     message: Optional[str] = None
+    type: str = "call"  # call, whatsapp, meeting, email
 
 class FollowUpUpdate(BaseModel):
     reminder_date: Optional[datetime] = None
     message: Optional[str] = None
     status: Optional[str] = None
+    type: Optional[str] = None
 
 class FollowUpResponse(BaseModel):
     id: str
@@ -114,6 +130,7 @@ class FollowUpResponse(BaseModel):
     reminder_date: datetime
     message: Optional[str] = None
     status: str = "pending"  # pending, completed, cancelled
+    type: str = "call"
     created_at: datetime
 
 # Sales/Receipt Models
@@ -194,6 +211,29 @@ class AIAnalysisResponse(BaseModel):
     suggested_message: str
     interests: List[str]
     sentiment: str
+
+# AI Draft Message Models
+class DraftMessageRequest(BaseModel):
+    customer_id: str
+    tone: Optional[str] = "friendly"  # professional, friendly, casual
+
+class DraftMessageResponse(BaseModel):
+    message: str
+    confidence: float
+    reason: str
+
+class SendAutoMessageRequest(BaseModel):
+    customer_id: str
+    message: str
+
+# User Settings Models
+class UserSettingsUpdate(BaseModel):
+    auto_reply_enabled: Optional[bool] = None
+    notification_enabled: Optional[bool] = None
+    notification_time: Optional[str] = None
+    daily_alert_count: Optional[int] = None
+    message_tone: Optional[str] = None
+    push_token: Optional[str] = None
 
 # ============ HELPER FUNCTIONS ============
 
@@ -408,6 +448,8 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "phone_number": customer.phone_number,
         "notes": customer.notes,
         "tags": customer.tags if customer.tags else ["New"],
+        "purchase_count": 0,
+        "total_spent": 0.0,
         "last_message": None,
         "last_contacted": None,
         "created_at": datetime.utcnow()
@@ -422,19 +464,29 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         phone_number=customer.phone_number,
         notes=customer.notes,
         tags=customer_doc["tags"],
+        purchase_count=0,
+        total_spent=0.0,
         last_message=None,
         last_contacted=None,
         created_at=customer_doc["created_at"]
     )
 
 @api_router.get("/customers", response_model=List[CustomerResponse])
-async def get_customers(tag: Optional[str] = None, user = Depends(get_current_user)):
+async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None, user = Depends(get_current_user)):
     """Get all customers for current user"""
     query = {"user_id": user["_id"]}
     if tag:
         query["tags"] = tag
     
-    customers = await db.customers.find(query).sort("created_at", -1).to_list(1000)
+    # Defaults
+    sort_field = "created_at"
+    sort_order = -1
+    
+    if sort_by == "purchases":
+        sort_field = "purchase_count"
+        sort_order = -1
+    
+    customers = await db.customers.find(query).sort(sort_field, sort_order).to_list(1000)
     
     return [
         CustomerResponse(
@@ -444,6 +496,8 @@ async def get_customers(tag: Optional[str] = None, user = Depends(get_current_us
             phone_number=c["phone_number"],
             notes=c.get("notes"),
             tags=c.get("tags", []),
+            purchase_count=c.get("purchase_count", 0),
+            total_spent=c.get("total_spent", 0.0),
             last_message=c.get("last_message"),
             last_contacted=c.get("last_contacted"),
             created_at=c["created_at"]
@@ -453,13 +507,8 @@ async def get_customers(tag: Optional[str] = None, user = Depends(get_current_us
 
 @api_router.get("/customers/cold")
 async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
-    """
-    Get customers who haven't been contacted in X days
-    These are potential follow-up opportunities
-    """
+    """Get customers who haven't been contacted in X days"""
     cutoff_date = datetime.utcnow() - timedelta(days=days)
-    
-    # Find customers not contacted recently
     customers = await db.customers.find({
         "user_id": user["_id"],
         "$or": [
@@ -468,39 +517,25 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
         ]
     }).sort("last_contacted", 1).to_list(100)
     
-    # Check which ones don't have pending follow-ups
     result = []
     for c in customers:
-        pending_followup = await db.followups.find_one({
-            "customer_id": c["_id"],
-            "status": "pending"
-        })
-        
-        days_since_contact = None
-        if c.get("last_contacted"):
-            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
-        
-        # Generate quick reason
+        pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
+        days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
         ai_reason = await generate_quick_reason(c, [])
-        
         result.append({
-            "id": c["_id"],
-            "name": c["name"],
-            "phone_number": c["phone_number"],
-            "notes": c.get("notes"),
-            "tags": c.get("tags", []),
-            "last_message": c.get("last_message"),
-            "last_contacted": c.get("last_contacted"),
-            "days_since_contact": days_since_contact,
-            "has_pending_followup": pending_followup is not None,
-            "ai_reason": ai_reason,
-            "created_at": c["created_at"]
+            "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+            "notes": c.get("notes"), "tags": c.get("tags", []),
+            "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
+            "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
+            "ai_reason": ai_reason, "created_at": c["created_at"]
         })
-    
-    # Sort by days since contact (most neglected first)
     result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
-    
     return result
+
+@api_router.get("/customers/cold-with-reasons")
+async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
+    """Alias for get_cold_customers to support frontend with reasons included"""
+    return await get_cold_customers(days, user)
 
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse)
 async def get_customer(customer_id: str, user = Depends(get_current_user)):
@@ -572,6 +607,7 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         "reminder_date": followup.reminder_date,
         "message": followup.message,
         "status": "pending",
+        "type": followup.type,
         "created_at": datetime.utcnow()
     }
     
@@ -586,6 +622,7 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         reminder_date=followup.reminder_date,
         message=followup.message,
         status="pending",
+        type=followup.type,
         created_at=followup_doc["created_at"]
     )
 
@@ -610,6 +647,7 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
             reminder_date=f["reminder_date"],
             message=f.get("message"),
             status=f["status"],
+            type=f.get("type", "call"),
             created_at=f["created_at"]
         ))
     
@@ -638,6 +676,7 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
         reminder_date=updated["reminder_date"],
         message=updated.get("message"),
         status=updated["status"],
+        type=updated.get("type", "call"),
         created_at=updated["created_at"]
     )
 
@@ -674,13 +713,20 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
     await db.sales.insert_one(sale_doc)
     
     # Update customer tag to "Returning" if was "New"
+    update_ops = {
+        "$inc": {"purchase_count": 1, "total_spent": sale.amount},
+        "$set": {"last_contacted": datetime.utcnow()}
+    }
+    
     if "New" in customer.get("tags", []):
         new_tags = [t for t in customer.get("tags", []) if t != "New"]
         new_tags.append("Returning")
-        await db.customers.update_one(
-            {"_id": sale.customer_id},
-            {"$set": {"tags": new_tags, "last_contacted": datetime.utcnow()}}
-        )
+        update_ops["$set"]["tags"] = new_tags
+        
+    await db.customers.update_one(
+        {"_id": sale.customer_id},
+        update_ops
+    )
     
     # Send receipt via WhatsApp (background task)
     if sale.send_receipt:
@@ -1092,53 +1138,6 @@ async def whatsapp_webhook(request: Request):
 
 # ============ SMART FOLLOW-UP ENDPOINTS ============
 
-@api_router.get("/customers/cold")
-async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
-    """
-    Get customers who haven't been contacted in X days
-    These are potential follow-up opportunities
-    """
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
-    
-    # Find customers not contacted recently
-    customers = await db.customers.find({
-        "user_id": user["_id"],
-        "$or": [
-            {"last_contacted": {"$lt": cutoff_date}},
-            {"last_contacted": None}
-        ]
-    }).sort("last_contacted", 1).to_list(100)
-    
-    # Check which ones don't have pending follow-ups
-    result = []
-    for c in customers:
-        pending_followup = await db.followups.find_one({
-            "customer_id": c["_id"],
-            "status": "pending"
-        })
-        
-        days_since_contact = None
-        if c.get("last_contacted"):
-            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
-        
-        result.append({
-            "id": c["_id"],
-            "name": c["name"],
-            "phone_number": c["phone_number"],
-            "notes": c.get("notes"),
-            "tags": c.get("tags", []),
-            "last_message": c.get("last_message"),
-            "last_contacted": c.get("last_contacted"),
-            "days_since_contact": days_since_contact,
-            "has_pending_followup": pending_followup is not None,
-            "created_at": c["created_at"]
-        })
-    
-    # Sort by days since contact (most neglected first)
-    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
-    
-    return result
-
 @api_router.get("/stats/followup-suggestions")
 async def get_followup_suggestions(user = Depends(get_current_user)):
     """
@@ -1265,22 +1264,23 @@ Respond in this exact JSON format:
 {{"summary": "...", "follow_up_reason": "...", "suggested_message": "...", "interests": ["item1", "item2"], "sentiment": "..."}}
 """
 
-        chat = LlmChat(
-            api_key=GEMINI_API_KEY,
-            session_id=f"analyze_{customer['_id']}",
-            system_message="You are a helpful CRM assistant. Always respond with valid JSON only."
-        ).with_model("gemini", "gemini-2.5-flash")
+        # chat = LlmChat(
+        #     api_key=GEMINI_API_KEY,
+        #     session_id=f"analyze_{customer['_id']}",
+        #     system_message="You are a helpful CRM assistant. Always respond with valid JSON only."
+        # ).with_model("gemini", "gemini-2.5-flash")
         
-        response = await chat.send_message(UserMessage(text=prompt))
+        # response = await chat.send_message(UserMessage(text=prompt))
         
-        # Parse JSON response
-        import re
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
-            return result
-        else:
-            raise ValueError("No JSON found in response")
+        # # Parse JSON response
+        # import re
+        # json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        # if json_match:
+        #     result = json.loads(json_match.group())
+        #     return result
+        # else:
+        #     raise ValueError("No JSON found in response")
+        raise Exception("LLM Disabled")
             
     except Exception as e:
         logging.error(f"AI analysis error: {e}")
@@ -1325,14 +1325,15 @@ Create brief, useful CRM notes that include:
 
 Keep it concise (max 3-4 bullet points). Use simple language."""
 
-        chat = LlmChat(
-            api_key=GEMINI_API_KEY,
-            session_id=f"notes_{customer['_id']}",
-            system_message="You are a CRM assistant. Generate concise, actionable notes."
-        ).with_model("gemini", "gemini-2.5-flash")
+        # chat = LlmChat(
+        #     api_key=GEMINI_API_KEY,
+        #     session_id=f"notes_{customer['_id']}",
+        #     system_message="You are a CRM assistant. Generate concise, actionable notes."
+        # ).with_model("gemini", "gemini-2.5-flash")
         
-        response = await chat.send_message(UserMessage(text=prompt))
-        return response.strip()
+        # response = await chat.send_message(UserMessage(text=prompt))
+        # return response.strip()
+        return "Notes generation disabled."
         
     except Exception as e:
         logging.error(f"Notes generation error: {e}")
@@ -1373,56 +1374,6 @@ async def generate_customer_notes(customer_id: str, user = Depends(get_current_u
     )
     
     return {"customer_id": customer_id, "notes": notes}
-
-@api_router.get("/customers/cold-with-reasons")
-async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
-    """
-    Get cold customers with AI-generated follow-up reasons
-    """
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
-    
-    customers = await db.customers.find({
-        "user_id": user["_id"],
-        "$or": [
-            {"last_contacted": {"$lt": cutoff_date}},
-            {"last_contacted": None}
-        ]
-    }).sort("last_contacted", 1).to_list(50)
-    
-    result = []
-    for c in customers:
-        pending_followup = await db.followups.find_one({
-            "customer_id": c["_id"],
-            "status": "pending"
-        })
-        
-        days_since_contact = None
-        if c.get("last_contacted"):
-            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
-        
-        # Get messages for AI analysis
-        messages = await db.messages.find({"customer_id": c["_id"]}).sort("created_at", -1).to_list(20)
-        
-        # Generate AI reason (simplified for performance)
-        ai_reason = await generate_quick_reason(c, messages)
-        
-        result.append({
-            "id": c["_id"],
-            "name": c["name"],
-            "phone_number": c["phone_number"],
-            "notes": c.get("notes"),
-            "tags": c.get("tags", []),
-            "last_message": c.get("last_message"),
-            "last_contacted": c.get("last_contacted"),
-            "days_since_contact": days_since_contact,
-            "has_pending_followup": pending_followup is not None,
-            "ai_reason": ai_reason,
-            "created_at": c["created_at"]
-        })
-    
-    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
-    
-    return result
 
 async def generate_quick_reason(customer: dict, messages: list) -> str:
     """Generate a quick follow-up reason without full AI call for performance"""
@@ -1514,17 +1465,260 @@ async def add_customer_message(customer_id: str, message: MessageCreate, user = 
     
     return {"id": message_id, "status": "success"}
 
+# ============ AI ENDPOINTS ============
+
+@api_router.post("/ai/draft-message", response_model=DraftMessageResponse)
+async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
+    """Generate AI-drafted follow-up message for a customer"""
+    
+    # Get customer
+    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Get message history
+    messages = await db.messages.find({
+        "customer_id": request.customer_id
+    }).sort("timestamp", 1).limit(10).to_list(10)
+    
+    # Get business name
+    business_name = user.get('business_name', 'Your Business')
+    
+    # Get user's preferred tone or use request tone
+    user_settings = user.get('settings', {})
+    tone = user_settings.get('message_tone', request.tone)
+    
+    # Draft message using AI
+    drafter = get_drafter()
+    result = await drafter.draft_followup_message(
+        customer_name=customer['name'],
+        customer_data=customer,
+        messages=messages,
+        business_name=business_name,
+        tone=tone
+    )
+    
+    return DraftMessageResponse(
+        message=result['message'],
+        confidence=result['confidence'],
+        reason=result['reason']
+    )
+
+@api_router.post("/ai/send-auto-message")
+async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_current_user)):
+    """Send an auto-drafted message via WhatsApp"""
+    
+    # Check if auto-reply is enabled
+    user_settings = user.get('settings', {})
+    if not user_settings.get('auto_reply_enabled', False):
+        raise HTTPException(status_code=403, detail="Auto-reply is not enabled")
+    
+    # Get customer
+    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Store message in database
+    message_id = str(uuid.uuid4())
+    message_doc = {
+        "_id": message_id,
+        "customer_id": request.customer_id,
+        "user_id": user["_id"],
+        "direction": "outgoing",
+        "content": request.message,
+        "message_type": "text",
+        "timestamp": datetime.utcnow(),
+        "auto_sent": True
+    }
+    await db.messages.insert_one(message_doc)
+    
+    # Update customer's last contacted time
+    await db.customers.update_one(
+        {"_id": request.customer_id},
+        {"$set": {"last_contacted": datetime.utcnow()}}
+    )
+    
+    # TODO: Actually send via WhatsApp API when integrated
+    # For now, we'll just return success and the user can manually send
+    
+    return {
+        "status": "success",
+        "message_id": message_id,
+        "note": "Message logged. WhatsApp integration pending."
+    }
+
+@api_router.get("/analysis/daily-insights")
+async def get_daily_insights(limit: int = 10, user = Depends(get_current_user)):
+    """Get today's customer insights from AI analysis"""
+    
+    analyzer = DailyCustomerAnalyzer(db)
+    
+    # Check if we have today's analysis
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    existing_analysis = await db.customer_analysis.find_one({
+        "user_id": user["_id"],
+        "analysis_date": {"$gte": today}
+    })
+    
+    # If no analysis for today, run it now
+    if not existing_analysis:
+        logging.info(f"No analysis found for today, running now for user {user['_id']}")
+        await analyzer.analyze_all_customers(user["_id"])
+    
+    # Get insights
+    insights = await analyzer.get_todays_insights(user["_id"], limit)
+    
+    return insights
+
+@api_router.post("/analysis/run-now")
+async def run_analysis_now(user = Depends(get_current_user)):
+    """Manually trigger customer analysis"""
+    
+    analyzer = DailyCustomerAnalyzer(db)
+    analyses = await analyzer.analyze_all_customers(user["_id"])
+    
+    return {
+        "status": "success",
+        "analyzed_count": len(analyses),
+        "high_priority": len([a for a in analyses if a['urgency_level'] == 'high'])
+    }
+
+# ============ USER SETTINGS ENDPOINTS ============
+
+@api_router.get("/settings")
+async def get_user_settings(user = Depends(get_current_user)):
+    """Get user settings"""
+    settings = user.get('settings', {})
+    
+    # Return with defaults
+    return {
+        "auto_reply_enabled": settings.get('auto_reply_enabled', False),
+        "notification_enabled": settings.get('notification_enabled', True),
+        "notification_time": settings.get('notification_time', '08:00'),
+        "daily_alert_count": settings.get('daily_alert_count', 5),
+        "message_tone": settings.get('message_tone', 'friendly'),
+        "push_token": user.get('push_token')
+    }
+
+@api_router.put("/settings")
+async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_current_user)):
+    """Update user settings"""
+    
+    update_data = {}
+    
+    if settings.auto_reply_enabled is not None:
+        update_data['settings.auto_reply_enabled'] = settings.auto_reply_enabled
+    
+    if settings.notification_enabled is not None:
+        update_data['settings.notification_enabled'] = settings.notification_enabled
+    
+    if settings.notification_time is not None:
+        update_data['settings.notification_time'] = settings.notification_time
+    
+    if settings.daily_alert_count is not None:
+        update_data['settings.daily_alert_count'] = settings.daily_alert_count
+    
+    if settings.message_tone is not None:
+        update_data['settings.message_tone'] = settings.message_tone
+    
+    if settings.push_token is not None:
+        update_data['push_token'] = settings.push_token
+    
+    if update_data:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": update_data}
+        )
+    
+    return {"status": "success", "message": "Settings updated"}
+
+@api_router.post("/notifications/register-token")
+async def register_push_token(token: dict, user = Depends(get_current_user)):
+    """Register Expo push token for notifications"""
+    
+    push_token = token.get('push_token')
+    if not push_token:
+        raise HTTPException(status_code=400, detail="push_token required")
+    
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"push_token": push_token}}
+    )
+    
+    return {"status": "success", "message": "Push token registered"}
+
+@api_router.post("/notifications/send-test")
+async def send_test_notification(user = Depends(get_current_user)):
+    """Send a test notification to verify setup"""
+    
+    push_token = user.get('push_token')
+    if not push_token:
+        raise HTTPException(status_code=400, detail="No push token registered")
+    
+    notification_service = get_notification_service()
+    success = await notification_service.send_notification(
+        push_token=push_token,
+        title="🎉 CRM Notifications Active!",
+        body="You'll receive daily follow-up reminders here",
+        data={"type": "test"}
+    )
+    
+    if success:
+        return {"status": "success", "message": "Test notification sent"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to send notification")
+
 # ============ MAIN APP SETUP ============
 
 app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.on_event("startup")
+async def startup_event():
+    """Run startup tasks"""
+    # Recalculate customer totals from sales (Self-Healing)
+    try:
+        logging.info("Starting customer totals recalculation...")
+        
+        # 1. Reset all totals to 0 first (safety)
+        await db.customers.update_many(
+            {}, 
+            {"$set": {"total_spent": 0.0, "purchase_count": 0}}
+        )
+        
+        # 2. Aggregate sales data directly from database
+        pipeline = [
+            {
+                "$group": {
+                    "_id": "$customer_id",
+                    "total_spent": {"$sum": "$amount"},
+                    "count": {"$sum": 1},
+                    "last_sale_date": {"$max": "$created_at"}
+                }
+            }
+        ]
+        
+        sales_stats = await db.sales.aggregate(pipeline).to_list(None)
+        
+        # 3. Update each customer with their real totals
+        updates = 0
+        for stat in sales_stats:
+            if stat["_id"]:
+                await db.customers.update_one(
+                    {"_id": stat["_id"]},
+                    {
+                        "$set": {
+                            "total_spent": stat["total_spent"], 
+                            "purchase_count": stat["count"],
+                            "last_contacted": stat["last_sale_date"]
+                        }
+                    }
+                )
+                updates += 1
+                
+        logging.info(f"Recalculated totals for {updates} customers")
+        
+    except Exception as e:
+        logging.error(f"Failed to recalculate totals: {e}")
 
 logging.basicConfig(
     level=logging.INFO,
