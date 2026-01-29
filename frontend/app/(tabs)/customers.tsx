@@ -48,6 +48,7 @@ export default function CustomersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<'recently_added' | 'recently_contacted'>('recently_added');
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -86,6 +87,9 @@ export default function CustomersScreen() {
         params = '?tag=Returning';
       } else if (selectedTag) {
         params = `?tag=${selectedTag}`;
+      } else {
+        // Apply sorting based on toggle
+        params = sortBy === 'recently_contacted' ? '?sort_by=recently_contacted' : '';
       }
 
       const response = await apiClient.get(`/customers${params}`);
@@ -96,7 +100,7 @@ export default function CustomersScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedTag, searchQuery]);
+  }, [selectedTag, searchQuery, sortBy]);
 
   useEffect(() => {
     // Debounce search to prevent too many API calls
@@ -492,6 +496,36 @@ export default function CustomersScreen() {
         />
       </View>
 
+      {/* Sorting Toggle */}
+      <View style={styles.sortContainer}>
+        <TouchableOpacity
+          style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
+          onPress={() => setSortBy('recently_added')}
+        >
+          <Ionicons 
+            name="time-outline" 
+            size={16} 
+            color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'} 
+          />
+          <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
+            Recently Added
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
+          onPress={() => setSortBy('recently_contacted')}
+        >
+          <Ionicons 
+            name="chatbubble-outline" 
+            size={16} 
+            color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'} 
+          />
+          <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
+            Recently Contacted
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={styles.filterContainer}>
         <TouchableOpacity
           style={[styles.filterChip, !selectedTag && styles.filterChipActive]}
@@ -688,6 +722,34 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 48,
     fontSize: 16,
+    color: '#FFFFFF',
+  },
+  sortContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    marginBottom: 12,
+    gap: 8,
+  },
+  sortButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A2942',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    gap: 6,
+  },
+  sortButtonActive: {
+    backgroundColor: '#25D366',
+  },
+  sortText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#666',
+  },
+  sortTextActive: {
     color: '#FFFFFF',
   },
   filterContainer: {

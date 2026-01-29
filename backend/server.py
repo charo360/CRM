@@ -603,15 +603,18 @@ async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None
     if tag:
         query["tags"] = tag
     
-    # Sorting logic - default to most recent first
+    # Sorting logic
     if sort_by == "purchases":
         sort_field = "purchase_count"
         sort_order = -1  # Highest purchases first
+    elif sort_by == "recently_contacted":
+        sort_field = "last_contacted"
+        sort_order = -1  # Most recently contacted first
     elif sort_by == "oldest":
         sort_field = "created_at"
         sort_order = 1  # Oldest first
     else:
-        # Default: Most recent contacts first
+        # Default: Recently added (newest first)
         sort_field = "created_at"
         sort_order = -1  # Newest first
     
