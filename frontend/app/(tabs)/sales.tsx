@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { apiClient } from '../context/api';
+import { apiClient } from '../../context/api';
 
 interface Customer {
   id: string;
@@ -104,7 +104,7 @@ export default function SalesScreen() {
       setSales([response.data, ...sales]);
       setModalVisible(false);
       resetForm();
-      
+
       Alert.alert(
         'Success',
         `Sale recorded!${sendReceipt ? ' Receipt sent to customer.' : ''}`,
@@ -208,8 +208,8 @@ export default function SalesScreen() {
       />
 
       {/* WhatsApp-style Floating Action Button */}
-      <TouchableOpacity 
-        style={styles.fab} 
+      <TouchableOpacity
+        style={styles.fab}
         onPress={() => setModalVisible(true)}
         activeOpacity={0.8}
       >

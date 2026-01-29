@@ -1,9 +1,35 @@
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load env before ANY other imports
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env', override=True)
+
+# Validate environment on startup
+def validate_startup_env():
+    """Quick validation to catch common issues"""
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key or api_key == 'your_openai_api_key_here':
+        print("\n" + "="*60)
+        print("❌ ERROR: OPENAI_API_KEY not configured in .env file")
+        print("="*60 + "\n")
+        sys.exit(1)
+    elif not api_key.startswith('sk-'):
+        print("\n" + "="*60)
+        print(f"⚠️  WARNING: OPENAI_API_KEY has unexpected format")
+        print(f"   Key starts with: {api_key[:10]}")
+        print("="*60 + "\n")
+    else:
+        print(f"✓ OpenAI API Key loaded (ends with: ...{api_key[-10:]})")
+
+validate_startup_env()
+
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -16,13 +42,24 @@ import hmac
 import hashlib
 import json
 from twilio.rest import Client as TwilioClient
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+# from emergentintegrations.llm.chat import LlmChat, UserMessage
+from ai_service import get_drafter, AIMessageDrafter
+from daily_analyzer import DailyCustomerAnalyzer
+from notification_service import get_notification_service
+from image_handler import ImageUploadHandler
+from product_organizer import get_organizer
+from wow_enhancements import get_wow_generator
+from whatsapp_service import get_whatsapp_service
+from followup_analytics import get_analytics
+from smart_notifications import get_smart_notifications
+from fastapi import UploadFile, File
+from fastapi.staticfiles import StaticFiles
+from daily_scheduler import start_daily_scheduler
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
-# Gemini API Key
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+
+# OpenAI API Key
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -46,6 +83,15 @@ PAYSTACK_BASE_URL = "https://api.paystack.co"
 app = FastAPI(title="WhatsApp CRM Kenya")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
+
+# Configure CORS to allow mobile app connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ============ PYDANTIC MODELS ============
 
@@ -90,6 +136,8 @@ class CustomerResponse(BaseModel):
     phone_number: str
     notes: Optional[str] = None
     tags: List[str] = []
+    purchase_count: int = 0
+    total_spent: float = 0.0
     last_message: Optional[str] = None
     last_contacted: Optional[datetime] = None
     created_at: datetime
@@ -99,11 +147,13 @@ class FollowUpCreate(BaseModel):
     customer_id: str
     reminder_date: datetime
     message: Optional[str] = None
+    type: str = "call"  # call, whatsapp, meeting, email
 
 class FollowUpUpdate(BaseModel):
     reminder_date: Optional[datetime] = None
     message: Optional[str] = None
     status: Optional[str] = None
+    type: Optional[str] = None
 
 class FollowUpResponse(BaseModel):
     id: str
@@ -114,6 +164,7 @@ class FollowUpResponse(BaseModel):
     reminder_date: datetime
     message: Optional[str] = None
     status: str = "pending"  # pending, completed, cancelled
+    type: str = "call"
     created_at: datetime
 
 # Sales/Receipt Models
@@ -195,6 +246,69 @@ class AIAnalysisResponse(BaseModel):
     interests: List[str]
     sentiment: str
 
+# AI Draft Message Models
+class DraftMessageRequest(BaseModel):
+    customer_id: str
+    tone: Optional[str] = "friendly"  # professional, friendly, casual
+
+class DraftMessageResponse(BaseModel):
+    message: str
+    confidence: float
+    reason: str
+
+class SendAutoMessageRequest(BaseModel):
+    customer_id: str
+    message: str
+
+# User Settings Models
+class UserSettingsUpdate(BaseModel):
+    auto_reply_enabled: Optional[bool] = None
+    notification_enabled: Optional[bool] = None
+    notification_time: Optional[str] = None
+    daily_alert_count: Optional[int] = None
+    message_tone: Optional[str] = None
+    push_token: Optional[str] = None
+
+# Business Knowledge Model
+class BusinessKnowledge(BaseModel):
+    products_services: Optional[str] = None  # What you sell/offer
+    pricing_info: Optional[str] = None  # Price ranges, payment methods
+    business_hours: Optional[str] = None  # When you're available
+    delivery_info: Optional[str] = None  # Delivery areas, costs, timing
+    faqs: Optional[str] = None  # Common questions and answers
+    special_offers: Optional[str] = None  # Current promotions
+    business_description: Optional[str] = None  # What makes you unique
+
+# Product Catalog Models
+class Product(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    price: float
+    image_url: str
+    category: Optional[str] = "Other"
+    description: Optional[str] = None
+    in_stock: bool = True
+    ai_suggested_name: Optional[str] = None
+    ai_confidence: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+class ProductCreate(BaseModel):
+    name: str
+    price: float
+    image_url: str
+    category: Optional[str] = "Other"
+    description: Optional[str] = None
+    in_stock: bool = True
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    in_stock: Optional[bool] = None
+
 # ============ HELPER FUNCTIONS ============
 
 def create_token(user_id: str, phone_number: str) -> str:
@@ -227,9 +341,60 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 # Store OTPs temporarily (in production, use Redis)
 otp_store = {}
 
-def generate_otp() -> str:
+def generate_otp():
     import random
     return str(random.randint(100000, 999999))
+
+def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
+    """Generate a simple follow-up reason without AI calls for performance"""
+    tags = customer.get("tags", [])
+    last_message = customer.get("last_message", "")
+    created_at = customer.get("created_at")
+    
+    # Calculate days since customer was added
+    days_since_added = None
+    if created_at:
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        days_since_added = (datetime.utcnow() - created_at).days
+    
+    # Quick rule-based reasons
+    if not customer.get("last_contacted"):
+        # Recently added contact (within 7 days) - reminder to reach out
+        if days_since_added is not None and days_since_added <= 7:
+            if days_since_added == 0:
+                return "Added today - reach out and introduce yourself"
+            elif days_since_added == 1:
+                return "Added yesterday - time to make first contact"
+            else:
+                return f"Added {days_since_added} days ago - haven't contacted yet"
+        
+        # Older contacts
+        if "New" in tags:
+            return "New customer - send welcome message"
+        return "Never contacted - introduce your services"
+    
+    if days_since_contact and days_since_contact > 30:
+        return f"Inactive for {days_since_contact} days - re-engage with offer"
+    
+    if "VIP" in tags and days_since_contact and days_since_contact > 7:
+        return f"VIP customer not contacted in {days_since_contact} days"
+    
+    # Check last message for context
+    if last_message:
+        lower_msg = last_message.lower()
+        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
+            return "Asked about pricing - follow up on quote"
+        if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
+            return "Was considering purchase - check decision"
+        if any(word in lower_msg for word in ["thank", "thanks", "asante"]):
+            return "Previous transaction - check satisfaction"
+    
+    # Default with days
+    if days_since_contact:
+        return f"No contact in {days_since_contact} days - check in"
+    
+    return "Due for follow-up"
 
 async def generate_quick_reason(customer: dict, messages: list) -> str:
     """Generate a quick follow-up reason without full AI call for performance"""
@@ -408,6 +573,8 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "phone_number": customer.phone_number,
         "notes": customer.notes,
         "tags": customer.tags if customer.tags else ["New"],
+        "purchase_count": 0,
+        "total_spent": 0.0,
         "last_message": None,
         "last_contacted": None,
         "created_at": datetime.utcnow()
@@ -422,19 +589,29 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         phone_number=customer.phone_number,
         notes=customer.notes,
         tags=customer_doc["tags"],
+        purchase_count=0,
+        total_spent=0.0,
         last_message=None,
         last_contacted=None,
         created_at=customer_doc["created_at"]
     )
 
 @api_router.get("/customers", response_model=List[CustomerResponse])
-async def get_customers(tag: Optional[str] = None, user = Depends(get_current_user)):
+async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None, user = Depends(get_current_user)):
     """Get all customers for current user"""
     query = {"user_id": user["_id"]}
     if tag:
         query["tags"] = tag
     
-    customers = await db.customers.find(query).sort("created_at", -1).to_list(1000)
+    # Defaults
+    sort_field = "created_at"
+    sort_order = -1
+    
+    if sort_by == "purchases":
+        sort_field = "purchase_count"
+        sort_order = -1
+    
+    customers = await db.customers.find(query).sort(sort_field, sort_order).to_list(1000)
     
     return [
         CustomerResponse(
@@ -444,6 +621,8 @@ async def get_customers(tag: Optional[str] = None, user = Depends(get_current_us
             phone_number=c["phone_number"],
             notes=c.get("notes"),
             tags=c.get("tags", []),
+            purchase_count=c.get("purchase_count", 0),
+            total_spent=c.get("total_spent", 0.0),
             last_message=c.get("last_message"),
             last_contacted=c.get("last_contacted"),
             created_at=c["created_at"]
@@ -453,13 +632,8 @@ async def get_customers(tag: Optional[str] = None, user = Depends(get_current_us
 
 @api_router.get("/customers/cold")
 async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
-    """
-    Get customers who haven't been contacted in X days
-    These are potential follow-up opportunities
-    """
+    """Get customers who haven't been contacted in X days"""
     cutoff_date = datetime.utcnow() - timedelta(days=days)
-    
-    # Find customers not contacted recently
     customers = await db.customers.find({
         "user_id": user["_id"],
         "$or": [
@@ -468,39 +642,68 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
         ]
     }).sort("last_contacted", 1).to_list(100)
     
-    # Check which ones don't have pending follow-ups
+    # Get today's analysis date
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Try to get Smart Insights first (AI Daily Analysis)
+    # This respects the "Smart Tiers" (limit 10/20/30) and "Smart Cadence" (24h/3d)
+    smart_insights = await db.customer_analysis.find({
+        "user_id": user["_id"],
+        "analysis_date": {"$gte": today}
+    }).sort("urgency_score", -1).to_list(100)
+    
     result = []
-    for c in customers:
-        pending_followup = await db.followups.find_one({
-            "customer_id": c["_id"],
-            "status": "pending"
-        })
-        
-        days_since_contact = None
-        if c.get("last_contacted"):
-            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
-        
-        # Generate quick reason
-        ai_reason = await generate_quick_reason(c, [])
-        
-        result.append({
-            "id": c["_id"],
-            "name": c["name"],
-            "phone_number": c["phone_number"],
-            "notes": c.get("notes"),
-            "tags": c.get("tags", []),
-            "last_message": c.get("last_message"),
-            "last_contacted": c.get("last_contacted"),
-            "days_since_contact": days_since_contact,
-            "has_pending_followup": pending_followup is not None,
-            "ai_reason": ai_reason,
-            "created_at": c["created_at"]
-        })
     
-    # Sort by days since contact (most neglected first)
-    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
-    
-    return result
+    # If we have smart insights, use them as the primary source for "Needs Attention"
+    if smart_insights:
+        for analysis in smart_insights:
+            c = await db.customers.find_one({"_id": analysis["customer_id"]})
+            if not c: continue
+            
+            result.append({
+                "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+                "notes": c.get("notes"), "tags": c.get("tags", []),
+                "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
+                "days_since_contact": analysis.get("days_since_contact"), 
+                "has_pending_followup": analysis.get("has_pending_followup", False),
+                "ai_reason": analysis.get("ai_reason") if analysis.get("ai_reason") else "Smart Follow-up",
+                "urgency_score": analysis.get("urgency_score", 0),
+                "created_at": c["created_at"]
+            })
+    else:
+        # Fallback to legacy "Cold" logic if AI hasn't run yet
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        customers = await db.customers.find({
+            "user_id": user["_id"],
+            "$or": [
+                {"last_contacted": {"$lt": cutoff_date}},
+                {"last_contacted": None}
+            ]
+        }).sort("last_contacted", 1).to_list(100)
+        
+        for c in customers:
+            pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
+            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
+            
+            # Use simple rule-based reason to avoid timeout
+            ai_reason = generate_simple_reason(c, days_since_contact)
+                
+            result.append({
+                "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+                "notes": c.get("notes"), "tags": c.get("tags", []),
+                "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
+                "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
+                "ai_reason": ai_reason, "created_at": c["created_at"]
+            })
+            
+    # Sort by urgency/days and limit to top 30 most urgent
+    result.sort(key=lambda x: x.get("urgency_score", 0) if "urgency_score" in x else (x["days_since_contact"] if x["days_since_contact"] else 999), reverse=True)
+    return result[:30]  # Only return top 30 most urgent customers
+
+@api_router.get("/customers/cold-with-reasons")
+async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
+    """Alias for get_cold_customers to support frontend with reasons included"""
+    return await get_cold_customers(days, user)
 
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse)
 async def get_customer(customer_id: str, user = Depends(get_current_user)):
@@ -572,6 +775,7 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         "reminder_date": followup.reminder_date,
         "message": followup.message,
         "status": "pending",
+        "type": followup.type,
         "created_at": datetime.utcnow()
     }
     
@@ -586,6 +790,7 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         reminder_date=followup.reminder_date,
         message=followup.message,
         status="pending",
+        type=followup.type,
         created_at=followup_doc["created_at"]
     )
 
@@ -610,6 +815,7 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
             reminder_date=f["reminder_date"],
             message=f.get("message"),
             status=f["status"],
+            type=f.get("type", "call"),
             created_at=f["created_at"]
         ))
     
@@ -638,6 +844,7 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
         reminder_date=updated["reminder_date"],
         message=updated.get("message"),
         status=updated["status"],
+        type=updated.get("type", "call"),
         created_at=updated["created_at"]
     )
 
@@ -648,6 +855,90 @@ async def delete_followup(followup_id: str, user = Depends(get_current_user)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Follow-up not found")
     return {"status": "success", "message": "Follow-up deleted"}
+
+@api_router.post("/followups/{followup_id}/snooze")
+async def snooze_followup(followup_id: str, days: int = 1, user = Depends(get_current_user)):
+    """
+    Snooze a follow-up by X days
+    Common options: 1 day, 3 days, 7 days
+    """
+    followup = await db.followups.find_one({"_id": followup_id, "user_id": user["_id"]})
+    if not followup:
+        raise HTTPException(status_code=404, detail="Follow-up not found")
+    
+    # Calculate new date
+    current_date = followup.get("reminder_date", datetime.utcnow())
+    new_date = current_date + timedelta(days=days)
+    
+    # Update follow-up
+    await db.followups.update_one(
+        {"_id": followup_id},
+        {"$set": {"reminder_date": new_date}}
+    )
+    
+    return {
+        "status": "success",
+        "message": f"Follow-up snoozed for {days} day(s)",
+        "new_date": new_date
+    }
+
+@api_router.get("/followups/analytics")
+async def get_followup_analytics(days: int = 30, user = Depends(get_current_user)):
+    """
+    Get follow-up success metrics for analytics dashboard
+    Automatically tracks: conversions, responses, timing
+    """
+    analytics = get_analytics(db)
+    stats = await analytics.get_followup_stats(user["_id"], days)
+    best_times = await analytics.get_best_followup_times(user["_id"])
+    
+    return {
+        "stats": stats,
+        "best_times": best_times
+    }
+
+@api_router.get("/analytics/summary")
+async def get_analytics_summary(user = Depends(get_current_user)):
+    """
+    Get quick analytics summary for menu/dashboard
+    Shows key metrics at a glance
+    """
+    analytics = get_analytics(db)
+    stats_30d = await analytics.get_followup_stats(user["_id"], days=30)
+    stats_7d = await analytics.get_followup_stats(user["_id"], days=7)
+    
+    # Get smart notification insight
+    smart_notif = get_smart_notifications(db)
+    insight = await smart_notif.get_meaningful_insights(user["_id"])
+    
+    return {
+        "last_30_days": {
+            "conversion_rate": round(stats_30d["conversion_rate"], 1),
+            "response_rate": round(stats_30d["response_rate"], 1),
+            "total_revenue": stats_30d["total_revenue"],
+            "followups": stats_30d["total_followups"]
+        },
+        "last_7_days": {
+            "conversion_rate": round(stats_7d["conversion_rate"], 1),
+            "followups": stats_7d["total_followups"],
+            "revenue": stats_7d["total_revenue"]
+        },
+        "insight": insight  # Current meaningful insight
+    }
+
+@api_router.post("/notifications/test-smart")
+async def test_smart_notification(user = Depends(get_current_user)):
+    """
+    Test smart notification system
+    Sends notification only if there's something meaningful
+    """
+    smart_notif = get_smart_notifications(db)
+    sent = await smart_notif.send_smart_notification(user["_id"])
+    
+    if sent:
+        return {"status": "sent", "message": "Smart notification sent"}
+    else:
+        return {"status": "skipped", "message": "No meaningful insight or too frequent"}
 
 # ============ SALES/RECEIPT ENDPOINTS ============
 
@@ -674,13 +965,20 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
     await db.sales.insert_one(sale_doc)
     
     # Update customer tag to "Returning" if was "New"
+    update_ops = {
+        "$inc": {"purchase_count": 1, "total_spent": sale.amount},
+        "$set": {"last_contacted": datetime.utcnow()}
+    }
+    
     if "New" in customer.get("tags", []):
         new_tags = [t for t in customer.get("tags", []) if t != "New"]
         new_tags.append("Returning")
-        await db.customers.update_one(
-            {"_id": sale.customer_id},
-            {"$set": {"tags": new_tags, "last_contacted": datetime.utcnow()}}
-        )
+        update_ops["$set"]["tags"] = new_tags
+        
+    await db.customers.update_one(
+        {"_id": sale.customer_id},
+        update_ops
+    )
     
     # Send receipt via WhatsApp (background task)
     if sale.send_receipt:
@@ -998,6 +1296,27 @@ async def paystack_webhook(request: Request, background_tasks: BackgroundTasks):
     
     return {"status": "ok"}
 
+# ============ WHATSAPP MESSAGING ENDPOINTS ============
+
+@api_router.post("/messages/send")
+async def send_whatsapp_message(to_number: str, message: str, customer_name: Optional[str] = None, user = Depends(get_current_user)):
+    """
+    Send WhatsApp message to a customer
+    Auto-creates contact if number doesn't exist
+    """
+    try:
+        whatsapp_service = get_whatsapp_service(db)
+        result = await whatsapp_service.send_message(
+            user_id=user["_id"],
+            to_number=to_number,
+            message=message,
+            customer_name=customer_name
+        )
+        return result
+    except Exception as e:
+        logging.error(f"Error sending message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============ WHATSAPP WEBHOOK ENDPOINTS ============
 
 @api_router.post("/webhooks/whatsapp")
@@ -1038,19 +1357,20 @@ async def whatsapp_webhook(request: Request):
         
         if customer:
             customer_id = customer["_id"]
-            # Update existing customer with last message
+            # Update existing customer with last message and contact time
             await db.customers.update_one(
                 {"_id": customer["_id"]},
                 {
                     "$set": {
                         "last_message": body[:200] if body else None,
-                        "last_contacted": datetime.utcnow()
+                        "last_contacted": datetime.utcnow(),
+                        "auto_created": customer.get("auto_created", True)  # Preserve auto_created flag
                     }
                 }
             )
-            logging.info(f"Updated customer {customer['name']} with new message")
+            logging.info(f"Updated customer {customer['name']} with incoming message")
         else:
-            # Auto-create new customer
+            # Auto-create new customer from WhatsApp
             customer_id = str(uuid.uuid4())
             customer_name = profile_name if profile_name else f"Customer {from_number[-4:]}"
             
@@ -1059,14 +1379,15 @@ async def whatsapp_webhook(request: Request):
                 "user_id": user["_id"],
                 "name": customer_name,
                 "phone_number": from_number,
-                "notes": f"Auto-added from WhatsApp chat",
+                "notes": f"Customer reached out via WhatsApp",
                 "tags": ["New"],
                 "last_message": body[:200] if body else None,
                 "last_contacted": datetime.utcnow(),
                 "created_at": datetime.utcnow(),
-                "auto_created": True
+                "auto_created": True,  # Flag for smart prioritization
+                "customer_initiated": True  # They messaged us first
             })
-            logging.info(f"Auto-created customer: {customer_name} ({from_number})")
+            logging.info(f"Auto-created customer from WhatsApp: {customer_name} ({from_number})")
         
         # Store the message for AI analysis
         if customer_id and body:
@@ -1092,87 +1413,60 @@ async def whatsapp_webhook(request: Request):
 
 # ============ SMART FOLLOW-UP ENDPOINTS ============
 
-@api_router.get("/customers/cold")
-async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
-    """
-    Get customers who haven't been contacted in X days
-    These are potential follow-up opportunities
-    """
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
-    
-    # Find customers not contacted recently
-    customers = await db.customers.find({
-        "user_id": user["_id"],
-        "$or": [
-            {"last_contacted": {"$lt": cutoff_date}},
-            {"last_contacted": None}
-        ]
-    }).sort("last_contacted", 1).to_list(100)
-    
-    # Check which ones don't have pending follow-ups
-    result = []
-    for c in customers:
-        pending_followup = await db.followups.find_one({
-            "customer_id": c["_id"],
-            "status": "pending"
-        })
-        
-        days_since_contact = None
-        if c.get("last_contacted"):
-            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
-        
-        result.append({
-            "id": c["_id"],
-            "name": c["name"],
-            "phone_number": c["phone_number"],
-            "notes": c.get("notes"),
-            "tags": c.get("tags", []),
-            "last_message": c.get("last_message"),
-            "last_contacted": c.get("last_contacted"),
-            "days_since_contact": days_since_contact,
-            "has_pending_followup": pending_followup is not None,
-            "created_at": c["created_at"]
-        })
-    
-    # Sort by days since contact (most neglected first)
-    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
-    
-    return result
-
 @api_router.get("/stats/followup-suggestions")
 async def get_followup_suggestions(user = Depends(get_current_user)):
     """
     Get smart follow-up suggestions based on customer activity
+    Only counts customers who don't already have pending follow-ups
     """
     now = datetime.utcnow()
     
-    # Customers not contacted in 7+ days
-    week_ago = now - timedelta(days=7)
+    # Get all customers with pending follow-ups
+    pending_followups = await db.followups.find({
+        "user_id": user["_id"],
+        "status": "pending"
+    }).to_list(None)
+    
+    customer_ids_with_followups = {f["customer_id"] for f in pending_followups}
+    
+    # Customers not contacted in 14+ days (without pending follow-ups)
+    # This is more realistic - 14 days is when attention is truly needed
+    two_weeks_ago = now - timedelta(days=14)
     neglected_week = await db.customers.count_documents({
         "user_id": user["_id"],
-        "last_contacted": {"$lt": week_ago}
+        "_id": {"$nin": list(customer_ids_with_followups)},
+        "$or": [
+            {"last_contacted": {"$lt": two_weeks_ago}},
+            {"last_contacted": None}
+        ]
     })
     
-    # Customers not contacted in 30+ days
+    # Customers not contacted in 30+ days (without pending follow-ups)
     month_ago = now - timedelta(days=30)
     neglected_month = await db.customers.count_documents({
         "user_id": user["_id"],
+        "_id": {"$nin": list(customer_ids_with_followups)},
         "last_contacted": {"$lt": month_ago}
     })
     
-    # New customers (never followed up)
+    # New customers (never followed up and no pending follow-ups)
     new_no_followup = await db.customers.count_documents({
         "user_id": user["_id"],
+        "_id": {"$nin": list(customer_ids_with_followups)},
         "tags": "New",
         "last_contacted": None
     })
     
-    # VIP customers not contacted in 14+ days
-    two_weeks_ago = now - timedelta(days=14)
+    # VIP customers not contacted in 7+ days (VIPs need more frequent attention)
+    week_ago = now - timedelta(days=7)
     vip_neglected = await db.customers.count_documents({
         "user_id": user["_id"],
+        "_id": {"$nin": list(customer_ids_with_followups)},
         "tags": "VIP",
-        "last_contacted": {"$lt": two_weeks_ago}
+        "$or": [
+            {"last_contacted": {"$lt": week_ago}},
+            {"last_contacted": None}
+        ]
     })
     
     return {
@@ -1180,7 +1474,7 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
         "neglected_month": neglected_month,
         "new_no_followup": new_no_followup,
         "vip_neglected": vip_neglected,
-        "total_needing_attention": neglected_week + new_no_followup
+        "total_needing_attention": neglected_week + new_no_followup + vip_neglected
     }
 
 # ============ STATS ENDPOINTS ============
@@ -1207,133 +1501,52 @@ async def get_stats(user = Depends(get_current_user)):
         "revenue_this_month": total_sales
     }
 
+@api_router.get("/stats/wow-moments")
+async def get_wow_moments(user = Depends(get_current_user)):
+    """
+    Get daily 'wow moment' insights that show intelligent features at work
+    Returns personalized insights, predictions, and delightful statistics
+    """
+    try:
+        wow_gen = get_wow_generator(db)
+        insights = await wow_gen.get_daily_wow_insights(user["_id"])
+        return insights
+    except Exception as e:
+        logging.error(f"Error generating wow moments: {e}")
+        return {
+            "greeting": "Welcome back!",
+            "quick_wins": [],
+            "revenue_opportunity": {"message": "Loading insights..."},
+            "streak": {"message": "Keep up the great work!"},
+            "ai_saved_time": {"message": "AI is working for you"},
+            "success_prediction": {"message": "Good luck today!"},
+            "best_time_to_contact": {"message": "Contact customers when they're active"}
+        }
+
 # ============ AI-POWERED ENDPOINTS ============
 
 async def analyze_customer_with_ai(customer: dict, messages: list, user: dict) -> dict:
-    """Use Gemini AI to analyze customer conversation and generate insights"""
-    if not GEMINI_API_KEY:
-        # Fallback if no API key
-        return {
-            "summary": "Unable to analyze - AI not configured",
-            "follow_up_reason": "Customer hasn't been contacted recently",
-            "suggested_message": f"Hi {customer.get('name', 'there')}! Just checking in. How can I help you today?",
-            "interests": [],
-            "sentiment": "neutral"
-        }
-    
+    """Use OpenAI to analyze customer conversation and generate insights"""
     try:
-        # Build conversation context
-        conversation_text = ""
-        if messages:
-            for msg in messages[-20:]:  # Last 20 messages
-                direction = "Customer" if msg.get("direction") == "incoming" else "You"
-                conversation_text += f"{direction}: {msg.get('content', '')}\n"
-        
-        notes = customer.get("notes", "") or ""
-        tags = ", ".join(customer.get("tags", []))
-        last_message = customer.get("last_message", "") or ""
-        days_since = ""
-        if customer.get("last_contacted"):
-            days = (datetime.utcnow() - customer["last_contacted"]).days
-            days_since = f"{days} days ago"
-        else:
-            days_since = "Never contacted"
-        
-        business_name = user.get("business_name", "the business")
-        
-        prompt = f"""You are an AI assistant for a small business CRM in Kenya. Analyze this customer data and provide actionable insights.
-
-CUSTOMER INFO:
-- Name: {customer.get('name', 'Unknown')}
-- Phone: {customer.get('phone_number', 'Unknown')}
-- Tags: {tags}
-- Notes: {notes}
-- Last message from customer: {last_message}
-- Last contacted: {days_since}
-
-RECENT CONVERSATION:
-{conversation_text if conversation_text else "No conversation history available"}
-
-Based on this information, provide:
-1. A brief summary of this customer (1-2 sentences)
-2. A specific reason why they need follow-up now (be specific, e.g., "Asked about iPhone 15 pricing but didn't purchase" or "New customer, hasn't received welcome message")
-3. A suggested WhatsApp message to send (casual, friendly Kenyan business style, keep it short)
-4. List any products/services they showed interest in
-5. Their sentiment (positive, neutral, negative, or unknown)
-
-Respond in this exact JSON format:
-{{"summary": "...", "follow_up_reason": "...", "suggested_message": "...", "interests": ["item1", "item2"], "sentiment": "..."}}
-"""
-
-        chat = LlmChat(
-            api_key=GEMINI_API_KEY,
-            session_id=f"analyze_{customer['_id']}",
-            system_message="You are a helpful CRM assistant. Always respond with valid JSON only."
-        ).with_model("gemini", "gemini-2.5-flash")
-        
-        response = await chat.send_message(UserMessage(text=prompt))
-        
-        # Parse JSON response
-        import re
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
-            return result
-        else:
-            raise ValueError("No JSON found in response")
-            
+        analyzer = DailyCustomerAnalyzer(db)
+        # Use existing method
+        return await analyzer.analyze_single_customer(customer["_id"], user["_id"])
     except Exception as e:
         logging.error(f"AI analysis error: {e}")
         # Return fallback
-        days_text = ""
-        if customer.get("last_contacted"):
-            days = (datetime.utcnow() - customer["last_contacted"]).days
-            days_text = f"Last contacted {days} days ago"
-        else:
-            days_text = "Never contacted"
-            
         return {
-            "summary": f"Customer since {customer.get('created_at', datetime.utcnow()).strftime('%b %Y')}",
-            "follow_up_reason": days_text,
-            "suggested_message": f"Hi {customer.get('name', 'there')}! Hope you're doing well. Is there anything I can help you with today?",
+            "summary": "AI Analysis Unavailable",
+            "follow_up_reason": "Analysis failed",
+            "suggested_message": "Hi! Checking in.",
             "interests": [],
             "sentiment": "neutral"
         }
 
 async def generate_notes_from_messages(customer: dict, messages: list) -> str:
     """Use AI to generate notes from conversation history"""
-    if not GEMINI_API_KEY or not messages:
-        return customer.get("notes", "") or "No conversation to analyze"
-    
     try:
-        conversation_text = ""
-        for msg in messages[-30:]:
-            direction = "Customer" if msg.get("direction") == "incoming" else "Business"
-            conversation_text += f"{direction}: {msg.get('content', '')}\n"
-        
-        prompt = f"""Analyze this WhatsApp business conversation and extract key information as CRM notes.
-
-CONVERSATION:
-{conversation_text}
-
-Create brief, useful CRM notes that include:
-- What products/services the customer is interested in
-- Any specific requirements or preferences mentioned
-- Price points discussed
-- Any commitments or next steps agreed
-- Customer's tone/attitude
-
-Keep it concise (max 3-4 bullet points). Use simple language."""
-
-        chat = LlmChat(
-            api_key=GEMINI_API_KEY,
-            session_id=f"notes_{customer['_id']}",
-            system_message="You are a CRM assistant. Generate concise, actionable notes."
-        ).with_model("gemini", "gemini-2.5-flash")
-        
-        response = await chat.send_message(UserMessage(text=prompt))
-        return response.strip()
-        
+        drafter = get_drafter()
+        return await drafter.analyze_conversation_for_notes(messages)
     except Exception as e:
         logging.error(f"Notes generation error: {e}")
         return customer.get("notes", "") or "Could not generate notes"
@@ -1374,93 +1587,43 @@ async def generate_customer_notes(customer_id: str, user = Depends(get_current_u
     
     return {"customer_id": customer_id, "notes": notes}
 
-@api_router.get("/customers/cold-with-reasons")
-async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
+@api_router.get("/ai/draft-message")
+async def draft_message(customer_id: str, user = Depends(get_current_user)):
     """
-    Get cold customers with AI-generated follow-up reasons
+    Draft a personalized message for a customer using AI
     """
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
-    
-    customers = await db.customers.find({
-        "user_id": user["_id"],
-        "$or": [
-            {"last_contacted": {"$lt": cutoff_date}},
-            {"last_contacted": None}
-        ]
-    }).sort("last_contacted", 1).to_list(50)
-    
-    result = []
-    for c in customers:
-        pending_followup = await db.followups.find_one({
-            "customer_id": c["_id"],
-            "status": "pending"
-        })
+    try:
+        customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+            
+        messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", 1).to_list(50)
         
-        days_since_contact = None
-        if c.get("last_contacted"):
-            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days
+        # Get business settings from user
+        settings = user.get("settings", {})
+        business_name = settings.get("business_name", "Your Business")
+        business_knowledge = settings.get("business_knowledge", "")
+        tone = settings.get("tone", "friendly")
         
-        # Get messages for AI analysis
-        messages = await db.messages.find({"customer_id": c["_id"]}).sort("created_at", -1).to_list(20)
+        drafter = get_drafter()
+        result = await drafter.draft_followup_message(
+            customer_name=customer.get("name", "Customer"),
+            customer_data=customer,
+            messages=messages,
+            business_name=business_name,
+            tone=tone,
+            business_knowledge=business_knowledge
+        )
         
-        # Generate AI reason (simplified for performance)
-        ai_reason = await generate_quick_reason(c, messages)
-        
-        result.append({
-            "id": c["_id"],
-            "name": c["name"],
-            "phone_number": c["phone_number"],
-            "notes": c.get("notes"),
-            "tags": c.get("tags", []),
-            "last_message": c.get("last_message"),
-            "last_contacted": c.get("last_contacted"),
-            "days_since_contact": days_since_contact,
-            "has_pending_followup": pending_followup is not None,
-            "ai_reason": ai_reason,
-            "created_at": c["created_at"]
-        })
-    
-    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
-    
-    return result
+        from bson import json_util
+        import json
+        return json.loads(json_util.dumps(result))
+    except Exception as e:
+        import traceback
+        logging.error(f"Error in draft_message: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-async def generate_quick_reason(customer: dict, messages: list) -> str:
-    """Generate a quick follow-up reason without full AI call for performance"""
-    last_message = customer.get("last_message", "")
-    notes = customer.get("notes", "")
-    tags = customer.get("tags", [])
-    days_since = None
-    
-    if customer.get("last_contacted"):
-        days_since = (datetime.utcnow() - customer["last_contacted"]).days
-    
-    # Quick rule-based reasons first
-    if not customer.get("last_contacted"):
-        if "New" in tags:
-            return "New customer - send welcome message"
-        return "Never contacted - introduce your services"
-    
-    if days_since and days_since > 30:
-        return f"Inactive for {days_since} days - re-engage with offer"
-    
-    if "VIP" in tags and days_since and days_since > 7:
-        return f"VIP customer not contacted in {days_since} days"
-    
-    # Check last message for context
-    if last_message:
-        lower_msg = last_message.lower()
-        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
-            return "Asked about pricing - follow up on quote"
-        if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
-            return "Was considering purchase - check decision"
-        if any(word in lower_msg for word in ["thank", "thanks", "asante"]):
-            return "Previous transaction - check satisfaction"
-    
-    # Default with days
-    if days_since:
-        return f"No contact in {days_since} days - check in"
-    
-    return "Due for follow-up"
+# Duplicate function removed - using the first definition
 
 # ============ MESSAGE STORAGE ENDPOINTS ============
 
@@ -1514,17 +1677,612 @@ async def add_customer_message(customer_id: str, message: MessageCreate, user = 
     
     return {"id": message_id, "status": "success"}
 
+# ============ AI ENDPOINTS ============
+
+@api_router.get("/business-knowledge")
+async def get_business_knowledge(user = Depends(get_current_user)):
+    """Get business knowledge for AI context"""
+    knowledge = user.get('business_knowledge', {})
+    
+    return {
+        "products_services": knowledge.get('products_services', ''),
+        "pricing_info": knowledge.get('pricing_info', ''),
+        "business_hours": knowledge.get('business_hours', ''),
+        "delivery_info": knowledge.get('delivery_info', ''),
+        "faqs": knowledge.get('faqs', ''),
+        "special_offers": knowledge.get('special_offers', ''),
+        "business_description": knowledge.get('business_description', ''),
+    }
+
+@api_router.put("/business-knowledge")
+async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends(get_current_user)):
+    """Update business knowledge for AI to use in conversations"""
+    
+    update_data = {}
+    
+    if knowledge.products_services is not None:
+        update_data['business_knowledge.products_services'] = knowledge.products_services
+    
+    if knowledge.pricing_info is not None:
+        update_data['business_knowledge.pricing_info'] = knowledge.pricing_info
+    
+    if knowledge.business_hours is not None:
+        update_data['business_knowledge.business_hours'] = knowledge.business_hours
+    
+    if knowledge.delivery_info is not None:
+        update_data['business_knowledge.delivery_info'] = knowledge.delivery_info
+    
+    if knowledge.faqs is not None:
+        update_data['business_knowledge.faqs'] = knowledge.faqs
+    
+    if knowledge.special_offers is not None:
+        update_data['business_knowledge.special_offers'] = knowledge.special_offers
+    
+    if knowledge.business_description is not None:
+        update_data['business_knowledge.business_description'] = knowledge.business_description
+    
+    if update_data:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": update_data}
+        )
+    
+    return {"status": "success", "message": "Business knowledge updated"}
+
+@api_router.post("/ai/draft-message", response_model=DraftMessageResponse)
+async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
+    """Generate AI-drafted follow-up message for a customer"""
+    
+    # Get customer
+    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Get message history
+    messages = await db.messages.find({
+        "customer_id": request.customer_id
+    }).sort("timestamp", 1).limit(10).to_list(10)
+    
+    # Get business name
+    business_name = user.get('business_name', 'Your Business')
+    
+    # Get user's preferred tone or use request tone
+    user_settings = user.get('settings', {})
+    tone = user_settings.get('message_tone', request.tone)
+    
+    # Build business knowledge context
+    business_knowledge_data = user.get('business_knowledge', {})
+    business_knowledge = None
+    
+    if business_knowledge_data:
+        # Format business knowledge for AI
+        knowledge_parts = []
+        
+        if business_knowledge_data.get('business_description'):
+            knowledge_parts.append(f"About us: {business_knowledge_data['business_description']}")
+        
+        if business_knowledge_data.get('products_services'):
+            knowledge_parts.append(f"Products/Services: {business_knowledge_data['products_services']}")
+        
+        if business_knowledge_data.get('pricing_info'):
+            knowledge_parts.append(f"Pricing: {business_knowledge_data['pricing_info']}")
+        
+        if business_knowledge_data.get('business_hours'):
+            knowledge_parts.append(f"Hours: {business_knowledge_data['business_hours']}")
+        
+        if business_knowledge_data.get('delivery_info'):
+            knowledge_parts.append(f"Delivery: {business_knowledge_data['delivery_info']}")
+        
+        if business_knowledge_data.get('special_offers'):
+            knowledge_parts.append(f"Current Offers: {business_knowledge_data['special_offers']}")
+        
+        if business_knowledge_data.get('faqs'):
+            knowledge_parts.append(f"FAQs: {business_knowledge_data['faqs']}")
+        
+        if knowledge_parts:
+            business_knowledge = "\n".join(knowledge_parts)
+    
+    # Draft message using AI
+    drafter = get_drafter()
+    result = await drafter.draft_followup_message(
+        customer_name=customer['name'],
+        customer_data=customer,
+        messages=messages,
+        business_name=business_name,
+        tone=tone,
+        business_knowledge=business_knowledge
+    )
+    
+    # Support both legacy and new AI service response keys
+    msg_text = result.get('message') or result.get('drafted_message') or "Hi! Just checking in—can I help with anything?"
+    reason_text = result.get('reason') or result.get('ai_reason') or "Due for follow-up"
+    confidence_val = result.get('confidence', 0.5)
+
+    return DraftMessageResponse(
+        message=msg_text,
+        confidence=confidence_val,
+        reason=reason_text
+    )
+
+@api_router.post("/ai/send-auto-message")
+async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_current_user)):
+    """Send an auto-drafted message via WhatsApp"""
+    
+    # Check if auto-reply is enabled
+    user_settings = user.get('settings', {})
+    if not user_settings.get('auto_reply_enabled', False):
+        raise HTTPException(status_code=403, detail="Auto-reply is not enabled")
+    
+    # Get customer
+    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Store message in database
+    message_id = str(uuid.uuid4())
+    message_doc = {
+        "_id": message_id,
+        "customer_id": request.customer_id,
+        "user_id": user["_id"],
+        "direction": "outgoing",
+        "content": request.message,
+        "message_type": "text",
+        "timestamp": datetime.utcnow(),
+        "auto_sent": True
+    }
+    await db.messages.insert_one(message_doc)
+    
+    # Update customer's last contacted time
+    await db.customers.update_one(
+        {"_id": request.customer_id},
+        {"$set": {"last_contacted": datetime.utcnow()}}
+    )
+    
+    # TODO: Actually send via WhatsApp API when integrated
+    # For now, we'll just return success and the user can manually send
+    
+    return {
+        "status": "success",
+        "message_id": message_id,
+        "note": "Message logged. WhatsApp integration pending."
+    }
+
+@api_router.get("/analysis/daily-insights")
+async def get_daily_insights(background_tasks: BackgroundTasks, limit: int = 10, user = Depends(get_current_user)):
+    """Get today's customer insights from AI analysis"""
+    try:
+        analyzer = DailyCustomerAnalyzer(db)
+        
+        # Check if we have today's analysis
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        existing_analysis_count = await db.customer_analysis.count_documents({
+            "user_id": user["_id"],
+            "analysis_date": {"$gte": today}
+        })
+        
+        # If no analysis for today OR we're just starting up, queue a background run
+        # We check count > 0 to see if results are already flowing in
+        if existing_analysis_count == 0:
+            logging.info(f"Triggering background analysis for user {user['_id']}")
+            background_tasks.add_task(analyzer.analyze_all_customers, user["_id"])
+        
+        # Get whatever insights we have so far (poll correctly handles partial results)
+        insights = await analyzer.get_todays_insights(user["_id"], limit)
+        
+        from bson import json_util
+        import json
+        return json.loads(json_util.dumps(insights))
+        
+    except Exception as e:
+        import traceback
+        logging.error(f"Error in daily-insights: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/analysis/run-now")
+async def run_analysis_now(user = Depends(get_current_user)):
+    """Manually trigger customer analysis"""
+    
+    analyzer = DailyCustomerAnalyzer(db)
+    analyses = await analyzer.analyze_all_customers(user["_id"])
+    
+    return {
+        "status": "success",
+        "analyzed_count": len(analyses),
+        "high_priority": len([a for a in analyses if a['urgency_level'] == 'high'])
+    }
+
+# ============ USER SETTINGS ENDPOINTS ============
+
+@api_router.get("/settings")
+async def get_user_settings(user = Depends(get_current_user)):
+    """Get user settings"""
+    settings = user.get('settings', {})
+    
+    # Return with defaults
+    return {
+        "auto_reply_enabled": settings.get('auto_reply_enabled', False),
+        "notification_enabled": settings.get('notification_enabled', True),
+        "notification_time": settings.get('notification_time', '08:00'),
+        "daily_alert_count": settings.get('daily_alert_count', 5),
+        "message_tone": settings.get('message_tone', 'friendly'),
+        "push_token": user.get('push_token')
+    }
+
+@api_router.put("/settings")
+async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_current_user)):
+    """Update user settings"""
+    
+    update_data = {}
+    
+    if settings.auto_reply_enabled is not None:
+        update_data['settings.auto_reply_enabled'] = settings.auto_reply_enabled
+    
+    if settings.notification_enabled is not None:
+        update_data['settings.notification_enabled'] = settings.notification_enabled
+    
+    if settings.notification_time is not None:
+        update_data['settings.notification_time'] = settings.notification_time
+    
+    if settings.daily_alert_count is not None:
+        update_data['settings.daily_alert_count'] = settings.daily_alert_count
+    
+    if settings.message_tone is not None:
+        update_data['settings.message_tone'] = settings.message_tone
+    
+    if settings.push_token is not None:
+        update_data['push_token'] = settings.push_token
+    
+    if update_data:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": update_data}
+        )
+    
+    return {"status": "success", "message": "Settings updated"}
+
+@api_router.post("/notifications/register-token")
+async def register_push_token(token: dict, user = Depends(get_current_user)):
+    """Register Expo push token for notifications"""
+    
+    push_token = token.get('push_token')
+    if not push_token:
+        raise HTTPException(status_code=400, detail="push_token required")
+    
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"push_token": push_token}}
+    )
+    
+    return {"status": "success", "message": "Push token registered"}
+
+@api_router.post("/notifications/send-test")
+async def send_test_notification(user = Depends(get_current_user)):
+    """Send a test notification to verify setup"""
+    
+    push_token = user.get('push_token')
+    if not push_token:
+        raise HTTPException(status_code=400, detail="No push token registered")
+    
+    notification_service = get_notification_service()
+    success = await notification_service.send_notification(
+        push_token=push_token,
+        title="🎉 CRM Notifications Active!",
+        body="You'll receive daily follow-up reminders here",
+        data={"type": "test"}
+    )
+    
+    if success:
+        return {"status": "success", "message": "Test notification sent"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to send notification")
+
+@api_router.post("/notifications/send-daily-now")
+async def send_daily_notifications_now(user = Depends(get_current_user)):
+    """Manually trigger daily notifications (for testing)"""
+    
+    from daily_scheduler import get_scheduler
+    
+    try:
+        scheduler = await get_scheduler(db)
+        sent_count = await scheduler.send_daily_notifications()
+        
+        return {
+            "status": "success",
+            "message": f"Daily notifications sent to {sent_count} users",
+            "sent_count": sent_count
+        }
+    except Exception as e:
+        logging.error(f"Failed to send daily notifications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ PRODUCT CATALOG ENDPOINTS ============
+
+@api_router.post("/products/upload")
+async def upload_products(
+    files: List[UploadFile] = File(...),
+    user = Depends(get_current_user)
+):
+    """Bulk upload product images with AI analysis"""
+    
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    # Save images
+    upload_handler = ImageUploadHandler()
+    saved_images = await upload_handler.save_multiple_images(files)
+    
+    # Filter successful uploads
+    successful_uploads = [img for img in saved_images if 'error' not in img]
+    
+    if not successful_uploads:
+        raise HTTPException(status_code=400, detail="No images could be saved")
+    
+    # Analyze images with AI
+    organizer = get_organizer()
+    image_paths = [
+        upload_handler.get_image_path(img['filename']) 
+        for img in successful_uploads
+    ]
+    
+    ai_analyses = await organizer.analyze_multiple_images([str(p) for p in image_paths])
+    
+    # Create product documents
+    products = []
+    now = datetime.utcnow()
+    
+    for i, (img_data, ai_data) in enumerate(zip(successful_uploads, ai_analyses)):
+        if 'error' in ai_data:
+            continue
+        
+        product_id = str(uuid.uuid4())
+        product_doc = {
+            "_id": product_id,
+            "user_id": user["_id"],
+            "name": ai_data.get('name', f'Product {i+1}'),
+            "price": ai_data.get('suggested_price', 0.0),
+            "image_url": img_data['image_url'],
+            "category": ai_data.get('category', 'Other'),
+            "description": ai_data.get('description', ''),
+            "in_stock": True,
+            "ai_suggested_name": ai_data.get('name'),
+            "ai_confidence": ai_data.get('confidence', 0.5),
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        await db.products.insert_one(product_doc)
+        products.append(product_doc)
+    
+    return {
+        "status": "success",
+        "uploaded_count": len(successful_uploads),
+        "products_created": len(products),
+        "products": [
+            {
+                "id": p["_id"],
+                "name": p["name"],
+                "price": p["price"],
+                "category": p["category"],
+                "image_url": p["image_url"],
+                "ai_confidence": p["ai_confidence"]
+            }
+            for p in products
+        ]
+    }
+
+@api_router.get("/products")
+async def get_products(
+    category: Optional[str] = None,
+    in_stock: Optional[bool] = None,
+    user = Depends(get_current_user)
+):
+    """Get all products for the user"""
+    
+    query = {"user_id": user["_id"]}
+    
+    if category:
+        query["category"] = category
+    
+    if in_stock is not None:
+        query["in_stock"] = in_stock
+    
+    products = await db.products.find(query).sort("created_at", -1).to_list(100)
+    
+    return [
+        {
+            "id": p["_id"],
+            "name": p["name"],
+            "price": p["price"],
+            "image_url": p["image_url"],
+            "category": p.get("category", "Other"),
+            "description": p.get("description", ""),
+            "in_stock": p.get("in_stock", True),
+            "created_at": p["created_at"].isoformat()
+        }
+        for p in products
+    ]
+
+@api_router.get("/products/{product_id}")
+async def get_product(product_id: str, user = Depends(get_current_user)):
+    """Get a single product"""
+    
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return {
+        "id": product["_id"],
+        "name": product["name"],
+        "price": product["price"],
+        "image_url": product["image_url"],
+        "category": product.get("category", "Other"),
+        "description": product.get("description", ""),
+        "in_stock": product.get("in_stock", True),
+        "ai_suggested_name": product.get("ai_suggested_name"),
+        "ai_confidence": product.get("ai_confidence"),
+        "created_at": product["created_at"].isoformat()
+    }
+
+@api_router.put("/products/{product_id}")
+async def update_product(
+    product_id: str,
+    product_update: ProductUpdate,
+    user = Depends(get_current_user)
+):
+    """Update product details"""
+    
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    update_data = {"updated_at": datetime.utcnow()}
+    
+    if product_update.name is not None:
+        update_data["name"] = product_update.name
+    
+    if product_update.price is not None:
+        update_data["price"] = product_update.price
+    
+    if product_update.category is not None:
+        update_data["category"] = product_update.category
+    
+    if product_update.description is not None:
+        update_data["description"] = product_update.description
+    
+    if product_update.in_stock is not None:
+        update_data["in_stock"] = product_update.in_stock
+    
+    await db.products.update_one(
+        {"_id": product_id},
+        {"$set": update_data}
+    )
+    
+    return {"status": "success", "message": "Product updated"}
+
+@api_router.delete("/products/{product_id}")
+async def delete_product(product_id: str, user = Depends(get_current_user)):
+    """Delete a product"""
+    
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Delete image file
+    if product.get("image_url"):
+        filename = product["image_url"].split("/")[-1]
+        ImageUploadHandler.delete_image(filename)
+    
+    # Delete from database
+    await db.products.delete_one({"_id": product_id})
+    
+    return {"status": "success", "message": "Product deleted"}
+
+@api_router.post("/products/{product_id}/send")
+async def send_product_to_customer(
+    product_id: str,
+    customer_id: str,
+    user = Depends(get_current_user)
+):
+    """Send product image to customer via WhatsApp"""
+    
+    # Get product
+    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Get customer
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # TODO: Send via WhatsApp API when integrated
+    # For now, just log the message
+    message_id = str(uuid.uuid4())
+    message_doc = {
+        "_id": message_id,
+        "customer_id": customer_id,
+        "user_id": user["_id"],
+        "direction": "outgoing",
+        "content": f"{product['name']} - KES {product['price']:,.0f}",
+        "message_type": "image",
+        "image_url": product["image_url"],
+        "timestamp": datetime.utcnow()
+    }
+    
+    await db.messages.insert_one(message_doc)
+    
+    return {
+        "status": "success",
+        "message_id": message_id,
+        "note": "Product logged. WhatsApp integration pending."
+    }
+
 # ============ MAIN APP SETUP ============
 
 app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Serve static files (product images)
+app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
+
+# Startup event - recalculate customer totals
+async def startup_tasks():
+    """Run startup tasks"""
+    # Recalculate customer totals from sales (Self-Healing)
+    try:
+        logging.info("Starting customer totals recalculation...")
+        
+        # 1. Reset all totals to 0 first (safety)
+        await db.customers.update_many(
+            {}, 
+            {"$set": {"total_spent": 0.0, "purchase_count": 0}}
+        )
+        
+        # 2. Aggregate sales data directly from database
+        pipeline = [
+            {
+                "$group": {
+                    "_id": "$customer_id",
+                    "total_spent": {"$sum": "$amount"},
+                    "count": {"$sum": 1},
+                    "last_sale_date": {"$max": "$created_at"}
+                }
+            }
+        ]
+        
+        sales_stats = await db.sales.aggregate(pipeline).to_list(None)
+        
+        # 3. Update each customer with their real totals
+        updates = 0
+        for stat in sales_stats:
+            if stat["_id"]:
+                await db.customers.update_one(
+                    {"_id": stat["_id"]},
+                    {
+                        "$set": {
+                            "total_spent": stat["total_spent"], 
+                            "purchase_count": stat["count"],
+                            "last_contacted": stat["last_sale_date"]
+                        }
+                    }
+                )
+                updates += 1
+                
+        logging.info(f"Recalculated totals for {updates} customers")
+        
+    except Exception as e:
+        logging.error(f"Failed to recalculate totals: {e}")
+    
+    # Start daily notification scheduler
+    try:
+        logging.info("Starting timezone-aware notification scheduler...")
+        # Scheduler runs every hour and checks each user's local timezone
+        await start_daily_scheduler(db)
+        logging.info("Scheduler started - notifications sent based on user timezone")
+    except Exception as e:
+        logging.error(f"Failed to start scheduler: {e}")
 
 logging.basicConfig(
     level=logging.INFO,

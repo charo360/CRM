@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 
 export default function VerifyScreen() {
   const { phone, devOtp } = useLocalSearchParams<{ phone: string; devOtp: string }>();
@@ -104,7 +104,7 @@ export default function VerifyScreen() {
             </View>
             <Text style={styles.otpBoxCode}>{devOtp}</Text>
             <Text style={styles.otpBoxHint}>Use this code to verify (SMS not sent)</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.autoFillButton}
               onPress={() => {
                 const digits = devOtp.split('');
@@ -122,7 +122,7 @@ export default function VerifyScreen() {
           {code.map((digit, index) => (
             <TextInput
               key={index}
-              ref={(ref) => (inputRefs.current[index] = ref!)}
+              ref={(ref) => { if (ref) inputRefs.current[index] = ref; }}
               style={[
                 styles.codeInput,
                 digit && styles.codeInputFilled,

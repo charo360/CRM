@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { apiClient } from '../context/api';
+import { apiClient } from '../../context/api';
 
 interface Customer {
   id: string;
@@ -206,8 +206,8 @@ export default function BroadcastScreen() {
       </Text>
       <View style={styles.filterBadge}>
         <Text style={styles.filterBadgeText}>
-          {item.filter_type === 'all' ? 'All Customers' : 
-           item.filter_type === 'returning' ? 'Returning' : 'VIP'}
+          {item.filter_type === 'all' ? 'All Customers' :
+            item.filter_type === 'returning' ? 'Returning' : 'VIP'}
         </Text>
       </View>
     </View>
@@ -261,8 +261,8 @@ export default function BroadcastScreen() {
       />
 
       {/* WhatsApp-style Floating Action Button */}
-      <TouchableOpacity 
-        style={styles.fab} 
+      <TouchableOpacity
+        style={styles.fab}
         onPress={() => setModalVisible(true)}
         activeOpacity={0.8}
       >
