@@ -7,6 +7,7 @@ import {
     StyleSheet,
     Animated,
     TouchableWithoutFeedback,
+    Switch,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -15,15 +16,20 @@ interface MenuItem {
     label: string;
     onPress: () => void;
     color?: string;
+    type?: 'button' | 'toggle';
+    value?: boolean;
 }
 
 interface ThreeDotMenuProps {
     items: MenuItem[];
+    color?: string;
 }
 
-export default function ThreeDotMenu({ items }: ThreeDotMenuProps) {
+export default function ThreeDotMenu({ items, color = '#333' }: ThreeDotMenuProps) {
     const [visible, setVisible] = useState(false);
     const fadeAnim = useRef(new Animated.Value(0)).current;
+
+    // ... (keep openMenu and closeMenu same)
 
     const openMenu = () => {
         setVisible(true);
@@ -42,16 +48,20 @@ export default function ThreeDotMenu({ items }: ThreeDotMenuProps) {
         }).start(() => setVisible(false));
     };
 
-    const handleItemPress = (onPress: () => void) => {
+    const handleItemPress = (item: MenuItem) => {
+        if (item.type === 'toggle') {
+            item.onPress();
+            // Don't close menu for toggles
+            return;
+        }
         closeMenu();
-        // Small delay to let menu close animation finish
-        setTimeout(onPress, 200);
+        setTimeout(item.onPress, 200);
     };
 
     return (
         <>
             <TouchableOpacity onPress={openMenu} style={styles.menuButton}>
-                <Ionicons name="ellipsis-vertical" size={24} color="#333" />
+                <Ionicons name="ellipsis-vertical" size={24} color={color} />
             </TouchableOpacity>
 
             <Modal
@@ -86,22 +96,34 @@ export default function ThreeDotMenu({ items }: ThreeDotMenuProps) {
                                             styles.menuItem,
                                             index === items.length - 1 && styles.lastMenuItem,
                                         ]}
-                                        onPress={() => handleItemPress(item.onPress)}
+                                        onPress={() => handleItemPress(item)}
+                                        activeOpacity={item.type === 'toggle' ? 1 : 0.7}
                                     >
-                                        <Ionicons
-                                            name={item.icon as any}
-                                            size={20}
-                                            color={item.color || '#333'}
-                                            style={styles.menuIcon}
-                                        />
-                                        <Text
-                                            style={[
-                                                styles.menuText,
-                                                item.color && { color: item.color },
-                                            ]}
-                                        >
-                                            {item.label}
-                                        </Text>
+                                        <View style={styles.menuItemContent}>
+                                            <Ionicons
+                                                name={item.icon as any}
+                                                size={20}
+                                                color={item.color || '#333'}
+                                                style={styles.menuIcon}
+                                            />
+                                            <Text
+                                                style={[
+                                                    styles.menuText,
+                                                    item.color && { color: item.color },
+                                                ]}
+                                            >
+                                                {item.label}
+                                            </Text>
+                                        </View>
+                                        {item.type === 'toggle' && (
+                                            <Switch
+                                                value={item.value}
+                                                onValueChange={item.onPress}
+                                                trackColor={{ false: '#767577', true: '#25D366' }}
+                                                thumbColor={item.value ? '#FFFFFF' : '#f4f3f4'}
+                                                style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
+                                            />
+                                        )}
                                     </TouchableOpacity>
                                 ))}
                             </Animated.View>
@@ -114,6 +136,7 @@ export default function ThreeDotMenu({ items }: ThreeDotMenuProps) {
 }
 
 const styles = StyleSheet.create({
+    // ... (keep existing styles)
     menuButton: {
         padding: 8,
     },
@@ -128,7 +151,7 @@ const styles = StyleSheet.create({
     menuContainer: {
         backgroundColor: '#FFFFFF',
         borderRadius: 12,
-        minWidth: 220,
+        minWidth: 260, // Increased width for toggles
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.15,
@@ -138,10 +161,15 @@ const styles = StyleSheet.create({
     menuItem: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 14,
+        justifyContent: 'space-between', // Changed for toggles
+        paddingVertical: 12,
         paddingHorizontal: 16,
         borderBottomWidth: 1,
         borderBottomColor: '#F0F0F0',
+    },
+    menuItemContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
     },
     lastMenuItem: {
         borderBottomWidth: 0,

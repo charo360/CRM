@@ -1,31 +1,37 @@
 """
 AI Product Organizer
-Uses Gemini Vision API to analyze product images and suggest names/categories
+Uses OpenAI Vision API to analyze product images and suggest names/categories
 """
-import google.generativeai as genai
+from openai import OpenAI
 import os
 from typing import Dict, List
 import logging
 from PIL import Image
 import io
+import base64
 
 logger = logging.getLogger(__name__)
 
 
 class ProductOrganizer:
-    """AI-powered product organization using Gemini Vision"""
+    """AI-powered product organization using OpenAI Vision"""
     
     def __init__(self, api_key: str = None):
-        """Initialize with Gemini API key"""
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY')
+        """Initialize with OpenAI API key"""
+        self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         
-        if self.api_key and self.api_key != 'your_gemini_api_key_here':
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
-            self.vision_available = True
+        if self.api_key and self.api_key != 'your_openai_api_key_here':
+            try:
+                self.client = OpenAI(api_key=self.api_key)
+                self.model_name = 'gpt-4o-mini'
+                self.vision_available = True
+                logger.info("OpenAI client initialized for product organization")
+            except Exception as e:
+                logger.error(f"Failed to configure OpenAI client: {e}")
+                self.vision_available = False
         else:
             self.vision_available = False
-            logger.warning("Gemini API key not configured - using fallback mode")
+            logger.warning("OpenAI API key not configured - using fallback mode")
     
     async def analyze_product_image(self, image_path: str) -> Dict[str, any]:
         """
@@ -44,7 +50,12 @@ class ProductOrganizer:
             # Load image
             img = Image.open(image_path)
             
-            # Create prompt for Gemini
+            # Convert image to base64 for OpenAI Vision API
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            
+            # Create prompt for OpenAI Vision
             prompt = """Analyze this product image and provide the following information in a structured format:
 
 1. Product Name: What is this product? Be specific (brand, model if visible)
@@ -60,11 +71,28 @@ DESCRIPTION: [description]
 PRICE: [price or "Not visible"]
 CONFIDENCE: [High/Medium/Low]"""
 
-            # Generate response
-            response = self.model.generate_content([prompt, img])
+            # Generate response using OpenAI Vision API
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=500
+            )
             
             # Parse response
-            result = self._parse_gemini_response(response.text)
+            result = self._parse_openai_response(response.choices[0].message.content)
             
             logger.info(f"AI analysis complete: {result.get('name', 'Unknown')}")
             
@@ -74,8 +102,8 @@ CONFIDENCE: [High/Medium/Low]"""
             logger.error(f"Error analyzing image with AI: {e}")
             return self._fallback_analysis(image_path)
     
-    def _parse_gemini_response(self, response_text: str) -> Dict[str, any]:
-        """Parse Gemini's structured response"""
+    def _parse_openai_response(self, response_text: str) -> Dict[str, any]:
+        """Parse OpenAI's structured response"""
         result = {
             "name": "Product",
             "category": "Other",
@@ -118,7 +146,7 @@ CONFIDENCE: [High/Medium/Low]"""
                         result['confidence'] = 0.5
             
         except Exception as e:
-            logger.error(f"Error parsing Gemini response: {e}")
+            logger.error(f"Error parsing OpenAI response: {e}")
         
         return result
     

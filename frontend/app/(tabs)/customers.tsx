@@ -480,10 +480,6 @@ export default function CustomersScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Customers</Text>
-        <Text style={styles.headerCount}>{customers.length} contacts</Text>
-      </View>
 
       <View style={styles.searchContainer}>
         <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />

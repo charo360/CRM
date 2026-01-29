@@ -16,9 +16,6 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, settingsAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
-import ThreeDotMenu from '../../components/ThreeDotMenu';
-import ProductCatalogModal from '../../components/ProductCatalogModal';
-import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 
 interface SubscriptionPlan {
   id: string;
@@ -50,11 +47,6 @@ export default function AccountScreen() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [subscribing, setSubscribing] = useState(false);
-
-  // Product catalog state
-  const [showCatalog, setShowCatalog] = useState(false);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [uploading, setUploading] = useState(false);
 
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
@@ -148,9 +140,6 @@ export default function AccountScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Account</Text>
-        </View>
 
         {/* Business Info */}
         <View style={styles.section}>
@@ -179,33 +168,35 @@ export default function AccountScreen() {
         </View>
 
         {/* Stats */}
-        {stats && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>This Month</Text>
-            <View style={styles.statsGrid}>
-              <View style={styles.statCard}>
-                <Ionicons name="people" size={24} color="#25D366" />
-                <Text style={styles.statValue}>{stats.customers_count}</Text>
-                <Text style={styles.statLabel}>Customers</Text>
-              </View>
-              <View style={styles.statCard}>
-                <Ionicons name="notifications" size={24} color="#FFD700" />
-                <Text style={styles.statValue}>{stats.pending_followups}</Text>
-                <Text style={styles.statLabel}>Follow-ups</Text>
-              </View>
-              <View style={styles.statCard}>
-                <Ionicons name="receipt" size={24} color="#4A90D9" />
-                <Text style={styles.statValue}>{stats.sales_this_month}</Text>
-                <Text style={styles.statLabel}>Sales</Text>
-              </View>
-              <View style={styles.statCard}>
-                <Ionicons name="cash" size={24} color="#25D366" />
-                <Text style={styles.statValue}>KES {stats.revenue_this_month.toLocaleString()}</Text>
-                <Text style={styles.statLabel}>Revenue</Text>
+        {
+          stats && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>This Month</Text>
+              <View style={styles.statsGrid}>
+                <View style={styles.statCard}>
+                  <Ionicons name="people" size={24} color="#25D366" />
+                  <Text style={styles.statValue}>{stats.customers_count}</Text>
+                  <Text style={styles.statLabel}>Customers</Text>
+                </View>
+                <View style={styles.statCard}>
+                  <Ionicons name="notifications" size={24} color="#FFD700" />
+                  <Text style={styles.statValue}>{stats.pending_followups}</Text>
+                  <Text style={styles.statLabel}>Follow-ups</Text>
+                </View>
+                <View style={styles.statCard}>
+                  <Ionicons name="receipt" size={24} color="#4A90D9" />
+                  <Text style={styles.statValue}>{stats.sales_this_month}</Text>
+                  <Text style={styles.statLabel}>Sales</Text>
+                </View>
+                <View style={styles.statCard}>
+                  <Ionicons name="cash" size={24} color="#25D366" />
+                  <Text style={styles.statValue}>KES {stats.revenue_this_month.toLocaleString()}</Text>
+                  <Text style={styles.statLabel}>Revenue</Text>
+                </View>
               </View>
             </View>
-          </View>
-        )}
+          )
+        }
 
         {/* Subscription Plans */}
         <View style={styles.section}>
@@ -253,20 +244,43 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Settings</Text>
           <View style={styles.settingsCard}>
+            <TouchableOpacity 
+              style={styles.settingItem}
+              onPress={() => router.push('../analytics' as any)}
+            >
+              <Ionicons name="analytics-outline" size={24} color="#25D366" />
+              <Text style={styles.settingText}>Follow-up Analytics</Text>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.settingItem}>
+              <Ionicons name="cube-outline" size={24} color="#666" />
+              <Text style={styles.settingText}>Product Catalog</Text>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.settingItem}>
+              <Ionicons name="book-outline" size={24} color="#666" />
+              <Text style={styles.settingText}>Business Knowledge</Text>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.settingItem}>
+              <Ionicons name="chatbubble-outline" size={24} color="#666" />
+              <Text style={styles.settingText}>Auto Reply</Text>
+              <Switch
+                value={false}
+                onValueChange={() => {}}
+                trackColor={{ false: '#3e3e3e', true: '#25D366' }}
+                thumbColor="#f4f3f4"
+              />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="notifications-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Notifications</Text>
-              <Ionicons name="chevron-forward" size={20} color="#666" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.settingItem}>
-              <Ionicons name="help-circle-outline" size={24} color="#666" />
-              <Text style={styles.settingText}>Help & Support</Text>
-              <Ionicons name="chevron-forward" size={20} color="#666" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.settingItem}>
-              <Ionicons name="document-text-outline" size={24} color="#666" />
-              <Text style={styles.settingText}>Terms & Privacy</Text>
-              <Ionicons name="chevron-forward" size={20} color="#666" />
+              <Switch
+                value={true}
+                onValueChange={() => {}}
+                trackColor={{ false: '#3e3e3e', true: '#25D366' }}
+                thumbColor="#f4f3f4"
+              />
             </TouchableOpacity>
           </View>
         </View>
@@ -278,7 +292,9 @@ export default function AccountScreen() {
         </TouchableOpacity>
 
         <Text style={styles.version}>Version 1.0.0</Text>
-      </ScrollView>
+      </ScrollView >
+
+      {/* Modals */}
     </SafeAreaView>
   );
 }

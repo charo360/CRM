@@ -1,9 +1,35 @@
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load env before ANY other imports
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env', override=True)
+
+# Validate environment on startup
+def validate_startup_env():
+    """Quick validation to catch common issues"""
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key or api_key == 'your_openai_api_key_here':
+        print("\n" + "="*60)
+        print("❌ ERROR: OPENAI_API_KEY not configured in .env file")
+        print("="*60 + "\n")
+        sys.exit(1)
+    elif not api_key.startswith('sk-'):
+        print("\n" + "="*60)
+        print(f"⚠️  WARNING: OPENAI_API_KEY has unexpected format")
+        print(f"   Key starts with: {api_key[:10]}")
+        print("="*60 + "\n")
+    else:
+        print(f"✓ OpenAI API Key loaded (ends with: ...{api_key[-10:]})")
+
+validate_startup_env()
+
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -17,19 +43,23 @@ import hashlib
 import json
 from twilio.rest import Client as TwilioClient
 # from emergentintegrations.llm.chat import LlmChat, UserMessage
-from ai_message_drafter import get_drafter
+from ai_service import get_drafter, AIMessageDrafter
 from daily_analyzer import DailyCustomerAnalyzer
 from notification_service import get_notification_service
 from image_handler import ImageUploadHandler
 from product_organizer import get_organizer
+from wow_enhancements import get_wow_generator
+from whatsapp_service import get_whatsapp_service
+from followup_analytics import get_analytics
+from smart_notifications import get_smart_notifications
 from fastapi import UploadFile, File
 from fastapi.staticfiles import StaticFiles
+from daily_scheduler import start_daily_scheduler
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
-# Gemini API Key
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+
+# OpenAI API Key
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -311,9 +341,60 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 # Store OTPs temporarily (in production, use Redis)
 otp_store = {}
 
-def generate_otp() -> str:
+def generate_otp():
     import random
     return str(random.randint(100000, 999999))
+
+def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
+    """Generate a simple follow-up reason without AI calls for performance"""
+    tags = customer.get("tags", [])
+    last_message = customer.get("last_message", "")
+    created_at = customer.get("created_at")
+    
+    # Calculate days since customer was added
+    days_since_added = None
+    if created_at:
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        days_since_added = (datetime.utcnow() - created_at).days
+    
+    # Quick rule-based reasons
+    if not customer.get("last_contacted"):
+        # Recently added contact (within 7 days) - reminder to reach out
+        if days_since_added is not None and days_since_added <= 7:
+            if days_since_added == 0:
+                return "Added today - reach out and introduce yourself"
+            elif days_since_added == 1:
+                return "Added yesterday - time to make first contact"
+            else:
+                return f"Added {days_since_added} days ago - haven't contacted yet"
+        
+        # Older contacts
+        if "New" in tags:
+            return "New customer - send welcome message"
+        return "Never contacted - introduce your services"
+    
+    if days_since_contact and days_since_contact > 30:
+        return f"Inactive for {days_since_contact} days - re-engage with offer"
+    
+    if "VIP" in tags and days_since_contact and days_since_contact > 7:
+        return f"VIP customer not contacted in {days_since_contact} days"
+    
+    # Check last message for context
+    if last_message:
+        lower_msg = last_message.lower()
+        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
+            return "Asked about pricing - follow up on quote"
+        if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
+            return "Was considering purchase - check decision"
+        if any(word in lower_msg for word in ["thank", "thanks", "asante"]):
+            return "Previous transaction - check satisfaction"
+    
+    # Default with days
+    if days_since_contact:
+        return f"No contact in {days_since_contact} days - check in"
+    
+    return "Due for follow-up"
 
 async def generate_quick_reason(customer: dict, messages: list) -> str:
     """Generate a quick follow-up reason without full AI call for performance"""
@@ -561,20 +642,63 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
         ]
     }).sort("last_contacted", 1).to_list(100)
     
+    # Get today's analysis date
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Try to get Smart Insights first (AI Daily Analysis)
+    # This respects the "Smart Tiers" (limit 10/20/30) and "Smart Cadence" (24h/3d)
+    smart_insights = await db.customer_analysis.find({
+        "user_id": user["_id"],
+        "analysis_date": {"$gte": today}
+    }).sort("urgency_score", -1).to_list(100)
+    
     result = []
-    for c in customers:
-        pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
-        days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
-        ai_reason = await generate_quick_reason(c, [])
-        result.append({
-            "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
-            "notes": c.get("notes"), "tags": c.get("tags", []),
-            "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
-            "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
-            "ai_reason": ai_reason, "created_at": c["created_at"]
-        })
-    result.sort(key=lambda x: x["days_since_contact"] if x["days_since_contact"] else 999, reverse=True)
-    return result
+    
+    # If we have smart insights, use them as the primary source for "Needs Attention"
+    if smart_insights:
+        for analysis in smart_insights:
+            c = await db.customers.find_one({"_id": analysis["customer_id"]})
+            if not c: continue
+            
+            result.append({
+                "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+                "notes": c.get("notes"), "tags": c.get("tags", []),
+                "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
+                "days_since_contact": analysis.get("days_since_contact"), 
+                "has_pending_followup": analysis.get("has_pending_followup", False),
+                "ai_reason": analysis.get("ai_reason") if analysis.get("ai_reason") else "Smart Follow-up",
+                "urgency_score": analysis.get("urgency_score", 0),
+                "created_at": c["created_at"]
+            })
+    else:
+        # Fallback to legacy "Cold" logic if AI hasn't run yet
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        customers = await db.customers.find({
+            "user_id": user["_id"],
+            "$or": [
+                {"last_contacted": {"$lt": cutoff_date}},
+                {"last_contacted": None}
+            ]
+        }).sort("last_contacted", 1).to_list(100)
+        
+        for c in customers:
+            pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
+            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
+            
+            # Use simple rule-based reason to avoid timeout
+            ai_reason = generate_simple_reason(c, days_since_contact)
+                
+            result.append({
+                "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+                "notes": c.get("notes"), "tags": c.get("tags", []),
+                "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
+                "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
+                "ai_reason": ai_reason, "created_at": c["created_at"]
+            })
+            
+    # Sort by urgency/days and limit to top 30 most urgent
+    result.sort(key=lambda x: x.get("urgency_score", 0) if "urgency_score" in x else (x["days_since_contact"] if x["days_since_contact"] else 999), reverse=True)
+    return result[:30]  # Only return top 30 most urgent customers
 
 @api_router.get("/customers/cold-with-reasons")
 async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
@@ -731,6 +855,90 @@ async def delete_followup(followup_id: str, user = Depends(get_current_user)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Follow-up not found")
     return {"status": "success", "message": "Follow-up deleted"}
+
+@api_router.post("/followups/{followup_id}/snooze")
+async def snooze_followup(followup_id: str, days: int = 1, user = Depends(get_current_user)):
+    """
+    Snooze a follow-up by X days
+    Common options: 1 day, 3 days, 7 days
+    """
+    followup = await db.followups.find_one({"_id": followup_id, "user_id": user["_id"]})
+    if not followup:
+        raise HTTPException(status_code=404, detail="Follow-up not found")
+    
+    # Calculate new date
+    current_date = followup.get("reminder_date", datetime.utcnow())
+    new_date = current_date + timedelta(days=days)
+    
+    # Update follow-up
+    await db.followups.update_one(
+        {"_id": followup_id},
+        {"$set": {"reminder_date": new_date}}
+    )
+    
+    return {
+        "status": "success",
+        "message": f"Follow-up snoozed for {days} day(s)",
+        "new_date": new_date
+    }
+
+@api_router.get("/followups/analytics")
+async def get_followup_analytics(days: int = 30, user = Depends(get_current_user)):
+    """
+    Get follow-up success metrics for analytics dashboard
+    Automatically tracks: conversions, responses, timing
+    """
+    analytics = get_analytics(db)
+    stats = await analytics.get_followup_stats(user["_id"], days)
+    best_times = await analytics.get_best_followup_times(user["_id"])
+    
+    return {
+        "stats": stats,
+        "best_times": best_times
+    }
+
+@api_router.get("/analytics/summary")
+async def get_analytics_summary(user = Depends(get_current_user)):
+    """
+    Get quick analytics summary for menu/dashboard
+    Shows key metrics at a glance
+    """
+    analytics = get_analytics(db)
+    stats_30d = await analytics.get_followup_stats(user["_id"], days=30)
+    stats_7d = await analytics.get_followup_stats(user["_id"], days=7)
+    
+    # Get smart notification insight
+    smart_notif = get_smart_notifications(db)
+    insight = await smart_notif.get_meaningful_insights(user["_id"])
+    
+    return {
+        "last_30_days": {
+            "conversion_rate": round(stats_30d["conversion_rate"], 1),
+            "response_rate": round(stats_30d["response_rate"], 1),
+            "total_revenue": stats_30d["total_revenue"],
+            "followups": stats_30d["total_followups"]
+        },
+        "last_7_days": {
+            "conversion_rate": round(stats_7d["conversion_rate"], 1),
+            "followups": stats_7d["total_followups"],
+            "revenue": stats_7d["total_revenue"]
+        },
+        "insight": insight  # Current meaningful insight
+    }
+
+@api_router.post("/notifications/test-smart")
+async def test_smart_notification(user = Depends(get_current_user)):
+    """
+    Test smart notification system
+    Sends notification only if there's something meaningful
+    """
+    smart_notif = get_smart_notifications(db)
+    sent = await smart_notif.send_smart_notification(user["_id"])
+    
+    if sent:
+        return {"status": "sent", "message": "Smart notification sent"}
+    else:
+        return {"status": "skipped", "message": "No meaningful insight or too frequent"}
 
 # ============ SALES/RECEIPT ENDPOINTS ============
 
@@ -1088,6 +1296,27 @@ async def paystack_webhook(request: Request, background_tasks: BackgroundTasks):
     
     return {"status": "ok"}
 
+# ============ WHATSAPP MESSAGING ENDPOINTS ============
+
+@api_router.post("/messages/send")
+async def send_whatsapp_message(to_number: str, message: str, customer_name: Optional[str] = None, user = Depends(get_current_user)):
+    """
+    Send WhatsApp message to a customer
+    Auto-creates contact if number doesn't exist
+    """
+    try:
+        whatsapp_service = get_whatsapp_service(db)
+        result = await whatsapp_service.send_message(
+            user_id=user["_id"],
+            to_number=to_number,
+            message=message,
+            customer_name=customer_name
+        )
+        return result
+    except Exception as e:
+        logging.error(f"Error sending message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============ WHATSAPP WEBHOOK ENDPOINTS ============
 
 @api_router.post("/webhooks/whatsapp")
@@ -1128,19 +1357,20 @@ async def whatsapp_webhook(request: Request):
         
         if customer:
             customer_id = customer["_id"]
-            # Update existing customer with last message
+            # Update existing customer with last message and contact time
             await db.customers.update_one(
                 {"_id": customer["_id"]},
                 {
                     "$set": {
                         "last_message": body[:200] if body else None,
-                        "last_contacted": datetime.utcnow()
+                        "last_contacted": datetime.utcnow(),
+                        "auto_created": customer.get("auto_created", True)  # Preserve auto_created flag
                     }
                 }
             )
-            logging.info(f"Updated customer {customer['name']} with new message")
+            logging.info(f"Updated customer {customer['name']} with incoming message")
         else:
-            # Auto-create new customer
+            # Auto-create new customer from WhatsApp
             customer_id = str(uuid.uuid4())
             customer_name = profile_name if profile_name else f"Customer {from_number[-4:]}"
             
@@ -1149,14 +1379,15 @@ async def whatsapp_webhook(request: Request):
                 "user_id": user["_id"],
                 "name": customer_name,
                 "phone_number": from_number,
-                "notes": f"Auto-added from WhatsApp chat",
+                "notes": f"Customer reached out via WhatsApp",
                 "tags": ["New"],
                 "last_message": body[:200] if body else None,
                 "last_contacted": datetime.utcnow(),
                 "created_at": datetime.utcnow(),
-                "auto_created": True
+                "auto_created": True,  # Flag for smart prioritization
+                "customer_initiated": True  # They messaged us first
             })
-            logging.info(f"Auto-created customer: {customer_name} ({from_number})")
+            logging.info(f"Auto-created customer from WhatsApp: {customer_name} ({from_number})")
         
         # Store the message for AI analysis
         if customer_id and body:
@@ -1186,36 +1417,56 @@ async def whatsapp_webhook(request: Request):
 async def get_followup_suggestions(user = Depends(get_current_user)):
     """
     Get smart follow-up suggestions based on customer activity
+    Only counts customers who don't already have pending follow-ups
     """
     now = datetime.utcnow()
     
-    # Customers not contacted in 7+ days
-    week_ago = now - timedelta(days=7)
+    # Get all customers with pending follow-ups
+    pending_followups = await db.followups.find({
+        "user_id": user["_id"],
+        "status": "pending"
+    }).to_list(None)
+    
+    customer_ids_with_followups = {f["customer_id"] for f in pending_followups}
+    
+    # Customers not contacted in 14+ days (without pending follow-ups)
+    # This is more realistic - 14 days is when attention is truly needed
+    two_weeks_ago = now - timedelta(days=14)
     neglected_week = await db.customers.count_documents({
         "user_id": user["_id"],
-        "last_contacted": {"$lt": week_ago}
+        "_id": {"$nin": list(customer_ids_with_followups)},
+        "$or": [
+            {"last_contacted": {"$lt": two_weeks_ago}},
+            {"last_contacted": None}
+        ]
     })
     
-    # Customers not contacted in 30+ days
+    # Customers not contacted in 30+ days (without pending follow-ups)
     month_ago = now - timedelta(days=30)
     neglected_month = await db.customers.count_documents({
         "user_id": user["_id"],
+        "_id": {"$nin": list(customer_ids_with_followups)},
         "last_contacted": {"$lt": month_ago}
     })
     
-    # New customers (never followed up)
+    # New customers (never followed up and no pending follow-ups)
     new_no_followup = await db.customers.count_documents({
         "user_id": user["_id"],
+        "_id": {"$nin": list(customer_ids_with_followups)},
         "tags": "New",
         "last_contacted": None
     })
     
-    # VIP customers not contacted in 14+ days
-    two_weeks_ago = now - timedelta(days=14)
+    # VIP customers not contacted in 7+ days (VIPs need more frequent attention)
+    week_ago = now - timedelta(days=7)
     vip_neglected = await db.customers.count_documents({
         "user_id": user["_id"],
+        "_id": {"$nin": list(customer_ids_with_followups)},
         "tags": "VIP",
-        "last_contacted": {"$lt": two_weeks_ago}
+        "$or": [
+            {"last_contacted": {"$lt": week_ago}},
+            {"last_contacted": None}
+        ]
     })
     
     return {
@@ -1223,7 +1474,7 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
         "neglected_month": neglected_month,
         "new_no_followup": new_no_followup,
         "vip_neglected": vip_neglected,
-        "total_needing_attention": neglected_week + new_no_followup
+        "total_needing_attention": neglected_week + new_no_followup + vip_neglected
     }
 
 # ============ STATS ENDPOINTS ============
@@ -1250,135 +1501,52 @@ async def get_stats(user = Depends(get_current_user)):
         "revenue_this_month": total_sales
     }
 
+@api_router.get("/stats/wow-moments")
+async def get_wow_moments(user = Depends(get_current_user)):
+    """
+    Get daily 'wow moment' insights that show intelligent features at work
+    Returns personalized insights, predictions, and delightful statistics
+    """
+    try:
+        wow_gen = get_wow_generator(db)
+        insights = await wow_gen.get_daily_wow_insights(user["_id"])
+        return insights
+    except Exception as e:
+        logging.error(f"Error generating wow moments: {e}")
+        return {
+            "greeting": "Welcome back!",
+            "quick_wins": [],
+            "revenue_opportunity": {"message": "Loading insights..."},
+            "streak": {"message": "Keep up the great work!"},
+            "ai_saved_time": {"message": "AI is working for you"},
+            "success_prediction": {"message": "Good luck today!"},
+            "best_time_to_contact": {"message": "Contact customers when they're active"}
+        }
+
 # ============ AI-POWERED ENDPOINTS ============
 
 async def analyze_customer_with_ai(customer: dict, messages: list, user: dict) -> dict:
-    """Use Gemini AI to analyze customer conversation and generate insights"""
-    if not GEMINI_API_KEY:
-        # Fallback if no API key
-        return {
-            "summary": "Unable to analyze - AI not configured",
-            "follow_up_reason": "Customer hasn't been contacted recently",
-            "suggested_message": f"Hi {customer.get('name', 'there')}! Just checking in. How can I help you today?",
-            "interests": [],
-            "sentiment": "neutral"
-        }
-    
+    """Use OpenAI to analyze customer conversation and generate insights"""
     try:
-        # Build conversation context
-        conversation_text = ""
-        if messages:
-            for msg in messages[-20:]:  # Last 20 messages
-                direction = "Customer" if msg.get("direction") == "incoming" else "You"
-                conversation_text += f"{direction}: {msg.get('content', '')}\n"
-        
-        notes = customer.get("notes", "") or ""
-        tags = ", ".join(customer.get("tags", []))
-        last_message = customer.get("last_message", "") or ""
-        days_since = ""
-        if customer.get("last_contacted"):
-            days = (datetime.utcnow() - customer["last_contacted"]).days
-            days_since = f"{days} days ago"
-        else:
-            days_since = "Never contacted"
-        
-        business_name = user.get("business_name", "the business")
-        
-        prompt = f"""You are an AI assistant for a small business CRM in Kenya. Analyze this customer data and provide actionable insights.
-
-CUSTOMER INFO:
-- Name: {customer.get('name', 'Unknown')}
-- Phone: {customer.get('phone_number', 'Unknown')}
-- Tags: {tags}
-- Notes: {notes}
-- Last message from customer: {last_message}
-- Last contacted: {days_since}
-
-RECENT CONVERSATION:
-{conversation_text if conversation_text else "No conversation history available"}
-
-Based on this information, provide:
-1. A brief summary of this customer (1-2 sentences)
-2. A specific reason why they need follow-up now (be specific, e.g., "Asked about iPhone 15 pricing but didn't purchase" or "New customer, hasn't received welcome message")
-3. A suggested WhatsApp message to send (casual, friendly Kenyan business style, keep it short)
-4. List any products/services they showed interest in
-5. Their sentiment (positive, neutral, negative, or unknown)
-
-Respond in this exact JSON format:
-{{"summary": "...", "follow_up_reason": "...", "suggested_message": "...", "interests": ["item1", "item2"], "sentiment": "..."}}
-"""
-
-        # chat = LlmChat(
-        #     api_key=GEMINI_API_KEY,
-        #     session_id=f"analyze_{customer['_id']}",
-        #     system_message="You are a helpful CRM assistant. Always respond with valid JSON only."
-        # ).with_model("gemini", "gemini-2.5-flash")
-        
-        # response = await chat.send_message(UserMessage(text=prompt))
-        
-        # # Parse JSON response
-        # import re
-        # json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        # if json_match:
-        #     result = json.loads(json_match.group())
-        #     return result
-        # else:
-        #     raise ValueError("No JSON found in response")
-        raise Exception("LLM Disabled")
-            
+        analyzer = DailyCustomerAnalyzer(db)
+        # Use existing method
+        return await analyzer.analyze_single_customer(customer["_id"], user["_id"])
     except Exception as e:
         logging.error(f"AI analysis error: {e}")
         # Return fallback
-        days_text = ""
-        if customer.get("last_contacted"):
-            days = (datetime.utcnow() - customer["last_contacted"]).days
-            days_text = f"Last contacted {days} days ago"
-        else:
-            days_text = "Never contacted"
-            
         return {
-            "summary": f"Customer since {customer.get('created_at', datetime.utcnow()).strftime('%b %Y')}",
-            "follow_up_reason": days_text,
-            "suggested_message": f"Hi {customer.get('name', 'there')}! Hope you're doing well. Is there anything I can help you with today?",
+            "summary": "AI Analysis Unavailable",
+            "follow_up_reason": "Analysis failed",
+            "suggested_message": "Hi! Checking in.",
             "interests": [],
             "sentiment": "neutral"
         }
 
 async def generate_notes_from_messages(customer: dict, messages: list) -> str:
     """Use AI to generate notes from conversation history"""
-    if not GEMINI_API_KEY or not messages:
-        return customer.get("notes", "") or "No conversation to analyze"
-    
     try:
-        conversation_text = ""
-        for msg in messages[-30:]:
-            direction = "Customer" if msg.get("direction") == "incoming" else "Business"
-            conversation_text += f"{direction}: {msg.get('content', '')}\n"
-        
-        prompt = f"""Analyze this WhatsApp business conversation and extract key information as CRM notes.
-
-CONVERSATION:
-{conversation_text}
-
-Create brief, useful CRM notes that include:
-- What products/services the customer is interested in
-- Any specific requirements or preferences mentioned
-- Price points discussed
-- Any commitments or next steps agreed
-- Customer's tone/attitude
-
-Keep it concise (max 3-4 bullet points). Use simple language."""
-
-        # chat = LlmChat(
-        #     api_key=GEMINI_API_KEY,
-        #     session_id=f"notes_{customer['_id']}",
-        #     system_message="You are a CRM assistant. Generate concise, actionable notes."
-        # ).with_model("gemini", "gemini-2.5-flash")
-        
-        # response = await chat.send_message(UserMessage(text=prompt))
-        # return response.strip()
-        return "Notes generation disabled."
-        
+        drafter = get_drafter()
+        return await drafter.analyze_conversation_for_notes(messages)
     except Exception as e:
         logging.error(f"Notes generation error: {e}")
         return customer.get("notes", "") or "Could not generate notes"
@@ -1419,43 +1587,43 @@ async def generate_customer_notes(customer_id: str, user = Depends(get_current_u
     
     return {"customer_id": customer_id, "notes": notes}
 
-async def generate_quick_reason(customer: dict, messages: list) -> str:
-    """Generate a quick follow-up reason without full AI call for performance"""
-    last_message = customer.get("last_message", "")
-    notes = customer.get("notes", "")
-    tags = customer.get("tags", [])
-    days_since = None
-    
-    if customer.get("last_contacted"):
-        days_since = (datetime.utcnow() - customer["last_contacted"]).days
-    
-    # Quick rule-based reasons first
-    if not customer.get("last_contacted"):
-        if "New" in tags:
-            return "New customer - send welcome message"
-        return "Never contacted - introduce your services"
-    
-    if days_since and days_since > 30:
-        return f"Inactive for {days_since} days - re-engage with offer"
-    
-    if "VIP" in tags and days_since and days_since > 7:
-        return f"VIP customer not contacted in {days_since} days"
-    
-    # Check last message for context
-    if last_message:
-        lower_msg = last_message.lower()
-        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
-            return "Asked about pricing - follow up on quote"
-        if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
-            return "Was considering purchase - check decision"
-        if any(word in lower_msg for word in ["thank", "thanks", "asante"]):
-            return "Previous transaction - check satisfaction"
-    
-    # Default with days
-    if days_since:
-        return f"No contact in {days_since} days - check in"
-    
-    return "Due for follow-up"
+@api_router.get("/ai/draft-message")
+async def draft_message(customer_id: str, user = Depends(get_current_user)):
+    """
+    Draft a personalized message for a customer using AI
+    """
+    try:
+        customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+            
+        messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", 1).to_list(50)
+        
+        # Get business settings from user
+        settings = user.get("settings", {})
+        business_name = settings.get("business_name", "Your Business")
+        business_knowledge = settings.get("business_knowledge", "")
+        tone = settings.get("tone", "friendly")
+        
+        drafter = get_drafter()
+        result = await drafter.draft_followup_message(
+            customer_name=customer.get("name", "Customer"),
+            customer_data=customer,
+            messages=messages,
+            business_name=business_name,
+            tone=tone,
+            business_knowledge=business_knowledge
+        )
+        
+        from bson import json_util
+        import json
+        return json.loads(json_util.dumps(result))
+    except Exception as e:
+        import traceback
+        logging.error(f"Error in draft_message: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Duplicate function removed - using the first definition
 
 # ============ MESSAGE STORAGE ENDPOINTS ============
 
@@ -1625,10 +1793,15 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         business_knowledge=business_knowledge
     )
     
+    # Support both legacy and new AI service response keys
+    msg_text = result.get('message') or result.get('drafted_message') or "Hi! Just checking in—can I help with anything?"
+    reason_text = result.get('reason') or result.get('ai_reason') or "Due for follow-up"
+    confidence_val = result.get('confidence', 0.5)
+
     return DraftMessageResponse(
-        message=result['message'],
-        confidence=result['confidence'],
-        reason=result['reason']
+        message=msg_text,
+        confidence=confidence_val,
+        reason=reason_text
     )
 
 @api_router.post("/ai/send-auto-message")
@@ -1675,27 +1848,35 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
     }
 
 @api_router.get("/analysis/daily-insights")
-async def get_daily_insights(limit: int = 10, user = Depends(get_current_user)):
+async def get_daily_insights(background_tasks: BackgroundTasks, limit: int = 10, user = Depends(get_current_user)):
     """Get today's customer insights from AI analysis"""
-    
-    analyzer = DailyCustomerAnalyzer(db)
-    
-    # Check if we have today's analysis
-    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    existing_analysis = await db.customer_analysis.find_one({
-        "user_id": user["_id"],
-        "analysis_date": {"$gte": today}
-    })
-    
-    # If no analysis for today, run it now
-    if not existing_analysis:
-        logging.info(f"No analysis found for today, running now for user {user['_id']}")
-        await analyzer.analyze_all_customers(user["_id"])
-    
-    # Get insights
-    insights = await analyzer.get_todays_insights(user["_id"], limit)
-    
-    return insights
+    try:
+        analyzer = DailyCustomerAnalyzer(db)
+        
+        # Check if we have today's analysis
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        existing_analysis_count = await db.customer_analysis.count_documents({
+            "user_id": user["_id"],
+            "analysis_date": {"$gte": today}
+        })
+        
+        # If no analysis for today OR we're just starting up, queue a background run
+        # We check count > 0 to see if results are already flowing in
+        if existing_analysis_count == 0:
+            logging.info(f"Triggering background analysis for user {user['_id']}")
+            background_tasks.add_task(analyzer.analyze_all_customers, user["_id"])
+        
+        # Get whatever insights we have so far (poll correctly handles partial results)
+        insights = await analyzer.get_todays_insights(user["_id"], limit)
+        
+        from bson import json_util
+        import json
+        return json.loads(json_util.dumps(insights))
+        
+    except Exception as e:
+        import traceback
+        logging.error(f"Error in daily-insights: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/analysis/run-now")
 async def run_analysis_now(user = Depends(get_current_user)):
@@ -1794,6 +1975,25 @@ async def send_test_notification(user = Depends(get_current_user)):
         return {"status": "success", "message": "Test notification sent"}
     else:
         raise HTTPException(status_code=500, detail="Failed to send notification")
+
+@api_router.post("/notifications/send-daily-now")
+async def send_daily_notifications_now(user = Depends(get_current_user)):
+    """Manually trigger daily notifications (for testing)"""
+    
+    from daily_scheduler import get_scheduler
+    
+    try:
+        scheduler = await get_scheduler(db)
+        sent_count = await scheduler.send_daily_notifications()
+        
+        return {
+            "status": "success",
+            "message": f"Daily notifications sent to {sent_count} users",
+            "sent_count": sent_count
+        }
+    except Exception as e:
+        logging.error(f"Failed to send daily notifications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============ PRODUCT CATALOG ENDPOINTS ============
 
@@ -2074,6 +2274,15 @@ async def startup_tasks():
         
     except Exception as e:
         logging.error(f"Failed to recalculate totals: {e}")
+    
+    # Start daily notification scheduler
+    try:
+        logging.info("Starting timezone-aware notification scheduler...")
+        # Scheduler runs every hour and checks each user's local timezone
+        await start_daily_scheduler(db)
+        logging.info("Scheduler started - notifications sent based on user timezone")
+    except Exception as e:
+        logging.error(f"Failed to start scheduler: {e}")
 
 logging.basicConfig(
     level=logging.INFO,

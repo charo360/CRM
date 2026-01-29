@@ -40,7 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (storedToken) {
         setToken(storedToken);
         apiClient.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
-        
+
         // Fetch current user
         try {
           const response = await apiClient.get('/auth/me');
@@ -49,6 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Token invalid, clear it
           await AsyncStorage.removeItem('auth_token');
           setToken(null);
+          delete apiClient.defaults.headers.common['Authorization'];
         }
       }
     } catch (error) {
@@ -61,8 +62,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const sendOTP = async (phone: string) => {
     try {
       const response = await apiClient.post('/auth/send-otp', { phone_number: phone });
-      return { 
-        success: true, 
+      return {
+        success: true,
         devOtp: response.data.dev_otp // For development testing
       };
     } catch (error: any) {
@@ -81,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       const { token: newToken, is_new_user, user: userData } = response.data;
-      
+
       setToken(newToken);
       await AsyncStorage.setItem('auth_token', newToken);
       apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;

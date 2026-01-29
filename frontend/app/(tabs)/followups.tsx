@@ -43,6 +43,8 @@ interface ColdCustomer {
   days_since_contact: number | null;
   has_pending_followup: boolean;
   ai_reason?: string;
+  urgency_score?: number;
+  urgency_level?: 'high' | 'medium' | 'low';
 }
 
 interface Customer {
@@ -85,8 +87,19 @@ export default function FollowupsScreen() {
   const [isEditing, setIsEditing] = useState(false);
   const [editingFollowup, setEditingFollowup] = useState<FollowUp | null>(null);
 
+  // Draft Message Modal State
+  const [showDraftModal, setShowDraftModal] = useState(false);
+  const [draftCustomer, setDraftCustomer] = useState<ColdCustomer | null>(null);
+  const [draftMessage, setDraftMessage] = useState('');
+  const [draftReason, setDraftReason] = useState('');
+  const [loadingDraft, setLoadingDraft] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
+      // Trigger daily analysis in background (don't await)
+      apiClient.get('/analysis/daily-insights').catch((e: any) => console.log('Background analysis trigger:', e));
+
       const [followupsRes, coldRes, suggestionsRes, customersRes] = await Promise.all([
         apiClient.get('/followups?status=pending'),
         apiClient.get('/customers/cold-with-reasons?days=14').catch(() => apiClient.get('/customers/cold?days=14')),
@@ -97,6 +110,13 @@ export default function FollowupsScreen() {
       setColdCustomers(coldRes.data);
       setSuggestions(suggestionsRes.data);
       setCustomers(customersRes.data);
+
+      // If we have no cold customers with reasons yet, it might be because analysis is running in background
+      if (coldRes.data.length === 0) {
+        setIsAnalyzing(true);
+      } else {
+        setIsAnalyzing(false);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -104,6 +124,19 @@ export default function FollowupsScreen() {
       setRefreshing(false);
     }
   }, []);
+
+  // Poll for insights if analysis is running
+  useEffect(() => {
+    let interval: any;
+    if (isAnalyzing && coldCustomers.length === 0) {
+      interval = setInterval(() => {
+        fetchData();
+      }, 8000); // Check every 8 seconds
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isAnalyzing, coldCustomers.length, fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -264,6 +297,37 @@ export default function FollowupsScreen() {
     setShowAddModal(true);
   };
 
+  const handleShowDraftMessage = async (customer: ColdCustomer) => {
+    setDraftCustomer(customer);
+    setShowDraftModal(true);
+    setLoadingDraft(true);
+
+    try {
+      const response = await apiClient.get(`/ai/draft-message`, {
+        params: { customer_id: customer.id }
+      });
+
+      setDraftMessage(response.data.drafted_message || '');
+      setDraftReason(response.data.ai_reason || customer.ai_reason || 'Based on your last interaction');
+    } catch (error) {
+      console.error('Error fetching draft message:', error);
+      setDraftMessage(`Hi ${customer.name}, just checking in!`);
+    } finally {
+      setLoadingDraft(false);
+    }
+  };
+
+  const handleSendDraftMessage = () => {
+    if (!draftCustomer) return;
+
+    setShowDraftModal(false);
+    handleSendMessage(draftCustomer.phone_number, draftCustomer.name, draftMessage);
+
+    // Reset
+    setDraftCustomer(null);
+    setDraftMessage('');
+  };
+
   const filteredCustomerList = customers.filter(c =>
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
     c.phone_number.includes(customerSearch)
@@ -377,6 +441,27 @@ export default function FollowupsScreen() {
           </View>
         </View>
 
+        {/* Urgency Badge */}
+        {customer.urgency_level && (
+          <View style={[
+            styles.urgencyBadge,
+            customer.urgency_level === 'high' && styles.urgencyBadgeHigh,
+            customer.urgency_level === 'medium' && styles.urgencyBadgeMedium,
+            customer.urgency_level === 'low' && styles.urgencyBadgeLow,
+          ]}>
+            <Text style={styles.urgencyBadgeIcon}>
+              {customer.urgency_level === 'high' ? '🔥' : customer.urgency_level === 'medium' ? '⚡' : '📋'}
+            </Text>
+            <Text style={styles.urgencyBadgeText}>
+              {customer.urgency_level === 'high' ? 'High Priority' :
+                customer.urgency_level === 'medium' ? 'Medium Priority' : 'Low Priority'}
+            </Text>
+            {customer.urgency_score !== undefined && (
+              <Text style={styles.urgencyScore}>{customer.urgency_score}</Text>
+            )}
+          </View>
+        )}
+
         {/* AI-Generated Reason */}
         <View style={styles.aiReasonContainer}>
           <Ionicons name="bulb" size={14} color="#FFD700" />
@@ -415,6 +500,15 @@ export default function FollowupsScreen() {
         >
           <Ionicons name="logo-whatsapp" size={22} color="#FFFFFF" />
         </TouchableOpacity>
+
+        {/* AI Draft Button */}
+        <TouchableOpacity
+          style={styles.aiDraftButton}
+          onPress={() => handleShowDraftMessage(customer)}
+        >
+          <Ionicons name="sparkles" size={20} color="#FFFFFF" />
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={styles.addReminderButton}
           onPress={() => handleCreateFollowupFromCold(customer)}
@@ -455,7 +549,7 @@ export default function FollowupsScreen() {
         <View style={styles.statsRow}>
           <View style={[styles.statCard, styles.statCardWarning]}>
             <Text style={styles.statNumber}>{suggestions.neglected_week}</Text>
-            <Text style={styles.statLabel}>Need attention</Text>
+            <Text style={styles.statLabel}>14+ days no contact</Text>
           </View>
           <View style={[styles.statCard, styles.statCardDanger]}>
             <Text style={styles.statNumber}>{suggestions.neglected_month}</Text>
@@ -517,22 +611,33 @@ export default function FollowupsScreen() {
       )}
 
       {activeTab === 'needs_attention' ? (
-        <FlatList
-          data={coldCustomers}
-          renderItem={({ item }) => renderColdCustomer(item)}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Ionicons name="checkmark-circle-outline" size={64} color="#25D366" />
-              <Text style={styles.emptyText}>All caught up!</Text>
-              <Text style={styles.emptySubtext}>No customers need immediate attention</Text>
+        <>
+          {isAnalyzing && coldCustomers.length === 0 && (
+            <View style={{ padding: 20, alignItems: 'center', backgroundColor: '#1A2942', margin: 16, borderRadius: 12 }}>
+              <ActivityIndicator color="#25D366" style={{ marginBottom: 12 }} />
+              <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>AI is analyzing your customers...</Text>
+              <Text style={{ color: '#666', fontSize: 13, marginTop: 4, textAlign: 'center' }}>
+                Identifying follow-up opportunities based on your recent conversations.
+              </Text>
             </View>
-          }
-        />
+          )}
+          <FlatList
+            data={coldCustomers}
+            renderItem={({ item }) => renderColdCustomer(item)}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <Ionicons name="checkmark-circle-outline" size={64} color="#25D366" />
+                <Text style={styles.emptyText}>All caught up!</Text>
+                <Text style={styles.emptySubtext}>No customers need immediate attention</Text>
+              </View>
+            }
+          />
+        </>
       ) : (
         <FlatList
           data={[1]}
@@ -579,6 +684,7 @@ export default function FollowupsScreen() {
       >
         <Ionicons name="add" size={30} color="#FFFFFF" />
       </TouchableOpacity>
+
 
       {/* Add Reminder Modal */}
       <Modal
@@ -836,6 +942,68 @@ export default function FollowupsScreen() {
                   )}
                 </TouchableOpacity>
               </ScrollView>
+            </View >
+          </KeyboardAvoidingView >
+        </View >
+      </Modal >
+
+      {/* AI Draft Message Modal */}
+      < Modal
+        visible={showDraftModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowDraftModal(false)
+        }
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.keyboardView}
+          >
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <View style={styles.aiModalTitleRow}>
+                  <Ionicons name="sparkles" size={20} color="#FFD700" />
+                  <Text style={styles.modalTitle}>AI Draft Message</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowDraftModal(false)}>
+                  <Ionicons name="close" size={24} color="#666" />
+                </TouchableOpacity>
+              </View>
+
+              {loadingDraft ? (
+                <View style={styles.draftLoadingContainer}>
+                  <ActivityIndicator size="large" color="#4A90D9" />
+                  <Text style={styles.draftLoadingText}>Writing perfect message...</Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={styles.inputLabel}>Message Preview (tap to edit)</Text>
+                  <TextInput
+                    style={[styles.messageInput, { minHeight: 120 }]}
+                    placeholder="Message..."
+                    placeholderTextColor="#666"
+                    value={draftMessage}
+                    onChangeText={setDraftMessage}
+                    multiline
+                  />
+
+                  <View style={styles.aiReasonBox}>
+                    <Text style={styles.aiReasonLabel}>Why this message?</Text>
+                    <Text style={styles.aiReasonTextSmall}>
+                      {draftReason}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.whatsappSendButton}
+                    onPress={handleSendDraftMessage}
+                  >
+                    <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
+                    <Text style={styles.whatsappSendText}>Open in WhatsApp</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           </KeyboardAvoidingView>
         </View>
@@ -1443,6 +1611,70 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 4,
   },
+  aiDraftButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFD700', // Gold
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  aiModalTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  draftLoadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
+    gap: 16,
+  },
+  draftLoadingText: {
+    fontSize: 16,
+    color: '#666',
+    fontWeight: '500',
+  },
+
+  aiReasonBox: {
+    backgroundColor: 'rgba(255, 215, 0, 0.1)', // Light gold
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 20,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FFD700',
+  },
+  aiReasonLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#DAA520', // Darker gold
+    marginBottom: 4,
+  },
+  aiReasonTextSmall: {
+    fontSize: 13,
+    color: '#666',
+    lineHeight: 18,
+  },
+  whatsappSendButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    borderRadius: 12,
+    padding: 16,
+    gap: 10,
+    marginTop: 'auto',
+  },
+  whatsappSendText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
   timeText: {
     fontSize: 14,
     color: '#4A90D9',
@@ -1450,5 +1682,46 @@ const styles = StyleSheet.create({
   },
   editButton: {
     padding: 8,
+  },
+  // Urgency Badge Styles
+  urgencyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    marginTop: 8,
+    marginBottom: 4,
+    alignSelf: 'flex-start',
+    gap: 6,
+  },
+  urgencyBadgeHigh: {
+    backgroundColor: 'rgba(255, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: '#FF4444',
+  },
+  urgencyBadgeMedium: {
+    backgroundColor: 'rgba(255, 193, 7, 0.15)',
+    borderWidth: 1,
+    borderColor: '#FFC107',
+  },
+  urgencyBadgeLow: {
+    backgroundColor: 'rgba(74, 144, 217, 0.15)',
+    borderWidth: 1,
+    borderColor: '#4A90D9',
+  },
+  urgencyBadgeIcon: {
+    fontSize: 14,
+  },
+  urgencyBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  urgencyScore: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFD700',
+    marginLeft: 4,
   },
 });
