@@ -603,13 +603,17 @@ async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None
     if tag:
         query["tags"] = tag
     
-    # Defaults
-    sort_field = "created_at"
-    sort_order = -1
-    
+    # Sorting logic - default to most recent first
     if sort_by == "purchases":
         sort_field = "purchase_count"
-        sort_order = -1
+        sort_order = -1  # Highest purchases first
+    elif sort_by == "oldest":
+        sort_field = "created_at"
+        sort_order = 1  # Oldest first
+    else:
+        # Default: Most recent contacts first
+        sort_field = "created_at"
+        sort_order = -1  # Newest first
     
     customers = await db.customers.find(query).sort(sort_field, sort_order).to_list(1000)
     
