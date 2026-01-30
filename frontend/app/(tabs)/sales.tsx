@@ -59,6 +59,7 @@ export default function SalesScreen() {
   const [paymentMethod, setPaymentMethod] = useState('M-Pesa');
   const [sendReceipt, setSendReceipt] = useState(true);
   const [receiptMessage, setReceiptMessage] = useState('');
+  const [editingReceipt, setEditingReceipt] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -133,15 +134,17 @@ export default function SalesScreen() {
     setPaymentMethod('M-Pesa');
     setSendReceipt(true);
     setReceiptMessage('');
+    setEditingReceipt(false);
   };
 
-  // Generate default receipt message when item or amount changes
-  useEffect(() => {
-    if (item && amount && parseFloat(amount) > 0) {
+  // Initialize receipt message when editing starts
+  const handleEditReceipt = () => {
+    if (!receiptMessage && item && amount) {
       const defaultMessage = `✅ Payment received\nItem: ${item}\nAmount: KES ${parseFloat(amount).toLocaleString()}\nThank you for shopping with us 🙏`;
       setReceiptMessage(defaultMessage);
     }
-  }, [item, amount]);
+    setEditingReceipt(true);
+  };
 
   // Filter sales based on search and date
   const filteredSales = useMemo(() => {
@@ -516,9 +519,28 @@ export default function SalesScreen() {
               <Text style={styles.receiptToggleText}>Send receipt via WhatsApp</Text>
             </TouchableOpacity>
 
-            {sendReceipt && (
+            {sendReceipt && !editingReceipt && (
+              <View style={styles.receiptPreview}>
+                <View style={styles.receiptPreviewHeader}>
+                  <Text style={styles.receiptPreviewTitle}>Receipt Preview:</Text>
+                  <TouchableOpacity onPress={handleEditReceipt}>
+                    <Ionicons name="pencil" size={20} color="#25D366" />
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.receiptPreviewText}>
+                  {receiptMessage || `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: KES ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`}
+                </Text>
+              </View>
+            )}
+
+            {sendReceipt && editingReceipt && (
               <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Receipt Message</Text>
+                <View style={styles.receiptEditHeader}>
+                  <Text style={styles.formLabel}>Edit Receipt Message</Text>
+                  <TouchableOpacity onPress={() => setEditingReceipt(false)}>
+                    <Text style={styles.doneButton}>Done</Text>
+                  </TouchableOpacity>
+                </View>
                 <TextInput
                   style={[styles.formInput, styles.receiptMessageInput]}
                   value={receiptMessage}
@@ -530,7 +552,7 @@ export default function SalesScreen() {
                   textAlignVertical="top"
                 />
                 <Text style={styles.receiptHint}>
-                  Tip: Personalize with your business name for a professional touch
+                  Tip: Add your business name for a professional touch
                 </Text>
               </View>
             )}
@@ -1145,6 +1167,38 @@ const styles = StyleSheet.create({
   receiptToggleText: {
     fontSize: 16,
     color: '#FFFFFF',
+  },
+  receiptPreview: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+  },
+  receiptPreviewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  receiptPreviewTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+  },
+  receiptPreviewText: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    lineHeight: 22,
+  },
+  receiptEditHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  doneButton: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#25D366',
   },
   receiptMessageInput: {
     minHeight: 100,
