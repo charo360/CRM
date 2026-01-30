@@ -319,12 +319,7 @@ export default function SalesScreen() {
       </View>
 
       {/* Date Filter */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filterScroll}
-        contentContainerStyle={styles.filterContainer}
-      >
+      <View style={styles.filterContainer}>
         {DATE_FILTERS.map((filter) => (
           <TouchableOpacity
             key={filter}
@@ -344,7 +339,7 @@ export default function SalesScreen() {
             </Text>
           </TouchableOpacity>
         ))}
-      </ScrollView>
+      </View>
 
       {/* Analytics Cards */}
       <View style={styles.analyticsContainer}>
@@ -848,21 +843,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FFFFFF',
   },
-  filterScroll: {
-    marginBottom: 12,
-  },
   filterContainer: {
+    flexDirection: 'row',
     paddingHorizontal: 20,
+    marginBottom: 12,
     gap: 8,
   },
   filterChip: {
-    paddingHorizontal: 12,
+    flex: 1,
     paddingVertical: 6,
     borderRadius: 8,
     backgroundColor: '#1A2942',
-    marginRight: 8,
     borderWidth: 1,
     borderColor: '#2A3952',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   filterChipActive: {
     backgroundColor: '#25D366',
