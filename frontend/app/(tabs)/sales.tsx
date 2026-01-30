@@ -60,6 +60,9 @@ export default function SalesScreen() {
   const [sendReceipt, setSendReceipt] = useState(true);
   const [receiptMessage, setReceiptMessage] = useState('');
   const [editingReceipt, setEditingReceipt] = useState(false);
+  const [paymentSettingsVisible, setPaymentSettingsVisible] = useState(false);
+  const [newPaymentMethod, setNewPaymentMethod] = useState('');
+  const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -315,9 +318,14 @@ export default function SalesScreen() {
           <Text style={styles.headerTitle}>Sales</Text>
           <Text style={styles.headerSubtitle}>{analytics.salesCount} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}</Text>
         </View>
-        <TouchableOpacity onPress={handleExportSales} style={styles.exportButton}>
-          <Ionicons name="download-outline" size={20} color="#4A90D9" />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={() => setPaymentSettingsVisible(true)} style={styles.exportButton}>
+            <Ionicons name="settings-outline" size={20} color="#888" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleExportSales} style={styles.exportButton}>
+            <Ionicons name="download-outline" size={20} color="#4A90D9" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Search Bar */}
@@ -709,6 +717,109 @@ export default function SalesScreen() {
               )}
             </ScrollView>
           )}
+        </SafeAreaView>
+      </Modal>
+
+      {/* Payment Method Settings Modal */}
+      <Modal
+        visible={paymentSettingsVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setPaymentSettingsVisible(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setPaymentSettingsVisible(false)}>
+              <Text style={styles.modalCancel}>Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Payment Methods</Text>
+            <View style={{ width: 60 }} />
+          </View>
+
+          <ScrollView style={styles.modalContent}>
+            <Text style={styles.settingsHint}>
+              Manage the payment methods available when recording sales
+            </Text>
+
+            {paymentMethods.map((method, index) => (
+              <View key={index} style={styles.paymentMethodItem}>
+                <Text style={styles.paymentMethodName}>{method}</Text>
+                {paymentMethods.length > 1 && (
+                  <TouchableOpacity
+                    onPress={async () => {
+                      const updated = paymentMethods.filter((_, i) => i !== index);
+                      setPaymentMethods(updated);
+                      try {
+                        await apiClient.put('/settings', { payment_methods: updated });
+                        Alert.alert('Success', 'Payment method removed');
+                      } catch (error) {
+                        console.error('Error updating payment methods:', error);
+                        Alert.alert('Error', 'Failed to update payment methods');
+                      }
+                    }}
+                  >
+                    <Ionicons name="close-circle" size={24} color="#FF6B6B" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+
+            {!addingPaymentMethod && (
+              <TouchableOpacity
+                style={styles.addPaymentButton}
+                onPress={() => setAddingPaymentMethod(true)}
+              >
+                <Ionicons name="add-circle-outline" size={24} color="#25D366" />
+                <Text style={styles.addPaymentText}>Add Payment Method</Text>
+              </TouchableOpacity>
+            )}
+
+            {addingPaymentMethod && (
+              <View style={styles.addPaymentForm}>
+                <TextInput
+                  style={styles.formInput}
+                  value={newPaymentMethod}
+                  onChangeText={setNewPaymentMethod}
+                  placeholder="e.g., Credit Card, PayPal"
+                  placeholderTextColor="#666"
+                  autoFocus
+                />
+                <View style={styles.addPaymentActions}>
+                  <TouchableOpacity
+                    style={styles.cancelAddButton}
+                    onPress={() => {
+                      setAddingPaymentMethod(false);
+                      setNewPaymentMethod('');
+                    }}
+                  >
+                    <Text style={styles.cancelAddText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.saveAddButton}
+                    onPress={async () => {
+                      if (!newPaymentMethod.trim()) {
+                        Alert.alert('Error', 'Please enter a payment method name');
+                        return;
+                      }
+                      const updated = [...paymentMethods, newPaymentMethod.trim()];
+                      setPaymentMethods(updated);
+                      try {
+                        await apiClient.put('/settings', { payment_methods: updated });
+                        Alert.alert('Success', 'Payment method added');
+                        setAddingPaymentMethod(false);
+                        setNewPaymentMethod('');
+                      } catch (error) {
+                        console.error('Error updating payment methods:', error);
+                        Alert.alert('Error', 'Failed to add payment method');
+                      }
+                    }}
+                  >
+                    <Text style={styles.saveAddText}>Add</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </ScrollView>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>
@@ -1250,5 +1361,80 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  settingsHint: {
+    fontSize: 14,
+    color: '#888',
+    marginBottom: 20,
+    paddingHorizontal: 20,
+    lineHeight: 20,
+  },
+  paymentMethodItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    marginHorizontal: 20,
+    marginBottom: 12,
+  },
+  paymentMethodName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  addPaymentButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    marginHorizontal: 20,
+    marginTop: 8,
+    gap: 8,
+  },
+  addPaymentText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#25D366',
+  },
+  addPaymentForm: {
+    marginHorizontal: 20,
+    marginTop: 8,
+  },
+  addPaymentActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+  },
+  cancelAddButton: {
+    flex: 1,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+  cancelAddText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#888',
+  },
+  saveAddButton: {
+    flex: 1,
+    backgroundColor: '#25D366',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+  saveAddText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });
