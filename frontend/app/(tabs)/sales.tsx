@@ -347,28 +347,23 @@ export default function SalesScreen() {
       </ScrollView>
 
       {/* Analytics Cards */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.analyticsScroll}
-        contentContainerStyle={styles.analyticsContainer}
-      >
+      <View style={styles.analyticsContainer}>
         <View style={styles.analyticsCard}>
           <Text style={styles.analyticsLabel}>Revenue</Text>
-          <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
+          <Text style={styles.analyticsValue} numberOfLines={1}>KES {analytics.totalRevenue.toLocaleString()}</Text>
         </View>
         <View style={styles.analyticsCard}>
           <Text style={styles.analyticsLabel}>Avg Sale</Text>
-          <Text style={styles.analyticsValue}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
+          <Text style={styles.analyticsValue} numberOfLines={1}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
         </View>
         {analytics.topCustomer && (
-          <View style={[styles.analyticsCard, styles.analyticsCardWide]}>
+          <View style={[styles.analyticsCard, { marginRight: 0 }]}>
             <Text style={styles.analyticsLabel}>Top Customer</Text>
             <Text style={styles.analyticsValue} numberOfLines={1}>{analytics.topCustomer.name}</Text>
-            <Text style={styles.analyticsSubtext}>KES {analytics.topCustomer.total.toLocaleString()}</Text>
+            <Text style={styles.analyticsSubtext} numberOfLines={1}>KES {analytics.topCustomer.total.toLocaleString()}</Text>
           </View>
         )}
-      </ScrollView>
+      </View>
 
       <FlatList
         data={filteredSales}
@@ -861,7 +856,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   filterChip: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
     backgroundColor: '#1A2942',
@@ -874,7 +869,7 @@ const styles = StyleSheet.create({
     borderColor: '#25D366',
   },
   filterChipText: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#888',
     fontWeight: '600',
   },
@@ -882,25 +877,23 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
   },
-  analyticsScroll: {
-    marginBottom: 16,
-  },
   analyticsContainer: {
     paddingHorizontal: 20,
-    gap: 10,
+    flexDirection: 'row',
+    marginBottom: 16,
   },
   analyticsCard: {
     backgroundColor: '#1A2942',
     borderRadius: 10,
     padding: 12,
     paddingVertical: 10,
-    minWidth: 110,
-    marginRight: 10,
+    flex: 1,
+    marginRight: 8,
     borderWidth: 1,
     borderColor: '#2A3952',
   },
   analyticsCardWide: {
-    minWidth: 150,
+    flex: 1,
   },
   analyticsLabel: {
     fontSize: 10,
