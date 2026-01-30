@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   ScrollView,
+  Share,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -35,6 +37,7 @@ interface Sale {
 }
 
 const PAYMENT_METHODS = ['Cash', 'M-Pesa'];
+const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
 
 export default function SalesScreen() {
   const [sales, setSales] = useState<Sale[]>([]);
@@ -44,6 +47,10 @@ export default function SalesScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [customerSelectVisible, setCustomerSelectVisible] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [dateFilter, setDateFilter] = useState('All Time');
+  const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
+  const [saleDetailsVisible, setSaleDetailsVisible] = useState(false);
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -125,10 +132,116 @@ export default function SalesScreen() {
     setSendReceipt(true);
   };
 
-  const totalRevenue = sales.reduce((sum, s) => sum + s.amount, 0);
+  // Filter sales based on search and date
+  const filteredSales = useMemo(() => {
+    let filtered = sales;
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(
+        (s) =>
+          s.customer_name.toLowerCase().includes(query) ||
+          s.item.toLowerCase().includes(query)
+      );
+    }
+
+    // Apply date filter
+    if (dateFilter !== 'All Time') {
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      
+      filtered = filtered.filter((s) => {
+        const saleDate = new Date(s.created_at);
+        
+        if (dateFilter === 'Today') {
+          return saleDate >= today;
+        } else if (dateFilter === 'This Week') {
+          const weekAgo = new Date(today);
+          weekAgo.setDate(weekAgo.getDate() - 7);
+          return saleDate >= weekAgo;
+        } else if (dateFilter === 'This Month') {
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+          return saleDate >= monthStart;
+        }
+        return true;
+      });
+    }
+
+    return filtered;
+  }, [sales, searchQuery, dateFilter]);
+
+  // Calculate analytics
+  const analytics = useMemo(() => {
+    const totalRevenue = filteredSales.reduce((sum, s) => sum + s.amount, 0);
+    const salesCount = filteredSales.length;
+    const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
+    
+    // Find top customer
+    const customerSales: { [key: string]: { name: string; total: number } } = {};
+    filteredSales.forEach((s) => {
+      if (!customerSales[s.customer_id]) {
+        customerSales[s.customer_id] = { name: s.customer_name, total: 0 };
+      }
+      customerSales[s.customer_id].total += s.amount;
+    });
+    
+    const topCustomer = Object.values(customerSales).sort((a, b) => b.total - a.total)[0];
+    
+    return { totalRevenue, salesCount, avgSale, topCustomer };
+  }, [filteredSales]);
+
+  const handleExportSales = async () => {
+    if (filteredSales.length === 0) {
+      Alert.alert('No Data', 'No sales to export');
+      return;
+    }
+
+    const csvHeader = 'Date,Customer,Phone,Item,Amount,Payment Method,Receipt Sent\n';
+    const csvRows = filteredSales.map((s) => {
+      const date = new Date(s.created_at).toLocaleDateString('en-KE');
+      return `${date},${s.customer_name},${s.customer_phone},${s.item},${s.amount},${s.payment_method},${s.receipt_sent ? 'Yes' : 'No'}`;
+    }).join('\n');
+    
+    const csvContent = csvHeader + csvRows;
+    
+    try {
+      await Share.share({
+        message: csvContent,
+        title: `Sales Report - ${dateFilter}`,
+      });
+    } catch (error) {
+      console.error('Error sharing:', error);
+    }
+  };
+
+  const handleResendReceipt = async (sale: Sale) => {
+    const message = `✅ Payment received\nItem: ${sale.item}\nAmount: KES ${sale.amount.toLocaleString()}\nThank you for shopping with us 🙏`;
+    const phoneNumber = sale.customer_phone.replace(/[^0-9]/g, '');
+    const whatsappUrl = `whatsapp://send?phone=${phoneNumber}&text=${encodeURIComponent(message)}`;
+
+    try {
+      const canOpen = await Linking.canOpenURL(whatsappUrl);
+      if (canOpen) {
+        await Linking.openURL(whatsappUrl);
+      } else {
+        Alert.alert('Error', 'WhatsApp is not installed on this device');
+      }
+    } catch (error) {
+      console.error('Error opening WhatsApp:', error);
+      Alert.alert('Error', 'Failed to open WhatsApp');
+    }
+  };
 
   const renderSale = ({ item: sale }: { item: Sale }) => (
-    <View style={styles.saleCard}>
+    <TouchableOpacity
+      style={styles.saleCard}
+      onPress={() => {
+        setSelectedSale(sale);
+        setSaleDetailsVisible(true);
+      }}
+      activeOpacity={0.7}
+    >
       <View style={styles.saleHeader}>
         <View style={styles.saleCustomer}>
           <View style={styles.avatar}>
@@ -163,7 +276,7 @@ export default function SalesScreen() {
           </View>
         )}
       </View>
-    </View>
+    </TouchableOpacity>
   );
 
   if (loading) {
@@ -181,17 +294,84 @@ export default function SalesScreen() {
       <View style={styles.header}>
         <View>
           <Text style={styles.headerTitle}>Sales</Text>
-          <Text style={styles.headerSubtitle}>{sales.length} receipts this month</Text>
+          <Text style={styles.headerSubtitle}>{analytics.salesCount} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}</Text>
         </View>
+        <TouchableOpacity onPress={handleExportSales} style={styles.exportButton}>
+          <Ionicons name="download-outline" size={20} color="#4A90D9" />
+        </TouchableOpacity>
       </View>
 
-      <View style={styles.statsCard}>
-        <Text style={styles.statsLabel}>Total Revenue</Text>
-        <Text style={styles.statsValue}>KES {totalRevenue.toLocaleString()}</Text>
+      {/* Search Bar */}
+      <View style={styles.searchContainer}>
+        <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="Search by customer or item..."
+          placeholderTextColor="#666"
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery('')}>
+            <Ionicons name="close-circle" size={20} color="#666" />
+          </TouchableOpacity>
+        )}
       </View>
+
+      {/* Date Filter */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filterScroll}
+        contentContainerStyle={styles.filterContainer}
+      >
+        {DATE_FILTERS.map((filter) => (
+          <TouchableOpacity
+            key={filter}
+            style={[
+              styles.filterChip,
+              dateFilter === filter && styles.filterChipActive,
+            ]}
+            onPress={() => setDateFilter(filter)}
+          >
+            <Text
+              style={[
+                styles.filterChipText,
+                dateFilter === filter && styles.filterChipTextActive,
+              ]}
+            >
+              {filter}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      {/* Analytics Cards */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.analyticsScroll}
+        contentContainerStyle={styles.analyticsContainer}
+      >
+        <View style={styles.analyticsCard}>
+          <Text style={styles.analyticsLabel}>Revenue</Text>
+          <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
+        </View>
+        <View style={styles.analyticsCard}>
+          <Text style={styles.analyticsLabel}>Avg Sale</Text>
+          <Text style={styles.analyticsValue}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
+        </View>
+        {analytics.topCustomer && (
+          <View style={[styles.analyticsCard, styles.analyticsCardWide]}>
+            <Text style={styles.analyticsLabel}>Top Customer</Text>
+            <Text style={styles.analyticsValue} numberOfLines={1}>{analytics.topCustomer.name}</Text>
+            <Text style={styles.analyticsSubtext}>KES {analytics.topCustomer.total.toLocaleString()}</Text>
+          </View>
+        )}
+      </ScrollView>
 
       <FlatList
-        data={sales}
+        data={filteredSales}
         renderItem={renderSale}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
@@ -201,8 +381,12 @@ export default function SalesScreen() {
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Ionicons name="receipt-outline" size={64} color="#666" />
-            <Text style={styles.emptyText}>No sales yet</Text>
-            <Text style={styles.emptySubtext}>Record your first sale</Text>
+            <Text style={styles.emptyText}>
+              {searchQuery || dateFilter !== 'All Time' ? 'No sales found' : 'No sales yet'}
+            </Text>
+            <Text style={styles.emptySubtext}>
+              {searchQuery || dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first sale'}
+            </Text>
           </View>
         }
       />
@@ -395,6 +579,103 @@ export default function SalesScreen() {
           />
         </SafeAreaView>
       </Modal>
+
+      {/* Sale Details Modal */}
+      <Modal
+        visible={saleDetailsVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setSaleDetailsVisible(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setSaleDetailsVisible(false)}>
+              <Text style={styles.modalCancel}>Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Sale Details</Text>
+            <View style={{ width: 60 }} />
+          </View>
+
+          {selectedSale && (
+            <ScrollView style={styles.modalContent}>
+              <View style={styles.detailsCard}>
+                <View style={styles.detailsHeader}>
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>{selectedSale.customer_name.charAt(0)}</Text>
+                  </View>
+                  <View style={styles.detailsHeaderInfo}>
+                    <Text style={styles.detailsCustomerName}>{selectedSale.customer_name}</Text>
+                    <Text style={styles.detailsPhone}>{selectedSale.customer_phone}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.detailsDivider} />
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Item</Text>
+                  <Text style={styles.detailsValue}>{selectedSale.item}</Text>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Amount</Text>
+                  <Text style={[styles.detailsValue, styles.detailsAmount]}>
+                    KES {selectedSale.amount.toLocaleString()}
+                  </Text>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Payment Method</Text>
+                  <View style={[styles.paymentBadge, selectedSale.payment_method === 'M-Pesa' && styles.mpesaBadge]}>
+                    <Text style={styles.paymentText}>{selectedSale.payment_method}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Date & Time</Text>
+                  <Text style={styles.detailsValue}>
+                    {new Date(selectedSale.created_at).toLocaleString('en-KE', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Receipt Status</Text>
+                  <View style={styles.receiptStatus}>
+                    <Ionicons
+                      name={selectedSale.receipt_sent ? 'checkmark-circle' : 'close-circle'}
+                      size={16}
+                      color={selectedSale.receipt_sent ? '#25D366' : '#666'}
+                    />
+                    <Text
+                      style={[
+                        styles.receiptStatusText,
+                        selectedSale.receipt_sent && styles.receiptStatusTextSent,
+                      ]}
+                    >
+                      {selectedSale.receipt_sent ? 'Sent' : 'Not sent'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {!selectedSale.receipt_sent && (
+                <TouchableOpacity
+                  style={styles.resendButton}
+                  onPress={() => handleResendReceipt(selectedSale)}
+                >
+                  <Ionicons name="paper-plane-outline" size={20} color="#FFFFFF" />
+                  <Text style={styles.resendButtonText}>Send Receipt</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -449,9 +730,11 @@ const styles = StyleSheet.create({
   },
   saleCard: {
     backgroundColor: '#1A2942',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
     marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#2A3952',
   },
   saleHeader: {
     flexDirection: 'row',
@@ -546,6 +829,177 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 8,
+  },
+  exportButton: {
+    padding: 8,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    marginHorizontal: 20,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#FFFFFF',
+  },
+  filterScroll: {
+    marginBottom: 12,
+  },
+  filterContainer: {
+    paddingHorizontal: 20,
+    gap: 8,
+  },
+  filterChip: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 24,
+    backgroundColor: '#1A2942',
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+  },
+  filterChipActive: {
+    backgroundColor: '#25D366',
+    borderColor: '#25D366',
+  },
+  filterChipText: {
+    fontSize: 14,
+    color: '#888',
+    fontWeight: '600',
+  },
+  filterChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  analyticsScroll: {
+    marginBottom: 16,
+  },
+  analyticsContainer: {
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  analyticsCard: {
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+    padding: 18,
+    minWidth: 150,
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+  },
+  analyticsCardWide: {
+    minWidth: 200,
+  },
+  analyticsLabel: {
+    fontSize: 13,
+    color: '#888',
+    marginBottom: 8,
+    fontWeight: '500',
+  },
+  analyticsValue: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  analyticsSubtext: {
+    fontSize: 13,
+    color: '#25D366',
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  detailsCard: {
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+  },
+  detailsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  detailsHeaderInfo: {
+    flex: 1,
+  },
+  detailsCustomerName: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  detailsPhone: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 2,
+  },
+  detailsDivider: {
+    height: 1,
+    backgroundColor: '#2A3952',
+    marginBottom: 16,
+  },
+  detailsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  detailsLabel: {
+    fontSize: 14,
+    color: '#888',
+  },
+  detailsValue: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    fontWeight: '500',
+  },
+  detailsAmount: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#25D366',
+  },
+  receiptStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  receiptStatusText: {
+    fontSize: 14,
+    color: '#666',
+    marginLeft: 6,
+  },
+  receiptStatusTextSent: {
+    color: '#25D366',
+  },
+  resendButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    borderRadius: 14,
+    padding: 18,
+    gap: 10,
+    shadowColor: '#25D366',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  resendButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
   // Modal styles
   modalContainer: {

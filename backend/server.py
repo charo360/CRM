@@ -1055,6 +1055,30 @@ async def get_sales(user = Depends(get_current_user)):
     
     return result
 
+@api_router.post("/sales/{sale_id}/resend-receipt")
+async def resend_receipt(sale_id: str, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
+    """Resend receipt for a sale"""
+    sale = await db.sales.find_one({"_id": sale_id, "user_id": user["_id"]})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    
+    customer = await db.customers.find_one({"_id": sale["customer_id"]})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Send receipt via WhatsApp (background task)
+    background_tasks.add_task(
+        send_receipt_message,
+        customer["phone_number"],
+        customer["name"],
+        sale["item"],
+        sale["amount"],
+        user.get("business_name", "Your Shop"),
+        sale_id
+    )
+    
+    return {"status": "success", "message": "Receipt sent"}
+
 # ============ BROADCAST ENDPOINTS ============
 
 @api_router.post("/broadcasts", response_model=BroadcastResponse)
