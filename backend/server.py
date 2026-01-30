@@ -115,6 +115,9 @@ class UserResponse(BaseModel):
     owner_name: Optional[str] = None
     subscription_plan: Optional[str] = None
     subscription_active: bool = False
+    country_code: Optional[str] = None
+    currency: Optional[str] = None
+    payment_methods: List[str] = []
     created_at: datetime
 
 # Customer Models
@@ -267,6 +270,8 @@ class UserSettingsUpdate(BaseModel):
     auto_reply_enabled: Optional[bool] = None
     notification_enabled: Optional[bool] = None
     notification_time: Optional[str] = None
+    payment_methods: Optional[List[str]] = None
+    currency: Optional[str] = None
     daily_alert_count: Optional[int] = None
     message_tone: Optional[str] = None
     push_token: Optional[str] = None
@@ -519,10 +524,16 @@ async def verify_otp(request: OTPVerify):
 @api_router.post("/auth/register")
 async def register_user(user_data: UserCreate):
     """Register new user after OTP verification"""
+    from country_utils import detect_country_from_phone, get_payment_methods_for_country
+    
     # Check if user already exists
     existing = await db.users.find_one({"phone_number": user_data.phone_number})
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
+    
+    # Detect country and get payment methods
+    country_code = detect_country_from_phone(user_data.phone_number)
+    country_config = get_payment_methods_for_country(country_code)
     
     user_id = str(uuid.uuid4())
     user_doc = {
@@ -532,6 +543,9 @@ async def register_user(user_data: UserCreate):
         "owner_name": user_data.owner_name,
         "subscription_plan": None,
         "subscription_active": False,
+        "country_code": country_code,
+        "currency": country_config["currency"],
+        "payment_methods": country_config["methods"],
         "created_at": datetime.utcnow()
     }
     
@@ -546,7 +560,10 @@ async def register_user(user_data: UserCreate):
             "phone_number": user_data.phone_number,
             "business_name": user_data.business_name,
             "owner_name": user_data.owner_name,
-            "subscription_active": False
+            "subscription_active": False,
+            "country_code": country_code,
+            "currency": country_config["currency"],
+            "payment_methods": country_config["methods"]
         }
     }
 
@@ -559,7 +576,10 @@ async def get_me(user = Depends(get_current_user)):
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
         "subscription_plan": user.get("subscription_plan"),
-        "subscription_active": user.get("subscription_active", False)
+        "subscription_active": user.get("subscription_active", False),
+        "country_code": user.get("country_code"),
+        "currency": user.get("currency", "USD"),
+        "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
     }
 
 # ============ CUSTOMER ENDPOINTS ============
@@ -1971,6 +1991,12 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
     
     if settings.push_token is not None:
         update_data['push_token'] = settings.push_token
+    
+    if settings.payment_methods is not None:
+        update_data['payment_methods'] = settings.payment_methods
+    
+    if settings.currency is not None:
+        update_data['currency'] = settings.currency
     
     if update_data:
         await db.users.update_one(

@@ -36,12 +36,12 @@ interface Sale {
   created_at: string;
 }
 
-const PAYMENT_METHODS = ['Cash', 'M-Pesa'];
 const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
 
 export default function SalesScreen() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [paymentMethods, setPaymentMethods] = useState<string[]>(['Cash', 'Mobile Money']);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -63,12 +63,17 @@ export default function SalesScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [salesRes, customersRes] = await Promise.all([
+      const [salesRes, customersRes, userRes] = await Promise.all([
         apiClient.get('/sales'),
         apiClient.get('/customers'),
+        apiClient.get('/auth/me'),
       ]);
       setSales(salesRes.data);
       setCustomers(customersRes.data);
+      if (userRes.data.payment_methods && userRes.data.payment_methods.length > 0) {
+        setPaymentMethods(userRes.data.payment_methods);
+        setPaymentMethod(userRes.data.payment_methods[0]);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -482,7 +487,7 @@ export default function SalesScreen() {
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>Payment Method</Text>
               <View style={styles.paymentMethods}>
-                {PAYMENT_METHODS.map((method) => (
+                {paymentMethods.map((method) => (
                   <TouchableOpacity
                     key={method}
                     style={[
