@@ -61,6 +61,13 @@ interface Suggestions {
   total_needing_attention: number;
 }
 
+interface Message {
+  id: string;
+  direction: 'incoming' | 'outgoing';
+  content: string;
+  created_at: string;
+}
+
 type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week';
 
 export default function FollowupsScreen() {
@@ -94,6 +101,10 @@ export default function FollowupsScreen() {
   const [draftReason, setDraftReason] = useState('');
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [customDirection, setCustomDirection] = useState('');
+  const [recentMessages, setRecentMessages] = useState<Message[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [showRecentMessages, setShowRecentMessages] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -297,24 +308,45 @@ export default function FollowupsScreen() {
     setShowAddModal(true);
   };
 
-  const handleShowDraftMessage = async (customer: ColdCustomer) => {
+  const handleShowDraftMessage = async (customer: ColdCustomer, direction?: string) => {
     setDraftCustomer(customer);
     setShowDraftModal(true);
     setLoadingDraft(true);
+    setShowRecentMessages(false);
+    fetchRecentMessages(customer.id);
 
     try {
-      const response = await apiClient.get(`/ai/draft-message`, {
-        params: { customer_id: customer.id }
+      const response = await apiClient.post(`/ai/draft-message`, {
+        customer_id: customer.id,
+        custom_instructions: direction || customDirection
       });
 
-      setDraftMessage(response.data.drafted_message || '');
-      setDraftReason(response.data.ai_reason || customer.ai_reason || 'Based on your last interaction');
+      setDraftMessage(response.data.message || response.data.drafted_message || '');
+      setDraftReason(response.data.reason || response.data.ai_reason || customer.ai_reason || 'Based on your last interaction');
     } catch (error) {
       console.error('Error fetching draft message:', error);
       setDraftMessage(`Hi ${customer.name}, just checking in!`);
     } finally {
       setLoadingDraft(false);
     }
+  };
+
+  const fetchRecentMessages = async (customerId: string) => {
+    setLoadingMessages(true);
+    try {
+      const response = await apiClient.get(`/customers/${customerId}/messages`);
+      setRecentMessages(response.data);
+    } catch (error) {
+      console.error('Error fetching recent messages:', error);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const handleRegenerateWithDirection = () => {
+    if (!draftCustomer) return;
+    handleShowDraftMessage(draftCustomer, customDirection);
+    // Don't clear direction yet so user can see what they typed
   };
 
   const handleSendDraftMessage = () => {
@@ -506,7 +538,7 @@ export default function FollowupsScreen() {
           style={styles.aiDraftButton}
           onPress={() => handleShowDraftMessage(customer)}
         >
-          <Ionicons name="sparkles" size={20} color="#FFFFFF" />
+          <Ionicons name="sparkles" size={20} color="#FFD700" />
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -995,6 +1027,84 @@ export default function FollowupsScreen() {
                     </Text>
                   </View>
 
+                  {/* Recent Messages Section */}
+                  <View style={styles.recentMessagesSection}>
+                    <TouchableOpacity
+                      style={styles.recentMessagesHeader}
+                      onPress={() => setShowRecentMessages(!showRecentMessages)}
+                    >
+                      <View style={styles.recentMessagesTitleRow}>
+                        <Ionicons name="chatbubbles-outline" size={18} color="#4A90D9" />
+                        <Text style={styles.inputLabelRecent}>Recent Messages</Text>
+                      </View>
+                      <Ionicons
+                        name={showRecentMessages ? "chevron-up" : "chevron-down"}
+                        size={20}
+                        color="#666"
+                      />
+                    </TouchableOpacity>
+
+                    {showRecentMessages && (
+                      <View style={styles.messagesList}>
+                        {loadingMessages ? (
+                          <ActivityIndicator size="small" color="#4A90D9" />
+                        ) : recentMessages.length > 0 ? (
+                          recentMessages.map((msg) => (
+                            <View
+                              key={msg.id}
+                              style={[
+                                styles.messageBubble,
+                                msg.direction === 'incoming'
+                                  ? styles.incomingBubble
+                                  : styles.outgoingBubble,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.messageText,
+                                  msg.direction === 'incoming'
+                                    ? styles.incomingText
+                                    : styles.outgoingText,
+                                ]}
+                              >
+                                {msg.content}
+                              </Text>
+                              <Text style={styles.messageTime}>
+                                {new Date(msg.created_at).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </Text>
+                            </View>
+                          ))
+                        ) : (
+                          <Text style={styles.noMessagesText}>No recent messages</Text>
+                        )}
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.regenerateSection}>
+                    <Text style={styles.inputLabel}>Give AI Direction (Optional):</Text>
+                    <TextInput
+                      style={styles.directionInput}
+                      value={customDirection}
+                      onChangeText={setCustomDirection}
+                      placeholder="e.g., Make it more casual, mention discount..."
+                      placeholderTextColor="#666"
+                      multiline
+                    />
+                    <TouchableOpacity
+                      style={styles.regenerateButton}
+                      onPress={handleRegenerateWithDirection}
+                    >
+                      <Ionicons name="refresh" size={20} color="#4A90D9" />
+                      <Text style={styles.regenerateButtonText}>
+                        {customDirection ? 'Regenerate with Direction' : 'Regenerate'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
                   <TouchableOpacity
                     style={styles.whatsappSendButton}
                     onPress={handleSendDraftMessage}
@@ -1044,7 +1154,7 @@ const styles = StyleSheet.create({
   addButton: {
     position: 'absolute',
     right: 20,
-    bottom: 20,
+    bottom: 30,
     width: 60,
     height: 60,
     borderRadius: 30,
@@ -1615,9 +1725,11 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#FFD700', // Gold
+    backgroundColor: 'rgba(255, 215, 0, 0.15)', // Light gold background
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 215, 0, 0.3)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
@@ -1682,6 +1794,101 @@ const styles = StyleSheet.create({
   },
   editButton: {
     padding: 8,
+  },
+  recentMessagesSection: {
+    marginBottom: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  recentMessagesHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+  },
+  recentMessagesTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inputLabelRecent: {
+    fontSize: 14,
+    color: '#888',
+    fontWeight: '600',
+  },
+  messagesList: {
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    gap: 8,
+  },
+  messageBubble: {
+    padding: 10,
+    borderRadius: 12,
+    maxWidth: '85%',
+  },
+  incomingBubble: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#0A1628',
+    borderBottomLeftRadius: 2,
+  },
+  outgoingBubble: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#25D366',
+    borderBottomRightRadius: 2,
+  },
+  messageText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  incomingText: {
+    color: '#FFFFFF',
+  },
+  outgoingText: {
+    color: '#FFFFFF',
+  },
+  messageTime: {
+    fontSize: 10,
+    color: '#666',
+    marginTop: 4,
+    alignSelf: 'flex-end',
+  },
+  noMessagesText: {
+    color: '#666',
+    fontSize: 14,
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  regenerateSection: {
+    marginTop: 16,
+    marginBottom: 20,
+  },
+  directionInput: {
+    backgroundColor: '#0A1628',
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 14,
+    color: '#FFFFFF',
+    minHeight: 60,
+    textAlignVertical: 'top',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#4A90D9',
+  },
+  regenerateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A2942',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+  },
+  regenerateButtonText: {
+    color: '#4A90D9',
+    fontSize: 16,
+    fontWeight: '600',
   },
   // Urgency Badge Styles
   urgencyBadge: {

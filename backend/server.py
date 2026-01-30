@@ -250,6 +250,7 @@ class AIAnalysisResponse(BaseModel):
 class DraftMessageRequest(BaseModel):
     customer_id: str
     tone: Optional[str] = "friendly"  # professional, friendly, casual
+    custom_instructions: Optional[str] = None
 
 class DraftMessageResponse(BaseModel):
     message: str
@@ -1595,9 +1596,9 @@ async def generate_customer_notes(customer_id: str, user = Depends(get_current_u
     return {"customer_id": customer_id, "notes": notes}
 
 @api_router.get("/ai/draft-message")
-async def draft_message(customer_id: str, user = Depends(get_current_user)):
+async def draft_message(customer_id: str, custom_instructions: Optional[str] = None, user = Depends(get_current_user)):
     """
-    Draft a personalized message for a customer using AI
+    Draft a personalized message for a customer using AI with optional custom instructions
     """
     try:
         customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
@@ -1619,7 +1620,8 @@ async def draft_message(customer_id: str, user = Depends(get_current_user)):
             messages=messages,
             business_name=business_name,
             tone=tone,
-            business_knowledge=business_knowledge
+            business_knowledge=business_knowledge,
+            custom_instructions=custom_instructions
         )
         
         from bson import json_util
@@ -1797,7 +1799,8 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         messages=messages,
         business_name=business_name,
         tone=tone,
-        business_knowledge=business_knowledge
+        business_knowledge=business_knowledge,
+        custom_instructions=request.custom_instructions
     )
     
     # Support both legacy and new AI service response keys

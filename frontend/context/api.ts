@@ -45,10 +45,11 @@ export const aiAPI = {
   /**
    * Draft an AI-generated follow-up message for a customer
    */
-  draftMessage: async (customerId: string, tone: string = 'friendly') => {
+  draftMessage: async (customerId: string, tone: string = 'friendly', customInstructions?: string) => {
     const response = await apiClient.post('/ai/draft-message', {
       customer_id: customerId,
-      tone
+      tone,
+      custom_instructions: customInstructions
     });
     return response.data;
   },

@@ -45,6 +45,7 @@ class AIMessageDrafter:
         business_name: str = "Your Business",
         tone: str = "friendly",
         business_knowledge: str = None,
+        custom_instructions: str = None,
         user_id: str = None,
         db = None
     ) -> Dict[str, any]:
@@ -69,7 +70,7 @@ class AIMessageDrafter:
             tone = user_style["style"]
         
         # Create AI prompt with personalized style
-        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style)
+        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions)
         
         # Call OpenAI API
         try:
@@ -249,11 +250,16 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
 
         return prompt
     
-    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None) -> str:
-        """Create personalized prompt using learned user writing style"""
+    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None) -> str:
+        """Create personalized prompt using learned user writing style and custom instructions"""
         
         # Start with the base prompt
         base_prompt = self._create_prompt(context, business_name, tone, business_knowledge)
+        
+        # If we have custom instructions, add them with high priority
+        if custom_instructions:
+            custom_section = f"\n\nCUSTOM USER INSTRUCTIONS (PRIORITY):\n- {custom_instructions}\nFollow these instructions strictly over any other style guidelines."
+            base_prompt = base_prompt + custom_section
         
         # If we have user style information, enhance the prompt
         if user_style and user_style.get("patterns"):

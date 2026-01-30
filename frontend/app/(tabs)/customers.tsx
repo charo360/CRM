@@ -42,6 +42,13 @@ interface PhoneContact {
 
 const TAGS = ['New', 'Returning', 'VIP'];
 
+interface Message {
+  id: string;
+  direction: 'incoming' | 'outgoing';
+  content: string;
+  created_at: string;
+}
+
 export default function CustomersScreen() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,6 +73,17 @@ export default function CustomersScreen() {
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [importingContacts, setImportingContacts] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
+
+  // AI Draft Message Modal State
+  const [showDraftModal, setShowDraftModal] = useState(false);
+  const [draftMessage, setDraftMessage] = useState('');
+  const [draftReason, setDraftReason] = useState('');
+  const [loadingDraft, setLoadingDraft] = useState(false);
+  const [draftCustomer, setDraftCustomer] = useState<Customer | null>(null);
+  const [customDirection, setCustomDirection] = useState('');
+  const [recentMessages, setRecentMessages] = useState<Message[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [showRecentMessages, setShowRecentMessages] = useState(false);
 
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
@@ -338,6 +356,61 @@ export default function CustomersScreen() {
     });
   };
 
+  const handleShowDraftMessage = async (customer: Customer, direction?: string) => {
+    setDraftCustomer(customer);
+    setShowDraftModal(true);
+    setLoadingDraft(true);
+    setShowRecentMessages(false);
+    fetchRecentMessages(customer.id);
+
+    try {
+      const response = await apiClient.post(`/ai/draft-message`, {
+        customer_id: customer.id,
+        custom_instructions: direction || customDirection
+      });
+
+      setDraftMessage(response.data.message || response.data.drafted_message || '');
+      setDraftReason(response.data.reason || response.data.ai_reason || 'Based on your interaction history');
+    } catch (error) {
+      console.error('Error fetching draft message:', error);
+      setDraftMessage(`Hi ${customer.name}, just checking in! How can I help you today?`);
+      setDraftReason('Generic follow-up message');
+    } finally {
+      setLoadingDraft(false);
+    }
+  };
+
+  const fetchRecentMessages = async (customerId: string) => {
+    setLoadingMessages(true);
+    try {
+      const response = await apiClient.get(`/customers/${customerId}/messages`);
+      setRecentMessages(response.data);
+    } catch (error) {
+      console.error('Error fetching recent messages:', error);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const handleRegenerateWithDirection = () => {
+    if (!draftCustomer) return;
+    handleShowDraftMessage(draftCustomer, customDirection);
+    setCustomDirection('');
+  };
+
+  const handleSendDraftMessage = () => {
+    if (!draftCustomer) return;
+
+    setShowDraftModal(false);
+    handleWhatsApp(draftCustomer.phone_number);
+
+    // Reset
+    setDraftMessage('');
+    setDraftReason('');
+    setDraftCustomer(null);
+    setCustomDirection('');
+  };
+
   const renderCustomer = ({ item }: { item: Customer }) => (
     <TouchableOpacity style={styles.customerCard} onPress={() => openEditModal(item)}>
       <View style={styles.customerAvatar}>
@@ -374,6 +447,9 @@ export default function CustomersScreen() {
         <View style={styles.actionButtons}>
           <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
             <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
+            <Ionicons name="sparkles" size={22} color="#FFD700" />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
             <Ionicons name="trash-outline" size={20} color="#FF4444" />
@@ -562,7 +638,7 @@ export default function CustomersScreen() {
       />
 
       {/* WhatsApp-style Floating Action Button with Menu */}
-      <View style={[styles.fabContainer, { bottom: insets.bottom + 90 }]}>
+      <View style={[styles.fabContainer, { bottom: insets.bottom + 30 }]}>
         <TouchableOpacity
           style={styles.fabSecondary}
           onPress={() => {
@@ -585,6 +661,156 @@ export default function CustomersScreen() {
 
       {renderModal(false)}
       {renderModal(true)}
+
+      {/* AI Draft Message Modal */}
+      <Modal
+        visible={showDraftModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setShowDraftModal(false);
+          setDraftMessage('');
+          setDraftReason('');
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => {
+              setShowDraftModal(false);
+              setDraftMessage('');
+              setDraftReason('');
+            }}>
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <View style={styles.aiModalTitleRow}>
+              <Ionicons name="sparkles" size={20} color="#FFD700" />
+              <Text style={styles.modalTitle}>AI Draft Message</Text>
+            </View>
+            <TouchableOpacity onPress={handleSendDraftMessage}>
+              <Text style={styles.modalSave}>Send</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.draftModalContent}>
+            {draftCustomer && (
+              <View style={styles.draftCustomerInfo}>
+                <View style={styles.customerAvatar}>
+                  <Text style={styles.avatarText}>{draftCustomer.name.charAt(0).toUpperCase()}</Text>
+                </View>
+                <View>
+                  <Text style={styles.draftCustomerName}>{draftCustomer.name}</Text>
+                  <Text style={styles.draftCustomerPhone}>{draftCustomer.phone_number}</Text>
+                </View>
+              </View>
+            )}
+
+            {loadingDraft ? (
+              <View style={styles.draftLoadingContainer}>
+                <ActivityIndicator size="large" color="#25D366" />
+                <Text style={styles.draftLoadingText}>AI is drafting your message...</Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.draftReasonContainer}>
+                  <Ionicons name="bulb" size={20} color="#FFD700" />
+                  <Text style={styles.draftReasonText}>{draftReason}</Text>
+                </View>
+
+                {/* Recent Messages Section */}
+                <View style={styles.recentMessagesSection}>
+                  <TouchableOpacity
+                    style={styles.recentMessagesHeader}
+                    onPress={() => setShowRecentMessages(!showRecentMessages)}
+                  >
+                    <View style={styles.recentMessagesTitleRow}>
+                      <Ionicons name="chatbubbles-outline" size={18} color="#4A90D9" />
+                      <Text style={styles.inputLabelRecent}>Recent Messages</Text>
+                    </View>
+                    <Ionicons
+                      name={showRecentMessages ? "chevron-up" : "chevron-down"}
+                      size={20}
+                      color="#666"
+                    />
+                  </TouchableOpacity>
+
+                  {showRecentMessages && (
+                    <View style={styles.messagesList}>
+                      {loadingMessages ? (
+                        <ActivityIndicator size="small" color="#4A90D9" />
+                      ) : recentMessages.length > 0 ? (
+                        recentMessages.map((msg) => (
+                          <View
+                            key={msg.id}
+                            style={[
+                              styles.messageBubble,
+                              msg.direction === 'incoming'
+                                ? styles.incomingBubble
+                                : styles.outgoingBubble,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.messageText,
+                                msg.direction === 'incoming'
+                                  ? styles.incomingText
+                                  : styles.outgoingText,
+                              ]}
+                            >
+                              {msg.content}
+                            </Text>
+                            <Text style={styles.messageTime}>
+                              {new Date(msg.created_at).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </Text>
+                          </View>
+                        ))
+                      ) : (
+                        <Text style={styles.noMessagesText}>No recent messages</Text>
+                      )}
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.draftMessageContainer}>
+                  <Text style={styles.draftLabel}>Message:</Text>
+                  <TextInput
+                    style={styles.draftMessageInput}
+                    value={draftMessage}
+                    onChangeText={setDraftMessage}
+                    multiline
+                    numberOfLines={8}
+                    placeholder="Edit the AI-generated message..."
+                    placeholderTextColor="#666"
+                  />
+                </View>
+
+                <View style={styles.regenerateSection}>
+                  <Text style={styles.draftLabel}>Give AI Direction (Optional):</Text>
+                  <TextInput
+                    style={styles.directionInput}
+                    value={customDirection}
+                    onChangeText={setCustomDirection}
+                    placeholder="e.g., Make it more casual, mention discount..."
+                    placeholderTextColor="#666"
+                    multiline
+                  />
+                  <TouchableOpacity
+                    style={styles.regenerateButton}
+                    onPress={handleRegenerateWithDirection}
+                  >
+                    <Ionicons name="refresh" size={20} color="#4A90D9" />
+                    <Text style={styles.regenerateButtonText}>
+                      {customDirection ? 'Regenerate with Direction' : 'Regenerate'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
 
       {/* Import Contacts Modal */}
       <Modal
@@ -1013,6 +1239,106 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginLeft: 8,
   },
+  regenerateSection: {
+    marginTop: 8,
+  },
+  directionInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 14,
+    color: '#FFFFFF',
+    minHeight: 60,
+    textAlignVertical: 'top',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#4A90D9',
+  },
+  aiModalTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  draftModalContent: {
+    flex: 1,
+    padding: 20,
+  },
+  draftCustomerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+  },
+  draftCustomerName: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginLeft: 12,
+  },
+  draftCustomerPhone: {
+    fontSize: 14,
+    color: '#666',
+    marginLeft: 12,
+  },
+  draftLoadingContainer: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  draftLoadingText: {
+    fontSize: 16,
+    color: '#666',
+    marginTop: 16,
+  },
+  draftReasonContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#1A2942',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+  },
+  draftReasonText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#FFD700',
+    marginLeft: 12,
+    lineHeight: 20,
+  },
+  draftMessageContainer: {
+    marginBottom: 20,
+  },
+  draftLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  draftMessageInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    color: '#FFFFFF',
+    minHeight: 150,
+    textAlignVertical: 'top',
+  },
+  regenerateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A2942',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+  },
+  regenerateButtonText: {
+    color: '#4A90D9',
+    fontSize: 16,
+    fontWeight: '600',
+  },
   contactsSearchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1071,5 +1397,69 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 2,
+  },
+  recentMessagesSection: {
+    marginBottom: 20,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  recentMessagesHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+  },
+  recentMessagesTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inputLabelRecent: {
+    fontSize: 14,
+    color: '#888',
+    fontWeight: '600',
+  },
+  messagesList: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 8,
+  },
+  messageBubble: {
+    padding: 10,
+    borderRadius: 12,
+    maxWidth: '85%',
+  },
+  incomingBubble: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#0A1628',
+    borderBottomLeftRadius: 2,
+  },
+  outgoingBubble: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#25D366',
+    borderBottomRightRadius: 2,
+  },
+  messageText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  incomingText: {
+    color: '#FFFFFF',
+  },
+  outgoingText: {
+    color: '#FFFFFF',
+  },
+  messageTime: {
+    fontSize: 10,
+    color: '#666',
+    marginTop: 4,
+    alignSelf: 'flex-end',
+  },
+  noMessagesText: {
+    color: '#666',
+    fontSize: 14,
+    fontStyle: 'italic',
+    textAlign: 'center',
   },
 });
