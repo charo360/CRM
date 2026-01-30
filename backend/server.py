@@ -174,6 +174,7 @@ class SaleCreate(BaseModel):
     amount: float
     payment_method: str  # Cash, M-Pesa
     send_receipt: bool = True
+    receipt_message: Optional[str] = None
 
 class SaleResponse(BaseModel):
     id: str
@@ -997,7 +998,8 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
             sale.item,
             sale.amount,
             user.get("business_name", "Your Shop"),
-            sale_id
+            sale_id,
+            sale.receipt_message
         )
     
     return SaleResponse(
@@ -1013,10 +1015,14 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
         created_at=sale_doc["created_at"]
     )
 
-async def send_receipt_message(phone: str, name: str, item: str, amount: float, business: str, sale_id: str):
+async def send_receipt_message(phone: str, name: str, item: str, amount: float, business: str, sale_id: str, custom_message: Optional[str] = None):
     """Send receipt via SMS (WhatsApp requires approved templates)"""
     try:
-        message = f"""✅ Payment received
+        # Use custom message if provided, otherwise use default template
+        if custom_message:
+            message = custom_message
+        else:
+            message = f"""✅ Payment received
 Item: {item}
 Amount: KES {amount:,.0f}
 Thank you for shopping with {business} 🙏"""

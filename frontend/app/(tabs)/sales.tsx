@@ -58,6 +58,7 @@ export default function SalesScreen() {
   const [amount, setAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('M-Pesa');
   const [sendReceipt, setSendReceipt] = useState(true);
+  const [receiptMessage, setReceiptMessage] = useState('');
 
   const fetchData = useCallback(async () => {
     try {
@@ -106,6 +107,7 @@ export default function SalesScreen() {
         amount: parseFloat(amount),
         payment_method: paymentMethod,
         send_receipt: sendReceipt,
+        receipt_message: receiptMessage.trim() || undefined,
       });
 
       setSales([response.data, ...sales]);
@@ -130,7 +132,16 @@ export default function SalesScreen() {
     setAmount('');
     setPaymentMethod('M-Pesa');
     setSendReceipt(true);
+    setReceiptMessage('');
   };
+
+  // Generate default receipt message when item or amount changes
+  useEffect(() => {
+    if (item && amount && parseFloat(amount) > 0) {
+      const defaultMessage = `✅ Payment received\nItem: ${item}\nAmount: KES ${parseFloat(amount).toLocaleString()}\nThank you for shopping with us 🙏`;
+      setReceiptMessage(defaultMessage);
+    }
+  }, [item, amount]);
 
   // Filter sales based on search and date
   const filteredSales = useMemo(() => {
@@ -506,13 +517,20 @@ export default function SalesScreen() {
             </TouchableOpacity>
 
             {sendReceipt && (
-              <View style={styles.receiptPreview}>
-                <Text style={styles.receiptPreviewTitle}>Receipt Preview:</Text>
-                <Text style={styles.receiptPreviewText}>
-                  ✅ Payment received{"\n"}
-                  Item: {item || '[Item]'}{"\n"}
-                  Amount: KES {amount ? parseFloat(amount).toLocaleString() : '0'}{"\n"}
-                  Thank you for shopping with us 🙏
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Receipt Message</Text>
+                <TextInput
+                  style={[styles.formInput, styles.receiptMessageInput]}
+                  value={receiptMessage}
+                  onChangeText={setReceiptMessage}
+                  placeholder="Customize your receipt message..."
+                  placeholderTextColor="#666"
+                  multiline
+                  numberOfLines={5}
+                  textAlignVertical="top"
+                />
+                <Text style={styles.receiptHint}>
+                  Tip: Personalize with your business name for a professional touch
                 </Text>
               </View>
             )}
@@ -1128,21 +1146,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FFFFFF',
   },
-  receiptPreview: {
-    backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
+  receiptMessageInput: {
+    minHeight: 100,
+    paddingTop: 14,
   },
-  receiptPreviewTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#666',
-    marginBottom: 8,
-  },
-  receiptPreviewText: {
-    fontSize: 14,
-    color: '#FFFFFF',
-    lineHeight: 22,
+  receiptHint: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 8,
+    fontStyle: 'italic',
   },
   customerOption: {
     flexDirection: 'row',
