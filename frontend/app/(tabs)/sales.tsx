@@ -139,8 +139,8 @@ export default function SalesScreen() {
 
   // Initialize receipt message when editing starts
   const handleEditReceipt = () => {
-    if (!receiptMessage && item && amount) {
-      const defaultMessage = `✅ Payment received\nItem: ${item}\nAmount: KES ${parseFloat(amount).toLocaleString()}\nThank you for shopping with us 🙏`;
+    if (!receiptMessage) {
+      const defaultMessage = `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: KES ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`;
       setReceiptMessage(defaultMessage);
     }
     setEditingReceipt(true);
