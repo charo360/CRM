@@ -48,7 +48,7 @@ const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
 const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Salaries', 'Other'];
 
 export default function FinanceScreen() {
-  const [viewMode, setViewMode] = useState<'income' | 'expenses'>('income');
+  const [viewMode, setViewMode] = useState<'sales' | 'expenses'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -441,9 +441,9 @@ export default function FinanceScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Finance</Text>
+          <Text style={styles.headerTitle}>Sales</Text>
           <Text style={styles.headerSubtitle}>
-            {viewMode === 'income' ? `${analytics.salesCount} sales` : `${filteredExpenses.length} expenses`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
+            {viewMode === 'sales' ? `${analytics.salesCount} sales` : `${filteredExpenses.length} expenses`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
           </Text>
         </View>
         <View style={styles.headerActions}>
@@ -456,13 +456,13 @@ export default function FinanceScreen() {
         </View>
       </View>
 
-      {/* Income/Expenses Toggle */}
+      {/* Sales/Expenses Toggle */}
       <View style={styles.viewToggle}>
         <TouchableOpacity
-          style={[styles.toggleButton, viewMode === 'income' && styles.toggleButtonActive]}
-          onPress={() => setViewMode('income')}
+          style={[styles.toggleButton, viewMode === 'sales' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('sales')}
         >
-          <Text style={[styles.toggleText, viewMode === 'income' && styles.toggleTextActive]}>Income</Text>
+          <Text style={[styles.toggleText, viewMode === 'sales' && styles.toggleTextActive]}>Sales</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.toggleButton, viewMode === 'expenses' && styles.toggleButtonActive]}
@@ -473,7 +473,7 @@ export default function FinanceScreen() {
       </View>
 
       {/* Search Bar */}
-      {viewMode === 'income' && (
+      {viewMode === 'sales' && (
         <View style={styles.searchContainer}>
         <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
         <TextInput
@@ -533,8 +533,8 @@ export default function FinanceScreen() {
       </View>
 
       <FlatList
-        data={viewMode === 'income' ? filteredSales : filteredExpenses}
-        renderItem={viewMode === 'income' ? renderSale : renderExpense}
+        data={viewMode === 'sales' ? filteredSales : filteredExpenses}
+        renderItem={viewMode === 'sales' ? renderSale : renderExpense}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -542,15 +542,15 @@ export default function FinanceScreen() {
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Ionicons name={viewMode === 'income' ? 'receipt-outline' : 'wallet-outline'} size={64} color="#666" />
+            <Ionicons name={viewMode === 'sales' ? 'receipt-outline' : 'wallet-outline'} size={64} color="#666" />
             <Text style={styles.emptyText}>
-              {viewMode === 'income' 
+              {viewMode === 'sales' 
                 ? (searchQuery || dateFilter !== 'All Time' ? 'No sales found' : 'No sales yet')
                 : (dateFilter !== 'All Time' ? 'No expenses found' : 'No expenses yet')
               }
             </Text>
             <Text style={styles.emptySubtext}>
-              {viewMode === 'income'
+              {viewMode === 'sales'
                 ? (searchQuery || dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first sale')
                 : (dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first expense')
               }
@@ -586,8 +586,8 @@ export default function FinanceScreen() {
             }}>
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>{viewMode === 'income' ? 'New Sale' : 'New Expense'}</Text>
-            <TouchableOpacity onPress={viewMode === 'income' ? handleCreateSale : handleCreateExpense} disabled={saving}>
+            <Text style={styles.modalTitle}>{viewMode === 'sales' ? 'New Sale' : 'New Expense'}</Text>
+            <TouchableOpacity onPress={viewMode === 'sales' ? handleCreateSale : handleCreateExpense} disabled={saving}>
               <Text style={[styles.modalSave, saving && styles.modalSaveDisabled]}>
                 {saving ? 'Saving...' : 'Save'}
               </Text>
@@ -595,7 +595,7 @@ export default function FinanceScreen() {
           </View>
 
           <ScrollView style={styles.modalContent}>
-            {viewMode === 'income' ? (
+            {viewMode === 'sales' ? (
               <>
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>Customer *</Text>
