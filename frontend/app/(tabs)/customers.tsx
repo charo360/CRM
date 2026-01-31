@@ -417,42 +417,48 @@ export default function CustomersScreen() {
         <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
       </View>
       <View style={styles.customerInfo}>
-        <Text style={styles.customerName}>{item.name}</Text>
-        <Text style={styles.customerPhone}>{item.phone_number}</Text>
-        <View style={styles.tagsContainer}>
-          {item.purchase_count > 0 && (
-            <View style={[styles.tag, styles.tagCount]}>
-              <Text style={styles.tagText}>{item.purchase_count} {item.purchase_count === 1 ? 'Sale' : 'Sales'}</Text>
-            </View>
-          )}
-          {item.total_spent > 0 && (
-            <View style={[styles.tag, styles.tagMoney]}>
-              <Text style={[styles.tagText, styles.tagMoneyText]}>KES {item.total_spent.toLocaleString()}</Text>
-            </View>
-          )}
-          {item.tags.map((tag, index) => (
-            <View key={index} style={[styles.tag, tag === 'VIP' && styles.tagVip, tag === 'Returning' && styles.tagReturning]}>
-              <Text style={styles.tagText}>{tag}</Text>
-            </View>
-          ))}
-        </View>
-        <View style={styles.actionButtons}>
-          <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
-            <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
-            <Ionicons name="sparkles" size={22} color="#FFD700" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
-            <Ionicons name="trash-outline" size={20} color="#FF4444" />
-          </TouchableOpacity>
-        </View>
-        {item.notes && (
-          <View style={styles.notesPreview}>
-            <Ionicons name="document-text-outline" size={12} color="#25D366" />
-            <Text style={styles.notesPreviewText} numberOfLines={2}>{item.notes}</Text>
+        <View style={styles.customerTopRow}>
+          <View style={styles.customerNameSection}>
+            <Text style={styles.customerName}>{item.name}</Text>
+            <Text style={styles.customerPhone}>{item.phone_number}</Text>
           </View>
-        )}
+          {item.notes && (
+            <View style={styles.notesPreview}>
+              <Ionicons name="document-text-outline" size={12} color="#25D366" />
+              <Text style={styles.notesPreviewText} numberOfLines={1}>{item.notes}</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.customerBottomRow}>
+          <View style={styles.tagsContainer}>
+            {item.purchase_count > 0 && (
+              <View style={[styles.tag, styles.tagCount]}>
+                <Text style={styles.tagText}>{item.purchase_count} {item.purchase_count === 1 ? 'Sale' : 'Sales'}</Text>
+              </View>
+            )}
+            {item.total_spent > 0 && (
+              <View style={[styles.tag, styles.tagMoney]}>
+                <Text style={[styles.tagText, styles.tagMoneyText]}>KES {item.total_spent.toLocaleString()}</Text>
+              </View>
+            )}
+            {item.tags.map((tag, index) => (
+              <View key={index} style={[styles.tag, tag === 'VIP' && styles.tagVip, tag === 'Returning' && styles.tagReturning]}>
+                <Text style={styles.tagText}>{tag}</Text>
+              </View>
+            ))}
+          </View>
+          <View style={styles.actionButtons}>
+            <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
+              <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
+              <Ionicons name="sparkles" size={22} color="#FFD700" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
+              <Ionicons name="trash-outline" size={20} color="#FF4444" />
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
     </TouchableOpacity>
   );
@@ -1028,11 +1034,16 @@ const styles = StyleSheet.create({
   customerInfo: {
     flex: 1,
   },
-  customerHeader: {
+  customerTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: 8,
+  },
+  customerBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   customerNameSection: {
     flex: 1,
@@ -1045,18 +1056,18 @@ const styles = StyleSheet.create({
   },
   notesPreview: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     backgroundColor: '#0D2137',
     borderRadius: 8,
-    padding: 8,
-    marginTop: 8,
+    padding: 6,
+    marginLeft: 8,
+    maxWidth: 120,
   },
   notesPreviewText: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#25D366',
     marginLeft: 4,
     flex: 1,
-    lineHeight: 14,
   },
   customerName: {
     fontSize: 16,
@@ -1067,13 +1078,12 @@ const styles = StyleSheet.create({
   customerPhone: {
     fontSize: 14,
     color: '#666',
-    marginBottom: 4,
   },
   tagsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginBottom: 8,
-    marginTop: 4,
+    flex: 1,
+    alignItems: 'center',
   },
   tag: {
     paddingHorizontal: 8,
