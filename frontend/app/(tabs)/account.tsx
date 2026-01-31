@@ -120,7 +120,7 @@ export default function AccountScreen() {
           style: 'destructive',
           onPress: async () => {
             await logout();
-            router.replace('/(auth)/login');
+            router.replace('/');
           },
         },
       ]
