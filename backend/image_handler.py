@@ -251,6 +251,11 @@ class ImageUploadHandler:
             if not cloud_name:
                 raise ValueError(f"Cloudinary cloud name not configured")
             
+            # Sanitize filename - remove path separators and special chars
+            # Cloudinary doesn't allow slashes in display names
+            safe_filename = Path(filename).name  # Get just the filename without path
+            safe_filename = safe_filename.replace('/', '_').replace('\\', '_')
+            
             # Ensure data URI format
             if not base64_data.startswith('data:'):
                 ext = Path(filename).suffix.lower().replace('.', '') or 'jpeg'
@@ -278,7 +283,7 @@ class ImageUploadHandler:
                     return {
                         "image_url": image_url,
                         "public_id": result.get("public_id"),
-                        "filename": filename
+                        "filename": safe_filename
                     }
                 else:
                     logger.error(f"Cloudinary upload failed: {response.text}")
