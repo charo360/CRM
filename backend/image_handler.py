@@ -226,8 +226,9 @@ class ImageUploadHandler:
         """
         try:
             # Check if Cloudinary is configured
+            logger.info(f"Cloudinary config check - Cloud: {bool(CLOUDINARY_CLOUD_NAME)}, Key: {bool(CLOUDINARY_API_KEY)}, Secret: {bool(CLOUDINARY_API_SECRET)}")
             if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
-                raise ValueError("Cloudinary not configured. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in .env")
+                raise ValueError(f"Cloudinary not configured. Cloud: {CLOUDINARY_CLOUD_NAME}, Key: {CLOUDINARY_API_KEY[:4] if CLOUDINARY_API_KEY else 'None'}...")
             
             # Ensure data URI format
             if not base64_data.startswith('data:'):
