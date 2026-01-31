@@ -417,8 +417,23 @@ export default function CustomersScreen() {
         <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
       </View>
       <View style={styles.customerInfo}>
-        <Text style={styles.customerName}>{item.name}</Text>
-        <Text style={styles.customerPhone}>{item.phone_number}</Text>
+        <View style={styles.customerHeader}>
+          <View style={styles.customerNameSection}>
+            <Text style={styles.customerName}>{item.name}</Text>
+            <Text style={styles.customerPhone}>{item.phone_number}</Text>
+          </View>
+          <View style={styles.actionButtons}>
+            <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
+              <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
+              <Ionicons name="sparkles" size={22} color="#FFD700" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
+              <Ionicons name="trash-outline" size={20} color="#FF4444" />
+            </TouchableOpacity>
+          </View>
+        </View>
         <View style={styles.tagsContainer}>
           {item.purchase_count > 0 && (
             <View style={[styles.tag, styles.tagCount]}>
@@ -436,25 +451,12 @@ export default function CustomersScreen() {
             </View>
           ))}
         </View>
-      </View>
-      <View style={styles.customerRight}>
         {item.notes && (
           <View style={styles.notesPreview}>
             <Ionicons name="document-text-outline" size={12} color="#25D366" />
             <Text style={styles.notesPreviewText} numberOfLines={2}>{item.notes}</Text>
           </View>
         )}
-        <View style={styles.actionButtons}>
-          <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
-            <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
-            <Ionicons name="sparkles" size={22} color="#FFD700" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
-            <Ionicons name="trash-outline" size={20} color="#FF4444" />
-          </TouchableOpacity>
-        </View>
       </View>
     </TouchableOpacity>
   );
@@ -1030,6 +1032,15 @@ const styles = StyleSheet.create({
   customerInfo: {
     flex: 1,
   },
+  customerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  customerNameSection: {
+    flex: 1,
+  },
   customerRight: {
     alignItems: 'flex-end',
     justifyContent: 'space-between',
@@ -1042,7 +1053,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0D2137',
     borderRadius: 8,
     padding: 8,
-    marginBottom: 8,
+    marginTop: 8,
   },
   notesPreviewText: {
     fontSize: 11,
@@ -1064,6 +1075,8 @@ const styles = StyleSheet.create({
   },
   tagsContainer: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 4,
   },
   tag: {
     paddingHorizontal: 8,
