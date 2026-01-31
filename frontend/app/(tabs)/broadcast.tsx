@@ -949,12 +949,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
-    gap: 4,
   },
   aiButtonText: {
     fontSize: 12,
     color: '#FFD700',
     fontWeight: '600',
+    marginLeft: 4,
   },
   formInput: {
     backgroundColor: '#1A2942',
@@ -973,10 +973,10 @@ const styles = StyleSheet.create({
   checkboxRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
   },
   checkboxLabel: {
     fontSize: 16,
     color: '#FFFFFF',
+    marginLeft: 12,
   },
 });
