@@ -856,13 +856,14 @@ const styles = StyleSheet.create({
   templatesContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
   },
   templateOption: {
     paddingHorizontal: 16,
     paddingVertical: 10,
     backgroundColor: '#1A2942',
     borderRadius: 20,
+    marginRight: 8,
+    marginBottom: 8,
   },
   templateOptionSelected: {
     backgroundColor: '#25D366',
