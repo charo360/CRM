@@ -1400,6 +1400,27 @@ Format: Just return the message text, nothing else."""
         logging.error(f"AI generation error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate message")
 
+# ============ IMAGE UPLOAD ENDPOINTS ============
+
+class ImageUploadRequest(BaseModel):
+    base64_data: str
+    filename: Optional[str] = "image.jpg"
+
+@api_router.post("/upload-image")
+async def upload_broadcast_image(request: ImageUploadRequest, user = Depends(get_current_user)):
+    """Upload an image for broadcast messages - returns public URL"""
+    try:
+        result = await ImageUploadHandler.upload_base64_to_cloudinary(
+            request.base64_data,
+            request.filename
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.error(f"Image upload error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload image")
+
 # ============ SUBSCRIPTION ENDPOINTS ============
 
 SUBSCRIPTION_PLANS = [

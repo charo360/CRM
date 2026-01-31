@@ -11,9 +11,11 @@ import {
   ActivityIndicator,
   RefreshControl,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { apiClient } from '../../context/api';
 
 interface Customer {
@@ -97,6 +99,10 @@ export default function BroadcastScreen() {
   // AI generation state
   const [aiPrompt, setAiPrompt] = useState('');
   const [businessType, setBusinessType] = useState('');
+  
+  // Image upload state
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -219,6 +225,56 @@ export default function BroadcastScreen() {
     );
   };
 
+  const pickImage = async () => {
+    try {
+      // Request permission
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow access to your photo library to upload images.');
+        return;
+      }
+
+      // Pick image
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const asset = result.assets[0];
+        setSelectedImage(asset.uri);
+        
+        // Upload to Cloudinary
+        if (asset.base64) {
+          setUploadingImage(true);
+          try {
+            const response = await apiClient.post('/upload-image', {
+              base64_data: asset.base64,
+              filename: asset.fileName || 'broadcast_image.jpg',
+            });
+            setImageUrl(response.data.image_url);
+            Alert.alert('Success', 'Image uploaded successfully!');
+          } catch (error: any) {
+            Alert.alert('Upload Failed', error.response?.data?.detail || 'Failed to upload image. Please try again.');
+            setSelectedImage(null);
+          } finally {
+            setUploadingImage(false);
+          }
+        }
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to pick image');
+    }
+  };
+
+  const removeImage = () => {
+    setSelectedImage(null);
+    setImageUrl('');
+  };
+
   const handleSendBroadcast = async () => {
     if (!message.trim()) {
       Alert.alert('Error', 'Please enter a message');
@@ -283,6 +339,7 @@ export default function BroadcastScreen() {
     setSelectedTemplate('');
     setMessage('');
     setImageUrl('');
+    setSelectedImage(null);
     setScheduledDate('');
     setSaveAsTemplate(false);
     setTemplateName('');
@@ -519,15 +576,28 @@ export default function BroadcastScreen() {
             </View>
 
             <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Image URL (Optional)</Text>
-              <TextInput
-                style={styles.formInput}
-                value={imageUrl}
-                onChangeText={setImageUrl}
-                placeholder="https://example.com/image.jpg"
-                placeholderTextColor="#666"
-              />
-              <Text style={styles.hint}>Add product images for clothing, promotions, etc.</Text>
+              <Text style={styles.formLabel}>Image (Optional)</Text>
+              {selectedImage ? (
+                <View style={styles.imagePreviewContainer}>
+                  <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
+                  {uploadingImage ? (
+                    <View style={styles.uploadingOverlay}>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text style={styles.uploadingText}>Uploading...</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity style={styles.removeImageButton} onPress={removeImage}>
+                      <Ionicons name="close-circle" size={28} color="#FF4444" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.imagePickerButton} onPress={pickImage}>
+                  <Ionicons name="image-outline" size={32} color="#25D366" />
+                  <Text style={styles.imagePickerText}>Tap to add product image</Text>
+                  <Text style={styles.imagePickerHint}>Perfect for clothing, promotions, etc.</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.formGroup}>
@@ -979,5 +1049,58 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FFFFFF',
     marginLeft: 12,
+  },
+  imagePickerButton: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#2A3952',
+    borderStyle: 'dashed',
+  },
+  imagePickerText: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    fontWeight: '500',
+    marginTop: 8,
+  },
+  imagePickerHint: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  imagePreviewContainer: {
+    position: 'relative',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  imagePreview: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+  },
+  removeImageButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 14,
+  },
+  uploadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 12,
+  },
+  uploadingText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginTop: 8,
   },
 });
