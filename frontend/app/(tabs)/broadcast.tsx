@@ -577,11 +577,27 @@ export default function BroadcastScreen() {
 
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>Image (Optional)</Text>
-              <View style={styles.imagePickerButton}>
-                <Ionicons name="image-outline" size={32} color="#666" />
-                <Text style={styles.imagePickerText}>Image upload coming soon</Text>
-                <Text style={styles.imagePickerHint}>For now, send text-only broadcasts</Text>
-              </View>
+              {selectedImage ? (
+                <View style={styles.imagePreviewContainer}>
+                  <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
+                  {uploadingImage ? (
+                    <View style={styles.uploadingOverlay}>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text style={styles.uploadingText}>Uploading...</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity style={styles.removeImageButton} onPress={removeImage}>
+                      <Ionicons name="close-circle" size={28} color="#FF4444" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.imagePickerButton} onPress={pickImage}>
+                  <Ionicons name="image-outline" size={32} color="#25D366" />
+                  <Text style={styles.imagePickerText}>Tap to add product image</Text>
+                  <Text style={styles.imagePickerHint}>Perfect for clothing, promotions, etc.</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.formGroup}>

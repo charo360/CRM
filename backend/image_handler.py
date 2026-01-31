@@ -232,7 +232,7 @@ class ImageUploadHandler:
     @staticmethod
     async def upload_base64_to_cloudinary(base64_data: str, filename: str = "image.jpg") -> Dict[str, str]:
         """
-        Upload base64 image data to Cloudinary using official SDK
+        Upload base64 image data to Cloudinary using unsigned upload preset
         
         Args:
             base64_data: Base64 encoded image data (with or without data URI prefix)
@@ -242,39 +242,47 @@ class ImageUploadHandler:
             Dict with public image_url
         """
         try:
-            # Get Cloudinary config dynamically (this also configures the SDK)
+            # Get Cloudinary config dynamically
             config = get_cloudinary_config()
             cloud_name = config['cloud_name']
-            api_key = config['api_key']
-            api_secret = config['api_secret']
             
             # Check if Cloudinary is configured
-            logger.info(f"Cloudinary config check - Cloud: {bool(cloud_name)}, Key: {bool(api_key)}, Secret: {bool(api_secret)}")
-            if not cloud_name or not api_key or not api_secret:
-                raise ValueError(f"Cloudinary not configured. Cloud: {cloud_name}, Key: {api_key[:4] if api_key else 'None'}...")
+            logger.info(f"Cloudinary config check - Cloud: {bool(cloud_name)}")
+            if not cloud_name:
+                raise ValueError(f"Cloudinary cloud name not configured")
             
-            # Ensure data URI format for Cloudinary SDK
+            # Ensure data URI format
             if not base64_data.startswith('data:'):
                 ext = Path(filename).suffix.lower().replace('.', '') or 'jpeg'
                 base64_data = f"data:image/{ext};base64,{base64_data}"
             
-            logger.info(f"Uploading to Cloudinary cloud: {cloud_name}")
+            logger.info(f"Uploading to Cloudinary cloud: {cloud_name} using unsigned upload")
             
-            # Use Cloudinary SDK for upload (handles auth automatically)
-            result = cloudinary.uploader.upload(
-                base64_data,
-                folder="broadcasts",
-                resource_type="image"
-            )
-            
-            image_url = result.get("secure_url", result.get("url"))
-            logger.info(f"Uploaded to Cloudinary: {image_url}")
-            
-            return {
-                "image_url": image_url,
-                "public_id": result.get("public_id"),
-                "filename": filename
-            }
+            # Use unsigned upload with broadcasts preset
+            import httpx
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
+                    data={
+                        "file": base64_data,
+                        "upload_preset": "broadcasts"
+                    },
+                    timeout=60.0
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    image_url = result.get("secure_url", result.get("url"))
+                    logger.info(f"Uploaded to Cloudinary: {image_url}")
+                    
+                    return {
+                        "image_url": image_url,
+                        "public_id": result.get("public_id"),
+                        "filename": filename
+                    }
+                else:
+                    logger.error(f"Cloudinary upload failed: {response.text}")
+                    raise ValueError(f"Upload failed: {response.status_code}")
                     
         except Exception as e:
             logger.error(f"Error uploading to Cloudinary: {e}")
