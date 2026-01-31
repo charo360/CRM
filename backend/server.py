@@ -191,6 +191,21 @@ class SaleResponse(BaseModel):
     receipt_sent: bool = False
     created_at: datetime
 
+# Expense Models
+class ExpenseCreate(BaseModel):
+    category: str  # Inventory, Rent, Transport, Utilities, Salaries, Other
+    amount: float
+    description: Optional[str] = None
+    date: Optional[datetime] = None
+
+class ExpenseResponse(BaseModel):
+    id: str
+    user_id: str
+    category: str
+    amount: float
+    description: Optional[str] = None
+    created_at: datetime
+
 # Broadcast Models
 class BroadcastCreate(BaseModel):
     message: str
@@ -1104,6 +1119,57 @@ async def resend_receipt(sale_id: str, background_tasks: BackgroundTasks, user =
     )
     
     return {"status": "success", "message": "Receipt sent"}
+
+# ============ EXPENSE ENDPOINTS ============
+
+@api_router.post("/expenses", response_model=ExpenseResponse)
+async def create_expense(expense: ExpenseCreate, user = Depends(get_current_user)):
+    """Record an expense"""
+    expense_id = str(uuid.uuid4())
+    expense_doc = {
+        "_id": expense_id,
+        "user_id": user["_id"],
+        "category": expense.category,
+        "amount": expense.amount,
+        "description": expense.description,
+        "created_at": expense.date if expense.date else datetime.utcnow()
+    }
+    
+    await db.expenses.insert_one(expense_doc)
+    
+    return ExpenseResponse(
+        id=expense_id,
+        user_id=user["_id"],
+        category=expense.category,
+        amount=expense.amount,
+        description=expense.description,
+        created_at=expense_doc["created_at"]
+    )
+
+@api_router.get("/expenses", response_model=List[ExpenseResponse])
+async def get_expenses(user = Depends(get_current_user)):
+    """Get all expenses for current user"""
+    expenses = await db.expenses.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(1000)
+    
+    return [
+        ExpenseResponse(
+            id=e["_id"],
+            user_id=e["user_id"],
+            category=e["category"],
+            amount=e["amount"],
+            description=e.get("description"),
+            created_at=e["created_at"]
+        )
+        for e in expenses
+    ]
+
+@api_router.delete("/expenses/{expense_id}")
+async def delete_expense(expense_id: str, user = Depends(get_current_user)):
+    """Delete an expense"""
+    result = await db.expenses.delete_one({"_id": expense_id, "user_id": user["_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"status": "success", "message": "Expense deleted"}
 
 # ============ BROADCAST ENDPOINTS ============
 

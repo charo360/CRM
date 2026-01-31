@@ -36,10 +36,21 @@ interface Sale {
   created_at: string;
 }
 
-const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
+interface Expense {
+  id: string;
+  category: string;
+  amount: number;
+  description?: string;
+  created_at: string;
+}
 
-export default function SalesScreen() {
+const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
+const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Salaries', 'Other'];
+
+export default function FinanceScreen() {
+  const [viewMode, setViewMode] = useState<'income' | 'expenses'>('income');
   const [sales, setSales] = useState<Sale[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<string[]>(['Cash', 'Mobile Money']);
   const [loading, setLoading] = useState(true);
@@ -64,14 +75,21 @@ export default function SalesScreen() {
   const [newPaymentMethod, setNewPaymentMethod] = useState('');
   const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
 
+  // Expense form state
+  const [expenseCategory, setExpenseCategory] = useState('Inventory');
+  const [expenseAmount, setExpenseAmount] = useState('');
+  const [expenseDescription, setExpenseDescription] = useState('');
+
   const fetchData = useCallback(async () => {
     try {
-      const [salesRes, customersRes, userRes] = await Promise.all([
+      const [salesRes, expensesRes, customersRes, userRes] = await Promise.all([
         apiClient.get('/sales'),
+        apiClient.get('/expenses'),
         apiClient.get('/customers'),
         apiClient.get('/auth/me'),
       ]);
       setSales(salesRes.data);
+      setExpenses(expensesRes.data);
       setCustomers(customersRes.data);
       if (userRes.data.payment_methods && userRes.data.payment_methods.length > 0) {
         setPaymentMethods(userRes.data.payment_methods);
@@ -145,6 +163,61 @@ export default function SalesScreen() {
     setEditingReceipt(false);
   };
 
+  const resetExpenseForm = () => {
+    setExpenseCategory('Inventory');
+    setExpenseAmount('');
+    setExpenseDescription('');
+  };
+
+  const handleCreateExpense = async () => {
+    if (!expenseAmount || parseFloat(expenseAmount) <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const response = await apiClient.post('/expenses', {
+        category: expenseCategory,
+        amount: parseFloat(expenseAmount),
+        description: expenseDescription.trim() || undefined,
+      });
+
+      setExpenses([response.data, ...expenses]);
+      setModalVisible(false);
+      resetExpenseForm();
+
+      Alert.alert('Success', 'Expense recorded!');
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to record expense');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId: string) => {
+    Alert.alert(
+      'Delete Expense',
+      'Are you sure you want to delete this expense?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await apiClient.delete(`/expenses/${expenseId}`);
+              setExpenses(expenses.filter((e) => e.id !== expenseId));
+              Alert.alert('Success', 'Expense deleted');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete expense');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // Initialize receipt message when editing starts
   const handleEditReceipt = () => {
     if (!receiptMessage) {
@@ -193,9 +266,33 @@ export default function SalesScreen() {
     return filtered;
   }, [sales, searchQuery, dateFilter]);
 
+  // Filter expenses based on date
+  const filteredExpenses = useMemo(() => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    return expenses.filter((e) => {
+      const expenseDate = new Date(e.created_at);
+      
+      if (dateFilter === 'Today') {
+        return expenseDate >= today;
+      } else if (dateFilter === 'This Week') {
+        const weekAgo = new Date(today);
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        return expenseDate >= weekAgo;
+      } else if (dateFilter === 'This Month') {
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        return expenseDate >= monthStart;
+      }
+      return true;
+    });
+  }, [expenses, dateFilter]);
+
   // Calculate analytics
   const analytics = useMemo(() => {
     const totalRevenue = filteredSales.reduce((sum, s) => sum + s.amount, 0);
+    const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+    const netProfit = totalRevenue - totalExpenses;
     const salesCount = filteredSales.length;
     const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
     
@@ -210,8 +307,8 @@ export default function SalesScreen() {
     
     const topCustomer = Object.values(customerSales).sort((a, b) => b.total - a.total)[0];
     
-    return { totalRevenue, salesCount, avgSale, topCustomer };
-  }, [filteredSales]);
+    return { totalRevenue, totalExpenses, netProfit, salesCount, avgSale, topCustomer };
+  }, [filteredSales, filteredExpenses]);
 
   const handleExportSales = async () => {
     if (filteredSales.length === 0) {
@@ -301,6 +398,35 @@ export default function SalesScreen() {
     </TouchableOpacity>
   );
 
+  const renderExpense = ({ item: expense }: { item: Expense }) => (
+    <View style={styles.expenseCard}>
+      <View style={styles.expenseHeader}>
+        <View style={styles.expenseInfo}>
+          <View style={styles.categoryBadge}>
+            <Text style={styles.categoryText}>{expense.category}</Text>
+          </View>
+          <Text style={styles.expenseDate}>
+            {new Date(expense.created_at).toLocaleDateString('en-KE', {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </Text>
+        </View>
+        <View style={styles.expenseAmountContainer}>
+          <Text style={styles.expenseAmount}>KES {expense.amount.toLocaleString()}</Text>
+          <TouchableOpacity onPress={() => handleDeleteExpense(expense.id)}>
+            <Ionicons name="trash-outline" size={20} color="#FF6B6B" />
+          </TouchableOpacity>
+        </View>
+      </View>
+      {expense.description && (
+        <Text style={styles.expenseDescription}>{expense.description}</Text>
+      )}
+    </View>
+  );
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -315,8 +441,10 @@ export default function SalesScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Sales</Text>
-          <Text style={styles.headerSubtitle}>{analytics.salesCount} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}</Text>
+          <Text style={styles.headerTitle}>Finance</Text>
+          <Text style={styles.headerSubtitle}>
+            {viewMode === 'income' ? `${analytics.salesCount} sales` : `${filteredExpenses.length} expenses`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
+          </Text>
         </View>
         <View style={styles.headerActions}>
           <TouchableOpacity onPress={() => setPaymentSettingsVisible(true)} style={styles.exportButton}>
@@ -328,8 +456,25 @@ export default function SalesScreen() {
         </View>
       </View>
 
+      {/* Income/Expenses Toggle */}
+      <View style={styles.viewToggle}>
+        <TouchableOpacity
+          style={[styles.toggleButton, viewMode === 'income' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('income')}
+        >
+          <Text style={[styles.toggleText, viewMode === 'income' && styles.toggleTextActive]}>Income</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleButton, viewMode === 'expenses' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('expenses')}
+        >
+          <Text style={[styles.toggleText, viewMode === 'expenses' && styles.toggleTextActive]}>Expenses</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* Search Bar */}
-      <View style={styles.searchContainer}>
+      {viewMode === 'income' && (
+        <View style={styles.searchContainer}>
         <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
@@ -344,6 +489,7 @@ export default function SalesScreen() {
           </TouchableOpacity>
         )}
       </View>
+      )}
 
       {/* Date Filter */}
       <View style={styles.filterContainer}>
@@ -375,21 +521,20 @@ export default function SalesScreen() {
           <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
         </View>
         <View style={styles.analyticsCard}>
-          <Text style={styles.analyticsLabel}>Avg Sale</Text>
-          <Text style={styles.analyticsValue}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
+          <Text style={styles.analyticsLabel}>Expenses</Text>
+          <Text style={styles.analyticsValue}>KES {analytics.totalExpenses.toLocaleString()}</Text>
         </View>
-        {analytics.topCustomer && (
-          <View style={[styles.analyticsCard, { marginRight: 0 }]}>
-            <Text style={styles.analyticsLabel}>Top Customer</Text>
-            <Text style={styles.analyticsValue}>{analytics.topCustomer.name}</Text>
-            <Text style={styles.analyticsSubtext} numberOfLines={1}>KES {analytics.topCustomer.total.toLocaleString()}</Text>
-          </View>
-        )}
+        <View style={[styles.analyticsCard, { marginRight: 0 }]}>
+          <Text style={styles.analyticsLabel}>Net Profit</Text>
+          <Text style={[styles.analyticsValue, analytics.netProfit < 0 && { color: '#FF6B6B' }]}>
+            KES {analytics.netProfit.toLocaleString()}
+          </Text>
+        </View>
       </View>
 
       <FlatList
-        data={filteredSales}
-        renderItem={renderSale}
+        data={viewMode === 'income' ? filteredSales : filteredExpenses}
+        renderItem={viewMode === 'income' ? renderSale : renderExpense}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -397,12 +542,18 @@ export default function SalesScreen() {
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Ionicons name="receipt-outline" size={64} color="#666" />
+            <Ionicons name={viewMode === 'income' ? 'receipt-outline' : 'wallet-outline'} size={64} color="#666" />
             <Text style={styles.emptyText}>
-              {searchQuery || dateFilter !== 'All Time' ? 'No sales found' : 'No sales yet'}
+              {viewMode === 'income' 
+                ? (searchQuery || dateFilter !== 'All Time' ? 'No sales found' : 'No sales yet')
+                : (dateFilter !== 'All Time' ? 'No expenses found' : 'No expenses yet')
+              }
             </Text>
             <Text style={styles.emptySubtext}>
-              {searchQuery || dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first sale'}
+              {viewMode === 'income'
+                ? (searchQuery || dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first sale')
+                : (dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first expense')
+              }
             </Text>
           </View>
         }
@@ -435,8 +586,8 @@ export default function SalesScreen() {
             }}>
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>New Sale</Text>
-            <TouchableOpacity onPress={handleCreateSale} disabled={saving}>
+            <Text style={styles.modalTitle}>{viewMode === 'income' ? 'New Sale' : 'New Expense'}</Text>
+            <TouchableOpacity onPress={viewMode === 'income' ? handleCreateSale : handleCreateExpense} disabled={saving}>
               <Text style={[styles.modalSave, saving && styles.modalSaveDisabled]}>
                 {saving ? 'Saving...' : 'Save'}
               </Text>
@@ -444,6 +595,8 @@ export default function SalesScreen() {
           </View>
 
           <ScrollView style={styles.modalContent}>
+            {viewMode === 'income' ? (
+              <>
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>Customer *</Text>
               <TouchableOpacity
@@ -568,6 +721,61 @@ export default function SalesScreen() {
                   Tip: Add your business name for a professional touch
                 </Text>
               </View>
+            )}
+              </>
+            ) : (
+              <>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Category *</Text>
+                  <View style={styles.categoryGrid}>
+                    {EXPENSE_CATEGORIES.map((category) => (
+                      <TouchableOpacity
+                        key={category}
+                        style={[
+                          styles.categoryOption,
+                          expenseCategory === category && styles.categoryOptionSelected,
+                        ]}
+                        onPress={() => setExpenseCategory(category)}
+                      >
+                        <Text
+                          style={[
+                            styles.categoryOptionText,
+                            expenseCategory === category && styles.categoryOptionTextSelected,
+                          ]}
+                        >
+                          {category}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Amount (KES) *</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={expenseAmount}
+                    onChangeText={setExpenseAmount}
+                    placeholder="0"
+                    placeholderTextColor="#666"
+                    keyboardType="numeric"
+                  />
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Description (Optional)</Text>
+                  <TextInput
+                    style={[styles.formInput, styles.receiptMessageInput]}
+                    value={expenseDescription}
+                    onChangeText={setExpenseDescription}
+                    placeholder="e.g., Bought inventory from supplier"
+                    placeholderTextColor="#666"
+                    multiline
+                    numberOfLines={3}
+                    textAlignVertical="top"
+                  />
+                </View>
+              </>
             )}
           </ScrollView>
         </SafeAreaView>
@@ -1437,5 +1645,104 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  viewToggle: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginBottom: 16,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 4,
+  },
+  toggleButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  toggleButtonActive: {
+    backgroundColor: '#25D366',
+  },
+  toggleText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#888',
+  },
+  toggleTextActive: {
+    color: '#FFFFFF',
+  },
+  expenseCard: {
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 20,
+    marginBottom: 12,
+  },
+  expenseHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  expenseInfo: {
+    flex: 1,
+  },
+  categoryBadge: {
+    backgroundColor: '#4A90D9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  categoryText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  expenseDate: {
+    fontSize: 12,
+    color: '#666',
+  },
+  expenseAmountContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  expenseAmount: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  expenseDescription: {
+    fontSize: 14,
+    color: '#888',
+    marginTop: 12,
+    lineHeight: 20,
+  },
+  categoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  categoryOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#1A2942',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+  },
+  categoryOptionSelected: {
+    backgroundColor: '#25D366',
+    borderColor: '#25D366',
+  },
+  categoryOptionText: {
+    fontSize: 14,
+    color: '#888',
+    fontWeight: '500',
+  },
+  categoryOptionTextSelected: {
+    color: '#FFFFFF',
+    fontWeight: '600',
   },
 });
