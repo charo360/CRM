@@ -30,11 +30,22 @@ interface Broadcast {
   recipients_count: number;
   sent_count: number;
   status: string;
+  image_url?: string;
+  scheduled_at?: string;
+  created_at: string;
+}
+
+interface BroadcastTemplate {
+  id: string;
+  name: string;
+  message: string;
+  image_url?: string;
   created_at: string;
 }
 
 const FILTERS = [
   { id: 'all', label: 'All Customers', icon: 'people' },
+  { id: 'new', label: 'New Customers', icon: 'person-add' },
   { id: 'returning', label: 'Returning', icon: 'refresh' },
   { id: 'vip', label: 'VIP', icon: 'star' },
 ];
@@ -65,24 +76,38 @@ const TEMPLATES = [
 export default function BroadcastScreen() {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [templates, setTemplates] = useState<BroadcastTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
+  const [templateModalVisible, setTemplateModalVisible] = useState(false);
+  const [aiModalVisible, setAiModalVisible] = useState(false);
   const [sending, setSending] = useState(false);
+  const [generatingAI, setGeneratingAI] = useState(false);
 
   // Form state
   const [selectedFilter, setSelectedFilter] = useState('all');
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [message, setMessage] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [scheduledDate, setScheduledDate] = useState('');
+  const [saveAsTemplate, setSaveAsTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  
+  // AI generation state
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [businessType, setBusinessType] = useState('');
 
   const fetchData = useCallback(async () => {
     try {
-      const [broadcastsRes, customersRes] = await Promise.all([
+      const [broadcastsRes, customersRes, templatesRes] = await Promise.all([
         apiClient.get('/broadcasts'),
         apiClient.get('/customers'),
+        apiClient.get('/broadcast-templates'),
       ]);
       setBroadcasts(broadcastsRes.data);
       setCustomers(customersRes.data);
+      setTemplates(templatesRes.data);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -102,6 +127,9 @@ export default function BroadcastScreen() {
 
   const getFilteredCount = () => {
     if (selectedFilter === 'all') return customers.length;
+    if (selectedFilter === 'new') {
+      return customers.filter(c => c.tags.includes('New')).length;
+    }
     if (selectedFilter === 'returning') {
       return customers.filter(c => c.tags.includes('Returning')).length;
     }
@@ -118,6 +146,79 @@ export default function BroadcastScreen() {
     }
   };
 
+  const handleSelectCustomTemplate = (template: BroadcastTemplate) => {
+    setMessage(template.message);
+    if (template.image_url) {
+      setImageUrl(template.image_url);
+    }
+  };
+
+  const handleGenerateAI = async () => {
+    if (!aiPrompt.trim()) {
+      Alert.alert('Error', 'Please enter a prompt');
+      return;
+    }
+
+    setGeneratingAI(true);
+    try {
+      const response = await apiClient.post('/ai/generate-broadcast-message', {
+        prompt: aiPrompt,
+        business_type: businessType || undefined,
+      });
+      setMessage(response.data.message);
+      setAiModalVisible(false);
+      setAiPrompt('');
+      setBusinessType('');
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to generate message');
+    } finally {
+      setGeneratingAI(false);
+    }
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!templateName.trim() || !message.trim()) {
+      Alert.alert('Error', 'Please enter template name and message');
+      return;
+    }
+
+    try {
+      const response = await apiClient.post('/broadcast-templates', {
+        name: templateName,
+        message: message,
+        image_url: imageUrl || undefined,
+      });
+      setTemplates([response.data, ...templates]);
+      Alert.alert('Success', 'Template saved!');
+      setSaveAsTemplate(false);
+      setTemplateName('');
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to save template');
+    }
+  };
+
+  const handleDeleteTemplate = async (templateId: string) => {
+    Alert.alert(
+      'Delete Template',
+      'Are you sure you want to delete this template?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await apiClient.delete(`/broadcast-templates/${templateId}`);
+              setTemplates(templates.filter(t => t.id !== templateId));
+            } catch (error: any) {
+              Alert.alert('Error', 'Failed to delete template');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleSendBroadcast = async () => {
     if (!message.trim()) {
       Alert.alert('Error', 'Please enter a message');
@@ -130,19 +231,30 @@ export default function BroadcastScreen() {
       return;
     }
 
+    // Save as template if requested
+    if (saveAsTemplate && templateName.trim()) {
+      await handleSaveTemplate();
+    }
+
+    const confirmMessage = scheduledDate 
+      ? `Schedule this message for ${new Date(scheduledDate).toLocaleString()} to ${recipientCount} customer${recipientCount > 1 ? 's' : ''}?`
+      : `Send this message to ${recipientCount} customer${recipientCount > 1 ? 's' : ''}?`;
+
     Alert.alert(
-      'Send Broadcast',
-      `Send this message to ${recipientCount} customer${recipientCount > 1 ? 's' : ''}?`,
+      scheduledDate ? 'Schedule Broadcast' : 'Send Broadcast',
+      confirmMessage,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Send',
+          text: scheduledDate ? 'Schedule' : 'Send',
           onPress: async () => {
             setSending(true);
             try {
               const response = await apiClient.post('/broadcasts', {
                 message: message,
                 filter_type: selectedFilter,
+                image_url: imageUrl || undefined,
+                scheduled_at: scheduledDate || undefined,
               });
 
               setBroadcasts([response.data, ...broadcasts]);
@@ -151,7 +263,9 @@ export default function BroadcastScreen() {
 
               Alert.alert(
                 'Success',
-                `Broadcast sent to ${response.data.recipients_count} customers!`
+                scheduledDate 
+                  ? `Broadcast scheduled for ${new Date(scheduledDate).toLocaleString()}!`
+                  : `Broadcast sent to ${response.data.recipients_count} customers!`
               );
             } catch (error: any) {
               Alert.alert('Error', error.response?.data?.detail || 'Failed to send broadcast');
@@ -168,6 +282,10 @@ export default function BroadcastScreen() {
     setSelectedFilter('all');
     setSelectedTemplate('');
     setMessage('');
+    setImageUrl('');
+    setScheduledDate('');
+    setSaveAsTemplate(false);
+    setTemplateName('');
   };
 
   const renderBroadcast = ({ item }: { item: Broadcast }) => (
@@ -354,13 +472,43 @@ export default function BroadcastScreen() {
               </View>
             </View>
 
+            {templates.length > 0 && (
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>My Templates</Text>
+                <View style={styles.templatesContainer}>
+                  {templates.map((template) => (
+                    <View key={template.id} style={styles.customTemplateItem}>
+                      <TouchableOpacity
+                        style={styles.customTemplateButton}
+                        onPress={() => handleSelectCustomTemplate(template)}
+                      >
+                        <Text style={styles.customTemplateText}>{template.name}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => handleDeleteTemplate(template.id)}>
+                        <Ionicons name="close-circle" size={20} color="#FF4444" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
             <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Message *</Text>
+              <View style={styles.labelRow}>
+                <Text style={styles.formLabel}>Message *</Text>
+                <TouchableOpacity 
+                  style={styles.aiButton}
+                  onPress={() => setAiModalVisible(true)}
+                >
+                  <Ionicons name="sparkles" size={16} color="#FFD700" />
+                  <Text style={styles.aiButtonText}>AI Generate</Text>
+                </TouchableOpacity>
+              </View>
               <TextInput
                 style={styles.messageInput}
                 value={message}
                 onChangeText={setMessage}
-                placeholder="Type your promotional message..."
+                placeholder="Type your promotional message... Use {{name}} for personalization"
                 placeholderTextColor="#666"
                 multiline
                 numberOfLines={6}
@@ -369,10 +517,122 @@ export default function BroadcastScreen() {
               <Text style={styles.charCount}>{message.length}/500</Text>
             </View>
 
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Image URL (Optional)</Text>
+              <TextInput
+                style={styles.formInput}
+                value={imageUrl}
+                onChangeText={setImageUrl}
+                placeholder="https://example.com/image.jpg"
+                placeholderTextColor="#666"
+              />
+              <Text style={styles.hint}>Add product images for clothing, promotions, etc.</Text>
+            </View>
+
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Schedule (Optional)</Text>
+              <TextInput
+                style={styles.formInput}
+                value={scheduledDate}
+                onChangeText={setScheduledDate}
+                placeholder="YYYY-MM-DD HH:MM (e.g., 2024-02-01 14:00)"
+                placeholderTextColor="#666"
+              />
+              <Text style={styles.hint}>Leave empty to send immediately</Text>
+            </View>
+
+            <View style={styles.formGroup}>
+              <TouchableOpacity 
+                style={styles.checkboxRow}
+                onPress={() => setSaveAsTemplate(!saveAsTemplate)}
+              >
+                <Ionicons 
+                  name={saveAsTemplate ? "checkbox" : "square-outline"} 
+                  size={24} 
+                  color={saveAsTemplate ? "#25D366" : "#666"} 
+                />
+                <Text style={styles.checkboxLabel}>Save as template</Text>
+              </TouchableOpacity>
+              {saveAsTemplate && (
+                <TextInput
+                  style={[styles.formInput, { marginTop: 8 }]}
+                  value={templateName}
+                  onChangeText={setTemplateName}
+                  placeholder="Template name"
+                  placeholderTextColor="#666"
+                />
+              )}
+            </View>
+
             <View style={styles.warningBox}>
               <Ionicons name="information-circle" size={20} color="#FFD700" />
               <Text style={styles.warningText}>
-                Messages will be sent via SMS. WhatsApp templates require approval.
+                Messages follow WhatsApp Business API guidelines. Use {{name}} to personalize with customer names.
+              </Text>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* AI Message Generation Modal */}
+      <Modal
+        visible={aiModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setAiModalVisible(false);
+          setAiPrompt('');
+          setBusinessType('');
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => {
+              setAiModalVisible(false);
+              setAiPrompt('');
+              setBusinessType('');
+            }}>
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>AI Generate Message</Text>
+            <TouchableOpacity onPress={handleGenerateAI} disabled={generatingAI}>
+              <Text style={[styles.modalSave, generatingAI && styles.modalSaveDisabled]}>
+                {generatingAI ? 'Generating...' : 'Generate'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.modalContent}>
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>What do you want to promote? *</Text>
+              <TextInput
+                style={styles.messageInput}
+                value={aiPrompt}
+                onChangeText={setAiPrompt}
+                placeholder="e.g., New winter collection arrived, 20% off all items"
+                placeholderTextColor="#666"
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+              />
+            </View>
+
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Business Type (Optional)</Text>
+              <TextInput
+                style={styles.formInput}
+                value={businessType}
+                onChangeText={setBusinessType}
+                placeholder="e.g., Clothing store, Restaurant, Salon"
+                placeholderTextColor="#666"
+              />
+              <Text style={styles.hint}>Helps AI generate more relevant messages</Text>
+            </View>
+
+            <View style={styles.warningBox}>
+              <Ionicons name="sparkles" size={20} color="#FFD700" />
+              <Text style={styles.warningText}>
+                AI will generate a WhatsApp-compliant promotional message based on your input.
               </Text>
             </View>
           </ScrollView>
@@ -658,5 +918,64 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
+  },
+  customTemplateItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+  },
+  customTemplateButton: {
+    flex: 1,
+  },
+  customTemplateText: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    fontWeight: '500',
+  },
+  labelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  aiButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 4,
+  },
+  aiButtonText: {
+    fontSize: 12,
+    color: '#FFD700',
+    fontWeight: '600',
+  },
+  formInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: '#FFFFFF',
+  },
+  hint: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 6,
+    fontStyle: 'italic',
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  checkboxLabel: {
+    fontSize: 16,
+    color: '#FFFFFF',
   },
 });
