@@ -47,7 +47,7 @@ interface Expense {
 const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
 const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Salaries', 'Other'];
 
-export default function FinanceScreen() {
+export default function SalesScreen() {
   const [viewMode, setViewMode] = useState<'sales' | 'expenses'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -555,8 +555,8 @@ export default function FinanceScreen() {
       </View>
 
       <FlatList
-        data={viewMode === 'sales' ? filteredSales : filteredExpenses}
-        renderItem={viewMode === 'sales' ? renderSale : renderExpense}
+        data={viewMode === 'sales' ? filteredSales : (filteredExpenses as any)}
+        renderItem={viewMode === 'sales' ? renderSale : (renderExpense as any)}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={

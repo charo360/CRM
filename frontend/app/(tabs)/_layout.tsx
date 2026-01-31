@@ -144,7 +144,7 @@ export default function TabsLayout() {
           options={{
             title: 'Sales',
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="receipt" size={size} color={color} />
+              <Ionicons name="cash" size={size} color={color} />
             ),
           }}
         />
