@@ -325,6 +325,7 @@ export default function BroadcastScreen() {
       <View style={styles.filterBadge}>
         <Text style={styles.filterBadgeText}>
           {item.filter_type === 'all' ? 'All Customers' :
+            item.filter_type === 'new' ? 'New Customers' :
             item.filter_type === 'returning' ? 'Returning' : 'VIP'}
         </Text>
       </View>
