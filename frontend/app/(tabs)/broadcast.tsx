@@ -509,7 +509,7 @@ export default function BroadcastScreen() {
                 style={styles.messageInput}
                 value={message}
                 onChangeText={setMessage}
-                placeholder="Type your promotional message... Use {{name}} for personalization"
+                placeholder="Type your promotional message... Use {name} for personalization"
                 placeholderTextColor="#666"
                 multiline
                 numberOfLines={6}
@@ -568,7 +568,7 @@ export default function BroadcastScreen() {
             <View style={styles.warningBox}>
               <Ionicons name="information-circle" size={20} color="#FFD700" />
               <Text style={styles.warningText}>
-                Messages follow WhatsApp Business API guidelines. Use {{name}} to personalize with customer names.
+                Messages follow WhatsApp Business API guidelines. Use {"{name}"} to personalize with customer names.
               </Text>
             </View>
           </ScrollView>
