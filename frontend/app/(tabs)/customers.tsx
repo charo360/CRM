@@ -579,19 +579,6 @@ export default function CustomersScreen() {
       {/* Sorting Toggle */}
       <View style={styles.sortContainer}>
         <TouchableOpacity
-          style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
-          onPress={() => setSortBy('recently_added')}
-        >
-          <Ionicons 
-            name="time-outline" 
-            size={16} 
-            color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'} 
-          />
-          <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
-            Recently Added
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
           style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
           onPress={() => setSortBy('recently_contacted')}
         >
@@ -602,6 +589,19 @@ export default function CustomersScreen() {
           />
           <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
             Recently Contacted
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
+          onPress={() => setSortBy('recently_added')}
+        >
+          <Ionicons 
+            name="time-outline" 
+            size={16} 
+            color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'} 
+          />
+          <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
+            Recently Added
           </Text>
         </TouchableOpacity>
       </View>
