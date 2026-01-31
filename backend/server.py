@@ -206,11 +206,28 @@ class ExpenseResponse(BaseModel):
     description: Optional[str] = None
     created_at: datetime
 
+# Broadcast Template Models
+class BroadcastTemplateCreate(BaseModel):
+    name: str
+    message: str
+    image_url: Optional[str] = None
+
+class BroadcastTemplateResponse(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    message: str
+    image_url: Optional[str] = None
+    created_at: datetime
+
 # Broadcast Models
 class BroadcastCreate(BaseModel):
     message: str
-    filter_type: str = "all"  # all, returning, vip
+    filter_type: str = "all"  # all, returning, vip, new
     customer_ids: Optional[List[str]] = None
+    image_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    template_id: Optional[str] = None
 
 class BroadcastResponse(BaseModel):
     id: str
@@ -220,7 +237,14 @@ class BroadcastResponse(BaseModel):
     recipients_count: int
     sent_count: int = 0
     status: str = "pending"
+    image_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
     created_at: datetime
+
+# AI Message Generation
+class AIMessageRequest(BaseModel):
+    prompt: str
+    business_type: Optional[str] = None
 
 # Subscription Models
 class SubscriptionPlan(BaseModel):
@@ -1183,6 +1207,8 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         query["tags"] = "Returning"
     elif broadcast.filter_type == "vip":
         query["tags"] = "VIP"
+    elif broadcast.filter_type == "new":
+        query["tags"] = "New"
     elif broadcast.customer_ids:
         query["_id"] = {"$in": broadcast.customer_ids}
     
@@ -1196,19 +1222,23 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         "filter_type": broadcast.filter_type,
         "recipients_count": len(customers),
         "sent_count": 0,
-        "status": "pending",
+        "status": "scheduled" if broadcast.scheduled_at else "pending",
+        "image_url": broadcast.image_url,
+        "scheduled_at": broadcast.scheduled_at,
         "created_at": datetime.utcnow()
     }
     
     await db.broadcasts.insert_one(broadcast_doc)
     
-    # Send messages in background
-    background_tasks.add_task(
-        send_broadcast_messages,
-        broadcast_id,
-        broadcast.message,
-        customers
-    )
+    # Send messages in background (only if not scheduled)
+    if not broadcast.scheduled_at:
+        background_tasks.add_task(
+            send_broadcast_messages,
+            broadcast_id,
+            broadcast.message,
+            customers,
+            broadcast.image_url
+        )
     
     return BroadcastResponse(
         id=broadcast_id,
@@ -1217,20 +1247,34 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         filter_type=broadcast.filter_type,
         recipients_count=len(customers),
         sent_count=0,
-        status="sending",
+        status="scheduled" if broadcast.scheduled_at else "sending",
+        image_url=broadcast.image_url,
+        scheduled_at=broadcast.scheduled_at,
         created_at=broadcast_doc["created_at"]
     )
 
-async def send_broadcast_messages(broadcast_id: str, message: str, customers: list):
+async def send_broadcast_messages(broadcast_id: str, message: str, customers: list, image_url: Optional[str] = None):
     """Send broadcast to all recipients"""
     sent_count = 0
     for customer in customers:
         try:
-            twilio_client.messages.create(
-                body=message,
-                from_=os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006'),
-                to=customer["phone_number"]
-            )
+            # Personalize message with customer name
+            personalized_message = message.replace("{{name}}", customer.get("name", "there"))
+            
+            # Send with or without image
+            if image_url:
+                twilio_client.messages.create(
+                    body=personalized_message,
+                    from_=os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006'),
+                    to=customer["phone_number"],
+                    media_url=[image_url]
+                )
+            else:
+                twilio_client.messages.create(
+                    body=personalized_message,
+                    from_=os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006'),
+                    to=customer["phone_number"]
+                )
             sent_count += 1
         except Exception as e:
             logging.error(f"Failed to send to {customer['phone_number']}: {e}")
@@ -1255,10 +1299,106 @@ async def get_broadcasts(user = Depends(get_current_user)):
             recipients_count=b["recipients_count"],
             sent_count=b.get("sent_count", 0),
             status=b["status"],
+            image_url=b.get("image_url"),
+            scheduled_at=b.get("scheduled_at"),
             created_at=b["created_at"]
         )
         for b in broadcasts
     ]
+
+# ============ BROADCAST TEMPLATE ENDPOINTS ============
+
+@api_router.post("/broadcast-templates", response_model=BroadcastTemplateResponse)
+async def create_broadcast_template(template: BroadcastTemplateCreate, user = Depends(get_current_user)):
+    """Create a reusable broadcast template"""
+    template_id = str(uuid.uuid4())
+    template_doc = {
+        "_id": template_id,
+        "user_id": user["_id"],
+        "name": template.name,
+        "message": template.message,
+        "image_url": template.image_url,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.broadcast_templates.insert_one(template_doc)
+    
+    return BroadcastTemplateResponse(
+        id=template_id,
+        user_id=user["_id"],
+        name=template.name,
+        message=template.message,
+        image_url=template.image_url,
+        created_at=template_doc["created_at"]
+    )
+
+@api_router.get("/broadcast-templates", response_model=List[BroadcastTemplateResponse])
+async def get_broadcast_templates(user = Depends(get_current_user)):
+    """Get all broadcast templates for current user"""
+    templates = await db.broadcast_templates.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
+    
+    return [
+        BroadcastTemplateResponse(
+            id=t["_id"],
+            user_id=t["user_id"],
+            name=t["name"],
+            message=t["message"],
+            image_url=t.get("image_url"),
+            created_at=t["created_at"]
+        )
+        for t in templates
+    ]
+
+@api_router.delete("/broadcast-templates/{template_id}")
+async def delete_broadcast_template(template_id: str, user = Depends(get_current_user)):
+    """Delete a broadcast template"""
+    result = await db.broadcast_templates.delete_one({"_id": template_id, "user_id": user["_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"status": "success", "message": "Template deleted"}
+
+# ============ AI MESSAGE GENERATION ============
+
+@api_router.post("/ai/generate-broadcast-message")
+async def generate_broadcast_message(request: AIMessageRequest, user = Depends(get_current_user)):
+    """Generate a broadcast message using AI"""
+    try:
+        # Build system prompt for WhatsApp-compliant messages
+        system_prompt = """You are a marketing message generator for small businesses. 
+Generate short, engaging WhatsApp-compliant promotional messages.
+
+Rules:
+1. Keep messages under 160 characters when possible
+2. Use emojis sparingly (1-2 max)
+3. Include a clear call-to-action
+4. Be friendly and conversational
+5. Follow WhatsApp Business API guidelines
+6. You can use {{name}} to personalize with customer name
+7. Make it suitable for SMS/WhatsApp broadcast
+
+Format: Just return the message text, nothing else."""
+
+        # Add business context if provided
+        if request.business_type:
+            system_prompt += f"\n\nBusiness type: {request.business_type}"
+        
+        # Call OpenAI API
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.prompt}
+            ],
+            max_tokens=200,
+            temperature=0.7
+        )
+        
+        generated_message = response.choices[0].message.content.strip()
+        
+        return {"message": generated_message}
+    except Exception as e:
+        logging.error(f"AI generation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate message")
 
 # ============ SUBSCRIPTION ENDPOINTS ============
 
