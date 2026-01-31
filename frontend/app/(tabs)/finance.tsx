@@ -516,20 +516,42 @@ export default function FinanceScreen() {
 
       {/* Analytics Cards */}
       <View style={styles.analyticsContainer}>
-        <View style={styles.analyticsCard}>
-          <Text style={styles.analyticsLabel}>Revenue</Text>
-          <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
-        </View>
-        <View style={styles.analyticsCard}>
-          <Text style={styles.analyticsLabel}>Expenses</Text>
-          <Text style={styles.analyticsValue}>KES {analytics.totalExpenses.toLocaleString()}</Text>
-        </View>
-        <View style={[styles.analyticsCard, { marginRight: 0 }]}>
-          <Text style={styles.analyticsLabel}>Net Profit</Text>
-          <Text style={[styles.analyticsValue, analytics.netProfit < 0 && { color: '#FF6B6B' }]}>
-            KES {analytics.netProfit.toLocaleString()}
-          </Text>
-        </View>
+        {viewMode === 'sales' ? (
+          <>
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsLabel}>Revenue</Text>
+              <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
+            </View>
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsLabel}>Avg Sale</Text>
+              <Text style={styles.analyticsValue}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
+            </View>
+            {analytics.topCustomer && (
+              <View style={[styles.analyticsCard, { marginRight: 0 }]}>
+                <Text style={styles.analyticsLabel}>Top Customer</Text>
+                <Text style={styles.analyticsValue}>{analytics.topCustomer.name}</Text>
+                <Text style={styles.analyticsSubtext} numberOfLines={1}>KES {analytics.topCustomer.total.toLocaleString()}</Text>
+              </View>
+            )}
+          </>
+        ) : (
+          <>
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsLabel}>Revenue</Text>
+              <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
+            </View>
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsLabel}>Expenses</Text>
+              <Text style={styles.analyticsValue}>KES {analytics.totalExpenses.toLocaleString()}</Text>
+            </View>
+            <View style={[styles.analyticsCard, { marginRight: 0 }]}>
+              <Text style={styles.analyticsLabel}>Net Profit</Text>
+              <Text style={[styles.analyticsValue, analytics.netProfit < 0 && { color: '#FF6B6B' }]}>
+                KES {analytics.netProfit.toLocaleString()}
+              </Text>
+            </View>
+          </>
+        )}
       </View>
 
       <FlatList
