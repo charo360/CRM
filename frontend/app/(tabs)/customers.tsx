@@ -417,23 +417,8 @@ export default function CustomersScreen() {
         <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
       </View>
       <View style={styles.customerInfo}>
-        <View style={styles.customerHeader}>
-          <View style={styles.customerNameSection}>
-            <Text style={styles.customerName}>{item.name}</Text>
-            <Text style={styles.customerPhone}>{item.phone_number}</Text>
-          </View>
-          <View style={styles.actionButtons}>
-            <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
-              <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
-              <Ionicons name="sparkles" size={22} color="#FFD700" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
-              <Ionicons name="trash-outline" size={20} color="#FF4444" />
-            </TouchableOpacity>
-          </View>
-        </View>
+        <Text style={styles.customerName}>{item.name}</Text>
+        <Text style={styles.customerPhone}>{item.phone_number}</Text>
         <View style={styles.tagsContainer}>
           {item.purchase_count > 0 && (
             <View style={[styles.tag, styles.tagCount]}>
@@ -450,6 +435,17 @@ export default function CustomersScreen() {
               <Text style={styles.tagText}>{tag}</Text>
             </View>
           ))}
+        </View>
+        <View style={styles.actionButtons}>
+          <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
+            <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
+            <Ionicons name="sparkles" size={22} color="#FFD700" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
+            <Ionicons name="trash-outline" size={20} color="#FF4444" />
+          </TouchableOpacity>
         </View>
         {item.notes && (
           <View style={styles.notesPreview}>
@@ -1076,7 +1072,8 @@ const styles = StyleSheet.create({
   tagsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginBottom: 4,
+    marginBottom: 8,
+    marginTop: 4,
   },
   tag: {
     paddingHorizontal: 8,
