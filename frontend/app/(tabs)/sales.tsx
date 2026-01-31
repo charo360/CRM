@@ -372,16 +372,16 @@ export default function SalesScreen() {
       <View style={styles.analyticsContainer}>
         <View style={styles.analyticsCard}>
           <Text style={styles.analyticsLabel}>Revenue</Text>
-          <Text style={styles.analyticsValue} numberOfLines={1}>KES {analytics.totalRevenue.toLocaleString()}</Text>
+          <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
         </View>
         <View style={styles.analyticsCard}>
           <Text style={styles.analyticsLabel}>Avg Sale</Text>
-          <Text style={styles.analyticsValue} numberOfLines={1}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
+          <Text style={styles.analyticsValue}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
         </View>
         {analytics.topCustomer && (
           <View style={[styles.analyticsCard, { marginRight: 0 }]}>
             <Text style={styles.analyticsLabel}>Top Customer</Text>
-            <Text style={styles.analyticsValue} numberOfLines={1}>{analytics.topCustomer.name}</Text>
+            <Text style={styles.analyticsValue}>{analytics.topCustomer.name}</Text>
             <Text style={styles.analyticsSubtext} numberOfLines={1}>KES {analytics.topCustomer.total.toLocaleString()}</Text>
           </View>
         )}
@@ -1053,10 +1053,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   analyticsValue: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
     color: '#FFFFFF',
     letterSpacing: 0.3,
+    flexWrap: 'wrap',
   },
   analyticsSubtext: {
     fontSize: 10,
