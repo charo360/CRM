@@ -19,10 +19,14 @@ logger = logging.getLogger(__name__)
 UPLOAD_DIR = Path(__file__).parent / "uploads" / "products"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# Cloudinary config (optional - for broadcast images that need public URLs)
-CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME', '')
-CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY', '')
-CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET', '')
+# Cloudinary config - loaded dynamically to ensure .env is loaded first
+def get_cloudinary_config():
+    """Get Cloudinary config, stripping any whitespace from env vars"""
+    return {
+        'cloud_name': os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip(),
+        'api_key': os.environ.get('CLOUDINARY_API_KEY', '').strip(),
+        'api_secret': os.environ.get('CLOUDINARY_API_SECRET', '').strip(),
+    }
 
 # Allowed image types
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -225,10 +229,16 @@ class ImageUploadHandler:
             Dict with public image_url
         """
         try:
+            # Get Cloudinary config dynamically
+            config = get_cloudinary_config()
+            cloud_name = config['cloud_name']
+            api_key = config['api_key']
+            api_secret = config['api_secret']
+            
             # Check if Cloudinary is configured
-            logger.info(f"Cloudinary config check - Cloud: {bool(CLOUDINARY_CLOUD_NAME)}, Key: {bool(CLOUDINARY_API_KEY)}, Secret: {bool(CLOUDINARY_API_SECRET)}")
-            if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
-                raise ValueError(f"Cloudinary not configured. Cloud: {CLOUDINARY_CLOUD_NAME}, Key: {CLOUDINARY_API_KEY[:4] if CLOUDINARY_API_KEY else 'None'}...")
+            logger.info(f"Cloudinary config check - Cloud: {bool(cloud_name)}, Key: {bool(api_key)}, Secret: {bool(api_secret)}")
+            if not cloud_name or not api_key or not api_secret:
+                raise ValueError(f"Cloudinary not configured. Cloud: {cloud_name}, Key: {api_key[:4] if api_key else 'None'}...")
             
             # Ensure data URI format
             if not base64_data.startswith('data:'):
@@ -240,15 +250,17 @@ class ImageUploadHandler:
             import time
             
             timestamp = str(int(time.time()))
-            params_to_sign = f"timestamp={timestamp}{CLOUDINARY_API_SECRET}"
+            params_to_sign = f"folder=broadcasts&timestamp={timestamp}{api_secret}"
             signature = hashlib.sha1(params_to_sign.encode()).hexdigest()
+            
+            logger.info(f"Uploading to Cloudinary cloud: {cloud_name}")
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/image/upload",
+                    f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
                     data={
                         "file": base64_data,
-                        "api_key": CLOUDINARY_API_KEY,
+                        "api_key": api_key,
                         "timestamp": timestamp,
                         "signature": signature,
                         "folder": "broadcasts"
