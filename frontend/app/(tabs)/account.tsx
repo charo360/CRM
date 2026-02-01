@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient, settingsAPI } from '../../context/api';
+import { apiClient } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
 
 interface SubscriptionPlan {

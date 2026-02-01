@@ -7,6 +7,7 @@ import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 
+import { useAuth } from '../../context/AuthContext';
 import { settingsAPI } from '../../context/api';
 
 export default function TabsLayout() {

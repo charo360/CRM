@@ -253,24 +253,32 @@ class ImageUploadHandler:
             
             # Sanitize filename - remove path separators and special chars
             # Cloudinary doesn't allow slashes in display names
+            logger.info(f"Original filename: {filename}")
             safe_filename = Path(filename).name  # Get just the filename without path
             safe_filename = safe_filename.replace('/', '_').replace('\\', '_')
+            logger.info(f"Sanitized filename: {safe_filename}")
             
             # Ensure data URI format
             if not base64_data.startswith('data:'):
                 ext = Path(filename).suffix.lower().replace('.', '') or 'jpeg'
                 base64_data = f"data:image/{ext};base64,{base64_data}"
+                logger.info(f"Added data URI prefix with extension: {ext}")
             
             logger.info(f"Uploading to Cloudinary cloud: {cloud_name} using unsigned upload")
             
             # Use unsigned upload with broadcasts preset
+            # Provide a safe public_id to avoid Cloudinary using base64 as display name (which contains slashes)
+            import uuid
+            public_id = f"broadcast_{uuid.uuid4().hex}"
+            
             import httpx
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
                     data={
                         "file": base64_data,
-                        "upload_preset": "broadcasts"
+                        "upload_preset": "broadcasts",
+                        "public_id": public_id
                     },
                     timeout=60.0
                 )
@@ -286,8 +294,10 @@ class ImageUploadHandler:
                         "filename": safe_filename
                     }
                 else:
-                    logger.error(f"Cloudinary upload failed: {response.text}")
-                    raise ValueError(f"Upload failed: {response.status_code}")
+                    error_text = response.text
+                    logger.error(f"Cloudinary upload failed with status {response.status_code}")
+                    logger.error(f"Full response: {error_text}")
+                    raise ValueError(f"Upload failed: {response.status_code} - {error_text}")
                     
         except Exception as e:
             logger.error(f"Error uploading to Cloudinary: {e}")
