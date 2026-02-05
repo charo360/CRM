@@ -401,8 +401,15 @@ export default function CustomersScreen() {
   const handleSendDraftMessage = () => {
     if (!draftCustomer) return;
 
+    // Open WhatsApp with pre-filled message
+    const text = draftMessage || `Hi ${draftCustomer.name}, just checking in!`;
+    const url = `whatsapp://send?phone=${draftCustomer.phone_number.replace(/\+/g, '')}&text=${encodeURIComponent(text)}`;
+
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Error', 'WhatsApp is not installed on this device');
+    });
+
     setShowDraftModal(false);
-    handleWhatsApp(draftCustomer.phone_number);
 
     // Reset
     setDraftMessage('');
@@ -582,10 +589,10 @@ export default function CustomersScreen() {
           style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
           onPress={() => setSortBy('recently_contacted')}
         >
-          <Ionicons 
-            name="chatbubble-outline" 
-            size={16} 
-            color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'} 
+          <Ionicons
+            name="chatbubble-outline"
+            size={16}
+            color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'}
           />
           <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
             Recently Contacted
@@ -595,10 +602,10 @@ export default function CustomersScreen() {
           style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
           onPress={() => setSortBy('recently_added')}
         >
-          <Ionicons 
-            name="time-outline" 
-            size={16} 
-            color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'} 
+          <Ionicons
+            name="time-outline"
+            size={16}
+            color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'}
           />
           <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
             Recently Added

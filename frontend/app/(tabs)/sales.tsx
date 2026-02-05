@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient } from '../../context/api';
 
 interface Customer {
@@ -33,6 +34,9 @@ interface Sale {
   amount: number;
   payment_method: string;
   receipt_sent: boolean;
+  is_credit?: boolean;
+  due_date?: string;
+  paid_date?: string;
   created_at: string;
 }
 
@@ -75,6 +79,16 @@ export default function SalesScreen() {
   const [newPaymentMethod, setNewPaymentMethod] = useState('');
   const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
 
+  // Customer selection state
+  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
+  const [isWalkInCustomer, setIsWalkInCustomer] = useState(false);
+
+  // Credit sale state
+  const [isCreditSale, setIsCreditSale] = useState(false);
+  const [dueDate, setDueDate] = useState('');
+  const [showDueDatePicker, setShowDueDatePicker] = useState(false);
+  const [tempDueDate, setTempDueDate] = useState<Date>(new Date());
+
   // Expense form state
   const [expenseCategory, setExpenseCategory] = useState('Inventory');
   const [expenseAmount, setExpenseAmount] = useState('');
@@ -113,8 +127,8 @@ export default function SalesScreen() {
   };
 
   const handleCreateSale = async () => {
-    if (!selectedCustomer) {
-      Alert.alert('Error', 'Please select a customer');
+    if (!isWalkInCustomer && !selectedCustomer) {
+      Alert.alert('Error', 'Please select a customer or choose Walk-in Customer');
       return;
     }
     if (!item.trim()) {
@@ -129,12 +143,14 @@ export default function SalesScreen() {
     setSaving(true);
     try {
       const response = await apiClient.post('/sales', {
-        customer_id: selectedCustomer.id,
+        customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
         item: item.trim(),
         amount: parseFloat(amount),
-        payment_method: paymentMethod,
-        send_receipt: sendReceipt,
+        payment_method: isCreditSale ? undefined : paymentMethod,
+        send_receipt: sendReceipt && !isWalkInCustomer,
         receipt_message: receiptMessage.trim() || undefined,
+        is_credit: isCreditSale,
+        due_date: isCreditSale && dueDate ? dueDate : undefined,
       });
 
       setSales([response.data, ...sales]);
@@ -161,6 +177,8 @@ export default function SalesScreen() {
     setSendReceipt(true);
     setReceiptMessage('');
     setEditingReceipt(false);
+    setIsCreditSale(false);
+    setDueDate('');
   };
 
   const resetExpenseForm = () => {
@@ -245,10 +263,10 @@ export default function SalesScreen() {
     if (dateFilter !== 'All Time') {
       const now = new Date();
       const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      
+
       filtered = filtered.filter((s) => {
         const saleDate = new Date(s.created_at);
-        
+
         if (dateFilter === 'Today') {
           return saleDate >= today;
         } else if (dateFilter === 'This Week') {
@@ -270,10 +288,10 @@ export default function SalesScreen() {
   const filteredExpenses = useMemo(() => {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    
+
     return expenses.filter((e) => {
       const expenseDate = new Date(e.created_at);
-      
+
       if (dateFilter === 'Today') {
         return expenseDate >= today;
       } else if (dateFilter === 'This Week') {
@@ -295,7 +313,7 @@ export default function SalesScreen() {
     const netProfit = totalRevenue - totalExpenses;
     const salesCount = filteredSales.length;
     const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
-    
+
     // Find top customer
     const customerSales: { [key: string]: { name: string; total: number } } = {};
     filteredSales.forEach((s) => {
@@ -304,9 +322,9 @@ export default function SalesScreen() {
       }
       customerSales[s.customer_id].total += s.amount;
     });
-    
+
     const topCustomer = Object.values(customerSales).sort((a, b) => b.total - a.total)[0];
-    
+
     return { totalRevenue, totalExpenses, netProfit, salesCount, avgSale, topCustomer };
   }, [filteredSales, filteredExpenses]);
 
@@ -321,9 +339,9 @@ export default function SalesScreen() {
       const date = new Date(s.created_at).toLocaleDateString('en-KE');
       return `${date},${s.customer_name},${s.customer_phone},${s.item},${s.amount},${s.payment_method},${s.receipt_sent ? 'Yes' : 'No'}`;
     }).join('\n');
-    
+
     const csvContent = csvHeader + csvRows;
-    
+
     try {
       await Share.share({
         message: csvContent,
@@ -350,6 +368,42 @@ export default function SalesScreen() {
       console.error('Error opening WhatsApp:', error);
       Alert.alert('Error', 'Failed to open WhatsApp');
     }
+  };
+
+  const handleMarkAsPaid = async (sale: Sale) => {
+    // Show payment method selection
+    Alert.alert(
+      'Mark as Paid',
+      'How was this credit sale paid?',
+      [
+        ...paymentMethods.map((method) => ({
+          text: method,
+          onPress: async () => {
+            try {
+              await apiClient.put(`/sales/${sale.id}/mark-paid?payment_method=${encodeURIComponent(method)}`);
+
+              // Update local state
+              const updatedSales = sales.map((s) =>
+                s.id === sale.id
+                  ? { ...s, paid_date: new Date().toISOString(), payment_method: method }
+                  : s
+              );
+              setSales(updatedSales);
+
+              // Update selected sale if it's open
+              if (selectedSale?.id === sale.id) {
+                setSelectedSale({ ...sale, paid_date: new Date().toISOString(), payment_method: method });
+              }
+
+              Alert.alert('Success', `Sale marked as paid via ${method}!`);
+            } catch (error) {
+              Alert.alert('Error', 'Failed to mark sale as paid');
+            }
+          },
+        })),
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
   };
 
   const renderSale = ({ item: sale }: { item: Sale }) => (
@@ -380,8 +434,12 @@ export default function SalesScreen() {
         </View>
         <View style={styles.amountContainer}>
           <Text style={styles.amount}>KES {sale.amount.toLocaleString()}</Text>
-          <View style={[styles.paymentBadge, sale.payment_method === 'M-Pesa' && styles.mpesaBadge]}>
-            <Text style={styles.paymentText}>{sale.payment_method}</Text>
+          <View style={[
+            styles.paymentBadge,
+            sale.payment_method === 'M-Pesa' && styles.mpesaBadge,
+            sale.is_credit && styles.creditBadge
+          ]}>
+            <Text style={styles.paymentText}>{sale.payment_method || 'Credit'}</Text>
           </View>
         </View>
       </View>
@@ -475,20 +533,20 @@ export default function SalesScreen() {
       {/* Search Bar */}
       {viewMode === 'sales' && (
         <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search by customer or item..."
-          placeholderTextColor="#666"
-        />
-        {searchQuery.length > 0 && (
-          <TouchableOpacity onPress={() => setSearchQuery('')}>
-            <Ionicons name="close-circle" size={20} color="#666" />
-          </TouchableOpacity>
-        )}
-      </View>
+          <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search by customer or item..."
+            placeholderTextColor="#666"
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Ionicons name="close-circle" size={20} color="#666" />
+            </TouchableOpacity>
+          )}
+        </View>
       )}
 
       {/* Date Filter */}
@@ -566,7 +624,7 @@ export default function SalesScreen() {
           <View style={styles.emptyContainer}>
             <Ionicons name={viewMode === 'sales' ? 'receipt-outline' : 'wallet-outline'} size={64} color="#666" />
             <Text style={styles.emptyText}>
-              {viewMode === 'sales' 
+              {viewMode === 'sales'
                 ? (searchQuery || dateFilter !== 'All Time' ? 'No sales found' : 'No sales yet')
                 : (dateFilter !== 'All Time' ? 'No expenses found' : 'No expenses yet')
               }
@@ -619,131 +677,208 @@ export default function SalesScreen() {
           <ScrollView style={styles.modalContent}>
             {viewMode === 'sales' ? (
               <>
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Customer *</Text>
-              <TouchableOpacity
-                style={styles.customerSelect}
-                onPress={() => setCustomerSelectVisible(true)}
-              >
-                {selectedCustomer ? (
-                  <View style={styles.selectedCustomer}>
-                    <View style={styles.miniAvatar}>
-                      <Text style={styles.miniAvatarText}>
-                        {selectedCustomer.name.charAt(0)}
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Customer *</Text>
+                  <TouchableOpacity
+                    style={styles.customerSelect}
+                    onPress={() => setCustomerSelectVisible(true)}
+                  >
+                    {isWalkInCustomer ? (
+                      <View style={styles.selectedCustomer}>
+                        <View style={styles.miniAvatar}>
+                          <Ionicons name="walk-outline" size={16} color="#FFFFFF" />
+                        </View>
+                        <View>
+                          <Text style={styles.selectedName}>Walk-in Customer</Text>
+                          <Text style={styles.selectedPhone}>No contact info</Text>
+                        </View>
+                      </View>
+                    ) : selectedCustomer ? (
+                      <View style={styles.selectedCustomer}>
+                        <View style={styles.miniAvatar}>
+                          <Text style={styles.miniAvatarText}>
+                            {selectedCustomer.name.charAt(0)}
+                          </Text>
+                        </View>
+                        <View>
+                          <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
+                          <Text style={styles.selectedPhone}>{selectedCustomer.phone_number}</Text>
+                        </View>
+                      </View>
+                    ) : (
+                      <Text style={styles.customerSelectPlaceholder}>Select a customer</Text>
+                    )}
+                    <Ionicons name="chevron-forward" size={20} color="#666" />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Item *</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={item}
+                    onChangeText={setItem}
+                    placeholder="e.g., Blue Jeans, iPhone Case"
+                    placeholderTextColor="#666"
+                  />
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Amount (KES) *</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={amount}
+                    onChangeText={setAmount}
+                    placeholder="0"
+                    placeholderTextColor="#666"
+                    keyboardType="numeric"
+                  />
+                </View>
+
+                {/* Credit Sale Checkbox */}
+                <TouchableOpacity
+                  style={styles.receiptToggle}
+                  onPress={() => {
+                    setIsCreditSale(!isCreditSale);
+                    if (!isCreditSale) {
+                      // When enabling credit sale, clear payment method
+                      setPaymentMethod('');
+                    } else {
+                      // When disabling credit sale, set default payment method
+                      setPaymentMethod(paymentMethods[0] || 'Cash');
+                      setDueDate('');
+                    }
+                  }}
+                >
+                  <View style={[styles.checkbox, isCreditSale && styles.checkboxChecked]}>
+                    {isCreditSale && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
+                  </View>
+                  <Text style={styles.receiptToggleText}>Credit Sale (Pay Later)</Text>
+                </TouchableOpacity>
+
+                {/* Due Date for Credit Sales */}
+                {isCreditSale && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Due Date (Optional)</Text>
+                    <TouchableOpacity
+                      style={styles.formInput}
+                      onPress={() => {
+                        setTempDueDate(dueDate ? new Date(dueDate) : new Date());
+                        setShowDueDatePicker(true);
+                      }}
+                    >
+                      <Text style={{ color: dueDate ? '#FFF' : '#666' }}>
+                        {dueDate ? new Date(dueDate).toLocaleDateString() : 'No due date set'}
                       </Text>
-                    </View>
-                    <View>
-                      <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
-                      <Text style={styles.selectedPhone}>{selectedCustomer.phone_number}</Text>
+                      <Ionicons name="calendar-outline" size={20} color="#666" style={{ position: 'absolute', right: 12, top: 12 }} />
+                    </TouchableOpacity>
+
+                    {showDueDatePicker && (
+                      <DateTimePicker
+                        value={tempDueDate}
+                        mode="date"
+                        display="default"
+                        onChange={(event, selectedDate) => {
+                          setShowDueDatePicker(false);
+                          if (event.type === 'set' && selectedDate) {
+                            setDueDate(selectedDate.toISOString());
+                          }
+                        }}
+                        minimumDate={new Date()}
+                      />
+                    )}
+
+                    {dueDate && (
+                      <TouchableOpacity
+                        onPress={() => setDueDate('')}
+                        style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                      >
+                        <Text style={{ color: '#FF4444', fontSize: 12 }}>Clear Due Date</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+
+                {/* Payment Method - Hidden for Credit Sales */}
+                {!isCreditSale && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Payment Method</Text>
+                    <View style={styles.paymentMethods}>
+                      {paymentMethods.map((method) => (
+                        <TouchableOpacity
+                          key={method}
+                          style={[
+                            styles.paymentOption,
+                            paymentMethod === method && styles.paymentOptionSelected,
+                          ]}
+                          onPress={() => setPaymentMethod(method)}
+                        >
+                          <Ionicons
+                            name={method === 'M-Pesa' ? 'phone-portrait' : 'cash'}
+                            size={20}
+                            color={paymentMethod === method ? '#FFFFFF' : '#666'}
+                          />
+                          <Text
+                            style={[
+                              styles.paymentOptionText,
+                              paymentMethod === method && styles.paymentOptionTextSelected,
+                            ]}
+                          >
+                            {method}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
                     </View>
                   </View>
-                ) : (
-                  <Text style={styles.customerSelectPlaceholder}>Select a customer</Text>
                 )}
-                <Ionicons name="chevron-forward" size={20} color="#666" />
-              </TouchableOpacity>
-            </View>
 
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Item *</Text>
-              <TextInput
-                style={styles.formInput}
-                value={item}
-                onChangeText={setItem}
-                placeholder="e.g., Blue Jeans, iPhone Case"
-                placeholderTextColor="#666"
-              />
-            </View>
+                <TouchableOpacity
+                  style={styles.receiptToggle}
+                  onPress={() => setSendReceipt(!sendReceipt)}
+                >
+                  <View style={[styles.checkbox, sendReceipt && styles.checkboxChecked]}>
+                    {sendReceipt && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
+                  </View>
+                  <Text style={styles.receiptToggleText}>Send receipt via WhatsApp</Text>
+                </TouchableOpacity>
 
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Amount (KES) *</Text>
-              <TextInput
-                style={styles.formInput}
-                value={amount}
-                onChangeText={setAmount}
-                placeholder="0"
-                placeholderTextColor="#666"
-                keyboardType="numeric"
-              />
-            </View>
-
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Payment Method</Text>
-              <View style={styles.paymentMethods}>
-                {paymentMethods.map((method) => (
-                  <TouchableOpacity
-                    key={method}
-                    style={[
-                      styles.paymentOption,
-                      paymentMethod === method && styles.paymentOptionSelected,
-                    ]}
-                    onPress={() => setPaymentMethod(method)}
-                  >
-                    <Ionicons
-                      name={method === 'M-Pesa' ? 'phone-portrait' : 'cash'}
-                      size={20}
-                      color={paymentMethod === method ? '#FFFFFF' : '#666'}
-                    />
-                    <Text
-                      style={[
-                        styles.paymentOptionText,
-                        paymentMethod === method && styles.paymentOptionTextSelected,
-                      ]}
-                    >
-                      {method}
+                {sendReceipt && !editingReceipt && (
+                  <View style={styles.receiptPreview}>
+                    <View style={styles.receiptPreviewHeader}>
+                      <Text style={styles.receiptPreviewTitle}>Receipt Preview:</Text>
+                      <TouchableOpacity onPress={handleEditReceipt}>
+                        <Ionicons name="pencil" size={20} color="#25D366" />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.receiptPreviewText}>
+                      {receiptMessage || `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: KES ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`}
                     </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
+                  </View>
+                )}
 
-            <TouchableOpacity
-              style={styles.receiptToggle}
-              onPress={() => setSendReceipt(!sendReceipt)}
-            >
-              <View style={[styles.checkbox, sendReceipt && styles.checkboxChecked]}>
-                {sendReceipt && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
-              </View>
-              <Text style={styles.receiptToggleText}>Send receipt via WhatsApp</Text>
-            </TouchableOpacity>
-
-            {sendReceipt && !editingReceipt && (
-              <View style={styles.receiptPreview}>
-                <View style={styles.receiptPreviewHeader}>
-                  <Text style={styles.receiptPreviewTitle}>Receipt Preview:</Text>
-                  <TouchableOpacity onPress={handleEditReceipt}>
-                    <Ionicons name="pencil" size={20} color="#25D366" />
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.receiptPreviewText}>
-                  {receiptMessage || `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: KES ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`}
-                </Text>
-              </View>
-            )}
-
-            {sendReceipt && editingReceipt && (
-              <View style={styles.formGroup}>
-                <View style={styles.receiptEditHeader}>
-                  <Text style={styles.formLabel}>Edit Receipt Message</Text>
-                  <TouchableOpacity onPress={() => setEditingReceipt(false)}>
-                    <Text style={styles.doneButton}>Done</Text>
-                  </TouchableOpacity>
-                </View>
-                <TextInput
-                  style={[styles.formInput, styles.receiptMessageInput]}
-                  value={receiptMessage}
-                  onChangeText={setReceiptMessage}
-                  placeholder="Customize your receipt message..."
-                  placeholderTextColor="#666"
-                  multiline
-                  numberOfLines={5}
-                  textAlignVertical="top"
-                />
-                <Text style={styles.receiptHint}>
-                  Tip: Add your business name for a professional touch
-                </Text>
-              </View>
-            )}
+                {sendReceipt && editingReceipt && (
+                  <View style={styles.formGroup}>
+                    <View style={styles.receiptEditHeader}>
+                      <Text style={styles.formLabel}>Edit Receipt Message</Text>
+                      <TouchableOpacity onPress={() => setEditingReceipt(false)}>
+                        <Text style={styles.doneButton}>Done</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <TextInput
+                      style={[styles.formInput, styles.receiptMessageInput]}
+                      value={receiptMessage}
+                      onChangeText={setReceiptMessage}
+                      placeholder="Customize your receipt message..."
+                      placeholderTextColor="#666"
+                      multiline
+                      numberOfLines={5}
+                      textAlignVertical="top"
+                    />
+                    <Text style={styles.receiptHint}>
+                      Tip: Add your business name for a professional touch
+                    </Text>
+                  </View>
+                )}
               </>
             ) : (
               <>
@@ -808,25 +943,78 @@ export default function SalesScreen() {
         visible={customerSelectVisible}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setCustomerSelectVisible(false)}
+        onRequestClose={() => {
+          setCustomerSelectVisible(false);
+          setCustomerSearchQuery('');
+        }}
       >
         <SafeAreaView style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setCustomerSelectVisible(false)}>
+            <TouchableOpacity onPress={() => {
+              setCustomerSelectVisible(false);
+              setCustomerSearchQuery('');
+            }}>
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle}>Select Customer</Text>
             <View style={{ width: 60 }} />
           </View>
 
+          {/* Search Input */}
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search by name or phone..."
+              placeholderTextColor="#666"
+              value={customerSearchQuery}
+              onChangeText={setCustomerSearchQuery}
+              autoCapitalize="none"
+            />
+            {customerSearchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setCustomerSearchQuery('')}>
+                <Ionicons name="close-circle" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Walk-in Customer Button */}
+          <TouchableOpacity
+            style={styles.walkInButton}
+            onPress={() => {
+              setIsWalkInCustomer(true);
+              setSelectedCustomer(null);
+              setSendReceipt(false);
+              setCustomerSelectVisible(false);
+              setCustomerSearchQuery('');
+            }}
+          >
+            <Ionicons name="walk-outline" size={24} color="#25D366" />
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={styles.walkInButtonText}>Walk-in Customer</Text>
+              <Text style={styles.walkInButtonSubtext}>Quick sale without customer details</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="#666" />
+          </TouchableOpacity>
+
           <FlatList
-            data={customers}
+            data={customers.filter((c) => {
+              if (!customerSearchQuery.trim()) return true;
+              const query = customerSearchQuery.toLowerCase();
+              return (
+                c.name.toLowerCase().includes(query) ||
+                c.phone_number.toLowerCase().includes(query)
+              );
+            })}
             renderItem={({ item: customer }) => (
               <TouchableOpacity
                 style={styles.customerOption}
                 onPress={() => {
                   setSelectedCustomer(customer);
+                  setIsWalkInCustomer(false);
+                  setSendReceipt(true);
                   setCustomerSelectVisible(false);
+                  setCustomerSearchQuery('');
                 }}
               >
                 <View style={styles.miniAvatar}>
@@ -934,6 +1122,63 @@ export default function SalesScreen() {
                     </Text>
                   </View>
                 </View>
+
+                {/* Credit Sale Information */}
+                {selectedSale.is_credit && (
+                  <>
+                    <View style={styles.detailsRow}>
+                      <Text style={styles.detailsLabel}>Sale Type</Text>
+                      <View style={styles.creditBadge}>
+                        <Text style={styles.paymentText}>Credit Sale</Text>
+                      </View>
+                    </View>
+
+                    {selectedSale.due_date && (
+                      <View style={styles.detailsRow}>
+                        <Text style={styles.detailsLabel}>Due Date</Text>
+                        <Text style={styles.detailsValue}>
+                          {new Date(selectedSale.due_date).toLocaleDateString('en-KE', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
+                        </Text>
+                      </View>
+                    )}
+
+                    <View style={styles.detailsRow}>
+                      <Text style={styles.detailsLabel}>Payment Status</Text>
+                      <View style={styles.receiptStatus}>
+                        <Ionicons
+                          name={selectedSale.paid_date ? 'checkmark-circle' : 'time-outline'}
+                          size={16}
+                          color={selectedSale.paid_date ? '#25D366' : '#FF8C00'}
+                        />
+                        <Text
+                          style={[
+                            styles.receiptStatusText,
+                            selectedSale.paid_date && styles.receiptStatusTextSent,
+                          ]}
+                        >
+                          {selectedSale.paid_date ? 'Paid' : 'Unpaid'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {selectedSale.paid_date && (
+                      <View style={styles.detailsRow}>
+                        <Text style={styles.detailsLabel}>Paid On</Text>
+                        <Text style={styles.detailsValue}>
+                          {new Date(selectedSale.paid_date).toLocaleDateString('en-KE', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
+                        </Text>
+                      </View>
+                    )}
+                  </>
+                )}
               </View>
 
               {!selectedSale.receipt_sent && (
@@ -943,6 +1188,17 @@ export default function SalesScreen() {
                 >
                   <Ionicons name="paper-plane-outline" size={20} color="#FFFFFF" />
                   <Text style={styles.resendButtonText}>Send Receipt</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Mark as Paid Button for Unpaid Credit Sales */}
+              {selectedSale.is_credit && !selectedSale.paid_date && (
+                <TouchableOpacity
+                  style={[styles.resendButton, { backgroundColor: '#25D366', marginTop: 12 }]}
+                  onPress={() => handleMarkAsPaid(selectedSale)}
+                >
+                  <Ionicons name="cash-outline" size={20} color="#FFFFFF" />
+                  <Text style={styles.resendButtonText}>Mark as Paid</Text>
                 </TouchableOpacity>
               )}
             </ScrollView>
@@ -994,7 +1250,7 @@ export default function SalesScreen() {
               </View>
             ))}
 
-            {!addingPaymentMethod && (
+            {!addingPaymentMethod && paymentMethods.length < 3 && (
               <TouchableOpacity
                 style={styles.addPaymentButton}
                 onPress={() => setAddingPaymentMethod(true)}
@@ -1002,6 +1258,15 @@ export default function SalesScreen() {
                 <Ionicons name="add-circle-outline" size={24} color="#25D366" />
                 <Text style={styles.addPaymentText}>Add Payment Method</Text>
               </TouchableOpacity>
+            )}
+
+            {paymentMethods.length >= 3 && !addingPaymentMethod && (
+              <View style={styles.maxMethodsNotice}>
+                <Ionicons name="information-circle" size={20} color="#FFD700" />
+                <Text style={styles.maxMethodsText}>
+                  Maximum of 3 payment methods. Remove one to add another.
+                </Text>
+              </View>
             )}
 
             {addingPaymentMethod && (
@@ -1163,6 +1428,9 @@ const styles = StyleSheet.create({
   },
   mpesaBadge: {
     backgroundColor: '#25D366',
+  },
+  creditBadge: {
+    backgroundColor: '#FF8C00',
   },
   paymentText: {
     fontSize: 10,
@@ -1577,6 +1845,27 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
   },
+  walkInButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    marginHorizontal: 20,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#25D366',
+  },
+  walkInButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  walkInButtonSubtext: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 2,
+  },
   fab: {
     position: 'absolute',
     bottom: 24,
@@ -1634,6 +1923,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#25D366',
+  },
+  maxMethodsNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2A2416',
+    borderRadius: 12,
+    padding: 16,
+    marginHorizontal: 20,
+    marginTop: 8,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#FFD700',
+  },
+  maxMethodsText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#FFD700',
+    lineHeight: 20,
   },
   addPaymentForm: {
     marginHorizontal: 20,

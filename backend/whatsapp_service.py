@@ -31,7 +31,8 @@ class WhatsAppService:
         user_id: str,
         to_number: str,
         message: str,
-        customer_name: Optional[str] = None
+        customer_name: Optional[str] = None,
+        media_url: Optional[str] = None
     ) -> Dict:
         """
         Send WhatsApp message and auto-create contact if needed
@@ -41,6 +42,7 @@ class WhatsAppService:
             to_number: Customer's phone number
             message: Message to send
             customer_name: Optional customer name (if known)
+            media_url: Optional URL of image/media to send
         
         Returns:
             Dict with status, customer_id, and message_id
@@ -80,17 +82,22 @@ class WhatsAppService:
             
             # Step 2: Store message in database
             message_id = str(uuid.uuid4())
-            await self.db.messages.insert_one({
+            message_doc = {
                 "_id": message_id,
                 "customer_id": customer_id,
                 "user_id": user_id,
                 "direction": "outgoing",
                 "content": message,
-                "message_type": "text",
+                "message_type": "image" if media_url else "text",
                 "from_number": self.from_number,
                 "to_number": to_number,
                 "created_at": datetime.utcnow()
-            })
+            }
+            
+            if media_url:
+                message_doc["image_url"] = media_url
+                
+            await self.db.messages.insert_one(message_doc)
             
             # Step 3: Update customer's last_contacted
             await self.db.customers.update_one(
@@ -106,11 +113,16 @@ class WhatsAppService:
                     from_whatsapp = f"whatsapp:{self.from_number}"
                     to_whatsapp = f"whatsapp:{to_number}" if not to_number.startswith("whatsapp:") else to_number
                     
-                    twilio_message = self.client.messages.create(
-                        from_=from_whatsapp,
-                        body=message,
-                        to=to_whatsapp
-                    )
+                    twilio_kwargs = {
+                        "from_": from_whatsapp,
+                        "body": message,
+                        "to": to_whatsapp
+                    }
+                    
+                    if media_url:
+                        twilio_kwargs["media_url"] = [media_url]
+                    
+                    twilio_message = self.client.messages.create(**twilio_kwargs)
                     twilio_sid = twilio_message.sid
                     logger.info(f"Sent WhatsApp message: {twilio_sid}")
                 except Exception as e:
