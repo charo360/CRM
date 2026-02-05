@@ -1,0 +1,15 @@
+
+❌ Upload Failed: Invalid Signature 65e7db1c376e62033ec9ad3e977f64fdea039be6. String to sign - 'timestamp=1770252157'.
+Full error details:
+Traceback (most recent call last):
+  File "C:\Users\sarch\Desktop\crm\CRM\backend\check_cloudinary.py", line 53, in <module>
+    response = cloudinary.uploader.upload(
+        raw_base64
+    )
+  File "C:\Users\sarch\AppData\Local\Programs\Python\Python313\Lib\site-packages\cloudinary\uploader.py", line 45, in upload
+    return call_cacheable_api("upload", params, file=file, **options)
+  File "C:\Users\sarch\AppData\Local\Programs\Python\Python313\Lib\site-packages\cloudinary\uploader.py", line 462, in call_cacheable_api
+    result = call_api(action, params, http_headers, return_error, unsigned, file, timeout, **options)
+  File "C:\Users\sarch\AppData\Local\Programs\Python\Python313\Lib\site-packages\cloudinary\uploader.py", line 527, in call_api
+    raise Error(result["error"]["message"])
+cloudinary.exceptions.Error: Invalid Signature 65e7db1c376e62033ec9ad3e977f64fdea039be6. String to sign - 'timestamp=1770252157'.

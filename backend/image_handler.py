@@ -232,73 +232,61 @@ class ImageUploadHandler:
     @staticmethod
     async def upload_base64_to_cloudinary(base64_data: str, filename: str = "image.jpg") -> Dict[str, str]:
         """
-        Upload base64 image data to Cloudinary using unsigned upload preset
+        Upload base64 image data to ImgBB (Free Alternative)
+        Kept name 'upload_base64_to_cloudinary' to avoid breaking callers, but uses ImgBB.
         
         Args:
-            base64_data: Base64 encoded image data (with or without data URI prefix)
-            filename: Original filename for extension detection
+            base64_data: Base64 encoded image data
+            filename: Original filename
             
         Returns:
             Dict with public image_url
         """
         try:
-            # Get Cloudinary config dynamically
-            config = get_cloudinary_config()
-            cloud_name = config['cloud_name']
+            # Get ImgBB API Key
+            # We will use the existing env var or a new one
+            api_key = os.environ.get('IMGBB_API_KEY')
+            if not api_key:
+                # Fallback to Cloudinary var if user put the key there, or error
+                api_key = os.environ.get('CLOUDINARY_API_KEY')
             
-            # Check if Cloudinary is configured
-            logger.info(f"Cloudinary config check - Cloud: {bool(cloud_name)}")
-            if not cloud_name:
-                raise ValueError(f"Cloudinary cloud name not configured")
-            
-            # Sanitize filename - remove path separators and special chars
-            # Cloudinary doesn't allow slashes in display names
-            logger.info(f"Original filename: {filename}")
-            safe_filename = Path(filename).name  # Get just the filename without path
-            safe_filename = safe_filename.replace('/', '_').replace('\\', '_')
-            logger.info(f"Sanitized filename: {safe_filename}")
-            
-            # Ensure data URI format
-            if not base64_data.startswith('data:'):
-                ext = Path(filename).suffix.lower().replace('.', '') or 'jpeg'
-                base64_data = f"data:image/{ext};base64,{base64_data}"
-                logger.info(f"Added data URI prefix with extension: {ext}")
-            
-            logger.info(f"Uploading to Cloudinary cloud: {cloud_name} using unsigned upload")
-            
-            # Use unsigned upload with broadcasts preset
-            # Provide a safe public_id to avoid Cloudinary using base64 as display name (which contains slashes)
-            import uuid
-            public_id = f"broadcast_{uuid.uuid4().hex}"
+            if not api_key:
+                 raise ValueError("IMGBB_API_KEY not found in environment")
+
+            # Strip header if present, ImgBB expects just the base64 string or the file
+            # But the API handles base64 parameter including headers usually.
+            # Let's clean it just in case:
+            if base64_data.startswith('data:'):
+                base64_data = base64_data.split(',')[1]
+
+            logger.info(f"Uploading to ImgBB...")
             
             import httpx
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
+                    "https://api.imgbb.com/1/upload",
                     data={
-                        "file": base64_data,
-                        "upload_preset": "broadcasts",
-                        "public_id": public_id
+                        "key": api_key,
+                        "image": base64_data,
+                        "name": Path(filename).stem
                     },
                     timeout=60.0
                 )
                 
                 if response.status_code == 200:
                     result = response.json()
-                    image_url = result.get("secure_url", result.get("url"))
-                    logger.info(f"Uploaded to Cloudinary: {image_url}")
+                    image_url = result['data']['url']
+                    logger.info(f"Uploaded to ImgBB: {image_url}")
                     
                     return {
                         "image_url": image_url,
-                        "public_id": result.get("public_id"),
-                        "filename": safe_filename
+                        "public_id": result['data']['id'],
+                        "filename": filename
                     }
                 else:
-                    error_text = response.text
-                    logger.error(f"Cloudinary upload failed with status {response.status_code}")
-                    logger.error(f"Full response: {error_text}")
-                    raise ValueError(f"Upload failed: {response.status_code} - {error_text}")
+                    logger.error(f"ImgBB upload failed: {response.text}")
+                    raise ValueError(f"ImgBB Upload failed: {response.status_code} - {response.text}")
                     
         except Exception as e:
-            logger.error(f"Error uploading to Cloudinary: {e}")
+            logger.error(f"Error uploading to ImgBB: {e}")
             raise

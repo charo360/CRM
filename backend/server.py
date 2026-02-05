@@ -93,267 +93,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============ PYDANTIC MODELS ============
-
-# Auth Models
-class OTPRequest(BaseModel):
-    phone_number: str  # E.164 format: +254...
-
-class OTPVerify(BaseModel):
-    phone_number: str
-    code: str
-
-class UserCreate(BaseModel):
-    phone_number: str
-    business_name: str
-    owner_name: Optional[str] = None
-
-class UserResponse(BaseModel):
-    id: str
-    phone_number: str
-    business_name: str
-    owner_name: Optional[str] = None
-    subscription_plan: Optional[str] = None
-    subscription_active: bool = False
-    country_code: Optional[str] = None
-    currency: Optional[str] = None
-    payment_methods: List[str] = []
-    created_at: datetime
-
-# Customer Models
-class CustomerCreate(BaseModel):
-    name: str
-    phone_number: str
-    notes: Optional[str] = None
-    tags: List[str] = []
-
-class CustomerUpdate(BaseModel):
-    name: Optional[str] = None
-    notes: Optional[str] = None
-    tags: Optional[List[str]] = None
-
-class CustomerResponse(BaseModel):
-    id: str
-    user_id: str
-    name: str
-    phone_number: str
-    notes: Optional[str] = None
-    tags: List[str] = []
-    purchase_count: int = 0
-    total_spent: float = 0.0
-    last_message: Optional[str] = None
-    last_contacted: Optional[datetime] = None
-    created_at: datetime
-
-# Follow-up Models
-class FollowUpCreate(BaseModel):
-    customer_id: str
-    reminder_date: datetime
-    message: Optional[str] = None
-    type: str = "call"  # call, whatsapp, meeting, email
-
-class FollowUpUpdate(BaseModel):
-    reminder_date: Optional[datetime] = None
-    message: Optional[str] = None
-    status: Optional[str] = None
-    type: Optional[str] = None
-
-class FollowUpResponse(BaseModel):
-    id: str
-    user_id: str
-    customer_id: str
-    customer_name: Optional[str] = None
-    customer_phone: Optional[str] = None
-    reminder_date: datetime
-    message: Optional[str] = None
-    status: str = "pending"  # pending, completed, cancelled
-    type: str = "call"
-    created_at: datetime
-
-# Sales/Receipt Models
-class SaleCreate(BaseModel):
-    customer_id: str
-    item: str
-    amount: float
-    payment_method: str  # Cash, M-Pesa
-    send_receipt: bool = True
-    receipt_message: Optional[str] = None
-
-class SaleResponse(BaseModel):
-    id: str
-    user_id: str
-    customer_id: str
-    customer_name: Optional[str] = None
-    customer_phone: Optional[str] = None
-    item: str
-    amount: float
-    payment_method: str
-    receipt_sent: bool = False
-    created_at: datetime
-
-# Expense Models
-class ExpenseCreate(BaseModel):
-    category: str  # Inventory, Rent, Transport, Utilities, Salaries, Other
-    amount: float
-    description: Optional[str] = None
-    date: Optional[datetime] = None
-
-class ExpenseResponse(BaseModel):
-    id: str
-    user_id: str
-    category: str
-    amount: float
-    description: Optional[str] = None
-    created_at: datetime
-
-# Broadcast Template Models
-class BroadcastTemplateCreate(BaseModel):
-    name: str
-    message: str
-    image_url: Optional[str] = None
-
-class BroadcastTemplateResponse(BaseModel):
-    id: str
-    user_id: str
-    name: str
-    message: str
-    image_url: Optional[str] = None
-    created_at: datetime
-
-# Broadcast Models
-class BroadcastCreate(BaseModel):
-    message: str
-    filter_type: str = "all"  # all, returning, vip, new
-    customer_ids: Optional[List[str]] = None
-    image_url: Optional[str] = None
-    scheduled_at: Optional[datetime] = None
-    template_id: Optional[str] = None
-
-class BroadcastResponse(BaseModel):
-    id: str
-    user_id: str
-    message: str
-    filter_type: str
-    recipients_count: int
-    sent_count: int = 0
-    status: str = "pending"
-    image_url: Optional[str] = None
-    scheduled_at: Optional[datetime] = None
-    created_at: datetime
-
-# AI Message Generation
-class AIMessageRequest(BaseModel):
-    prompt: str
-    business_type: Optional[str] = None
-
-# Subscription Models
-class SubscriptionPlan(BaseModel):
-    id: str
-    name: str
-    amount: int  # in cents
-    amount_display: str
-    interval: str
-    features: List[str]
-
-class PaymentInitRequest(BaseModel):
-    email: str
-    plan_id: str
-
-class PaymentVerifyRequest(BaseModel):
-    reference: str
-
-# Message Models (for storing WhatsApp messages)
-class MessageCreate(BaseModel):
-    customer_id: str
-    direction: str  # incoming, outgoing
-    content: str
-    message_type: str = "text"  # text, image, document
-
-class MessageResponse(BaseModel):
-    id: str
-    customer_id: str
-    direction: str
-    content: str
-    message_type: str
-    created_at: datetime
-
-# AI Analysis Models
-class AIAnalysisRequest(BaseModel):
-    customer_id: str
-
-class AIAnalysisResponse(BaseModel):
-    customer_id: str
-    summary: str
-    follow_up_reason: str
-    suggested_message: str
-    interests: List[str]
-    sentiment: str
-
-# AI Draft Message Models
-class DraftMessageRequest(BaseModel):
-    customer_id: str
-    tone: Optional[str] = "friendly"  # professional, friendly, casual
-    custom_instructions: Optional[str] = None
-
-class DraftMessageResponse(BaseModel):
-    message: str
-    confidence: float
-    reason: str
-
-class SendAutoMessageRequest(BaseModel):
-    customer_id: str
-    message: str
-
-# User Settings Models
-class UserSettingsUpdate(BaseModel):
-    auto_reply_enabled: Optional[bool] = None
-    notification_enabled: Optional[bool] = None
-    notification_time: Optional[str] = None
-    payment_methods: Optional[List[str]] = None
-    currency: Optional[str] = None
-    daily_alert_count: Optional[int] = None
-    message_tone: Optional[str] = None
-    push_token: Optional[str] = None
-
-# Business Knowledge Model
-class BusinessKnowledge(BaseModel):
-    products_services: Optional[str] = None  # What you sell/offer
-    pricing_info: Optional[str] = None  # Price ranges, payment methods
-    business_hours: Optional[str] = None  # When you're available
-    delivery_info: Optional[str] = None  # Delivery areas, costs, timing
-    faqs: Optional[str] = None  # Common questions and answers
-    special_offers: Optional[str] = None  # Current promotions
-    business_description: Optional[str] = None  # What makes you unique
-
-# Product Catalog Models
-class Product(BaseModel):
-    id: str
-    user_id: str
-    name: str
-    price: float
-    image_url: str
-    category: Optional[str] = "Other"
-    description: Optional[str] = None
-    in_stock: bool = True
-    ai_suggested_name: Optional[str] = None
-    ai_confidence: Optional[float] = None
-    created_at: datetime
-    updated_at: datetime
-
-class ProductCreate(BaseModel):
-    name: str
-    price: float
-    image_url: str
-    category: Optional[str] = "Other"
-    description: Optional[str] = None
-    in_stock: bool = True
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    price: Optional[float] = None
-    category: Optional[str] = None
-    description: Optional[str] = None
-    in_stock: Optional[bool] = None
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "crm-backend"}
 
 # ============ HELPER FUNCTIONS ============
 
@@ -478,6 +220,415 @@ async def generate_quick_reason(customer: dict, messages: list) -> str:
         return f"No contact in {days_since} days - check in"
     
     return "Due for follow-up"
+
+# ============ PYDANTIC MODELS ============
+
+# Auth Models
+class OTPRequest(BaseModel):
+    phone_number: str  # E.164 format: +254...
+
+class OTPVerify(BaseModel):
+    phone_number: str
+    code: str
+
+class UserCreate(BaseModel):
+    phone_number: str
+    business_name: str
+    owner_name: Optional[str] = None
+
+class UserResponse(BaseModel):
+    id: str
+    phone_number: str
+    business_name: str
+    owner_name: Optional[str] = None
+    subscription_plan: Optional[str] = None
+    subscription_active: bool = False
+    country_code: Optional[str] = None
+    currency: Optional[str] = None
+    payment_methods: List[str] = []
+    created_at: datetime
+
+# Customer Models
+class CustomerCreate(BaseModel):
+    name: str
+    phone_number: str
+    notes: Optional[str] = None
+    tags: List[str] = []
+
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    notes: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+class CustomerResponse(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    phone_number: str
+    notes: Optional[str] = None
+    tags: List[str] = []
+    purchase_count: int = 0
+    total_spent: float = 0.0
+    last_message: Optional[str] = None
+    last_contacted: Optional[datetime] = None
+    created_at: datetime
+
+# Follow-up Models
+class FollowUpCreate(BaseModel):
+    customer_id: str
+    reminder_date: datetime
+    message: Optional[str] = None
+    type: str = "call"  # call, whatsapp, meeting, email
+
+class FollowUpUpdate(BaseModel):
+    reminder_date: Optional[datetime] = None
+    message: Optional[str] = None
+    status: Optional[str] = None
+    type: Optional[str] = None
+
+class FollowUpResponse(BaseModel):
+    id: str
+    user_id: str
+    customer_id: str
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    reminder_date: datetime
+    message: Optional[str] = None
+    status: str = "pending"  # pending, completed, cancelled
+    type: str = "call"
+    created_at: datetime
+
+# Sales/Receipt Models
+class SaleCreate(BaseModel):
+    customer_id: str
+    item: str
+    amount: float
+    payment_method: Optional[str] = None  # Optional for credit sales
+    send_receipt: bool = True
+    receipt_message: Optional[str] = None
+    is_credit: bool = False  # Whether this is a credit sale
+    due_date: Optional[str] = None  # When payment is due (ISO format)
+    paid_date: Optional[str] = None  # When credit was paid (ISO format)
+
+class SaleResponse(BaseModel):
+    id: str
+    user_id: str
+    customer_id: str
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    item: str
+    amount: float
+    payment_method: Optional[str] = None
+    receipt_sent: bool = False
+    is_credit: bool = False
+    due_date: Optional[str] = None
+    paid_date: Optional[str] = None
+    created_at: datetime
+
+# Expense Models
+class ExpenseCreate(BaseModel):
+    category: str  # Inventory, Rent, Transport, Utilities, Salaries, Other
+    amount: float
+    description: Optional[str] = None
+    date: Optional[datetime] = None
+
+class ExpenseResponse(BaseModel):
+    id: str
+    user_id: str
+    category: str
+    amount: float
+    description: Optional[str] = None
+    created_at: datetime
+
+# Broadcast Template Models
+class BroadcastTemplateCreate(BaseModel):
+    name: str
+    message: str
+    image_url: Optional[str] = None
+
+class BroadcastTemplateResponse(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    message: str
+    image_url: Optional[str] = None
+    created_at: datetime
+
+# Broadcast Models
+class BroadcastCreate(BaseModel):
+    message: str
+    filter_type: str = "all"  # all, returning, vip, new
+    customer_ids: Optional[List[str]] = None
+    image_url: Optional[str] = None
+    image_urls: Optional[List[str]] = None
+    scheduled_at: Optional[datetime] = None
+    template_id: Optional[str] = None
+
+class BroadcastResponse(BaseModel):
+    id: str
+    user_id: str
+    message: str
+    filter_type: str
+    recipients_count: int
+    sent_count: int = 0
+    status: str = "pending"
+    image_url: Optional[str] = None
+    image_urls: Optional[List[str]] = None
+    scheduled_at: Optional[datetime] = None
+    created_at: datetime
+
+# ============ AI MESSAGE GENERATION ============
+
+# ... (skipping AI lines)
+
+# ============ BROADCAST ENDPOINTS ============
+
+@api_router.post("/broadcasts", response_model=BroadcastResponse)
+async def create_broadcast(broadcast: BroadcastCreate, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
+    """Create and send a broadcast message"""
+    # Get recipients based on filter
+    query = {"user_id": user["_id"]}
+    
+    if broadcast.filter_type == "returning":
+        query["tags"] = "Returning"
+    elif broadcast.filter_type == "vip":
+        query["tags"] = "VIP"
+    elif broadcast.filter_type == "new":
+        query["tags"] = "New"
+    elif broadcast.customer_ids:
+        query["_id"] = {"$in": broadcast.customer_ids}
+    
+    customers = await db.customers.find(query).to_list(1000)
+    
+    # Handle images: Normalize to image_urls list
+    image_urls = broadcast.image_urls or []
+    if not image_urls and broadcast.image_url:
+        image_urls = [broadcast.image_url]
+    
+    # Sync single image_url for storage/backwards compat
+    primary_image_url = image_urls[0] if image_urls else None
+
+    broadcast_id = str(uuid.uuid4())
+    broadcast_doc = {
+        "_id": broadcast_id,
+        "user_id": user["_id"],
+        "message": broadcast.message,
+        "filter_type": broadcast.filter_type,
+        "recipients_count": len(customers),
+        "sent_count": 0,
+        "status": "scheduled" if broadcast.scheduled_at else "pending",
+        "image_url": primary_image_url,
+        "image_urls": image_urls,
+        "scheduled_at": broadcast.scheduled_at,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.broadcasts.insert_one(broadcast_doc)
+    
+    # Send messages in background (only if not scheduled)
+    if not broadcast.scheduled_at:
+        background_tasks.add_task(
+            send_broadcast_messages,
+            broadcast_id,
+            user["_id"],
+            broadcast.message,
+            customers,
+            image_urls
+        )
+    
+    return BroadcastResponse(
+        id=broadcast_id,
+        user_id=user["_id"],
+        message=broadcast.message,
+        filter_type=broadcast.filter_type,
+        recipients_count=len(customers),
+        sent_count=0,
+        status="scheduled" if broadcast.scheduled_at else "sending",
+        image_url=primary_image_url,
+        image_urls=image_urls,
+        scheduled_at=broadcast.scheduled_at,
+        created_at=broadcast_doc["created_at"]
+    )
+
+async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str, customers: list, image_urls: List[str] = []):
+    """Send broadcast to all recipients"""
+    from whatsapp_service import get_whatsapp_service
+    whatsapp_service = get_whatsapp_service(db)
+    
+    sent_count = 0
+    for customer in customers:
+        try:
+            # Personalize message with customer name
+            personalized_message = message.replace("{{name}}", customer.get("name", "there"))
+            
+            # 1. Send text message (optionally with first image)
+            first_image = image_urls[0] if image_urls else None
+            await whatsapp_service.send_message(
+                user_id=user_id,
+                to_number=customer["phone_number"],
+                message=personalized_message,
+                customer_name=customer.get("name"),
+                media_url=first_image
+            )
+            
+            # 2. Send remaining images
+            if len(image_urls) > 1:
+                for img_url in image_urls[1:]:
+                    await whatsapp_service.send_message(
+                        user_id=user_id,
+                        to_number=customer["phone_number"],
+                        message="", # Empty caption/message for additional images
+                        customer_name=customer.get("name"),
+                        media_url=img_url
+                    )
+
+            sent_count += 1
+        except Exception as e:
+            logging.error(f"Failed to send to {customer['phone_number']}: {e}")
+    
+    # Update broadcast status
+    await db.broadcasts.update_one(
+        {"_id": broadcast_id},
+        {"$set": {"sent_count": sent_count, "status": "completed"}}
+    )
+
+@api_router.get("/broadcasts", response_model=List[BroadcastResponse])
+async def get_broadcasts(user = Depends(get_current_user)):
+    """Get all broadcasts for current user"""
+    broadcasts = await db.broadcasts.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
+    
+    return [
+        BroadcastResponse(
+            id=b["_id"],
+            user_id=b["user_id"],
+            message=b["message"],
+            filter_type=b["filter_type"],
+            recipients_count=b["recipients_count"],
+            sent_count=b.get("sent_count", 0),
+            status=b["status"],
+            image_url=b.get("image_url"),
+            image_urls=b.get("image_urls", [b.get("image_url")] if b.get("image_url") else []),
+            scheduled_at=b.get("scheduled_at"),
+            created_at=b["created_at"]
+        )
+        for b in broadcasts
+    ]
+
+# AI Message Generation
+class AIMessageRequest(BaseModel):
+    prompt: str
+    business_type: Optional[str] = None
+
+# Subscription Models
+class SubscriptionPlan(BaseModel):
+    id: str
+    name: str
+    amount: int  # in cents
+    amount_display: str
+    interval: str
+    features: List[str]
+
+class PaymentInitRequest(BaseModel):
+    email: str
+    plan_id: str
+
+class PaymentVerifyRequest(BaseModel):
+    reference: str
+
+# Message Models (for storing WhatsApp messages)
+class MessageCreate(BaseModel):
+    customer_id: str
+    direction: str  # incoming, outgoing
+    content: str
+    message_type: str = "text"  # text, image, document
+
+class MessageResponse(BaseModel):
+    id: str
+    customer_id: str
+    direction: str
+    content: str
+    message_type: str
+    created_at: datetime
+
+# AI Analysis Models
+class AIAnalysisRequest(BaseModel):
+    customer_id: str
+
+class AIAnalysisResponse(BaseModel):
+    customer_id: str
+    summary: str
+    follow_up_reason: str
+    suggested_message: str
+    interests: List[str]
+    sentiment: str
+
+# AI Draft Message Models
+class DraftMessageRequest(BaseModel):
+    customer_id: str
+    tone: Optional[str] = "friendly"  # professional, friendly, casual
+    custom_instructions: Optional[str] = None
+
+class DraftMessageResponse(BaseModel):
+    message: str
+    confidence: float
+    reason: str
+
+class SendAutoMessageRequest(BaseModel):
+    customer_id: str
+    message: str
+
+# User Settings Models
+class UserSettingsUpdate(BaseModel):
+    auto_reply_enabled: Optional[bool] = None
+    notification_enabled: Optional[bool] = None
+    notification_time: Optional[str] = None
+    payment_methods: Optional[List[str]] = None
+    currency: Optional[str] = None
+    daily_alert_count: Optional[int] = None
+    message_tone: Optional[str] = None
+    push_token: Optional[str] = None
+
+# Business Knowledge Model
+class BusinessKnowledge(BaseModel):
+    products_services: Optional[str] = None  # What you sell/offer
+    pricing_info: Optional[str] = None  # Price ranges, payment methods
+    business_hours: Optional[str] = None  # When you're available
+    delivery_info: Optional[str] = None  # Delivery areas, costs, timing
+    faqs: Optional[str] = None  # Common questions and answers
+    special_offers: Optional[str] = None  # Current promotions
+    business_description: Optional[str] = None  # What makes you unique
+
+# Product Catalog Models
+class Product(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    price: float
+    image_url: str
+    category: Optional[str] = "Other"
+    description: Optional[str] = None
+    in_stock: bool = True
+    ai_suggested_name: Optional[str] = None
+    ai_confidence: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+class ProductCreate(BaseModel):
+    name: str
+    price: float
+    image_url: str
+    category: Optional[str] = "Other"
+    description: Optional[str] = None
+    in_stock: bool = True
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    in_stock: Optional[bool] = None
+
+
 
 # ============ AUTH ENDPOINTS ============
 
@@ -1013,20 +1164,39 @@ async def test_smart_notification(user = Depends(get_current_user)):
 @api_router.post("/sales", response_model=SaleResponse)
 async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
     """Record a sale and optionally send receipt"""
-    # Verify customer exists
-    customer = await db.customers.find_one({"_id": sale.customer_id, "user_id": user["_id"]})
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
+    # Handle walk-in customers
+    is_walk_in = sale.customer_id == 'walk-in'
+    
+    if not is_walk_in:
+        # Verify customer exists for regular sales
+        customer = await db.customers.find_one({"_id": sale.customer_id, "user_id": user["_id"]})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+    else:
+        # Create placeholder for walk-in customer
+        customer = {
+            "name": "Walk-in Customer",
+            "phone_number": "N/A"
+        }
     
     sale_id = str(uuid.uuid4())
+    
+    # Set payment method to "Credit" if this is a credit sale
+    payment_method = sale.payment_method
+    if sale.is_credit and not payment_method:
+        payment_method = "Credit"
+    
     sale_doc = {
         "_id": sale_id,
         "user_id": user["_id"],
         "customer_id": sale.customer_id,
         "item": sale.item,
         "amount": sale.amount,
-        "payment_method": sale.payment_method,
+        "payment_method": payment_method,
         "receipt_sent": False,
+        "is_credit": sale.is_credit,
+        "due_date": sale.due_date,
+        "paid_date": sale.paid_date,
         "created_at": datetime.utcnow()
     }
     
@@ -1069,10 +1239,40 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
         customer_phone=customer["phone_number"],
         item=sale.item,
         amount=sale.amount,
-        payment_method=sale.payment_method,
+        payment_method=payment_method,
         receipt_sent=sale.send_receipt,
+        is_credit=sale.is_credit,
+        due_date=sale.due_date,
+        paid_date=sale.paid_date,
         created_at=sale_doc["created_at"]
     )
+
+@api_router.put("/sales/{sale_id}/mark-paid")
+async def mark_sale_as_paid(sale_id: str, payment_method: str, user = Depends(get_current_user)):
+    """Mark a credit sale as paid"""
+    # Verify sale exists and belongs to user
+    sale = await db.sales.find_one({"_id": sale_id, "user_id": user["_id"]})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Sale not found")
+    
+    if not sale.get("is_credit"):
+        raise HTTPException(status_code=400, detail="This is not a credit sale")
+    
+    if sale.get("paid_date"):
+        raise HTTPException(status_code=400, detail="Sale already marked as paid")
+    
+    # Update sale to mark as paid
+    await db.sales.update_one(
+        {"_id": sale_id},
+        {
+            "$set": {
+                "paid_date": datetime.utcnow().isoformat(),
+                "payment_method": payment_method
+            }
+        }
+    )
+    
+    return {"message": "Sale marked as paid", "paid_date": datetime.utcnow().isoformat()}
 
 async def send_receipt_message(phone: str, name: str, item: str, amount: float, business: str, sale_id: str, custom_message: Optional[str] = None):
     """Send receipt via SMS (WhatsApp requires approved templates)"""
@@ -1235,6 +1435,7 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         background_tasks.add_task(
             send_broadcast_messages,
             broadcast_id,
+            user["_id"],
             broadcast.message,
             customers,
             broadcast.image_url
@@ -1253,28 +1454,25 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         created_at=broadcast_doc["created_at"]
     )
 
-async def send_broadcast_messages(broadcast_id: str, message: str, customers: list, image_url: Optional[str] = None):
+async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str, customers: list, image_url: Optional[str] = None):
     """Send broadcast to all recipients"""
+    from whatsapp_service import get_whatsapp_service
+    whatsapp_service = get_whatsapp_service(db)
+    
     sent_count = 0
     for customer in customers:
         try:
             # Personalize message with customer name
             personalized_message = message.replace("{{name}}", customer.get("name", "there"))
             
-            # Send with or without image
-            if image_url:
-                twilio_client.messages.create(
-                    body=personalized_message,
-                    from_=os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006'),
-                    to=customer["phone_number"],
-                    media_url=[image_url]
-                )
-            else:
-                twilio_client.messages.create(
-                    body=personalized_message,
-                    from_=os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006'),
-                    to=customer["phone_number"]
-                )
+            # Send using service (handles logging and contact updates)
+            await whatsapp_service.send_message(
+                user_id=user_id,
+                to_number=customer["phone_number"],
+                message=personalized_message,
+                customer_name=customer.get("name"),
+                media_url=image_url
+            )
             sent_count += 1
         except Exception as e:
             logging.error(f"Failed to send to {customer['phone_number']}: {e}")
@@ -1357,43 +1555,229 @@ async def delete_broadcast_template(template_id: str, user = Depends(get_current
         raise HTTPException(status_code=404, detail="Template not found")
     return {"status": "success", "message": "Template deleted"}
 
+# ============ CUSTOMER GROUP ENDPOINTS ============
+
+class CustomerGroupCreate(BaseModel):
+    name: str
+    customer_ids: List[str]
+
+class CustomerGroupResponse(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    customer_ids: List[str]
+    count: int
+    created_at: datetime
+
+@api_router.post("/customer-groups", response_model=CustomerGroupResponse)
+async def create_customer_group(group: CustomerGroupCreate, user = Depends(get_current_user)):
+    """Create a custom group of customers"""
+    group_id = str(uuid.uuid4())
+    
+    # deduplicate ids
+    customer_ids = list(set(group.customer_ids))
+    
+    group_doc = {
+        "_id": group_id,
+        "user_id": user["_id"],
+        "name": group.name,
+        "customer_ids": customer_ids,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.customer_groups.insert_one(group_doc)
+    
+    return CustomerGroupResponse(
+        id=group_id,
+        user_id=user["_id"],
+        name=group.name,
+        customer_ids=customer_ids,
+        count=len(customer_ids),
+        created_at=group_doc["created_at"]
+    )
+
+@api_router.get("/customer-groups", response_model=List[CustomerGroupResponse])
+async def get_customer_groups(user = Depends(get_current_user)):
+    """Get all customer groups for user"""
+    groups = await db.customer_groups.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
+    
+    return [
+        CustomerGroupResponse(
+            id=g["_id"],
+            user_id=g["user_id"],
+            name=g["name"],
+            customer_ids=g.get("customer_ids", []),
+            count=len(g.get("customer_ids", [])),
+            created_at=g["created_at"]
+        )
+        for g in groups
+    ]
+
+@api_router.delete("/customer-groups/{group_id}")
+async def delete_customer_group(group_id: str, user = Depends(get_current_user)):
+    """Delete a customer group"""
+    result = await db.customer_groups.delete_one({"_id": group_id, "user_id": user["_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return {"status": "success", "message": "Group deleted"}
+
+
+# ============ PRODUCT ENDPOINTS ============
+
+class ProductResponse(BaseModel):
+    id: str
+    name: str
+    price: float
+    category: str
+    image_url: Optional[str]
+    images: List[str] = []
+    created_at: datetime
+
+@api_router.get("/products", response_model=List[ProductResponse])
+async def get_products(user = Depends(get_current_user)):
+    """Get all products (with auto-seeding for demo)"""
+    products = await db.products.find({"user_id": user["_id"]}).to_list(100)
+    
+    if not products:
+        # Seed dummy products
+        dummy_products = [
+            {
+                "_id": str(uuid.uuid4()),
+                "user_id": user["_id"],
+                "name": "Winter Jacket",
+                "price": 4500,
+                "category": "Clothing",
+                "image_url": "https://placehold.co/600x400/png",
+                "images": ["https://placehold.co/600x400/png"],
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": str(uuid.uuid4()),
+                "user_id": user["_id"],
+                "name": "Sneakers",
+                "price": 3200,
+                "category": "Shoes",
+                "image_url": "https://placehold.co/600x400/png",
+                "images": ["https://placehold.co/600x400/png"],
+                "created_at": datetime.utcnow()
+            },
+             {
+                "_id": str(uuid.uuid4()),
+                "user_id": user["_id"],
+                "name": "Bluetooth Headphones",
+                "price": 2500,
+                "category": "Electronics",
+                "image_url": None,
+                "images": [],
+                "created_at": datetime.utcnow()
+            }
+        ]
+        await db.products.insert_many(dummy_products)
+        products = dummy_products
+    
+    return [
+        ProductResponse(
+            id=p["_id"],
+            name=p["name"],
+            price=p["price"],
+            category=p.get("category", "Other"),
+            image_url=p.get("image_url"),
+            images=p.get("images", [p.get("image_url")] if p.get("image_url") else []),
+            created_at=p["created_at"]
+        )
+        for p in products
+    ]
+
+class ProductCreate(BaseModel):
+    name: str = "New Product"
+    price: float = 0.0
+    category: str = "Other"
+    image_url: Optional[str] = None
+    images: List[str] = []
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    category: Optional[str] = None
+    image_url: Optional[str] = None
+    images: Optional[List[str]] = None
+
+@api_router.post("/products", response_model=ProductResponse)
+async def create_product(product: ProductCreate, user = Depends(get_current_user)):
+    """Create a new product"""
+    # Ensure images list is populated if image_url is provided
+    images = product.images
+    if not images and product.image_url:
+        images = [product.image_url]
+    
+    product_doc = {
+        "_id": str(uuid.uuid4()),
+        "user_id": user["_id"],
+        "name": product.name,
+        "price": product.price,
+        "category": product.category,
+        "image_url": product.image_url,
+        "images": images,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.products.insert_one(product_doc)
+    
+    return ProductResponse(
+        id=product_doc["_id"],
+        name=product_doc["name"],
+        price=product_doc["price"],
+        category=product_doc["category"],
+        image_url=product_doc["image_url"],
+        images=product_doc["images"],
+        created_at=product_doc["created_at"]
+    )
+
+@api_router.put("/products/{product_id}", response_model=ProductResponse)
+async def update_product(product_id: str, updates: ProductUpdate, user = Depends(get_current_user)):
+    """Update a product"""
+    # Create update dict excluding None values
+    update_data = {k: v for k, v in updates.dict().items() if v is not None}
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No updates provided")
+        
+    # If updating images, ensure image_url is consistent (take first image)
+    if "images" in update_data and update_data["images"]:
+        update_data["image_url"] = update_data["images"][0]
+    elif "images" in update_data and not update_data["images"]:
+        update_data["image_url"] = None
+
+    result = await db.products.find_one_and_update(
+        {"_id": product_id, "user_id": user["_id"]},
+        {"$set": update_data},
+        return_document=True
+    )
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Product not found")
+        
+    return ProductResponse(
+        id=result["_id"],
+        name=result["name"],
+        price=result["price"],
+        category=result["category"],
+        image_url=result.get("image_url"),
+        images=result.get("images", [result.get("image_url")] if result.get("image_url") else []),
+        created_at=result["created_at"]
+    )
+
 # ============ AI MESSAGE GENERATION ============
 
 @api_router.post("/ai/generate-broadcast-message")
 async def generate_broadcast_message(request: AIMessageRequest, user = Depends(get_current_user)):
     """Generate a broadcast message using AI"""
     try:
-        # Build system prompt for WhatsApp-compliant messages
-        system_prompt = """You are a marketing message generator for small businesses. 
-Generate short, engaging WhatsApp-compliant promotional messages.
-
-Rules:
-1. Keep messages under 160 characters when possible
-2. Use emojis sparingly (1-2 max)
-3. Include a clear call-to-action
-4. Be friendly and conversational
-5. Follow WhatsApp Business API guidelines
-6. You can use {{name}} to personalize with customer name
-7. Make it suitable for SMS/WhatsApp broadcast
-
-Format: Just return the message text, nothing else."""
-
-        # Add business context if provided
-        if request.business_type:
-            system_prompt += f"\n\nBusiness type: {request.business_type}"
-        
-        # Call OpenAI API
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": request.prompt}
-            ],
-            max_tokens=200,
-            temperature=0.7
+        drafter = get_drafter()
+        generated_message = await drafter.draft_broadcast_message(
+            prompt=request.prompt,
+            business_type=request.business_type
         )
-        
-        generated_message = response.choices[0].message.content.strip()
         
         return {"message": generated_message}
     except Exception as e:

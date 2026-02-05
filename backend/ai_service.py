@@ -405,6 +405,38 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
             raise Exception(f"OpenAI API error: {str(e)}")
 
 
+    async def draft_broadcast_message(self, prompt: str, business_type: str = None) -> str:
+        """Draft a broadcast message based on a prompt"""
+        if not self.api_key or not self.client:
+            return "AI Unavailable: Please set OPENAI_API_KEY in environment"
+
+        # Build system prompt for WhatsApp-compliant messages
+        system_prompt = """You are a marketing message generator for small businesses. 
+Generate engaging WhatsApp-compliant promotional messages.
+
+Rules:
+1. Keep messages under 160 characters when possible
+2. Use emojis sparingly (1-2 max)
+3. Include a clear call-to-action
+4. Be friendly and conversational
+5. Follow WhatsApp Business API guidelines
+6. You can use {{name}} to personalize with customer name
+7. Make it suitable for SMS/WhatsApp broadcast
+
+Format: Just return the message text, nothing else."""
+
+        if business_type:
+            system_prompt += f"\n\nBusiness type: {business_type}"
+            
+        full_prompt = f"{system_prompt}\n\nUser request: {prompt}"
+        
+        try:
+            return await self._call_openai(full_prompt)
+        except Exception as e:
+            logger.error(f"Broadcast drafting failed: {e}")
+            return f"Error drafting message: {str(e)}"
+
+
     async def analyze_conversation_for_notes(
         self,
         messages: List[Dict]
