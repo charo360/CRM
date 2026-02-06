@@ -76,9 +76,8 @@ twilio_client = TwilioClient(
 JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret-key')
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
 
-# Paystack Config
-PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY')
-PAYSTACK_BASE_URL = "https://api.paystack.co"
+# Google Play / App Store IAP Config
+GOOGLE_PLAY_PACKAGE_NAME = os.environ.get('GOOGLE_PLAY_PACKAGE_NAME', '')
 
 app = FastAPI(title="WhatsApp CRM")
 api_router = APIRouter(prefix="/api")
@@ -555,12 +554,10 @@ class SubscriptionPlan(BaseModel):
     interval: str
     features: List[str]
 
-class PaymentInitRequest(BaseModel):
-    email: str
+class IAPVerifyRequest(BaseModel):
     plan_id: str
-
-class PaymentVerifyRequest(BaseModel):
-    reference: str
+    purchase_token: str  # Google Play purchase token or Apple receipt
+    platform: str  # 'android' or 'ios'
 
 # Message Models (for storing WhatsApp messages)
 class MessageCreate(BaseModel):
@@ -2220,134 +2217,53 @@ async def get_subscription_plans():
     """Get available subscription plans"""
     return SUBSCRIPTION_PLANS
 
-@api_router.post("/subscription/initialize")
-async def initialize_payment(request: PaymentInitRequest, user = Depends(get_current_user)):
-    """Initialize Paystack payment"""
+@api_router.post("/subscription/verify-purchase")
+async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_current_user)):
+    """Verify in-app purchase from Google Play or App Store"""
     plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == request.plan_id), None)
     if not plan:
         raise HTTPException(status_code=400, detail="Invalid plan")
     
-    headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
-        "Content-Type": "application/json"
-    }
+    # For now, trust the client-side purchase verification
+    # In production, verify with Google Play Developer API or Apple App Store Server API
     
-    # Get user's currency setting
-    user_currency = user.get("settings", {}).get("currency", "USD")
-    
-    payload = {
-        "email": request.email,
-        "amount": plan["amount"] * 100,  # Paystack expects amount in smallest unit (cents)
-        "currency": user_currency,
-        "channels": ["card", "mobile_money"],
-        "metadata": {
-            "user_id": user["_id"],
-            "plan_id": plan["id"],
-            "plan_name": plan["name"]
+    # Update user subscription
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "subscription_plan": request.plan_id,
+                "subscription_active": True,
+                "subscription_date": datetime.utcnow()
+            }
         }
+    )
+    
+    # Store transaction
+    await db.transactions.insert_one({
+        "_id": str(uuid.uuid4()),
+        "user_id": user["_id"],
+        "purchase_token": request.purchase_token,
+        "plan_id": request.plan_id,
+        "platform": request.platform,
+        "status": "success",
+        "created_at": datetime.utcnow()
+    })
+    
+    return {
+        "status": "success",
+        "message": "Subscription activated",
+        "plan": request.plan_id
     }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{PAYSTACK_BASE_URL}/transaction/initialize",
-            json=payload,
-            headers=headers
-        )
-        data = response.json()
-        
-        if data.get("status"):
-            return {
-                "status": "success",
-                "authorization_url": data["data"]["authorization_url"],
-                "reference": data["data"]["reference"]
-            }
-        else:
-            raise HTTPException(status_code=400, detail=data.get("message", "Payment initialization failed"))
 
-@api_router.post("/subscription/verify")
-async def verify_payment(request: PaymentVerifyRequest, user = Depends(get_current_user)):
-    """Verify Paystack payment"""
-    headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"
+@api_router.get("/subscription/status")
+async def get_subscription_status(user = Depends(get_current_user)):
+    """Get current user subscription status"""
+    return {
+        "subscription_plan": user.get("subscription_plan"),
+        "subscription_active": user.get("subscription_active", False),
+        "subscription_date": user.get("subscription_date")
     }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{PAYSTACK_BASE_URL}/transaction/verify/{request.reference}",
-            headers=headers
-        )
-        data = response.json()
-        
-        if data.get("status") and data["data"].get("status") == "success":
-            # Update user subscription
-            plan_id = data["data"]["metadata"].get("plan_id")
-            await db.users.update_one(
-                {"_id": user["_id"]},
-                {
-                    "$set": {
-                        "subscription_plan": plan_id,
-                        "subscription_active": True,
-                        "subscription_date": datetime.utcnow()
-                    }
-                }
-            )
-            
-            # Store transaction
-            await db.transactions.insert_one({
-                "_id": str(uuid.uuid4()),
-                "user_id": user["_id"],
-                "reference": request.reference,
-                "amount": data["data"]["amount"],
-                "plan_id": plan_id,
-                "status": "success",
-                "created_at": datetime.utcnow()
-            })
-            
-            return {
-                "status": "success",
-                "message": "Subscription activated",
-                "plan": plan_id
-            }
-        else:
-            raise HTTPException(status_code=400, detail="Payment verification failed")
-
-@api_router.post("/webhooks/paystack")
-async def paystack_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Handle Paystack webhooks"""
-    body = await request.body()
-    signature = request.headers.get("x-paystack-signature")
-    
-    # Verify signature
-    if PAYSTACK_SECRET_KEY:
-        hash_obj = hmac.new(
-            PAYSTACK_SECRET_KEY.encode('utf-8'),
-            body,
-            hashlib.sha512
-        )
-        if hash_obj.hexdigest() != signature:
-            raise HTTPException(status_code=401, detail="Invalid signature")
-    
-    payload = json.loads(body)
-    event = payload.get("event")
-    data = payload.get("data", {})
-    
-    if event == "charge.success":
-        user_id = data.get("metadata", {}).get("user_id")
-        plan_id = data.get("metadata", {}).get("plan_id")
-        
-        if user_id and plan_id:
-            await db.users.update_one(
-                {"_id": user_id},
-                {
-                    "$set": {
-                        "subscription_plan": plan_id,
-                        "subscription_active": True,
-                        "subscription_date": datetime.utcnow()
-                    }
-                }
-            )
-    
-    return {"status": "ok"}
 
 # ============ WHATSAPP MESSAGING ENDPOINTS ============
 

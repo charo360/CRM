@@ -19,6 +19,17 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, settingsAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
+import {
+  initConnection,
+  fetchProducts,
+  requestPurchase,
+  purchaseUpdatedListener,
+  purchaseErrorListener,
+  finishTransaction,
+  type Purchase,
+  type PurchaseError,
+  ErrorCode,
+} from 'react-native-iap';
 
 interface SubscriptionPlan {
   id: string;
@@ -88,43 +99,95 @@ export default function AccountScreen() {
     }
   };
 
+  // Google Play / App Store product IDs mapped to plan IDs
+  const PLAN_PRODUCT_IDS: Record<string, string> = {
+    starter: Platform.OS === 'ios' ? 'com.crm.starter.monthly' : 'crm_starter_monthly',
+    standard: Platform.OS === 'ios' ? 'com.crm.standard.monthly' : 'crm_standard_monthly',
+    pro: Platform.OS === 'ios' ? 'com.crm.pro.monthly' : 'crm_pro_monthly',
+  };
+
+  useEffect(() => {
+    const setupIAP = async () => {
+      try {
+        await initConnection();
+      } catch (e) {
+        console.log('IAP connection error (expected in dev):', e);
+      }
+    };
+    setupIAP();
+
+    const purchaseUpdate = purchaseUpdatedListener(async (purchase: Purchase) => {
+      try {
+        // Verify purchase on backend
+        const planId = Object.entries(PLAN_PRODUCT_IDS).find(
+          ([_, productId]) => productId === purchase.productId
+        )?.[0];
+
+        if (planId) {
+          const token = ('purchaseToken' in purchase ? purchase.purchaseToken : '') || '';
+          await apiClient.post('/subscription/verify-purchase', {
+            plan_id: planId,
+            purchase_token: token,
+            platform: Platform.OS,
+          });
+
+          await finishTransaction({ purchase, isConsumable: false });
+          Alert.alert('Success', 'Your subscription has been activated!');
+          refreshUser();
+        }
+      } catch (error: any) {
+        Alert.alert('Error', 'Failed to verify purchase. Please contact support.');
+      } finally {
+        setSubscribing(false);
+      }
+    });
+
+    const purchaseError = purchaseErrorListener((error: PurchaseError) => {
+      if (error.code !== ErrorCode.UserCancelled) {
+        Alert.alert('Purchase Error', error.message || 'Something went wrong');
+      }
+      setSubscribing(false);
+    });
+
+    return () => {
+      purchaseUpdate.remove();
+      purchaseError.remove();
+    };
+  }, []);
+
   const handleSubscribe = async (plan: SubscriptionPlan) => {
     if (!user) return;
 
-    Alert.prompt(
-      'Enter Email',
-      'Enter your email for payment receipt',
-      async (email) => {
-        if (!email || !email.includes('@')) {
-          Alert.alert('Error', 'Please enter a valid email');
-          return;
-        }
+    const productId = PLAN_PRODUCT_IDS[plan.id];
+    if (!productId) {
+      Alert.alert('Error', 'Invalid plan');
+      return;
+    }
 
-        setSubscribing(true);
-        try {
-          const response = await apiClient.post('/subscription/initialize', {
-            email: email,
-            plan_id: plan.id,
-          });
+    setSubscribing(true);
+    try {
+      // Fetch available subscriptions from store
+      const products = await fetchProducts({ skus: [productId], type: 'subs' });
+      if (!products || !products.length) {
+        Alert.alert('Error', 'This plan is not available in your region');
+        setSubscribing(false);
+        return;
+      }
 
-          if (response.data.authorization_url) {
-            Linking.openURL(response.data.authorization_url);
-            Alert.alert(
-              'Payment Started',
-              'Complete the payment in your browser. Your subscription will be activated automatically.',
-              [{ text: 'OK', onPress: () => refreshUser() }]
-            );
-          }
-        } catch (error: any) {
-          Alert.alert('Error', error.response?.data?.detail || 'Failed to start payment');
-        } finally {
-          setSubscribing(false);
-        }
-      },
-      'plain-text',
-      '',
-      'email-address'
-    );
+      // Request the subscription purchase via platform-specific params
+      await requestPurchase({
+        type: 'subs',
+        request: Platform.OS === 'ios'
+          ? { apple: { sku: productId } }
+          : { google: { skus: [productId] } },
+      });
+      // Purchase result handled by purchaseUpdatedListener above
+    } catch (error: any) {
+      if (error.code !== ErrorCode.UserCancelled) {
+        Alert.alert('Error', error.message || 'Failed to start purchase');
+      }
+      setSubscribing(false);
+    }
   };
 
   const handleTogglePulse = async (value: boolean) => {
