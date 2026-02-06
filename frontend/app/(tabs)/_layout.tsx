@@ -19,17 +19,23 @@ export default function TabsLayout() {
   // Settings State
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [notificationEnabled, setNotificationEnabled] = useState(false);
+  const [dailyPulseEnabled, setDailyPulseEnabled] = useState(false);
 
-  // Fetch initial settings
+  const { user } = useAuth();
+
+  // Fetch initial settings only after auth is ready
   React.useEffect(() => {
-    loadSettings();
-  }, []);
+    if (user) {
+      loadSettings();
+    }
+  }, [user]);
 
   const loadSettings = async () => {
     try {
       const settings = await settingsAPI.getSettings();
       setAutoReplyEnabled(settings.auto_reply_enabled ?? false);
       setNotificationEnabled(settings.notification_enabled ?? false);
+      setDailyPulseEnabled(settings.daily_pulse_enabled ?? false);
     } catch (error) {
       console.log('Error loading settings:', error);
     }
@@ -54,6 +60,17 @@ export default function TabsLayout() {
     } catch (error) {
       console.error('Failed to update notifications', error);
       setNotificationEnabled(!newValue); // Revert on failure
+    }
+  };
+
+  const handleToggleDailyPulse = async () => {
+    const newValue = !dailyPulseEnabled;
+    setDailyPulseEnabled(newValue);
+    try {
+      await settingsAPI.updateSettings({ daily_pulse_enabled: newValue });
+    } catch (error) {
+      console.error('Failed to update daily pulse', error);
+      setDailyPulseEnabled(!newValue);
     }
   };
 
@@ -107,6 +124,14 @@ export default function TabsLayout() {
                     type: 'toggle',
                     value: notificationEnabled,
                     onPress: handleToggleNotification,
+                  },
+                  {
+                    icon: 'pulse',
+                    label: 'Daily Pulse',
+                    type: 'toggle',
+                    value: dailyPulseEnabled,
+                    onPress: handleToggleDailyPulse,
+                    color: '#25D366',
                   }
                 ]}
               />

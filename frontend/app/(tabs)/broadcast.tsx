@@ -18,7 +18,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { apiClient } from '../../context/api';
+import { apiClient, productsAPI } from '../../context/api';
 
 interface Customer {
   id: string;
@@ -149,6 +149,7 @@ export default function BroadcastScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [tempDate, setTempDate] = useState<Date>(new Date());
+  const [broadcastingCatalog, setBroadcastingCatalog] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -263,6 +264,61 @@ export default function BroadcastScreen() {
       newSelection.add(product.id);
     }
     setSelectedProductIds(newSelection);
+  };
+
+  // Broadcast catalog to customers
+  const handleBroadcastCatalog = async () => {
+    if (selectedProductIds.size === 0) {
+      Alert.alert('Error', 'Please select at least one product');
+      return;
+    }
+
+    const recipientCount = getFilteredCount();
+    if (recipientCount === 0) {
+      Alert.alert('Error', 'No customers match this filter');
+      return;
+    }
+
+    const productIds = Array.from(selectedProductIds);
+
+    Alert.alert(
+      'Broadcast Catalog',
+      `Send ${productIds.length} product${productIds.length > 1 ? 's' : ''} as a catalog to ${recipientCount} customer${recipientCount > 1 ? 's' : ''}?\n\nCustomers can reply "Order 1" to place an order!`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Broadcast',
+          onPress: async () => {
+            setBroadcastingCatalog(true);
+            try {
+              let filterType = selectedFilter;
+              let customerIds: string[] | undefined;
+
+              if (selectedFilter === 'group' && selectedGroup) {
+                const group = groups.find(g => g.id === selectedGroup);
+                if (group) {
+                  filterType = 'custom';
+                  customerIds = group.customer_ids;
+                }
+              }
+
+              const result = await productsAPI.broadcastCatalog(productIds, filterType, customerIds);
+              setProductModalVisible(false);
+              setSelectedProductIds(new Set());
+              fetchData();
+              Alert.alert(
+                'Catalog Broadcast Sent!',
+                `Sent to ${result.sent_count} customer${result.sent_count !== 1 ? 's' : ''} with ${result.products_in_catalog} products.\n\nCustomers can reply to order!`
+              );
+            } catch (error: any) {
+              Alert.alert('Error', error.response?.data?.detail || 'Failed to broadcast catalog');
+            } finally {
+              setBroadcastingCatalog(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Adds selected products' images to the broadcast
@@ -1092,10 +1148,10 @@ export default function BroadcastScreen() {
             )}
           </ScrollView>
         </SafeAreaView>
-      </Modal >
+      </Modal>
 
       {/* View Image Modal */}
-      < Modal visible={!!viewingImage} transparent={true} onRequestClose={() => setViewingImage(null)}>
+      <Modal visible={!!viewingImage} transparent={true} onRequestClose={() => setViewingImage(null)}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' }}>
           <TouchableOpacity
             style={{ position: 'absolute', top: 40, right: 20, zIndex: 10 }}
@@ -1110,10 +1166,10 @@ export default function BroadcastScreen() {
             />
           )}
         </View>
-      </Modal >
+      </Modal>
 
       {/* CREATE GROUP MODAL */}
-      < Modal
+      <Modal
         visible={createGroupModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
@@ -1160,10 +1216,10 @@ export default function BroadcastScreen() {
             />
           </View>
         </SafeAreaView>
-      </Modal >
+      </Modal>
 
       {/* PRODUCT GALLERY MODAL */}
-      < Modal
+      <Modal
         visible={productModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
@@ -1184,28 +1240,31 @@ export default function BroadcastScreen() {
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.modalContent}>
+          <ScrollView style={styles.modalContent} contentContainerStyle={{ paddingBottom: selectedProductIds.size > 0 ? 80 : 20 }}>
             {Object.keys(productsByCategory).map((category) => (
               <View key={category} style={styles.categorySection}>
                 <Text style={styles.categoryTitle}>{category}</Text>
                 <View style={styles.productGrid}>
                   {productsByCategory[category].map((product) => {
                     const isSelected = selectedProductIds.has(product.id);
+                    const imgUrl = product.image_url
+                      ? (product.image_url.startsWith('http') ? product.image_url : `${process.env.EXPO_PUBLIC_BACKEND_URL}${product.image_url}`)
+                      : null;
                     return (
                       <View key={product.id} style={[styles.productItem, isSelected && styles.productItemSelected]}>
                         <TouchableOpacity
                           style={styles.productTouchable}
                           onPress={() => handleToggleProductSelection(product)}
                         >
-                          {product.image_url ? (
-                            <Image source={{ uri: product.image_url }} style={styles.productImage} />
+                          {imgUrl ? (
+                            <Image source={{ uri: imgUrl }} style={styles.productImage} resizeMode="cover" />
                           ) : (
-                            <View style={[styles.productImage, { backgroundColor: '#1A2942', justifyContent: 'center', alignItems: 'center' }]}>
-                              <Ionicons name="image-outline" size={24} color="#666" />
+                            <View style={[styles.productImage, { backgroundColor: '#0D1B2A', justifyContent: 'center', alignItems: 'center' }]}>
+                              <Ionicons name="image-outline" size={28} color="#3A4A5C" />
                             </View>
                           )}
                           <Text style={styles.productName} numberOfLines={1}>{product.name}</Text>
-                          <Text style={styles.productPrice}>KES {product.price}</Text>
+                          <Text style={styles.productPrice}>KES {product.price?.toLocaleString() || 0}</Text>
                         </TouchableOpacity>
 
                         {/* Edit Button Overlay */}
@@ -1228,13 +1287,39 @@ export default function BroadcastScreen() {
                 </View>
               </View>
             ))}
-            <View style={{ height: 40 }} />
           </ScrollView>
+
+          {/* Floating action bar when products are selected */}
+          {selectedProductIds.size > 0 && (
+            <View style={styles.broadcastCatalogBar}>
+              <TouchableOpacity
+                style={styles.broadcastCatalogAddBtn}
+                onPress={handleConfirmProductSelection}
+              >
+                <Ionicons name="images-outline" size={18} color="#3B82F6" />
+                <Text style={styles.broadcastCatalogAddText}>Add Images</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.broadcastCatalogSendBtn, broadcastingCatalog && { opacity: 0.6 }]}
+                onPress={handleBroadcastCatalog}
+                disabled={broadcastingCatalog}
+              >
+                {broadcastingCatalog ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <>
+                    <Ionicons name="megaphone-outline" size={18} color="#FFF" />
+                    <Text style={styles.broadcastCatalogSendText}>Broadcast Catalog ({selectedProductIds.size})</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
         </SafeAreaView>
-      </Modal >
+      </Modal>
 
       {/* EDIT PRODUCT MODAL */}
-      < Modal
+      <Modal
         visible={editProductModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
@@ -1296,19 +1381,19 @@ export default function BroadcastScreen() {
             </View>
           </ScrollView>
         </SafeAreaView>
-      </Modal >
+      </Modal>
 
       {/* AI Modal (Existing) */}
-      < Modal
+      <Modal
         visible={aiModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={() => setAiModalVisible(false)}
       >
         {/* ... Existing AI Modal Content ... */}
-        < SafeAreaView style={styles.modalContainer} >
+        <SafeAreaView style={styles.modalContainer}>
           {/* Simplified for brevity - reuse logic from previous implementation */}
-          < View style={styles.modalContent} >
+          <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>AI Message Generator</Text>
             <TextInput
               style={styles.messageInput}
@@ -1320,11 +1405,11 @@ export default function BroadcastScreen() {
             <TouchableOpacity style={styles.generateButton} onPress={handleGenerateAI}>
               <Text style={styles.generateButtonText}>Generate Message</Text>
             </TouchableOpacity>
-          </View >
-        </SafeAreaView >
-      </Modal >
+          </View>
+        </SafeAreaView>
+      </Modal>
 
-    </SafeAreaView >
+    </SafeAreaView>
   );
 }
 
@@ -1393,11 +1478,11 @@ const styles = StyleSheet.create({
   // Product Gallery
   categorySection: { marginBottom: 24 },
   categoryTitle: { color: '#666', fontSize: 14, fontWeight: 'bold', marginBottom: 12, textTransform: 'uppercase' },
-  productGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  productItem: { width: '31%', marginBottom: 12 },
-  productImage: { width: '100%', aspectRatio: 1, borderRadius: 8, marginBottom: 4 },
-  productName: { color: '#FFF', fontSize: 12 },
-  productPrice: { color: '#25D366', fontSize: 12, fontWeight: 'bold' },
+  productGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  productItem: { width: '47%', backgroundColor: '#1A2942', borderRadius: 10, overflow: 'hidden', marginBottom: 4 },
+  productImage: { width: '100%', height: 120, borderTopLeftRadius: 10, borderTopRightRadius: 10 },
+  productName: { color: '#FFF', fontSize: 13, fontWeight: '500', paddingHorizontal: 8, paddingTop: 6 },
+  productPrice: { color: '#25D366', fontSize: 13, fontWeight: 'bold', paddingHorizontal: 8, paddingBottom: 8 },
 
   // Customer Selection
   customerSelectItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#1A2942' },
@@ -1420,6 +1505,7 @@ const styles = StyleSheet.create({
   productItemSelected: {
     borderColor: '#25D366',
     borderWidth: 2,
+    borderRadius: 10,
   },
   productTouchable: {
     flex: 1,
@@ -1499,5 +1585,52 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  // Broadcast Catalog Bar
+  broadcastCatalogBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D1B2A',
+    borderTopWidth: 1,
+    borderTopColor: '#2A3A52',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  broadcastCatalogAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A2942',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#3B82F6',
+  },
+  broadcastCatalogAddText: {
+    color: '#3B82F6',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  broadcastCatalogSendBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 8,
+  },
+  broadcastCatalogSendText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

@@ -974,18 +974,17 @@ export default function FollowupsScreen() {
                   )}
                 </TouchableOpacity>
               </ScrollView>
-            </View >
-          </KeyboardAvoidingView >
-        </View >
-      </Modal >
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
 
       {/* AI Draft Message Modal */}
-      < Modal
+      <Modal
         visible={showDraftModal}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setShowDraftModal(false)
-        }
+        onRequestClose={() => setShowDraftModal(false)}
       >
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView

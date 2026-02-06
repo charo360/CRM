@@ -21,7 +21,7 @@ export default function Index() {
     <View style={styles.container}>
       <Text style={styles.logo}>📱</Text>
       <Text style={styles.title}>WhatsApp CRM</Text>
-      <Text style={styles.subtitle}>For Kenyan SMEs</Text>
+      <Text style={styles.subtitle}>Smart CRM for Small Businesses</Text>
       <ActivityIndicator size="large" color="#25D366" style={styles.loader} />
     </View>
   );

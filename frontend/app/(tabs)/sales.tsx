@@ -17,7 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { apiClient } from '../../context/api';
+import { apiClient, settingsAPI } from '../../context/api';
 
 interface Customer {
   id: string;
@@ -40,6 +40,22 @@ interface Sale {
   created_at: string;
 }
 
+interface Order {
+  id: string;
+  customer_id: string;
+  customer_name: string;
+  customer_phone: string;
+  product: string;
+  quantity: number;
+  price: number;
+  total_amount: number;
+  payment_status: 'Pending' | 'Partial' | 'Paid';
+  delivery_status: 'Processing' | 'Shipped' | 'Delivered';
+  notes?: string;
+  due_date?: string;
+  created_at: string;
+}
+
 interface Expense {
   id: string;
   category: string;
@@ -52,9 +68,10 @@ const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
 const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Salaries', 'Other'];
 
 export default function SalesScreen() {
-  const [viewMode, setViewMode] = useState<'sales' | 'expenses'>('sales');
+  const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<string[]>(['Cash', 'Mobile Money']);
   const [loading, setLoading] = useState(true);
@@ -66,6 +83,8 @@ export default function SalesScreen() {
   const [dateFilter, setDateFilter] = useState('All Time');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [saleDetailsVisible, setSaleDetailsVisible] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [orderDetailsVisible, setOrderDetailsVisible] = useState(false);
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -94,16 +113,40 @@ export default function SalesScreen() {
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseDescription, setExpenseDescription] = useState('');
 
+  // Order form state
+  const [orderProduct, setOrderProduct] = useState('');
+  const [orderQuantity, setOrderQuantity] = useState('1');
+  const [orderPrice, setOrderPrice] = useState('');
+  const [orderNotes, setOrderNotes] = useState('');
+  const [orderDueDate, setOrderDueDate] = useState('');
+  const [showOrderDueDatePicker, setShowOrderDueDatePicker] = useState(false);
+  const [tempOrderDueDate, setTempOrderDueDate] = useState<Date>(new Date());
+
+  // Currency
+  const [currency, setCurrency] = useState('USD');
+
+  useEffect(() => {
+    const loadCurrency = async () => {
+      try {
+        const settings = await settingsAPI.getSettings();
+        if (settings.currency) setCurrency(settings.currency);
+      } catch (e) {}
+    };
+    loadCurrency();
+  }, []);
+
   const fetchData = useCallback(async () => {
     try {
-      const [salesRes, expensesRes, customersRes, userRes] = await Promise.all([
+      const [salesRes, expensesRes, ordersRes, customersRes, userRes] = await Promise.all([
         apiClient.get('/sales'),
         apiClient.get('/expenses'),
+        apiClient.get('/orders'),
         apiClient.get('/customers'),
         apiClient.get('/auth/me'),
       ]);
       setSales(salesRes.data);
       setExpenses(expensesRes.data);
+      setOrders(ordersRes.data);
       setCustomers(customersRes.data);
       if (userRes.data.payment_methods && userRes.data.payment_methods.length > 0) {
         setPaymentMethods(userRes.data.payment_methods);
@@ -236,10 +279,64 @@ export default function SalesScreen() {
     );
   };
 
+  const handleCreateOrder = async () => {
+    // Validate
+    if (!isWalkInCustomer && !selectedCustomer) {
+      Alert.alert('Error', 'Please select a customer or choose Walk-in Customer');
+      return;
+    }
+    if (!orderProduct.trim()) {
+      Alert.alert('Error', 'Please enter the product name');
+      return;
+    }
+    if (!orderQuantity || parseInt(orderQuantity) <= 0) {
+      Alert.alert('Error', 'Please enter a valid quantity');
+      return;
+    }
+    if (!orderPrice || parseFloat(orderPrice) <= 0) {
+      Alert.alert('Error', 'Please enter a valid price');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const totalAmount = parseInt(orderQuantity) * parseFloat(orderPrice);
+      const response = await apiClient.post('/orders', {
+        customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
+        product: orderProduct.trim(),
+        quantity: parseInt(orderQuantity),
+        price: parseFloat(orderPrice),
+        total_amount: totalAmount,
+        payment_status: 'Pending',
+        delivery_status: 'Processing',
+        notes: orderNotes.trim() || undefined,
+        due_date: orderDueDate || undefined,
+      });
+
+      setOrders([response.data, ...orders]);
+      setModalVisible(false);
+      Alert.alert('Success', 'Order created successfully!');
+
+      // Reset form
+      setSelectedCustomer(null);
+      setIsWalkInCustomer(false);
+      setOrderProduct('');
+      setOrderQuantity('1');
+      setOrderPrice('');
+      setOrderNotes('');
+      setOrderDueDate('');
+    } catch (error: any) {
+      console.error('Error creating order:', error);
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to create order');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Initialize receipt message when editing starts
   const handleEditReceipt = () => {
     if (!receiptMessage) {
-      const defaultMessage = `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: KES ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`;
+      const defaultMessage = `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: ${currency} ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`;
       setReceiptMessage(defaultMessage);
     }
     setEditingReceipt(true);
@@ -314,6 +411,15 @@ export default function SalesScreen() {
     const salesCount = filteredSales.length;
     const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
 
+    // Order analytics
+    const totalOrders = orders.length;
+    const pendingPayment = orders
+      .filter(o => o.payment_status === 'Pending' || o.payment_status === 'Partial')
+      .reduce((sum, o) => sum + o.total_amount, 0);
+    const ordersToDeliver = orders.filter(
+      o => o.delivery_status === 'Processing' || o.delivery_status === 'Shipped'
+    ).length;
+
     // Find top customer
     const customerSales: { [key: string]: { name: string; total: number } } = {};
     filteredSales.forEach((s) => {
@@ -325,8 +431,18 @@ export default function SalesScreen() {
 
     const topCustomer = Object.values(customerSales).sort((a, b) => b.total - a.total)[0];
 
-    return { totalRevenue, totalExpenses, netProfit, salesCount, avgSale, topCustomer };
-  }, [filteredSales, filteredExpenses]);
+    return {
+      totalRevenue,
+      totalExpenses,
+      netProfit,
+      salesCount,
+      avgSale,
+      topCustomer,
+      totalOrders,
+      pendingPayment,
+      ordersToDeliver
+    };
+  }, [filteredSales, filteredExpenses, orders]);
 
   const handleExportSales = async () => {
     if (filteredSales.length === 0) {
@@ -353,7 +469,7 @@ export default function SalesScreen() {
   };
 
   const handleResendReceipt = async (sale: Sale) => {
-    const message = `✅ Payment received\nItem: ${sale.item}\nAmount: KES ${sale.amount.toLocaleString()}\nThank you for shopping with us 🙏`;
+    const message = `✅ Payment received\nItem: ${sale.item}\nAmount: ${currency} ${sale.amount.toLocaleString()}\nThank you for shopping with us 🙏`;
     const phoneNumber = sale.customer_phone.replace(/[^0-9]/g, '');
     const whatsappUrl = `whatsapp://send?phone=${phoneNumber}&text=${encodeURIComponent(message)}`;
 
@@ -433,7 +549,7 @@ export default function SalesScreen() {
           </View>
         </View>
         <View style={styles.amountContainer}>
-          <Text style={styles.amount}>KES {sale.amount.toLocaleString()}</Text>
+          <Text style={styles.amount}>{currency} {sale.amount.toLocaleString()}</Text>
           <View style={[
             styles.paymentBadge,
             sale.payment_method === 'M-Pesa' && styles.mpesaBadge,
@@ -446,7 +562,7 @@ export default function SalesScreen() {
       <View style={styles.saleDetails}>
         <Ionicons name="pricetag-outline" size={14} color="#666" />
         <Text style={styles.itemText}>{sale.item}</Text>
-        {sale.receipt_sent && (
+        {!!sale.receipt_sent && (
           <View style={styles.receiptBadge}>
             <Ionicons name="checkmark-circle" size={14} color="#25D366" />
             <Text style={styles.receiptText}>Receipt sent</Text>
@@ -473,17 +589,85 @@ export default function SalesScreen() {
           </Text>
         </View>
         <View style={styles.expenseAmountContainer}>
-          <Text style={styles.expenseAmount}>KES {expense.amount.toLocaleString()}</Text>
+          <Text style={styles.expenseAmount}>{currency} {expense.amount.toLocaleString()}</Text>
           <TouchableOpacity onPress={() => handleDeleteExpense(expense.id)}>
             <Ionicons name="trash-outline" size={20} color="#FF6B6B" />
           </TouchableOpacity>
         </View>
       </View>
-      {expense.description && (
+      {!!expense.description && (
         <Text style={styles.expenseDescription}>{expense.description}</Text>
       )}
     </View>
   );
+
+  const renderOrder = ({ item: order }: { item: Order }) => {
+    const getPaymentStatusColor = (status: string) => {
+      switch (status) {
+        case 'Paid': return '#25D366';
+        case 'Partial': return '#FFD700';
+        case 'Pending': return '#FF6B6B';
+        default: return '#666';
+      }
+    };
+
+    const getDeliveryStatusColor = (status: string) => {
+      switch (status) {
+        case 'Delivered': return '#25D366';
+        case 'Shipped': return '#9B59B6';
+        case 'Processing': return '#3498DB';
+        default: return '#666';
+      }
+    };
+
+    return (
+      <TouchableOpacity
+        style={styles.saleCard}
+        onPress={() => {
+          setSelectedOrder(order);
+          setOrderDetailsVisible(true);
+        }}
+      >
+        <View style={styles.saleHeader}>
+          <View style={styles.saleCustomer}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{order.customer_name.charAt(0)}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.customerName} numberOfLines={1}>{order.customer_name}</Text>
+              <Text style={styles.saleDate}>
+                {new Date(order.created_at).toLocaleDateString('en-KE', {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </Text>
+            </View>
+          </View>
+          <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {order.total_amount.toLocaleString()}</Text>
+        </View>
+        <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
+            <Text style={styles.statusBadgeText}>{order.payment_status}</Text>
+          </View>
+          <View style={[styles.statusBadge, { backgroundColor: getDeliveryStatusColor(order.delivery_status) }]}>
+            <Text style={styles.statusBadgeText}>{order.delivery_status}</Text>
+          </View>
+        </View>
+        <View style={styles.saleDetails}>
+          <Text style={styles.itemText}>{order.product} (x{order.quantity})</Text>
+          <Text style={styles.paymentText}>@ {currency} {order.price.toLocaleString()} each</Text>
+        </View>
+        {order.payment_status === 'Paid' && (
+          <View style={{ backgroundColor: '#1A3A2A', borderRadius: 8, padding: 8, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <Ionicons name="checkmark-circle" size={14} color="#25D366" />
+            <Text style={{ color: '#25D366', fontSize: 12, fontWeight: '600' }}>Ready to convert to sale</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   if (loading) {
     return (
@@ -501,7 +685,11 @@ export default function SalesScreen() {
         <View>
           <Text style={styles.headerTitle}>Sales</Text>
           <Text style={styles.headerSubtitle}>
-            {viewMode === 'sales' ? `${analytics.salesCount} sales` : `${filteredExpenses.length} expenses`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
+            {viewMode === 'sales'
+              ? `${analytics.salesCount} sales`
+              : viewMode === 'expenses'
+                ? `${filteredExpenses.length} expenses`
+                : `${orders.length} orders`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
           </Text>
         </View>
         <View style={styles.headerActions}>
@@ -514,7 +702,7 @@ export default function SalesScreen() {
         </View>
       </View>
 
-      {/* Sales/Expenses Toggle */}
+      {/* Sales/Expenses/Orders Toggle */}
       <View style={styles.viewToggle}>
         <TouchableOpacity
           style={[styles.toggleButton, viewMode === 'sales' && styles.toggleButtonActive]}
@@ -527,6 +715,12 @@ export default function SalesScreen() {
           onPress={() => setViewMode('expenses')}
         >
           <Text style={[styles.toggleText, viewMode === 'expenses' && styles.toggleTextActive]}>Expenses</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleButton, viewMode === 'orders' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('orders')}
+        >
+          <Text style={[styles.toggleText, viewMode === 'orders' && styles.toggleTextActive]}>Orders</Text>
         </TouchableOpacity>
       </View>
 
@@ -578,61 +772,84 @@ export default function SalesScreen() {
           <>
             <View style={styles.analyticsCard}>
               <Text style={styles.analyticsLabel}>Revenue</Text>
-              <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
+              <Text style={styles.analyticsValue}>{currency} {analytics.totalRevenue.toLocaleString()}</Text>
             </View>
             <View style={styles.analyticsCard}>
               <Text style={styles.analyticsLabel}>Avg Sale</Text>
-              <Text style={styles.analyticsValue}>KES {Math.round(analytics.avgSale).toLocaleString()}</Text>
+              <Text style={styles.analyticsValue}>{currency} {Math.round(analytics.avgSale).toLocaleString()}</Text>
             </View>
-            {analytics.topCustomer && (
+            {!!analytics.topCustomer && (
               <View style={[styles.analyticsCard, { marginRight: 0 }]}>
                 <Text style={styles.analyticsLabel}>Top Customer</Text>
                 <Text style={styles.analyticsValue}>{analytics.topCustomer.name}</Text>
-                <Text style={styles.analyticsSubtext} numberOfLines={1}>KES {analytics.topCustomer.total.toLocaleString()}</Text>
+                <Text style={styles.analyticsSubtext} numberOfLines={1}>{currency} {analytics.topCustomer.total.toLocaleString()}</Text>
               </View>
             )}
           </>
-        ) : (
+        ) : viewMode === 'expenses' ? (
           <>
             <View style={styles.analyticsCard}>
               <Text style={styles.analyticsLabel}>Revenue</Text>
-              <Text style={styles.analyticsValue}>KES {analytics.totalRevenue.toLocaleString()}</Text>
+              <Text style={styles.analyticsValue}>{currency} {analytics.totalRevenue.toLocaleString()}</Text>
             </View>
             <View style={styles.analyticsCard}>
               <Text style={styles.analyticsLabel}>Expenses</Text>
-              <Text style={styles.analyticsValue}>KES {analytics.totalExpenses.toLocaleString()}</Text>
+              <Text style={styles.analyticsValue}>{currency} {analytics.totalExpenses.toLocaleString()}</Text>
             </View>
             <View style={[styles.analyticsCard, { marginRight: 0 }]}>
               <Text style={styles.analyticsLabel}>Net Profit</Text>
               <Text style={[styles.analyticsValue, analytics.netProfit < 0 && { color: '#FF6B6B' }]}>
-                KES {analytics.netProfit.toLocaleString()}
+                {currency} {analytics.netProfit.toLocaleString()}
               </Text>
+            </View>
+          </>
+        ) : (
+          <>
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsLabel}>Total Orders</Text>
+              <Text style={styles.analyticsValue}>{analytics.totalOrders}</Text>
+            </View>
+            <View style={styles.analyticsCard}>
+              <Text style={styles.analyticsLabel}>Pending Payment</Text>
+              <Text style={styles.analyticsValue}>{currency} {analytics.pendingPayment.toLocaleString()}</Text>
+            </View>
+            <View style={[styles.analyticsCard, { marginRight: 0 }]}>
+              <Text style={styles.analyticsLabel}>To Deliver</Text>
+              <Text style={styles.analyticsValue}>{analytics.ordersToDeliver}</Text>
             </View>
           </>
         )}
       </View>
 
       <FlatList
-        data={viewMode === 'sales' ? filteredSales : (filteredExpenses as any)}
-        renderItem={viewMode === 'sales' ? renderSale : (renderExpense as any)}
-        keyExtractor={(item) => item.id}
+        data={(viewMode === 'sales' ? filteredSales : viewMode === 'expenses' ? filteredExpenses : orders) as any[]}
+        renderItem={(viewMode === 'sales' ? renderSale : viewMode === 'expenses' ? renderExpense : renderOrder) as any}
+        keyExtractor={(item: any) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Ionicons name={viewMode === 'sales' ? 'receipt-outline' : 'wallet-outline'} size={64} color="#666" />
+            <Ionicons
+              name={viewMode === 'sales' ? 'receipt-outline' : viewMode === 'expenses' ? 'wallet-outline' : 'cart-outline'}
+              size={64}
+              color="#666"
+            />
             <Text style={styles.emptyText}>
               {viewMode === 'sales'
                 ? (searchQuery || dateFilter !== 'All Time' ? 'No sales found' : 'No sales yet')
-                : (dateFilter !== 'All Time' ? 'No expenses found' : 'No expenses yet')
+                : viewMode === 'expenses'
+                  ? (dateFilter !== 'All Time' ? 'No expenses found' : 'No expenses yet')
+                  : 'No orders yet'
               }
             </Text>
             <Text style={styles.emptySubtext}>
               {viewMode === 'sales'
                 ? (searchQuery || dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first sale')
-                : (dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first expense')
+                : viewMode === 'expenses'
+                  ? (dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first expense')
+                  : 'Create your first order'
               }
             </Text>
           </View>
@@ -664,10 +881,15 @@ export default function SalesScreen() {
               setModalVisible(false);
               resetForm();
             }}>
-              <Text style={styles.modalCancel}>Cancel</Text>
+              <Ionicons name="close" size={28} color="#888" />
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>{viewMode === 'sales' ? 'New Sale' : 'New Expense'}</Text>
-            <TouchableOpacity onPress={viewMode === 'sales' ? handleCreateSale : handleCreateExpense} disabled={saving}>
+            <Text style={styles.modalTitle}>
+              {viewMode === 'sales' ? 'New Sale' : viewMode === 'expenses' ? 'New Expense' : 'New Order'}
+            </Text>
+            <TouchableOpacity
+              onPress={viewMode === 'sales' ? handleCreateSale : viewMode === 'expenses' ? handleCreateExpense : handleCreateOrder}
+              disabled={saving}
+            >
               <Text style={[styles.modalSave, saving && styles.modalSaveDisabled]}>
                 {saving ? 'Saving...' : 'Save'}
               </Text>
@@ -724,7 +946,7 @@ export default function SalesScreen() {
                 </View>
 
                 <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Amount (KES) *</Text>
+                  <Text style={styles.formLabel}>Amount ({currency}) *</Text>
                   <TextInput
                     style={styles.formInput}
                     value={amount}
@@ -788,7 +1010,7 @@ export default function SalesScreen() {
                       />
                     )}
 
-                    {dueDate && (
+                    {!!dueDate && (
                       <TouchableOpacity
                         onPress={() => setDueDate('')}
                         style={{ marginTop: 8, alignSelf: 'flex-start' }}
@@ -851,7 +1073,7 @@ export default function SalesScreen() {
                       </TouchableOpacity>
                     </View>
                     <Text style={styles.receiptPreviewText}>
-                      {receiptMessage || `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: KES ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`}
+                      {receiptMessage || `✅ Payment received\nItem: ${item || '[Item]'}\nAmount: ${currency} ${amount ? parseFloat(amount).toLocaleString() : '0'}\nThank you for shopping with us 🙏`}
                     </Text>
                   </View>
                 )}
@@ -880,35 +1102,38 @@ export default function SalesScreen() {
                   </View>
                 )}
               </>
-            ) : (
+            ) : viewMode === 'expenses' ? (
+
               <>
+                {/* Expense Category Selection */}
                 <View style={styles.formGroup}>
                   <Text style={styles.formLabel}>Category *</Text>
-                  <View style={styles.categoryGrid}>
-                    {EXPENSE_CATEGORIES.map((category) => (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+                    {EXPENSE_CATEGORIES.map((cat) => (
                       <TouchableOpacity
-                        key={category}
+                        key={cat}
                         style={[
                           styles.categoryOption,
-                          expenseCategory === category && styles.categoryOptionSelected,
+                          expenseCategory === cat && styles.categoryOptionSelected,
                         ]}
-                        onPress={() => setExpenseCategory(category)}
+                        onPress={() => setExpenseCategory(cat)}
                       >
                         <Text
                           style={[
                             styles.categoryOptionText,
-                            expenseCategory === category && styles.categoryOptionTextSelected,
+                            expenseCategory === cat && styles.categoryOptionTextSelected,
                           ]}
                         >
-                          {category}
+                          {cat}
                         </Text>
                       </TouchableOpacity>
                     ))}
-                  </View>
+                  </ScrollView>
                 </View>
 
+
                 <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Amount (KES) *</Text>
+                  <Text style={styles.formLabel}>Amount ({currency}) *</Text>
                   <TextInput
                     style={styles.formInput}
                     value={expenseAmount}
@@ -931,6 +1156,142 @@ export default function SalesScreen() {
                     numberOfLines={3}
                     textAlignVertical="top"
                   />
+                </View>
+              </>
+            ) : (
+              <>
+                {/* Order Form */}
+                {/* Customer Selection */}
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Customer *</Text>
+                  <TouchableOpacity
+                    style={styles.customerSelect}
+                    onPress={() => setCustomerSelectVisible(true)}
+                  >
+                    {isWalkInCustomer ? (
+                      <View style={styles.selectedCustomer}>
+                        <View style={styles.miniAvatar}>
+                          <Ionicons name="walk-outline" size={16} color="#FFFFFF" />
+                        </View>
+                        <View>
+                          <Text style={styles.selectedName}>Walk-in Customer</Text>
+                          <Text style={styles.selectedPhone}>No contact info</Text>
+                        </View>
+                      </View>
+                    ) : selectedCustomer ? (
+                      <View style={styles.selectedCustomer}>
+                        <View style={styles.miniAvatar}>
+                          <Text style={styles.miniAvatarText}>
+                            {selectedCustomer.name.charAt(0)}
+                          </Text>
+                        </View>
+                        <View>
+                          <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
+                          <Text style={styles.selectedPhone}>{selectedCustomer.phone_number}</Text>
+                        </View>
+                      </View>
+                    ) : (
+                      <Text style={styles.customerSelectPlaceholder}>Select a customer</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Product *</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={orderProduct}
+                    onChangeText={setOrderProduct}
+                    placeholder="e.g., Laptop, Phone, etc."
+                    placeholderTextColor="#666"
+                  />
+                </View>
+
+                <View style={styles.formRow}>
+                  <View style={[styles.formGroup, { flex: 1, marginRight: 8 }]}>
+                    <Text style={styles.formLabel}>Quantity *</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderQuantity}
+                      onChangeText={setOrderQuantity}
+                      placeholder="1"
+                      placeholderTextColor="#666"
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <View style={[styles.formGroup, { flex: 1, marginLeft: 8 }]}>
+                    <Text style={styles.formLabel}>Price ({currency}) *</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderPrice}
+                      onChangeText={setOrderPrice}
+                      placeholder="0"
+                      placeholderTextColor="#666"
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
+
+                {!!orderQuantity && !!orderPrice && parseInt(orderQuantity) > 0 && parseFloat(orderPrice) > 0 ? (
+                  <View style={styles.totalDisplay}>
+                    <Text style={styles.totalLabel}>Total Amount:</Text>
+                    <Text style={styles.totalValue}>
+                      {currency} {(parseInt(orderQuantity) * parseFloat(orderPrice)).toLocaleString()}
+                    </Text>
+                  </View>
+                ) : null}
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Notes (Optional)</Text>
+                  <TextInput
+                    style={[styles.formInput, styles.receiptMessageInput]}
+                    value={orderNotes}
+                    onChangeText={setOrderNotes}
+                    placeholder="e.g., Customer requested blue color"
+                    placeholderTextColor="#666"
+                    multiline
+                    numberOfLines={3}
+                    textAlignVertical="top"
+                  />
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Due Date (Optional)</Text>
+                  <TouchableOpacity
+                    style={styles.formInput}
+                    onPress={() => {
+                      setTempOrderDueDate(orderDueDate ? new Date(orderDueDate) : new Date());
+                      setShowOrderDueDatePicker(true);
+                    }}
+                  >
+                    <Text style={!!orderDueDate ? styles.dateText : styles.datePlaceholder}>
+                      {orderDueDate ? new Date(orderDueDate).toLocaleDateString() : 'Select due date'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {showOrderDueDatePicker && (
+                    <DateTimePicker
+                      value={tempOrderDueDate}
+                      mode="date"
+                      display="default"
+                      onChange={(event, selectedDate) => {
+                        setShowOrderDueDatePicker(false);
+                        if (event.type === 'set' && selectedDate) {
+                          setOrderDueDate(selectedDate.toISOString());
+                        }
+                      }}
+                      minimumDate={new Date()}
+                    />
+                  )}
+
+                  {!!orderDueDate && (
+                    <TouchableOpacity
+                      onPress={() => setOrderDueDate('')}
+                      style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                    >
+                      <Text style={{ color: '#FF4444', fontSize: 12 }}>Clear Due Date</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </>
             )}
@@ -1080,14 +1441,14 @@ export default function SalesScreen() {
                 <View style={styles.detailsRow}>
                   <Text style={styles.detailsLabel}>Amount</Text>
                   <Text style={[styles.detailsValue, styles.detailsAmount]}>
-                    KES {selectedSale.amount.toLocaleString()}
+                    {currency} {selectedSale.amount.toLocaleString()}
                   </Text>
                 </View>
 
                 <View style={styles.detailsRow}>
                   <Text style={styles.detailsLabel}>Payment Method</Text>
                   <View style={[styles.paymentBadge, selectedSale.payment_method === 'M-Pesa' && styles.mpesaBadge]}>
-                    <Text style={styles.paymentText}>{selectedSale.payment_method}</Text>
+                    <Text style={styles.paymentText}>{selectedSale.payment_method || 'Credit'}</Text>
                   </View>
                 </View>
 
@@ -1115,7 +1476,7 @@ export default function SalesScreen() {
                     <Text
                       style={[
                         styles.receiptStatusText,
-                        selectedSale.receipt_sent && styles.receiptStatusTextSent,
+                        !!selectedSale.receipt_sent && styles.receiptStatusTextSent,
                       ]}
                     >
                       {selectedSale.receipt_sent ? 'Sent' : 'Not sent'}
@@ -1124,7 +1485,7 @@ export default function SalesScreen() {
                 </View>
 
                 {/* Credit Sale Information */}
-                {selectedSale.is_credit && (
+                {!!selectedSale.is_credit && (
                   <>
                     <View style={styles.detailsRow}>
                       <Text style={styles.detailsLabel}>Sale Type</Text>
@@ -1133,7 +1494,7 @@ export default function SalesScreen() {
                       </View>
                     </View>
 
-                    {selectedSale.due_date && (
+                    {!!selectedSale.due_date && (
                       <View style={styles.detailsRow}>
                         <Text style={styles.detailsLabel}>Due Date</Text>
                         <Text style={styles.detailsValue}>
@@ -1157,7 +1518,7 @@ export default function SalesScreen() {
                         <Text
                           style={[
                             styles.receiptStatusText,
-                            selectedSale.paid_date && styles.receiptStatusTextSent,
+                            !!selectedSale.paid_date && styles.receiptStatusTextSent,
                           ]}
                         >
                           {selectedSale.paid_date ? 'Paid' : 'Unpaid'}
@@ -1165,7 +1526,7 @@ export default function SalesScreen() {
                       </View>
                     </View>
 
-                    {selectedSale.paid_date && (
+                    {!!selectedSale.paid_date && (
                       <View style={styles.detailsRow}>
                         <Text style={styles.detailsLabel}>Paid On</Text>
                         <Text style={styles.detailsValue}>
@@ -1192,7 +1553,7 @@ export default function SalesScreen() {
               )}
 
               {/* Mark as Paid Button for Unpaid Credit Sales */}
-              {selectedSale.is_credit && !selectedSale.paid_date && (
+              {!!selectedSale.is_credit && !selectedSale.paid_date && (
                 <TouchableOpacity
                   style={[styles.resendButton, { backgroundColor: '#25D366', marginTop: 12 }]}
                   onPress={() => handleMarkAsPaid(selectedSale)}
@@ -1201,6 +1562,225 @@ export default function SalesScreen() {
                   <Text style={styles.resendButtonText}>Mark as Paid</Text>
                 </TouchableOpacity>
               )}
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
+
+      {/* Order Details Modal */}
+      <Modal
+        visible={orderDetailsVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setOrderDetailsVisible(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setOrderDetailsVisible(false)}>
+              <Ionicons name="close" size={28} color="#888" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Order Details</Text>
+            <TouchableOpacity onPress={async () => {
+              if (!selectedOrder) return;
+              Alert.alert(
+                'Delete Order',
+                'Are you sure you want to delete this order?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: async () => {
+                      try {
+                        await apiClient.delete(`/orders/${selectedOrder.id}`);
+                        setOrders(orders.filter(o => o.id !== selectedOrder.id));
+                        setOrderDetailsVisible(false);
+                        Alert.alert('Success', 'Order deleted');
+                      } catch (error) {
+                        Alert.alert('Error', 'Failed to delete order');
+                      }
+                    },
+                  },
+                ]
+              );
+            }}>
+              <Ionicons name="trash-outline" size={24} color="#FF6B6B" />
+            </TouchableOpacity>
+          </View>
+
+          {selectedOrder && (
+            <ScrollView style={styles.modalContent}>
+              <View style={styles.detailsCard}>
+                <View style={styles.detailsHeader}>
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>{selectedOrder.customer_name.charAt(0)}</Text>
+                  </View>
+                  <View style={styles.detailsHeaderInfo}>
+                    <Text style={styles.detailsCustomerName}>{selectedOrder.customer_name}</Text>
+                    <Text style={styles.detailsPhone}>{selectedOrder.customer_phone}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.detailsDivider} />
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Product</Text>
+                  <Text style={styles.detailsValue}>{selectedOrder.product}</Text>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Quantity</Text>
+                  <Text style={styles.detailsValue}>{selectedOrder.quantity}</Text>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Price per unit</Text>
+                  <Text style={styles.detailsValue}>{currency} {selectedOrder.price.toLocaleString()}</Text>
+                </View>
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Total Amount</Text>
+                  <Text style={[styles.detailsValue, { fontSize: 18, fontWeight: 'bold', color: '#25D366' }]}>
+                    {currency} {selectedOrder.total_amount.toLocaleString()}
+                  </Text>
+                </View>
+
+                <View style={styles.detailsDivider} />
+
+                {/* Payment Status Update */}
+                <View style={{ marginBottom: 16 }}>
+                  <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Payment Status</Text>
+                  <View style={styles.statusUpdateContainer}>
+                    {['Pending', 'Partial', 'Paid'].map((status) => (
+                      <TouchableOpacity
+                        key={status}
+                        style={[
+                          styles.statusOption,
+                          selectedOrder.payment_status === status && styles.statusOptionActive,
+                        ]}
+                        onPress={async () => {
+                          try {
+                            const response = await apiClient.put(`/orders/${selectedOrder.id}?payment_status=${status}`);
+                            setOrders(orders.map(o => o.id === selectedOrder.id ? response.data : o));
+                            setSelectedOrder(response.data);
+                            Alert.alert('Success', 'Payment status updated');
+                          } catch (error) {
+                            Alert.alert('Error', 'Failed to update status');
+                          }
+                        }}
+                      >
+                        <Text style={[
+                          styles.statusOptionText,
+                          selectedOrder.payment_status === status && styles.statusOptionTextActive,
+                        ]}>
+                          {status}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                {/* Delivery Status Update */}
+                <View style={{ marginBottom: 16 }}>
+                  <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Delivery Status</Text>
+                  <View style={styles.statusUpdateContainer}>
+                    {['Processing', 'Shipped', 'Delivered'].map((status) => (
+                      <TouchableOpacity
+                        key={status}
+                        style={[
+                          styles.statusOption,
+                          selectedOrder.delivery_status === status && styles.statusOptionActive,
+                        ]}
+                        onPress={async () => {
+                          try {
+                            const response = await apiClient.put(`/orders/${selectedOrder.id}?delivery_status=${status}`);
+                            setOrders(orders.map(o => o.id === selectedOrder.id ? response.data : o));
+                            setSelectedOrder(response.data);
+                            Alert.alert('Success', 'Delivery status updated');
+                          } catch (error) {
+                            Alert.alert('Error', 'Failed to update status');
+                          }
+                        }}
+                      >
+                        <Text style={[
+                          styles.statusOptionText,
+                          selectedOrder.delivery_status === status && styles.statusOptionTextActive,
+                        ]}>
+                          {status}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                {/* Convert to Sale Button (only for paid orders) */}
+                {selectedOrder.payment_status === 'Paid' && (
+                  <>
+                    <View style={styles.detailsDivider} />
+                    <TouchableOpacity
+                      style={[styles.convertButton, { marginHorizontal: 0, marginBottom: 16 }]}
+                      onPress={() => {
+                        Alert.alert(
+                          'Convert to Sale',
+                          'This will convert the order to a sale and remove it from orders. Choose payment method:',
+                          [
+                            ...paymentMethods.map((method) => ({
+                              text: method,
+                              onPress: async () => {
+                                try {
+                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method)}`);
+                                  setOrders(orders.filter(o => o.id !== selectedOrder.id));
+                                  setOrderDetailsVisible(false);
+                                  Alert.alert('Success', 'Order converted to sale!');
+                                  fetchData();
+                                } catch (error: any) {
+                                  Alert.alert('Error', error.response?.data?.detail || 'Failed to convert order');
+                                }
+                              },
+                            })),
+                            { text: 'Cancel', style: 'cancel' },
+                          ]
+                        );
+                      }}
+                    >
+                      <Ionicons name="checkmark-circle-outline" size={20} color="#FFFFFF" />
+                      <Text style={styles.convertButtonText}>Convert to Sale</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                {!!selectedOrder.notes && (
+                  <>
+                    <View style={styles.detailsDivider} />
+                    <View style={styles.detailsRow}>
+                      <Text style={styles.detailsLabel}>Notes</Text>
+                      <Text style={styles.detailsValue}>{selectedOrder.notes}</Text>
+                    </View>
+                  </>
+                )}
+
+                {!!selectedOrder.due_date && (
+                  <View style={styles.detailsRow}>
+                    <Text style={styles.detailsLabel}>Due Date</Text>
+                    <Text style={styles.detailsValue}>
+                      {new Date(selectedOrder.due_date).toLocaleDateString('en-KE')}
+                    </Text>
+                  </View>
+                )}
+
+                <View style={styles.detailsRow}>
+                  <Text style={styles.detailsLabel}>Created</Text>
+                  <Text style={styles.detailsValue}>
+                    {new Date(selectedOrder.created_at).toLocaleString('en-KE', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                </View>
+              </View>
             </ScrollView>
           )}
         </SafeAreaView>
@@ -1386,6 +1966,8 @@ const styles = StyleSheet.create({
   saleCustomer: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+    marginRight: 8,
   },
   avatar: {
     width: 40,
@@ -2073,5 +2655,90 @@ const styles = StyleSheet.create({
   categoryOptionTextSelected: {
     color: '#FFFFFF',
     fontWeight: '600',
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+  },
+  statusBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  formRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  totalDisplay: {
+    backgroundColor: '#1A2942',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  totalLabel: {
+    fontSize: 16,
+    color: '#888',
+  },
+  totalValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#25D366',
+  },
+  dateText: {
+    color: '#FFFFFF',
+  },
+  datePlaceholder: {
+    color: '#666',
+  },
+  categoryScroll: {
+    marginTop: 8,
+  },
+  statusUpdateContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  statusOption: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#1A2942',
+    borderWidth: 1,
+    borderColor: '#2A3952',
+    alignItems: 'center',
+  },
+  statusOptionActive: {
+    backgroundColor: '#25D366',
+    borderColor: '#25D366',
+  },
+  statusOptionText: {
+    fontSize: 14,
+    color: '#888',
+  },
+  statusOptionTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  convertButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    padding: 16,
+    borderRadius: 12,
+    marginHorizontal: 20,
+    marginBottom: 20,
+    gap: 8,
+  },
+  convertButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });

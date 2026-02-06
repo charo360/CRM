@@ -132,6 +132,13 @@ class DailyScheduler:
                 # Run notification check
                 await self.send_daily_notifications()
                 
+                # Run order payment reminders
+                try:
+                    from server import send_order_payment_reminders
+                    await send_order_payment_reminders()
+                except Exception as e:
+                    logger.error(f"Error sending order reminders: {e}")
+                
                 # Wait for next check
                 wait_seconds = check_interval_minutes * 60
                 logger.info(f"Next check in {check_interval_minutes} minutes")

@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { apiClient } from '../context/api';
+import { apiClient, settingsAPI } from '../context/api';
 
 interface Analytics {
   last_30_days: {
@@ -37,7 +37,18 @@ export default function AnalyticsScreen() {
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [currency, setCurrency] = useState('USD');
   const router = useRouter();
+
+  useEffect(() => {
+    const loadCurrency = async () => {
+      try {
+        const settings = await settingsAPI.getSettings();
+        if (settings.currency) setCurrency(settings.currency);
+      } catch (e) {}
+    };
+    loadCurrency();
+  }, []);
 
   useEffect(() => {
     fetchAnalytics();
@@ -123,7 +134,7 @@ export default function AnalyticsScreen() {
             <Ionicons name="cash" size={32} color="#FFD700" />
             <View style={styles.revenueInfo}>
               <Text style={styles.revenueValue}>
-                KES {analytics?.last_7_days.revenue?.toLocaleString() || 0}
+                {currency} {analytics?.last_7_days.revenue?.toLocaleString() || 0}
               </Text>
               <Text style={styles.revenueLabel}>Revenue Generated</Text>
             </View>
@@ -169,7 +180,7 @@ export default function AnalyticsScreen() {
             <Ionicons name="wallet" size={32} color="#FFD700" />
             <View style={styles.revenueInfo}>
               <Text style={styles.revenueValue}>
-                KES {analytics?.last_30_days.total_revenue?.toLocaleString() || 0}
+                {currency} {analytics?.last_30_days.total_revenue?.toLocaleString() || 0}
               </Text>
               <Text style={styles.revenueLabel}>Total Revenue</Text>
             </View>

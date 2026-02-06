@@ -79,25 +79,18 @@ agenthub/agents/youtube/db
 
 # Build caches
 .cache/
+.metro-cache/
+**/.metro-cache/
+
+# Uploads
+backend/uploads/
 
 # Mobile development
 android-sdk/
 
 # Git backup refs
 .git/refs/original/
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
+
+# Temp files
+*.tmp
+order_endpoints_temp.py

@@ -7,8 +7,23 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000,
+  timeout: 60000,
 });
+
+// Helper for file uploads using native fetch (more reliable than Axios for multipart on RN)
+const uploadFetch = async (path: string, formData: FormData) => {
+  const token = apiClient.defaults.headers.common['Authorization'];
+  const res = await fetch(`${API_URL}/api${path}`, {
+    method: 'POST',
+    headers: token ? { 'Authorization': token as string } : {},
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
+    throw new Error(err.detail || `Upload failed (${res.status})`);
+  }
+  return res.json();
+};
 
 // Request interceptor for logging
 apiClient.interceptors.request.use(
@@ -105,6 +120,9 @@ export const settingsAPI = {
     daily_alert_count?: number;
     message_tone?: string;
     push_token?: string;
+    daily_pulse_enabled?: boolean;
+    daily_pulse_time?: string;
+    currency?: string;
   }) => {
     const response = await apiClient.put('/settings', settings);
     return response.data;
@@ -188,19 +206,20 @@ export const productsAPI = {
     const formData = new FormData();
 
     files.forEach((file, index) => {
+      // Expo ImagePicker returns type: "image" which is not a valid MIME type
+      let mimeType = file.mimeType || file.type || 'image/jpeg';
+      if (mimeType === 'image' || !mimeType.includes('/')) {
+        mimeType = 'image/jpeg';
+      }
+      const fileName = file.fileName || file.uri.split('/').pop() || `product_${index}.jpg`;
       formData.append('files', {
         uri: file.uri,
-        type: file.type || 'image/jpeg',
-        name: file.fileName || `product_${index}.jpg`,
+        type: mimeType,
+        name: fileName,
       } as any);
     });
 
-    const response = await apiClient.post('/products/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
+    return await uploadFetch('/products/upload', formData);
   },
 
   /**
@@ -220,6 +239,20 @@ export const productsAPI = {
    */
   getProduct: async (productId: string) => {
     const response = await apiClient.get(`/products/${productId}`);
+    return response.data;
+  },
+
+  /**
+   * Create a new product
+   */
+  createProduct: async (product: {
+    name: string;
+    price: number;
+    category?: string;
+    description?: string;
+    in_stock?: boolean;
+  }) => {
+    const response = await apiClient.post('/products', product);
     return response.data;
   },
 
@@ -246,11 +279,62 @@ export const productsAPI = {
   },
 
   /**
-   * Send product to customer
+   * Add images to an existing product
+   */
+  addProductImages: async (productId: string, files: any[]) => {
+    const formData = new FormData();
+    files.forEach((file, index) => {
+      let mimeType = file.mimeType || file.type || 'image/jpeg';
+      if (mimeType === 'image' || !mimeType.includes('/')) {
+        mimeType = 'image/jpeg';
+      }
+      const fileName = file.fileName || file.uri.split('/').pop() || `photo_${index}.jpg`;
+      formData.append('files', {
+        uri: file.uri,
+        type: mimeType,
+        name: fileName,
+      } as any);
+    });
+    return await uploadFetch(`/products/${productId}/images`, formData);
+  },
+
+  /**
+   * Delete a specific image from a product
+   */
+  deleteProductImage: async (productId: string, imageIndex: number) => {
+    const response = await apiClient.delete(`/products/${productId}/images/${imageIndex}`);
+    return response.data;
+  },
+
+  /**
+   * Send product to customer via WhatsApp API (with image)
    */
   sendProductToCustomer: async (productId: string, customerId: string) => {
     const response = await apiClient.post(`/products/${productId}/send`, null, {
       params: { customer_id: customerId }
+    });
+    return response.data;
+  },
+
+  /**
+   * Send multiple products as a catalog to customer via WhatsApp
+   */
+  sendCatalog: async (customerId: string, productIds: string[]) => {
+    const response = await apiClient.post('/products/send-catalog', {
+      customer_id: customerId,
+      product_ids: productIds,
+    });
+    return response.data;
+  },
+
+  /**
+   * Broadcast a product catalog to multiple customers
+   */
+  broadcastCatalog: async (productIds: string[], filterType: string, customerIds?: string[]) => {
+    const response = await apiClient.post('/products/broadcast-catalog', {
+      product_ids: productIds,
+      filter_type: filterType,
+      customer_ids: customerIds,
     });
     return response.data;
   }

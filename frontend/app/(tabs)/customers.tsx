@@ -13,11 +13,12 @@ import {
   Platform,
   ScrollView,
   Linking,
+  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient } from '../../context/api';
+import { apiClient, productsAPI, settingsAPI } from '../../context/api';
 import * as Contacts from 'expo-contacts';
 
 interface Customer {
@@ -85,6 +86,16 @@ export default function CustomersScreen() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [showRecentMessages, setShowRecentMessages] = useState(false);
 
+  // Product picker state
+  const [showProductPicker, setShowProductPicker] = useState(false);
+  const [productPickerCustomer, setProductPickerCustomer] = useState<Customer | null>(null);
+  const [pickerProducts, setPickerProducts] = useState<any[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [sendingProduct, setSendingProduct] = useState<string | null>(null);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [sendingCatalog, setSendingCatalog] = useState(false);
+  const [currency, setCurrency] = useState('USD');
+
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -119,6 +130,16 @@ export default function CustomersScreen() {
       setRefreshing(false);
     }
   }, [selectedTag, searchQuery, sortBy]);
+
+  useEffect(() => {
+    const loadCurrency = async () => {
+      try {
+        const settings = await settingsAPI.getSettings();
+        if (settings.currency) setCurrency(settings.currency);
+      } catch (e) {}
+    };
+    loadCurrency();
+  }, []);
 
   useEffect(() => {
     // Debounce search to prevent too many API calls
@@ -398,6 +419,86 @@ export default function CustomersScreen() {
     setCustomDirection('');
   };
 
+  // Product picker handlers
+  const handleOpenProductPicker = async (customer: Customer) => {
+    setProductPickerCustomer(customer);
+    setShowProductPicker(true);
+    setLoadingProducts(true);
+    setSelectedProductIds([]);
+    try {
+      const data = await productsAPI.getProducts();
+      setPickerProducts(data.filter((p: any) => p.in_stock !== false));
+    } catch (error) {
+      console.error('Error fetching products:', error);
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
+
+  const toggleProductSelection = (productId: string) => {
+    setSelectedProductIds(prev =>
+      prev.includes(productId) ? prev.filter(id => id !== productId) : [...prev, productId]
+    );
+  };
+
+  const handleSendProduct = async (product: any) => {
+    if (!productPickerCustomer) return;
+    setSendingProduct(product.id);
+    try {
+      await productsAPI.sendProductToCustomer(product.id, productPickerCustomer.id);
+      Alert.alert('Sent!', `${product.name} sent to ${productPickerCustomer.name} via WhatsApp`);
+      setShowProductPicker(false);
+      setProductPickerCustomer(null);
+    } catch (error: any) {
+      // Fallback to WhatsApp deep link
+      const desc = product.description ? `\n${product.description}` : '';
+      const text = `*${product.name}*\n${currency} ${product.price.toLocaleString()}${desc}\n\nInterested? Let me know!`;
+      const phone = productPickerCustomer.phone_number.replace(/\+/g, '');
+      Linking.openURL(`whatsapp://send?phone=${phone}&text=${encodeURIComponent(text)}`).catch(() => {
+        Alert.alert('Error', 'Could not send product');
+      });
+      setShowProductPicker(false);
+      setProductPickerCustomer(null);
+    } finally {
+      setSendingProduct(null);
+    }
+  };
+
+  const handleSendCatalog = async () => {
+    if (!productPickerCustomer || selectedProductIds.length === 0) return;
+    setSendingCatalog(true);
+    try {
+      const result = await productsAPI.sendCatalog(productPickerCustomer.id, selectedProductIds);
+      Alert.alert('Catalog Sent!', `${result.products_sent} products sent to ${productPickerCustomer.name} via WhatsApp. They can reply to order!`);
+      setShowProductPicker(false);
+      setProductPickerCustomer(null);
+      setSelectedProductIds([]);
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to send catalog');
+    } finally {
+      setSendingCatalog(false);
+    }
+  };
+
+  const handleCreateOrderFromProduct = async (product: any) => {
+    if (!productPickerCustomer) return;
+    try {
+      await apiClient.post('/orders', {
+        customer_id: productPickerCustomer.id,
+        product: product.name,
+        quantity: 1,
+        price: product.price,
+        total_amount: product.price,
+      });
+      Alert.alert('Order Created!', `Order for ${product.name} (${currency} ${product.price.toLocaleString()}) created for ${productPickerCustomer.name}`);
+      setShowProductPicker(false);
+      setProductPickerCustomer(null);
+    } catch (error) {
+      console.error('Error creating order:', error);
+      Alert.alert('Error', 'Failed to create order');
+    }
+  };
+
   const handleSendDraftMessage = () => {
     if (!draftCustomer) return;
 
@@ -445,7 +546,7 @@ export default function CustomersScreen() {
             )}
             {item.total_spent > 0 && (
               <View style={[styles.tag, styles.tagMoney]}>
-                <Text style={[styles.tagText, styles.tagMoneyText]}>KES {item.total_spent.toLocaleString()}</Text>
+                <Text style={[styles.tagText, styles.tagMoneyText]}>{currency} {item.total_spent.toLocaleString()}</Text>
               </View>
             )}
             {item.tags.map((tag, index) => (
@@ -460,6 +561,9 @@ export default function CustomersScreen() {
             </TouchableOpacity>
             <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
               <Ionicons name="sparkles" size={22} color="#FFD700" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleOpenProductPicker(item)} style={styles.iconButton}>
+              <Ionicons name="storefront-outline" size={20} color="#4A90D9" />
             </TouchableOpacity>
             <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
               <Ionicons name="trash-outline" size={20} color="#FF4444" />
@@ -820,6 +924,134 @@ export default function CustomersScreen() {
               </>
             )}
           </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Product Picker Modal */}
+      <Modal
+        visible={showProductPicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => { setShowProductPicker(false); setProductPickerCustomer(null); }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => { setShowProductPicker(false); setProductPickerCustomer(null); }}>
+              <Text style={styles.modalCancel}>Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Send Product</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {productPickerCustomer && (
+            <View style={styles.pickerCustomerBar}>
+              <Ionicons name="person-outline" size={16} color="#8899AA" />
+              <Text style={styles.pickerCustomerName}>To: {productPickerCustomer.name}</Text>
+              {selectedProductIds.length > 0 && (
+                <View style={styles.pickerSelectedBadge}>
+                  <Text style={styles.pickerSelectedText}>{selectedProductIds.length} selected</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {loadingProducts ? (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <ActivityIndicator size="large" color="#25D366" />
+              <Text style={{ color: '#8899AA', marginTop: 12 }}>Loading products...</Text>
+            </View>
+          ) : pickerProducts.length > 0 ? (
+            <>
+              <FlatList
+                data={pickerProducts}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={{ padding: 16, paddingBottom: selectedProductIds.length > 0 ? 80 : 16 }}
+                renderItem={({ item: product }) => {
+                  const imageUri = product.image_url
+                    ? (product.image_url.startsWith('http') ? product.image_url : `${process.env.EXPO_PUBLIC_BACKEND_URL}${product.image_url}`)
+                    : null;
+                  const isSending = sendingProduct === product.id;
+                  const isSelected = selectedProductIds.includes(product.id);
+
+                  return (
+                    <TouchableOpacity
+                      style={[styles.pickerProductCard, isSelected && styles.pickerProductCardSelected]}
+                      onPress={() => toggleProductSelection(product.id)}
+                      activeOpacity={0.7}
+                    >
+                      {/* Checkbox */}
+                      <View style={[styles.pickerCheckbox, isSelected && styles.pickerCheckboxSelected]}>
+                        {isSelected && <Ionicons name="checkmark" size={14} color="#FFF" />}
+                      </View>
+                      {imageUri ? (
+                        <Image source={{ uri: imageUri }} style={styles.pickerProductImage} resizeMode="cover" />
+                      ) : (
+                        <View style={[styles.pickerProductImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A2942' }]}>
+                          <Ionicons name="image-outline" size={24} color="#3A4A5C" />
+                        </View>
+                      )}
+                      <View style={styles.pickerProductInfo}>
+                        <Text style={styles.pickerProductName} numberOfLines={1}>{product.name}</Text>
+                        <Text style={styles.pickerProductPrice}>{currency} {product.price.toLocaleString()}</Text>
+                        <Text style={styles.pickerProductCategory}>{product.category || 'Other'}</Text>
+                      </View>
+                      <View style={styles.pickerActions}>
+                        <TouchableOpacity
+                          style={styles.pickerSendBtn}
+                          onPress={() => handleSendProduct(product)}
+                          disabled={isSending}
+                        >
+                          {isSending ? (
+                            <ActivityIndicator size="small" color="#FFF" />
+                          ) : (
+                            <>
+                              <Ionicons name="send" size={14} color="#FFF" />
+                              <Text style={styles.pickerSendText}>Send</Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.pickerOrderBtn}
+                          onPress={() => handleCreateOrderFromProduct(product)}
+                        >
+                          <Ionicons name="cart-outline" size={14} color="#25D366" />
+                          <Text style={styles.pickerOrderText}>Order</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+              {/* Send Catalog floating bar */}
+              {selectedProductIds.length > 0 && (
+                <View style={styles.catalogBar}>
+                  <TouchableOpacity style={styles.catalogClearBtn} onPress={() => setSelectedProductIds([])}>
+                    <Ionicons name="close-circle" size={20} color="#8899AA" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.catalogSendBtn, sendingCatalog && { opacity: 0.6 }]}
+                    onPress={handleSendCatalog}
+                    disabled={sendingCatalog}
+                  >
+                    {sendingCatalog ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : (
+                      <>
+                        <Ionicons name="list-outline" size={18} color="#FFF" />
+                        <Text style={styles.catalogSendText}>Send Catalog ({selectedProductIds.length})</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              )}
+            </>
+          ) : (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 }}>
+              <Ionicons name="storefront-outline" size={48} color="#3A4A5C" />
+              <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginTop: 12 }}>No products yet</Text>
+              <Text style={{ color: '#8899AA', fontSize: 13, marginTop: 6, textAlign: 'center' }}>Add products in your Product Catalog first</Text>
+            </View>
+          )}
         </SafeAreaView>
       </Modal>
 
@@ -1488,5 +1720,149 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontStyle: 'italic',
     textAlign: 'center',
+  },
+  // Product Picker Styles
+  pickerCustomerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#1A2942',
+    borderBottomWidth: 1,
+    borderBottomColor: '#2A3A52',
+  },
+  pickerCustomerName: {
+    color: '#CCD6E0',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pickerProductCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 10,
+    gap: 12,
+  },
+  pickerProductImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: '#0D1B2A',
+  },
+  pickerProductInfo: {
+    flex: 1,
+  },
+  pickerProductName: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pickerProductPrice: {
+    color: '#25D366',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  pickerProductCategory: {
+    color: '#8899AA',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  pickerActions: {
+    gap: 6,
+  },
+  pickerSendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#25D366',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    gap: 4,
+  },
+  pickerSendText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  pickerOrderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D1B2A',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#25D366',
+  },
+  pickerOrderText: {
+    color: '#25D366',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  pickerProductCardSelected: {
+    borderWidth: 1.5,
+    borderColor: '#25D366',
+  },
+  pickerCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#3A4A5C',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pickerCheckboxSelected: {
+    backgroundColor: '#25D366',
+    borderColor: '#25D366',
+  },
+  pickerSelectedBadge: {
+    marginLeft: 'auto',
+    backgroundColor: '#25D366',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  pickerSelectedText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  catalogBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D1B2A',
+    borderTopWidth: 1,
+    borderTopColor: '#2A3A52',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  catalogClearBtn: {
+    padding: 4,
+  },
+  catalogSendBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 8,
+  },
+  catalogSendText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

@@ -47,7 +47,8 @@ class AIMessageDrafter:
         business_knowledge: str = None,
         custom_instructions: str = None,
         user_id: str = None,
-        db = None
+        db = None,
+        customer_id: str = None
     ) -> Dict[str, any]:
         """
         Draft a personalized follow-up message for a customer using learned user writing style
@@ -69,8 +70,15 @@ class AIMessageDrafter:
             # Override tone with learned style
             tone = user_style["style"]
         
+        # Find similar past answers from other customers
+        past_answers_context = ""
+        incoming_msg = messages[-1].get("content", "") if messages and messages[-1].get("direction") == "incoming" else ""
+        cid = customer_id or customer_data.get("_id", "")
+        if user_id and db and incoming_msg:
+            past_answers_context = await self._find_similar_past_answers(user_id, incoming_msg, cid, db)
+        
         # Create AI prompt with personalized style
-        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions)
+        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions, past_answers_context)
         
         # Call OpenAI API
         try:
@@ -157,6 +165,66 @@ class AIMessageDrafter:
         
         return topics
     
+    async def _find_similar_past_answers(self, user_id: str, incoming_message: str, current_customer_id: str, db) -> str:
+        """Find how the business owner previously answered similar questions from other customers"""
+        if not db or not incoming_message:
+            return ""
+        
+        try:
+            # Extract key words from the incoming message (skip very short/common words)
+            stop_words = {'hi', 'hello', 'hey', 'the', 'a', 'an', 'is', 'are', 'was', 'do', 'does', 'i', 'me', 'my', 'you', 'your', 'we', 'ok', 'yes', 'no', 'please', 'thanks', 'thank', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'how', 'what', 'when', 'where', 'who', 'which', 'can', 'will', 'have', 'has', 'had', 'this', 'that', 'it', 'be', 'been', 'am', 'not', 'so', 'if'}
+            words = [w.lower().strip('?!.,') for w in incoming_message.split() if len(w) > 2]
+            keywords = [w for w in words if w not in stop_words]
+            
+            if not keywords:
+                return ""
+            
+            # Search for incoming messages from OTHER customers that contain similar keywords
+            search_regex = "|".join(keywords[:5])  # Limit to 5 keywords
+            similar_incoming = await db.messages.find({
+                "user_id": user_id,
+                "direction": "incoming",
+                "customer_id": {"$ne": current_customer_id},
+                "content": {"$regex": search_regex, "$options": "i"}
+            }).sort("created_at", -1).limit(5).to_list(5)
+            
+            if not similar_incoming:
+                return ""
+            
+            # For each similar incoming message, find the business owner's reply
+            past_exchanges = []
+            for msg in similar_incoming:
+                # Find the next outgoing message to this customer after this incoming message
+                reply = await db.messages.find_one({
+                    "user_id": user_id,
+                    "customer_id": msg["customer_id"],
+                    "direction": "outgoing",
+                    "created_at": {"$gt": msg["created_at"]}
+                }, sort=[("created_at", 1)])
+                
+                if reply and reply.get("content"):
+                    past_exchanges.append({
+                        "question": msg.get("content", "")[:150],
+                        "answer": reply.get("content", "")[:200]
+                    })
+            
+            if not past_exchanges:
+                return ""
+            
+            # Format as context for the AI
+            lines = ["PAST SIMILAR CONVERSATIONS (how you answered similar questions from other customers):"]
+            for i, ex in enumerate(past_exchanges[:3], 1):
+                lines.append(f"  Customer asked: \"{ex['question']}\"")
+                lines.append(f"  You replied: \"{ex['answer']}\"")
+                lines.append("")
+            
+            lines.append("Use these past answers as reference for tone, pricing, and information accuracy. Stay consistent with how you've answered before.")
+            return "\n".join(lines)
+            
+        except Exception as e:
+            logger.error(f"Error finding similar past answers: {e}")
+            return ""
+
     def _create_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None) -> str:
         """Create prompt for OpenAI with business knowledge and language detection"""
         
@@ -174,7 +242,7 @@ class AIMessageDrafter:
             context_parts.append("New customer")
         
         if context['purchase_count'] > 0:
-            context_parts.append(f"Made {context['purchase_count']} purchases (KES {context['total_spent']:.0f} total)")
+            context_parts.append(f"Made {context['purchase_count']} purchases ({context['total_spent']:.0f} total spent)")
         
         if context['last_message']:
             context_parts.append(f"Last message from {'them' if context['last_message_direction'] == 'incoming' else 'us'}: \"{context['last_message'][:100]}\"")
@@ -190,13 +258,7 @@ class AIMessageDrafter:
         # Detect language from last message
         language_hint = ""
         if context['last_message']:
-            msg = context['last_message'].lower()
-            # Check for Swahili keywords
-            swahili_words = ['habari', 'sawa', 'asante', 'tafadhali', 'bei', 'ngapi', 'nini', 'vipi', 'poa', 'mambo']
-            if any(word in msg for word in swahili_words):
-                language_hint = "\n- Customer seems to prefer Swahili - respond in Swahili if you're confident"
-            else:
-                language_hint = "\n- Respond in the same language as the customer (English or Swahili)"
+            language_hint = "\n- Detect the language the customer used and respond in the SAME language"
         
         # Tone instructions
         tone_instructions = {
@@ -216,7 +278,7 @@ Business Information:
 Use this information to answer questions and provide relevant details about products/services.
 """
         
-        prompt = f"""You are the owner of {business_name}, a Kenyan business. You're reaching out to your customer {context['name']} via WhatsApp.
+        prompt = f"""You are the owner of {business_name}. You're reaching out to your customer {context['name']} via WhatsApp.
 
 Customer Context:
 - {context_str}{language_hint}
@@ -230,15 +292,15 @@ CRITICAL INSTRUCTIONS:
 4. Reference their last interaction if relevant
 5. If they asked a question, ANSWER it directly
 6. Detect the language they used and respond in the SAME language
-7. For Swahili, use natural Kenyan Swahili (mix with English is fine - "Sheng")
+7. Match the customer's language naturally - if they mix languages, you can too
 8. Be {tone_desc}
 9. Include a clear next step or question
 10. NO emojis unless it fits naturally (max 1-2)
 11. If you don't have enough information to answer their question, say you'll check and get back to them
 
 Examples of GOOD messages:
-- "Hi John! Saw you were asking about the price last week. It's KES 2,500. Still interested?"
-- "Habari Mary! That product is back in stock. Unataka nikudelivery?"
+- "Hi John! Saw you were asking about the price last week. It's 2,500. Still interested?"
+- "Hey Mary! That product is back in stock. Want me to deliver it?"
 - "Hey! Been a while 😊 We have a new offer - 20% off this week. Want details?"
 
 Examples of BAD messages (too formal/generic):
@@ -250,11 +312,15 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
 
         return prompt
     
-    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None) -> str:
+    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None, past_answers_context: str = None) -> str:
         """Create personalized prompt using learned user writing style and custom instructions"""
         
         # Start with the base prompt
         base_prompt = self._create_prompt(context, business_name, tone, business_knowledge)
+        
+        # Add past similar answers context
+        if past_answers_context:
+            base_prompt = base_prompt + f"\n\n{past_answers_context}"
         
         # If we have custom instructions, add them with high priority
         if custom_instructions:
@@ -271,8 +337,8 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
             if patterns.get("uses_emojis"):
                 style_instructions.append("- Use 1-2 emojis naturally (like the business owner usually does)")
             
-            if patterns.get("uses_swahili"):
-                style_instructions.append("- Mix English and Swahili naturally (Sheng style)")
+            if patterns.get("uses_local_language"):
+                style_instructions.append("- Mix languages naturally as the business owner usually does")
             
             if patterns.get("avg_length", 0) < 10:
                 style_instructions.append("- Keep it very brief (under 10 words if possible)")
@@ -318,7 +384,7 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
             patterns = {
                 "avg_length": sum(len(msg.split()) for msg in message_texts) / len(message_texts),
                 "uses_emojis": "😊" in combined_text or "😄" in combined_text or "👍" in combined_text,
-                "uses_swahili": any(word in combined_text.lower() for word in ["habari", "sawa", "asante", "bei", "vipi", "poa"]),
+                "uses_local_language": len(set(combined_text.lower().split()) - set('the a an is are was do does i me my you your we ok yes no please thanks thank and or but in on at to for of with how what when where who which can will have has had this that it be been am not so if'.split())) > len(combined_text.lower().split()) * 0.3,
                 "formal_tone": any(phrase in combined_text.lower() for phrase in ["dear", "thank you", "please", "kindly"]),
                 "casual_tone": any(phrase in combined_text.lower() for phrase in ["hey", "hi", "what's up", "how are you"]),
                 "uses_questions": "?" in combined_text,
