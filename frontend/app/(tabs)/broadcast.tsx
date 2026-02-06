@@ -18,7 +18,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { apiClient, productsAPI } from '../../context/api';
+import { apiClient, productsAPI, settingsAPI } from '../../context/api';
 
 interface Customer {
   id: string;
@@ -101,6 +101,7 @@ export default function BroadcastScreen() {
   const [groups, setGroups] = useState<CustomerGroup[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [viewingBroadcast, setViewingBroadcast] = useState<Broadcast | null>(null);
+  const [currency, setCurrency] = useState('USD');
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -165,6 +166,11 @@ export default function BroadcastScreen() {
       setTemplates(templatesRes.data);
       setGroups(groupsRes.data);
       setProducts(productsRes.data);
+      // Load currency
+      try {
+        const settings = await settingsAPI.getSettings();
+        if (settings.currency) setCurrency(settings.currency);
+      } catch (e) {}
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -1264,7 +1270,7 @@ export default function BroadcastScreen() {
                             </View>
                           )}
                           <Text style={styles.productName} numberOfLines={1}>{product.name}</Text>
-                          <Text style={styles.productPrice}>KES {product.price?.toLocaleString() || 0}</Text>
+                          <Text style={styles.productPrice}>{currency} {product.price?.toLocaleString() || 0}</Text>
                         </TouchableOpacity>
 
                         {/* Edit Button Overlay */}
@@ -1349,7 +1355,7 @@ export default function BroadcastScreen() {
             </View>
 
             <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Price (KES)</Text>
+              <Text style={styles.formLabel}>Price ({currency})</Text>
               <TextInput
                 style={styles.formInput}
                 value={editPrice}

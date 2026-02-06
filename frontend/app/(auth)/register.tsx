@@ -14,9 +14,12 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import { settingsAPI } from '../../context/api';
+import { COUNTRIES } from '../../components/CountryPicker';
 
 export default function RegisterScreen() {
-  const { phone } = useLocalSearchParams<{ phone: string }>();
+  const { phone, countryCode } = useLocalSearchParams<{ phone: string; countryCode: string }>();
+  const country = COUNTRIES.find(c => c.code === (countryCode || 'US'));
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -33,6 +36,15 @@ export default function RegisterScreen() {
     try {
       const result = await register(phone!, businessName, ownerName);
       if (result.success) {
+        // Save country and currency settings
+        if (country) {
+          try {
+            await settingsAPI.updateSettings({
+              country_code: country.code,
+              currency: country.currency || 'USD',
+            });
+          } catch (e) {}
+        }
         router.replace('/(tabs)/customers');
       } else {
         Alert.alert('Error', result.message || 'Registration failed');

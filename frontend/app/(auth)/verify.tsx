@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 
 export default function VerifyScreen() {
-  const { phone, devOtp } = useLocalSearchParams<{ phone: string; devOtp: string }>();
+  const { phone, devOtp, countryCode } = useLocalSearchParams<{ phone: string; devOtp: string; countryCode: string }>();
   const [code, setCode] = useState(['', '', '', '', '', '']);
   const [loading, setLoading] = useState(false);
   const [showOtp, setShowOtp] = useState(true);
@@ -62,7 +62,7 @@ export default function VerifyScreen() {
         if (result.isNewUser) {
           router.replace({
             pathname: '/(auth)/register',
-            params: { phone: phone },
+            params: { phone: phone, countryCode: countryCode || '' },
           });
         } else {
           router.replace('/(tabs)/customers');

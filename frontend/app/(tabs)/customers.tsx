@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, productsAPI, settingsAPI } from '../../context/api';
 import * as Contacts from 'expo-contacts';
+import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
 interface Customer {
   id: string;
@@ -63,7 +64,10 @@ export default function CustomersScreen() {
 
   // New customer form
   const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('+254');
+  const [newPhone, setNewPhone] = useState('');
+  const [customerCountry, setCustomerCountry] = useState<Country>(
+    COUNTRIES.find(c => c.code === 'KE')!
+  );
   const [newNotes, setNewNotes] = useState('');
   const [newTags, setNewTags] = useState<string[]>(['New']);
   const [saving, setSaving] = useState(false);
@@ -162,9 +166,15 @@ export default function CustomersScreen() {
 
     setSaving(true);
     try {
+      // Build full phone number with country code
+      let fullPhone = newPhone.trim();
+      if (!fullPhone.startsWith('+')) {
+        fullPhone = fullPhone.replace(/^0+/, '');
+        fullPhone = `${customerCountry.dial}${fullPhone}`;
+      }
       const response = await apiClient.post('/customers', {
         name: newName,
-        phone_number: newPhone,
+        phone_number: fullPhone,
         notes: newNotes || null,
         tags: newTags,
       });
@@ -224,7 +234,7 @@ export default function CustomersScreen() {
 
   const resetForm = () => {
     setNewName('');
-    setNewPhone('+254');
+    setNewPhone('');
     setNewNotes('');
     setNewTags(['New']);
     setSelectedCustomer(null);
@@ -266,13 +276,13 @@ export default function CustomersScreen() {
     }
   };
 
-  const formatPhoneNumber = (phone: string) => {
-    // Remove all non-digit characters
+  const formatPhoneNumber = (phone: string, country?: Country) => {
     let cleaned = phone.replace(/\D/g, '');
 
-    // If starts with 0, replace with +254 (Kenya)
+    // If starts with 0, replace with country dial code
     if (cleaned.startsWith('0')) {
-      cleaned = '254' + cleaned.substring(1);
+      const dial = (country || customerCountry).dial.replace('+', '');
+      cleaned = dial + cleaned.substring(1);
     }
 
     // Add + if not present
@@ -614,15 +624,25 @@ export default function CustomersScreen() {
 
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Phone Number *</Text>
-            <TextInput
-              style={[styles.formInput, isEdit && styles.inputDisabled]}
-              value={newPhone}
-              onChangeText={setNewPhone}
-              placeholder="+254 7XX XXX XXX"
-              placeholderTextColor="#666"
-              keyboardType="phone-pad"
-              editable={!isEdit}
-            />
+            <View style={styles.phoneRow}>
+              {!isEdit && (
+                <CountryPicker
+                  selectedCountry={customerCountry}
+                  onSelect={setCustomerCountry}
+                />
+              )}
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  style={[styles.formInput, isEdit && styles.inputDisabled]}
+                  value={newPhone}
+                  onChangeText={setNewPhone}
+                  placeholder="Phone number"
+                  placeholderTextColor="#666"
+                  keyboardType="phone-pad"
+                  editable={!isEdit}
+                />
+              </View>
+            </View>
           </View>
 
           <View style={styles.formGroup}>
@@ -1423,6 +1443,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#FFFFFF',
     marginBottom: 8,
+  },
+  phoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   formInput: {
     backgroundColor: '#1A2942',

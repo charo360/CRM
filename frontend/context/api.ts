@@ -123,6 +123,7 @@ export const settingsAPI = {
     daily_pulse_enabled?: boolean;
     daily_pulse_time?: string;
     currency?: string;
+    country_code?: string;
   }) => {
     const response = await apiClient.put('/settings', settings);
     return response.data;

@@ -80,7 +80,7 @@ JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
 PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY')
 PAYSTACK_BASE_URL = "https://api.paystack.co"
 
-app = FastAPI(title="WhatsApp CRM Kenya")
+app = FastAPI(title="WhatsApp CRM")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
@@ -225,7 +225,7 @@ async def generate_quick_reason(customer: dict, messages: list) -> str:
 
 # Auth Models
 class OTPRequest(BaseModel):
-    phone_number: str  # E.164 format: +254...
+    phone_number: str  # E.164 format: +<country_code><number>
 
 class OTPVerify(BaseModel):
     phone_number: str
@@ -611,6 +611,7 @@ class UserSettingsUpdate(BaseModel):
     notification_time: Optional[str] = None
     payment_methods: Optional[List[str]] = None
     currency: Optional[str] = None
+    country_code: Optional[str] = None  # ISO 3166-1 alpha-2 e.g. 'US', 'KE', 'NG'
     daily_alert_count: Optional[int] = None
     message_tone: Optional[str] = None
     push_token: Optional[str] = None
@@ -2191,24 +2192,24 @@ SUBSCRIPTION_PLANS = [
     {
         "id": "starter",
         "name": "Starter",
-        "amount": 70000,  # KES 700 in cents
-        "amount_display": "KES 700/month",
+        "amount": 700,
+        "amount_display": "700/month",
         "interval": "monthly",
         "features": ["Up to 100 customers", "Basic follow-ups", "Receipt sending"]
     },
     {
         "id": "standard",
         "name": "Standard",
-        "amount": 100000,  # KES 1000 in cents
-        "amount_display": "KES 1,000/month",
+        "amount": 1000,
+        "amount_display": "1,000/month",
         "interval": "monthly",
         "features": ["Up to 500 customers", "Unlimited follow-ups", "Broadcast messages", "Priority support"]
     },
     {
         "id": "pro",
         "name": "Pro",
-        "amount": 150000,  # KES 1500 in cents
-        "amount_display": "KES 1,500/month",
+        "amount": 1500,
+        "amount_display": "1,500/month",
         "interval": "monthly",
         "features": ["Unlimited customers", "Advanced analytics", "Custom templates", "WhatsApp Business API", "Dedicated support"]
     }
@@ -2231,10 +2232,13 @@ async def initialize_payment(request: PaymentInitRequest, user = Depends(get_cur
         "Content-Type": "application/json"
     }
     
+    # Get user's currency setting
+    user_currency = user.get("settings", {}).get("currency", "USD")
+    
     payload = {
         "email": request.email,
-        "amount": plan["amount"],
-        "currency": "KES",
+        "amount": plan["amount"] * 100,  # Paystack expects amount in smallest unit (cents)
+        "currency": user_currency,
         "channels": ["card", "mobile_money"],
         "metadata": {
             "user_id": user["_id"],
@@ -3366,7 +3370,8 @@ async def get_user_settings(user = Depends(get_current_user)):
         "push_token": user.get('push_token'),
         "daily_pulse_enabled": settings.get('daily_pulse_enabled', False),
         "daily_pulse_time": settings.get('daily_pulse_time', '20:00'),
-        "currency": settings.get('currency', 'USD')
+        "currency": settings.get('currency', 'USD'),
+        "country_code": settings.get('country_code', '')
     }
 
 @api_router.put("/settings")
@@ -3404,6 +3409,9 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
     
     if settings.currency is not None:
         update_data['settings.currency'] = settings.currency
+    
+    if settings.country_code is not None:
+        update_data['settings.country_code'] = settings.country_code
     
     if update_data:
         await db.users.update_one(

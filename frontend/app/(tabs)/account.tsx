@@ -17,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient } from '../../context/api';
+import { apiClient, settingsAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
 
 interface SubscriptionPlan {
@@ -67,6 +67,8 @@ export default function AccountScreen() {
     fetchData();
   }, []);
 
+  const [currency, setCurrency] = useState('USD');
+
   const fetchData = async () => {
     try {
       const [plansRes, statsRes, settingsRes] = await Promise.all([
@@ -78,6 +80,7 @@ export default function AccountScreen() {
       setStats(statsRes.data);
       setPulseEnabled(settingsRes.data.daily_pulse_enabled || false);
       setPulseTime(settingsRes.data.daily_pulse_time || '20:00');
+      if (settingsRes.data.currency) setCurrency(settingsRes.data.currency);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -266,7 +269,7 @@ export default function AccountScreen() {
                 </View>
                 <View style={styles.statCard}>
                   <Ionicons name="cash" size={24} color="#25D366" />
-                  <Text style={styles.statValue}>KES {stats.revenue_this_month.toLocaleString()}</Text>
+                  <Text style={styles.statValue}>{currency} {stats.revenue_this_month.toLocaleString()}</Text>
                   <Text style={styles.statLabel}>Revenue</Text>
                 </View>
               </View>

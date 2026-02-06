@@ -13,26 +13,32 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
 export default function LoginScreen() {
-  const [phoneNumber, setPhoneNumber] = useState('+254');
+  const [selectedCountry, setSelectedCountry] = useState<Country>(
+    COUNTRIES.find(c => c.code === 'KE')!
+  );
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { sendOTP } = useAuth();
 
+  const fullPhone = `${selectedCountry.dial}${phoneNumber.replace(/^0+/, '')}`;
+
   const handleSendOTP = async () => {
-    if (phoneNumber.length < 10) {
+    if (phoneNumber.length < 6) {
       Alert.alert('Error', 'Please enter a valid phone number');
       return;
     }
 
     setLoading(true);
     try {
-      const result = await sendOTP(phoneNumber);
+      const result = await sendOTP(fullPhone);
       if (result.success) {
         router.push({
           pathname: '/(auth)/verify',
-          params: { phone: phoneNumber, devOtp: result.devOtp || '' },
+          params: { phone: fullPhone, devOtp: result.devOtp || '', countryCode: selectedCountry.code },
         });
       } else {
         Alert.alert('Error', result.message || 'Failed to send OTP');
@@ -51,24 +57,29 @@ export default function LoginScreen() {
     >
       <View style={styles.content}>
         <View style={styles.header}>
-          <Text style={styles.emoji}>🇰🇪</Text>
+          <Text style={styles.emoji}>💼</Text>
           <Text style={styles.title}>WhatsApp CRM</Text>
-          <Text style={styles.subtitle}>For Kenyan SMEs</Text>
+          <Text style={styles.subtitle}>For Businesses Worldwide</Text>
         </View>
 
         <View style={styles.form}>
           <Text style={styles.label}>Enter your phone number</Text>
-          <View style={styles.inputContainer}>
-            <Ionicons name="call-outline" size={20} color="#666" style={styles.inputIcon} />
-            <TextInput
-              style={styles.input}
-              value={phoneNumber}
-              onChangeText={setPhoneNumber}
-              placeholder="+254 7XX XXX XXX"
-              placeholderTextColor="#666"
-              keyboardType="phone-pad"
-              autoComplete="tel"
+          <View style={styles.phoneRow}>
+            <CountryPicker
+              selectedCountry={selectedCountry}
+              onSelect={setSelectedCountry}
             />
+            <View style={styles.phoneInputContainer}>
+              <TextInput
+                style={styles.phoneInput}
+                value={phoneNumber}
+                onChangeText={setPhoneNumber}
+                placeholder="Phone number"
+                placeholderTextColor="#666"
+                keyboardType="phone-pad"
+                autoComplete="tel"
+              />
+            </View>
           </View>
           <Text style={styles.hint}>
             We'll send you a verification code via SMS
@@ -133,19 +144,19 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: 12,
   },
-  inputContainer: {
+  phoneRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  phoneInputContainer: {
+    flex: 1,
     backgroundColor: '#1A2942',
     borderRadius: 12,
     paddingHorizontal: 16,
-    marginBottom: 8,
   },
-  inputIcon: {
-    marginRight: 12,
-  },
-  input: {
-    flex: 1,
+  phoneInput: {
     height: 56,
     fontSize: 18,
     color: '#FFFFFF',
