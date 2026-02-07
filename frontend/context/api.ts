@@ -172,6 +172,52 @@ export const settingsAPI = {
   }
 };
 
+// ============ WhatsApp API Methods ============
+
+export const whatsappAPI = {
+  /**
+   * Start WhatsApp pairing: returns 8-digit code for Linked Devices
+   */
+  connect: async (phoneNumber: string) => {
+    const response = await apiClient.post('/whatsapp/connect', { phone_number: phoneNumber });
+    return response.data;
+  },
+
+  /**
+   * Get WhatsApp connection status and message usage
+   */
+  getStatus: async () => {
+    const response = await apiClient.get('/whatsapp/status');
+    return response.data;
+  },
+
+  /**
+   * Disconnect WhatsApp instance
+   */
+  disconnect: async () => {
+    const response = await apiClient.post('/whatsapp/disconnect');
+    return response.data;
+  },
+
+  /**
+   * Send a WhatsApp message to a customer
+   */
+  sendMessage: async (toNumber: string, message: string, customerName?: string) => {
+    const response = await apiClient.post('/messages/send', null, {
+      params: { to_number: toNumber, message, customer_name: customerName },
+    });
+    return response.data;
+  },
+
+  /**
+   * Get message history for a customer
+   */
+  getMessages: async (customerId: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/messages`);
+    return response.data;
+  },
+};
+
 // ============ Messages API Methods ============
 
 export const messagesAPI = {

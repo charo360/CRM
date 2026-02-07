@@ -12,12 +12,12 @@ import {
   RefreshControl,
   ScrollView,
   Share,
-  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient, settingsAPI } from '../../context/api';
+import { useRouter } from 'expo-router';
 
 interface Customer {
   id: string;
@@ -68,6 +68,7 @@ const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
 const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Salaries', 'Other'];
 
 export default function SalesScreen() {
+  const router = useRouter();
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -468,22 +469,17 @@ export default function SalesScreen() {
     }
   };
 
-  const handleResendReceipt = async (sale: Sale) => {
+  const handleResendReceipt = (sale: Sale) => {
     const message = `✅ Payment received\nItem: ${sale.item}\nAmount: ${currency} ${sale.amount.toLocaleString()}\nThank you for shopping with us 🙏`;
-    const phoneNumber = sale.customer_phone.replace(/[^0-9]/g, '');
-    const whatsappUrl = `whatsapp://send?phone=${phoneNumber}&text=${encodeURIComponent(message)}`;
-
-    try {
-      const canOpen = await Linking.canOpenURL(whatsappUrl);
-      if (canOpen) {
-        await Linking.openURL(whatsappUrl);
-      } else {
-        Alert.alert('Error', 'WhatsApp is not installed on this device');
-      }
-    } catch (error) {
-      console.error('Error opening WhatsApp:', error);
-      Alert.alert('Error', 'Failed to open WhatsApp');
-    }
+    router.push({
+      pathname: '/chat',
+      params: {
+        customerId: sale.customer_id,
+        customerName: sale.customer_name || 'Customer',
+        customerPhone: sale.customer_phone,
+        prefill: message,
+      },
+    });
   };
 
   const handleMarkAsPaid = async (sale: Sale) => {

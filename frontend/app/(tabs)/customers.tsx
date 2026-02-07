@@ -12,13 +12,13 @@ import {
   RefreshControl,
   Platform,
   ScrollView,
-  Linking,
   Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, productsAPI, settingsAPI } from '../../context/api';
+import { useRouter } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
@@ -52,6 +52,7 @@ interface Message {
 }
 
 export default function CustomersScreen() {
+  const router = useRouter();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -380,10 +381,14 @@ export default function CustomersScreen() {
     }
   };
 
-  const handleWhatsApp = (phone: string) => {
-    const url = `https://wa.me/${phone.replace(/\D/g, '')}`;
-    Linking.openURL(url).catch(() => {
-      Alert.alert('Error', 'Could not open WhatsApp');
+  const handleWhatsApp = (customer: Customer) => {
+    router.push({
+      pathname: '/chat',
+      params: {
+        customerId: customer.id,
+        customerName: customer.name,
+        customerPhone: customer.phone_number,
+      },
     });
   };
 
@@ -460,14 +465,19 @@ export default function CustomersScreen() {
       setShowProductPicker(false);
       setProductPickerCustomer(null);
     } catch (error: any) {
-      // Fallback to WhatsApp deep link
+      // Fallback: navigate to chat with product message pre-filled
       const desc = product.description ? `\n${product.description}` : '';
       const text = `*${product.name}*\n${currency} ${product.price.toLocaleString()}${desc}\n\nInterested? Let me know!`;
-      const phone = productPickerCustomer.phone_number.replace(/\+/g, '');
-      Linking.openURL(`whatsapp://send?phone=${phone}&text=${encodeURIComponent(text)}`).catch(() => {
-        Alert.alert('Error', 'Could not send product');
-      });
       setShowProductPicker(false);
+      router.push({
+        pathname: '/chat',
+        params: {
+          customerId: productPickerCustomer.id,
+          customerName: productPickerCustomer.name,
+          customerPhone: productPickerCustomer.phone_number,
+          prefill: text,
+        },
+      });
       setProductPickerCustomer(null);
     } finally {
       setSendingProduct(null);
@@ -512,15 +522,20 @@ export default function CustomersScreen() {
   const handleSendDraftMessage = () => {
     if (!draftCustomer) return;
 
-    // Open WhatsApp with pre-filled message
     const text = draftMessage || `Hi ${draftCustomer.name}, just checking in!`;
-    const url = `whatsapp://send?phone=${draftCustomer.phone_number.replace(/\+/g, '')}&text=${encodeURIComponent(text)}`;
-
-    Linking.openURL(url).catch(() => {
-      Alert.alert('Error', 'WhatsApp is not installed on this device');
-    });
 
     setShowDraftModal(false);
+
+    // Navigate to in-app chat with message pre-filled
+    router.push({
+      pathname: '/chat',
+      params: {
+        customerId: draftCustomer.id,
+        customerName: draftCustomer.name,
+        customerPhone: draftCustomer.phone_number,
+        prefill: text,
+      },
+    });
 
     // Reset
     setDraftMessage('');
@@ -566,7 +581,7 @@ export default function CustomersScreen() {
             ))}
           </View>
           <View style={styles.actionButtons}>
-            <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
+            <TouchableOpacity onPress={() => handleWhatsApp(item)} style={styles.iconButton}>
               <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
             </TouchableOpacity>
             <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>

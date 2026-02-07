@@ -41,7 +41,7 @@ import httpx
 import hmac
 import hashlib
 import json
-from twilio.rest import Client as TwilioClient
+# Evolution API replaces Twilio — config in whatsapp_service.py
 # from emergentintegrations.llm.chat import LlmChat, UserMessage
 from ai_service import get_drafter, AIMessageDrafter
 from daily_analyzer import DailyCustomerAnalyzer
@@ -66,11 +66,7 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ.get('DB_NAME', 'whatsapp_crm')]
 
-# Twilio setup
-twilio_client = TwilioClient(
-    os.environ.get('TWILIO_ACCOUNT_SID'),
-    os.environ.get('TWILIO_AUTH_TOKEN')
-)
+# WhatsApp via Evolution API (config in .env: EVOLUTION_API_URL, EVOLUTION_API_KEY)
 
 # JWT Config
 JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret-key')
@@ -654,26 +650,10 @@ async def send_otp(request: OTPRequest):
         "expires": datetime.utcnow() + timedelta(minutes=10)
     }
     
-    # Check if we have a real Twilio phone number configured
-    twilio_phone = os.environ.get('TWILIO_PHONE_NUMBER')
-    
-    if twilio_phone and not twilio_phone.startswith('+1500'):  # Not a test number
-        try:
-            # Send SMS via Twilio (LIVE MODE)
-            message = twilio_client.messages.create(
-                body=f"Your WhatsApp CRM verification code is: {otp}",
-                from_=twilio_phone,
-                to=phone
-            )
-            return {"status": "success", "message": "OTP sent successfully"}
-        except Exception as e:
-            logging.error(f"Twilio error: {e}")
-            # Fall back to sandbox mode
-            return {"status": "success", "message": "OTP sent (sandbox)", "dev_otp": otp}
-    else:
-        # SANDBOX MODE - Show OTP in response for testing
-        logging.info(f"SANDBOX MODE: OTP for {phone} is {otp}")
-        return {"status": "success", "message": "OTP sent (sandbox)", "dev_otp": otp}
+    # OTP delivery: send via WhatsApp if user has connected instance, else sandbox
+    # In production, integrate an SMS gateway (e.g. Vonage, Africa's Talking)
+    logging.info(f"SANDBOX MODE: OTP for {phone} is {otp}")
+    return {"status": "success", "message": "OTP sent (sandbox)", "dev_otp": otp}
 
 @api_router.post("/auth/verify-otp")
 async def verify_otp(request: OTPVerify):
@@ -1284,10 +1264,9 @@ async def mark_sale_as_paid(sale_id: str, payment_method: str, user = Depends(ge
     
     return {"message": "Sale marked as paid", "paid_date": datetime.utcnow().isoformat()}
 
-async def send_receipt_message(phone: str, name: str, item: str, amount: float, business: str, sale_id: str, custom_message: Optional[str] = None, currency: str = "USD"):
-    """Send receipt via SMS (WhatsApp requires approved templates)"""
+async def send_receipt_message(phone: str, name: str, item: str, amount: float, business: str, sale_id: str, custom_message: Optional[str] = None, currency: str = "USD", user_id: Optional[str] = None):
+    """Send receipt via WhatsApp (Evolution API)"""
     try:
-        # Use custom message if provided, otherwise use default template
         if custom_message:
             message = custom_message
         else:
@@ -1296,11 +1275,14 @@ Item: {item}
 Amount: {currency} {amount:,.0f}
 Thank you for shopping with {business} 🙏"""
         
-        twilio_client.messages.create(
-            body=message,
-            from_=os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006'),
-            to=phone
-        )
+        if user_id:
+            whatsapp_service = get_whatsapp_service(db)
+            await whatsapp_service.send_message(
+                user_id=user_id,
+                to_number=phone,
+                message=message,
+                customer_name=name
+            )
         
         # Update receipt status
         await db.sales.update_one({"_id": sale_id}, {"$set": {"receipt_sent": True}})
@@ -2332,13 +2314,58 @@ async def get_subscription_status(user = Depends(get_current_user)):
         "subscription_date": user.get("subscription_date")
     }
 
-# ============ WHATSAPP MESSAGING ENDPOINTS ============
+# ============ WHATSAPP (EVOLUTION API) ENDPOINTS ============
+
+@api_router.post("/whatsapp/connect")
+async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
+    """
+    Start WhatsApp pairing: creates Evolution API instance and returns pairing code.
+    User enters the code in WhatsApp > Linked Devices > Link with phone number.
+    """
+    body = await request.json()
+    phone_number = body.get("phone_number", "").strip()
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    
+    whatsapp_service = get_whatsapp_service(db)
+    result = await whatsapp_service.create_instance(user["_id"], phone_number)
+    
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message"))
+    
+    return result
+
+@api_router.get("/whatsapp/status")
+async def whatsapp_status(user = Depends(get_current_user)):
+    """Get WhatsApp connection status and message usage"""
+    whatsapp_service = get_whatsapp_service(db)
+    status = await whatsapp_service.get_instance_status(user["_id"])
+    limits = await whatsapp_service.check_message_limit(user["_id"])
+    
+    return {
+        "connected": status.get("connected", False),
+        "status": status.get("status", "not_connected"),
+        "number": status.get("number"),
+        "messages_sent": limits.get("sent", 0),
+        "messages_limit": limits.get("limit", 50),
+        "messages_remaining": limits.get("remaining", 50),
+        "daily_sent": limits.get("daily_sent", 0),
+        "daily_limit": limits.get("daily_limit", 500),
+        "plan": limits.get("plan", "free"),
+    }
+
+@api_router.post("/whatsapp/disconnect")
+async def whatsapp_disconnect(user = Depends(get_current_user)):
+    """Disconnect and remove WhatsApp instance"""
+    whatsapp_service = get_whatsapp_service(db)
+    result = await whatsapp_service.disconnect_instance(user["_id"])
+    return result
 
 @api_router.post("/messages/send")
 async def send_whatsapp_message(to_number: str, message: str, customer_name: Optional[str] = None, user = Depends(get_current_user)):
     """
-    Send WhatsApp message to a customer
-    Auto-creates contact if number doesn't exist
+    Send WhatsApp message to a customer via Evolution API.
+    Auto-creates contact if number doesn't exist. Enforces rate limits.
     """
     try:
         whatsapp_service = get_whatsapp_service(db)
@@ -2348,103 +2375,103 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
             message=message,
             customer_name=customer_name
         )
+        if result.get("status") == "limit_reached":
+            raise HTTPException(status_code=429, detail=result.get("message"))
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error sending message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============ WHATSAPP WEBHOOK ENDPOINTS ============
+# ============ EVOLUTION API WEBHOOK ============
 
-@api_router.post("/webhooks/whatsapp")
-async def whatsapp_webhook(request: Request):
+@api_router.post("/webhooks/evolution")
+async def evolution_webhook(request: Request):
     """
-    Receive incoming WhatsApp messages from Twilio
-    Auto-creates customers when new numbers message us
-    Stores all messages for AI analysis
+    Receive webhooks from Evolution API.
+    Handles: connection.update, messages.upsert
+    Configure in Evolution API: webhook URL = https://your-domain/api/webhooks/evolution
     """
     try:
-        form_data = await request.form()
+        payload = await request.json()
+        event = payload.get("event", "")
+        instance_name = payload.get("instance", "")
+        data = payload.get("data", payload)
         
-        from_number = form_data.get("From", "").replace("whatsapp:", "")
-        to_number = form_data.get("To", "").replace("whatsapp:", "")
-        body = form_data.get("Body", "")
-        profile_name = form_data.get("ProfileName", "")
+        logging.info(f"Evolution webhook: event={event}, instance={instance_name}")
         
-        if not from_number:
+        whatsapp_service = get_whatsapp_service(db)
+        
+        # Handle connection status changes
+        if event == "connection.update":
+            await whatsapp_service.handle_connection_update(instance_name, data)
             return {"status": "ok"}
         
-        # Find the business owner by their WhatsApp number
-        user = await db.users.find_one({"phone_number": to_number})
-        if not user:
-            # Try without country code variations
-            user = await db.users.find_one({})  # For testing, get first user
-        
-        if not user:
-            logging.warning(f"No user found for number {to_number}")
-            return {"status": "ok"}
-        
-        # Check if customer already exists
-        customer = await db.customers.find_one({
-            "user_id": user["_id"],
-            "phone_number": from_number
-        })
-        
-        customer_id = None
-        
-        if customer:
-            customer_id = customer["_id"]
-            # Update existing customer with last message and contact time
-            await db.customers.update_one(
-                {"_id": customer["_id"]},
-                {
-                    "$set": {
+        # Handle incoming messages
+        if event == "messages.upsert":
+            parsed = await whatsapp_service.handle_incoming_message(instance_name, data)
+            
+            if not parsed:
+                return {"status": "ok"}
+            
+            user = parsed["user"]
+            from_number = parsed["from_number"]
+            body = parsed["body"]
+            push_name = parsed["push_name"]
+            
+            # Find or create customer
+            customer = await db.customers.find_one({
+                "user_id": user["_id"],
+                "phone_number": from_number
+            })
+            
+            customer_id = None
+            customer_name = push_name or f"Customer {from_number[-4:]}"
+            
+            if customer:
+                customer_id = customer["_id"]
+                customer_name = customer.get("name", customer_name)
+                await db.customers.update_one(
+                    {"_id": customer["_id"]},
+                    {"$set": {
                         "last_message": body[:200] if body else None,
                         "last_contacted": datetime.utcnow(),
-                        "auto_created": customer.get("auto_created", True)  # Preserve auto_created flag
-                    }
-                }
-            )
-            logging.info(f"Updated customer {customer['name']} with incoming message")
-        else:
-            # Auto-create new customer from WhatsApp
-            customer_id = str(uuid.uuid4())
-            customer_name = profile_name if profile_name else f"Customer {from_number[-4:]}"
+                    }}
+                )
+            else:
+                customer_id = str(uuid.uuid4())
+                await db.customers.insert_one({
+                    "_id": customer_id,
+                    "user_id": user["_id"],
+                    "name": customer_name,
+                    "phone_number": from_number,
+                    "notes": "Customer reached out via WhatsApp",
+                    "tags": ["New"],
+                    "last_message": body[:200] if body else None,
+                    "last_contacted": datetime.utcnow(),
+                    "created_at": datetime.utcnow(),
+                    "auto_created": True,
+                    "customer_initiated": True,
+                })
+                logging.info(f"Auto-created customer from WhatsApp: {customer_name} ({from_number})")
             
-            await db.customers.insert_one({
-                "_id": customer_id,
-                "user_id": user["_id"],
-                "name": customer_name,
-                "phone_number": from_number,
-                "notes": f"Customer reached out via WhatsApp",
-                "tags": ["New"],
-                "last_message": body[:200] if body else None,
-                "last_contacted": datetime.utcnow(),
-                "created_at": datetime.utcnow(),
-                "auto_created": True,  # Flag for smart prioritization
-                "customer_initiated": True  # They messaged us first
-            })
-            logging.info(f"Auto-created customer from WhatsApp: {customer_name} ({from_number})")
-        
-        # Store the message for AI analysis
-        if customer_id and body:
-            message_id = str(uuid.uuid4())
-            await db.messages.insert_one({
-                "_id": message_id,
-                "customer_id": customer_id,
-                "user_id": user["_id"],
-                "direction": "incoming",
-                "content": body,
-                "message_type": "text",
-                "from_number": from_number,
-                "to_number": to_number,
-                "created_at": datetime.utcnow()
-            })
-            logging.info(f"Stored incoming message from {from_number}")
-            
-            # Check if customer is ordering from a catalog
-            if body and customer_id:
+            # Store message
+            if customer_id and body:
+                message_id = str(uuid.uuid4())
+                await db.messages.insert_one({
+                    "_id": message_id,
+                    "customer_id": customer_id,
+                    "user_id": user["_id"],
+                    "direction": "incoming",
+                    "content": body,
+                    "message_type": "text",
+                    "from_number": from_number,
+                    "created_at": datetime.utcnow(),
+                })
+                
+                # Check if customer is ordering from a catalog
                 body_lower = body.strip().lower().strip("*").strip()
-                # Check for pending catalog first
                 pending = await db.pending_catalogs.find_one({
                     "customer_id": customer_id,
                     "user_id": user["_id"]
@@ -2453,12 +2480,10 @@ async def whatsapp_webhook(request: Request):
                     matched_product = None
                     is_single = pending.get("single_product", False)
                     
-                    # For single product: "yes", "order", "buy", "ok", "sure", "1"
                     if is_single and body_lower in ("yes", "yeah", "yep", "ok", "sure", "order", "buy", "i want", "1"):
                         matched_product = pending["products"][0]
                     
                     if not matched_product:
-                        # Try just a number: "1", "2", "3"
                         try:
                             idx = int(body_lower)
                             for p in pending["products"]:
@@ -2469,11 +2494,9 @@ async def whatsapp_webhook(request: Request):
                             pass
                     
                     if not matched_product:
-                        # Try "order X" / "buy X" patterns
                         for prefix in ("order", "buy", "i want", "i'll take"):
                             if body_lower.startswith(prefix):
                                 query = body_lower[len(prefix):].strip().strip("*").strip()
-                                # Try number
                                 try:
                                     idx = int(query)
                                     for p in pending["products"]:
@@ -2482,7 +2505,6 @@ async def whatsapp_webhook(request: Request):
                                             break
                                 except ValueError:
                                     pass
-                                # Try name match
                                 if not matched_product and query:
                                     for p in pending["products"]:
                                         if query in p["name"].lower():
@@ -2505,11 +2527,8 @@ async def whatsapp_webhook(request: Request):
                             "status": "pending",
                             "created_at": datetime.utcnow()
                         })
-                        logging.info(f"Auto-created order for {matched_product['name']} from customer reply '{body}'")
                         
-                        # Send confirmation via WhatsApp
                         try:
-                            from whatsapp_service import get_whatsapp_service
                             ws = get_whatsapp_service(db)
                             confirm_msg = (
                                 f"✅ *Order Confirmed!*\n\n"
@@ -2527,87 +2546,80 @@ async def whatsapp_webhook(request: Request):
                         except Exception as e:
                             logging.error(f"Failed to send order confirmation: {e}")
                         
-                        # Clean up pending catalog
                         await db.pending_catalogs.delete_one({"_id": pending["_id"]})
-                        
                         return {"status": "ok"}
-            
-            # Auto-reply if enabled
-            user_settings = user.get('settings', {})
-            if user_settings.get('auto_reply_enabled', False):
-                try:
-                    # Get recent messages for context
-                    recent_messages = await db.messages.find({
-                        "customer_id": customer_id,
-                        "user_id": user["_id"]
-                    }).sort("created_at", -1).limit(20).to_list(20)
-                    recent_messages.reverse()
-                    
-                    # Get customer data
-                    customer_data = customer if customer else await db.customers.find_one({"_id": customer_id})
-                    customer_name = customer_data.get("name", "Customer") if customer_data else "Customer"
-                    
-                    # Get business knowledge
-                    bk = user.get("business_knowledge", {})
-                    business_knowledge = "\n".join([f"{k}: {v}" for k, v in bk.items() if v]) if bk else ""
-                    
-                    # Inject product catalog into business knowledge
-                    user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
-                    if user_products:
-                        currency = user_settings.get("currency", "USD")
-                        catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
-                        for p in user_products:
-                            stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
-                            desc = f' - {p["description"]}' if p.get("description") else ""
-                            price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "Price not set"
-                            catalog_lines.append(f"  • {p['name']}: {price_str} [{stock}] ({p.get('category', 'Other')}){desc}")
-                        catalog_lines.append("When customers ask about products, prices, or availability, use this catalog for accurate answers. Do NOT make up prices.")
-                        business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
-                    
-                    if not business_knowledge:
-                        business_knowledge = None
-                    
-                    # Draft AI response
-                    from ai_service import get_drafter
-                    ai_service = get_drafter()
-                    user_country_code = user_settings.get("country_code", "")
-                    customer_phone = customer_data.get("phone", from_number) if customer_data else from_number
-                    result = await ai_service.draft_followup_message(
-                        customer_name=customer_name,
-                        customer_data=customer_data or {},
-                        messages=[{"direction": m.get("direction", "incoming"), "content": m.get("content", "")} for m in recent_messages],
-                        business_name=user.get("business_name", "Our Business"),
-                        tone=user_settings.get("message_tone", "friendly"),
-                        business_knowledge=business_knowledge,
-                        custom_instructions=f"The customer just sent: '{body}'. Reply naturally to their message.",
-                        user_id=user["_id"],
-                        db=db,
-                        customer_id=customer_id,
-                        user_country=user_country_code,
-                        customer_phone=customer_phone
-                    )
-                    
-                    reply_text = result.get("drafted_message", "")
-                    
-                    if reply_text:
-                        # Send the auto-reply via WhatsApp
-                        from whatsapp_service import get_whatsapp_service
-                        whatsapp_service = get_whatsapp_service(db)
-                        await whatsapp_service.send_message(
+                
+                # Auto-reply if enabled
+                user_settings = user.get('settings', {})
+                if user_settings.get('auto_reply_enabled', False):
+                    try:
+                        recent_messages = await db.messages.find({
+                            "customer_id": customer_id,
+                            "user_id": user["_id"]
+                        }).sort("created_at", -1).limit(20).to_list(20)
+                        recent_messages.reverse()
+                        
+                        customer_data = customer if customer else await db.customers.find_one({"_id": customer_id})
+                        c_name = customer_data.get("name", "Customer") if customer_data else "Customer"
+                        
+                        bk = user.get("business_knowledge", {})
+                        business_knowledge = "\n".join([f"{k}: {v}" for k, v in bk.items() if v]) if bk else ""
+                        
+                        user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
+                        if user_products:
+                            currency = user_settings.get("currency", "USD")
+                            catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
+                            for p in user_products:
+                                stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
+                                desc = f' - {p["description"]}' if p.get("description") else ""
+                                price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "Price not set"
+                                catalog_lines.append(f"  • {p['name']}: {price_str} [{stock}] ({p.get('category', 'Other')}){desc}")
+                            catalog_lines.append("When customers ask about products, prices, or availability, use this catalog for accurate answers. Do NOT make up prices.")
+                            business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
+                        
+                        if not business_knowledge:
+                            business_knowledge = None
+                        
+                        from ai_service import get_drafter
+                        ai_service = get_drafter()
+                        user_country_code = user_settings.get("country_code", "")
+                        customer_phone = customer_data.get("phone", from_number) if customer_data else from_number
+                        result = await ai_service.draft_followup_message(
+                            customer_name=c_name,
+                            customer_data=customer_data or {},
+                            messages=[{"direction": m.get("direction", "incoming"), "content": m.get("content", "")} for m in recent_messages],
+                            business_name=user.get("business_name", "Our Business"),
+                            tone=user_settings.get("message_tone", "friendly"),
+                            business_knowledge=business_knowledge,
+                            custom_instructions=f"The customer just sent: '{body}'. Reply naturally to their message.",
                             user_id=user["_id"],
-                            to_number=from_number,
-                            message=reply_text,
-                            customer_name=customer_name
+                            db=db,
+                            customer_id=customer_id,
+                            user_country=user_country_code,
+                            customer_phone=customer_phone
                         )
-                        logging.info(f"Auto-replied to {customer_name} ({from_number})")
-                    
-                except Exception as e:
-                    logging.error(f"Auto-reply failed for {from_number}: {e}")
+                        
+                        reply_text = result.get("drafted_message", "")
+                        
+                        if reply_text:
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message=reply_text,
+                                customer_name=c_name
+                            )
+                            logging.info(f"Auto-replied to {c_name} ({from_number})")
+                        
+                    except Exception as e:
+                        logging.error(f"Auto-reply failed for {from_number}: {e}")
+            
+            return {"status": "ok"}
         
-        return {"status": "ok"}
+        return {"status": "ok", "event": event}
         
     except Exception as e:
-        logging.error(f"WhatsApp webhook error: {e}")
+        logging.error(f"Evolution webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
 # ============ SMART FOLLOW-UP ENDPOINTS ============

@@ -8,7 +8,6 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
-  Linking,
   Modal,
   TextInput,
   ScrollView,
@@ -18,6 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { apiClient } from '../../context/api';
+import { useRouter } from 'expo-router';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 interface FollowUp {
@@ -71,6 +71,7 @@ interface Message {
 type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week';
 
 export default function FollowupsScreen() {
+  const router = useRouter();
   const [followups, setFollowups] = useState<FollowUp[]>([]);
   const [coldCustomers, setColdCustomers] = useState<ColdCustomer[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -231,11 +232,16 @@ export default function FollowupsScreen() {
     );
   };
 
-  const handleSendMessage = (phone: string, name: string, message?: string | null) => {
+  const handleSendMessage = (customerId: string, phone: string, name: string, message?: string | null) => {
     const text = message || `Hi ${name}, just checking in!`;
-    const url = `whatsapp://send?phone=${phone.replace(/\+/g, '')}&text=${encodeURIComponent(text)}`;
-    Linking.openURL(url).catch(() => {
-      Alert.alert('Error', 'WhatsApp is not installed on this device');
+    router.push({
+      pathname: '/chat',
+      params: {
+        customerId,
+        customerName: name,
+        customerPhone: phone,
+        prefill: text,
+      },
     });
   };
 
@@ -360,7 +366,7 @@ export default function FollowupsScreen() {
     if (!draftCustomer) return;
 
     setShowDraftModal(false);
-    handleSendMessage(draftCustomer.phone_number, draftCustomer.name, draftMessage);
+    handleSendMessage(draftCustomer.id, draftCustomer.phone_number, draftCustomer.name, draftMessage);
 
     // Reset
     setDraftCustomer(null);
@@ -425,7 +431,7 @@ export default function FollowupsScreen() {
         <View style={styles.actions}>
           <TouchableOpacity
             style={styles.whatsappButton}
-            onPress={() => handleSendMessage(item.customer_phone, item.customer_name, item.message)}
+            onPress={() => handleSendMessage(item.customer_id, item.customer_phone, item.customer_name, item.message)}
           >
             <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
           </TouchableOpacity>
@@ -535,7 +541,7 @@ export default function FollowupsScreen() {
       <View style={styles.coldActions}>
         <TouchableOpacity
           style={styles.coldWhatsappButton}
-          onPress={() => handleSendMessage(customer.phone_number, customer.name)}
+          onPress={() => handleSendMessage(customer.id, customer.phone_number, customer.name)}
         >
           <Ionicons name="logo-whatsapp" size={22} color="#FFFFFF" />
         </TouchableOpacity>

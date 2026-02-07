@@ -20,6 +20,7 @@
         "backgroundColor": "#0A1628"
       },
       "edgeToEdgeEnabled": true,
+      "softwareKeyboardLayoutMode": "adjustResize",
       "permissions": ["android.permission.READ_CONTACTS"]
     },
     "web": {
