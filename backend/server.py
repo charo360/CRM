@@ -2185,43 +2185,110 @@ async def upload_broadcast_image(request: ImageUploadRequest, user = Depends(get
 
 # ============ SUBSCRIPTION ENDPOINTS ============
 
-SUBSCRIPTION_PLANS = [
-    {
-        "id": "starter",
+# Base plan features (prices are set per region)
+PLAN_FEATURES = {
+    "starter": {
         "name": "Starter",
-        "amount": 700,
-        "amount_display": "700/month",
         "interval": "monthly",
         "features": ["Up to 100 customers", "Basic follow-ups", "Receipt sending"]
     },
-    {
-        "id": "standard",
+    "standard": {
         "name": "Standard",
-        "amount": 1000,
-        "amount_display": "1,000/month",
         "interval": "monthly",
         "features": ["Up to 500 customers", "Unlimited follow-ups", "Broadcast messages", "Priority support"]
     },
-    {
-        "id": "pro",
+    "pro": {
         "name": "Pro",
-        "amount": 1500,
-        "amount_display": "1,500/month",
         "interval": "monthly",
         "features": ["Unlimited customers", "Advanced analytics", "Custom templates", "WhatsApp Business API", "Dedicated support"]
     }
-]
+}
+
+# Regional pricing: currency -> (starter, standard, pro)
+REGIONAL_PRICING = {
+    # East Africa
+    "KES": (700, 1000, 1500),       # Kenya
+    "TZS": (15000, 22000, 33000),   # Tanzania
+    "UGX": (25000, 37000, 55000),   # Uganda
+    "RWF": (7000, 10000, 15000),    # Rwanda
+    "ETB": (400, 600, 900),         # Ethiopia
+    "BIF": (20000, 30000, 45000),   # Burundi
+    "SOS": (4000, 6000, 9000),      # Somalia
+    # West Africa
+    "NGN": (5000, 7500, 11000),     # Nigeria
+    "GHS": (50, 75, 110),           # Ghana
+    "XOF": (4000, 6000, 9000),      # CFA (Senegal, Ivory Coast, etc.)
+    "XAF": (4000, 6000, 9000),      # CFA (Cameroon, etc.)
+    # Southern Africa
+    "ZAR": (100, 150, 220),         # South Africa
+    "CDF": (18000, 27000, 40000),   # DR Congo
+    # North Africa / Middle East
+    "EGP": (200, 300, 450),         # Egypt
+    "MAD": (60, 90, 135),           # Morocco
+    "TND": (20, 30, 45),            # Tunisia
+    "AED": (25, 37, 55),            # UAE
+    "SAR": (25, 37, 55),            # Saudi Arabia
+    # South Asia
+    "INR": (500, 750, 1100),        # India
+    "PKR": (2000, 3000, 4500),      # Pakistan
+    "BDT": (700, 1000, 1500),       # Bangladesh
+    # Southeast Asia
+    "PHP": (400, 600, 900),         # Philippines
+    "IDR": (100000, 150000, 220000),# Indonesia
+    "MYR": (30, 45, 65),            # Malaysia
+    "THB": (250, 375, 550),         # Thailand
+    "VND": (170000, 250000, 370000),# Vietnam
+    # East Asia
+    "CNY": (45, 65, 100),           # China
+    "JPY": (1000, 1500, 2200),      # Japan
+    "KRW": (9000, 13000, 20000),    # South Korea
+    # Americas
+    "USD": (7, 10, 15),             # USA/Canada
+    "BRL": (35, 50, 75),            # Brazil
+    "MXN": (120, 180, 270),         # Mexico
+    "COP": (28000, 42000, 63000),   # Colombia
+    "CLP": (5500, 8000, 12000),     # Chile
+    "ARS": (5000, 7500, 11000),     # Argentina
+    # Europe
+    "GBP": (5, 8, 12),             # UK
+    "EUR": (6, 9, 14),             # Eurozone
+}
+
+def get_regional_plans(currency: str) -> list:
+    """Get subscription plans with regional pricing"""
+    prices = REGIONAL_PRICING.get(currency, REGIONAL_PRICING["USD"])
+    plan_ids = ["starter", "standard", "pro"]
+    plans = []
+    for i, plan_id in enumerate(plan_ids):
+        plan = PLAN_FEATURES[plan_id].copy()
+        amount = prices[i]
+        # Format display amount with commas
+        if amount >= 1000:
+            display = f"{amount:,.0f}/month"
+        else:
+            display = f"{amount}/month"
+        plans.append({
+            "id": plan_id,
+            "name": plan["name"],
+            "amount": amount,
+            "currency": currency,
+            "amount_display": display,
+            "interval": plan["interval"],
+            "features": plan["features"]
+        })
+    return plans
 
 @api_router.get("/subscription/plans")
-async def get_subscription_plans():
-    """Get available subscription plans"""
-    return SUBSCRIPTION_PLANS
+async def get_subscription_plans(user = Depends(get_current_user)):
+    """Get available subscription plans with regional pricing"""
+    user_settings = user.get('settings', {})
+    currency = user_settings.get('currency', 'USD')
+    return get_regional_plans(currency)
 
 @api_router.post("/subscription/verify-purchase")
 async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_current_user)):
     """Verify in-app purchase from Google Play or App Store"""
-    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == request.plan_id), None)
-    if not plan:
+    if request.plan_id not in PLAN_FEATURES:
         raise HTTPException(status_code=400, detail="Invalid plan")
     
     # For now, trust the client-side purchase verification
@@ -2492,7 +2559,8 @@ async def whatsapp_webhook(request: Request):
                         for p in user_products:
                             stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
                             desc = f' - {p["description"]}' if p.get("description") else ""
-                            catalog_lines.append(f"  • {p['name']}: {currency} {p['price']:,.0f} [{stock}] ({p.get('category', 'Other')}){desc}")
+                            price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "Price not set"
+                            catalog_lines.append(f"  • {p['name']}: {price_str} [{stock}] ({p.get('category', 'Other')}){desc}")
                         catalog_lines.append("When customers ask about products, prices, or availability, use this catalog for accurate answers. Do NOT make up prices.")
                         business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
                     
@@ -2502,6 +2570,8 @@ async def whatsapp_webhook(request: Request):
                     # Draft AI response
                     from ai_service import get_drafter
                     ai_service = get_drafter()
+                    user_country_code = user_settings.get("country_code", "")
+                    customer_phone = customer_data.get("phone", from_number) if customer_data else from_number
                     result = await ai_service.draft_followup_message(
                         customer_name=customer_name,
                         customer_data=customer_data or {},
@@ -2512,7 +2582,9 @@ async def whatsapp_webhook(request: Request):
                         custom_instructions=f"The customer just sent: '{body}'. Reply naturally to their message.",
                         user_id=user["_id"],
                         db=db,
-                        customer_id=customer_id
+                        customer_id=customer_id,
+                        user_country=user_country_code,
+                        customer_phone=customer_phone
                     )
                     
                     reply_text = result.get("drafted_message", "")
@@ -2732,6 +2804,8 @@ async def draft_message(customer_id: str, custom_instructions: Optional[str] = N
         business_knowledge = settings.get("business_knowledge", "")
         tone = settings.get("tone", "friendly")
         
+        user_country_code = settings.get("country_code", "")
+        
         drafter = get_drafter()
         result = await drafter.draft_followup_message(
             customer_name=customer.get("name", "Customer"),
@@ -2740,7 +2814,12 @@ async def draft_message(customer_id: str, custom_instructions: Optional[str] = N
             business_name=business_name,
             tone=tone,
             business_knowledge=business_knowledge,
-            custom_instructions=custom_instructions
+            custom_instructions=custom_instructions,
+            user_id=user["_id"],
+            db=db,
+            customer_id=customer_id,
+            user_country=user_country_code,
+            customer_phone=customer.get('phone', '')
         )
         
         from bson import json_util
@@ -2771,7 +2850,7 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
             "direction": m["direction"],
             "content": m["content"],
             "message_type": m.get("message_type", "text"),
-            "created_at": m["created_at"]
+            "created_at": m.get("created_at", m.get("timestamp"))
         }
         for m in messages
     ]
@@ -2860,90 +2939,105 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
 @api_router.post("/ai/draft-message", response_model=DraftMessageResponse)
 async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
     """Generate AI-drafted follow-up message for a customer"""
-    
-    # Get customer
-    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    
-    # Get message history
-    messages = await db.messages.find({
-        "customer_id": request.customer_id
-    }).sort("timestamp", 1).limit(10).to_list(10)
-    
-    # Get business name
-    business_name = user.get('business_name', 'Your Business')
-    
-    # Get user's preferred tone or use request tone
-    user_settings = user.get('settings', {})
-    tone = user_settings.get('message_tone', request.tone)
-    
-    # Build business knowledge context
-    business_knowledge_data = user.get('business_knowledge', {})
-    business_knowledge = None
-    
-    if business_knowledge_data:
-        # Format business knowledge for AI
-        knowledge_parts = []
+    try:
+        # Get customer
+        customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
         
-        if business_knowledge_data.get('business_description'):
-            knowledge_parts.append(f"About us: {business_knowledge_data['business_description']}")
+        # Get message history
+        messages = await db.messages.find({
+            "customer_id": request.customer_id
+        }).sort("timestamp", 1).limit(10).to_list(10)
         
-        if business_knowledge_data.get('products_services'):
-            knowledge_parts.append(f"Products/Services: {business_knowledge_data['products_services']}")
+        # Get business name
+        business_name = user.get('business_name', 'Your Business')
         
-        if business_knowledge_data.get('pricing_info'):
-            knowledge_parts.append(f"Pricing: {business_knowledge_data['pricing_info']}")
+        # Get user's preferred tone or use request tone
+        user_settings = user.get('settings', {})
+        tone = user_settings.get('message_tone', request.tone)
         
-        if business_knowledge_data.get('business_hours'):
-            knowledge_parts.append(f"Hours: {business_knowledge_data['business_hours']}")
+        # Build business knowledge context
+        business_knowledge_data = user.get('business_knowledge', {})
+        business_knowledge = None
         
-        if business_knowledge_data.get('delivery_info'):
-            knowledge_parts.append(f"Delivery: {business_knowledge_data['delivery_info']}")
+        if business_knowledge_data:
+            # Format business knowledge for AI
+            knowledge_parts = []
+            
+            if business_knowledge_data.get('business_description'):
+                knowledge_parts.append(f"About us: {business_knowledge_data['business_description']}")
+            
+            if business_knowledge_data.get('products_services'):
+                knowledge_parts.append(f"Products/Services: {business_knowledge_data['products_services']}")
+            
+            if business_knowledge_data.get('pricing_info'):
+                knowledge_parts.append(f"Pricing: {business_knowledge_data['pricing_info']}")
+            
+            if business_knowledge_data.get('business_hours'):
+                knowledge_parts.append(f"Hours: {business_knowledge_data['business_hours']}")
+            
+            if business_knowledge_data.get('delivery_info'):
+                knowledge_parts.append(f"Delivery: {business_knowledge_data['delivery_info']}")
+            
+            if business_knowledge_data.get('special_offers'):
+                knowledge_parts.append(f"Current Offers: {business_knowledge_data['special_offers']}")
+            
+            if business_knowledge_data.get('faqs'):
+                knowledge_parts.append(f"FAQs: {business_knowledge_data['faqs']}")
+            
+            if knowledge_parts:
+                business_knowledge = "\n".join(knowledge_parts)
         
-        if business_knowledge_data.get('special_offers'):
-            knowledge_parts.append(f"Current Offers: {business_knowledge_data['special_offers']}")
+        # Inject product catalog
+        user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
+        if user_products:
+            currency = user_settings.get("currency", "USD")
+            catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
+            for p in user_products:
+                stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
+                desc = f' - {p["description"]}' if p.get("description") else ""
+                price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "Price not set"
+                catalog_lines.append(f"  • {p['name']}: {price_str} [{stock}] ({p.get('category', 'Other')}){desc}")
+            catalog_lines.append("When customers ask about products, prices, or availability, use this catalog for accurate answers. Do NOT make up prices.")
+            business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
         
-        if business_knowledge_data.get('faqs'):
-            knowledge_parts.append(f"FAQs: {business_knowledge_data['faqs']}")
+        # Get user country for language awareness
+        user_country_code = user_settings.get("country_code", "")
         
-        if knowledge_parts:
-            business_knowledge = "\n".join(knowledge_parts)
-    
-    # Inject product catalog
-    user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
-    if user_products:
-        currency = user_settings.get("currency", "USD")
-        catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
-        for p in user_products:
-            stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
-            desc = f' - {p["description"]}' if p.get("description") else ""
-            catalog_lines.append(f"  • {p['name']}: {currency} {p['price']:,.0f} [{stock}] ({p.get('category', 'Other')}){desc}")
-        catalog_lines.append("When customers ask about products, prices, or availability, use this catalog for accurate answers. Do NOT make up prices.")
-        business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
-    
-    # Draft message using AI
-    drafter = get_drafter()
-    result = await drafter.draft_followup_message(
-        customer_name=customer['name'],
-        customer_data=customer,
-        messages=messages,
-        business_name=business_name,
-        tone=tone,
-        business_knowledge=business_knowledge,
-        custom_instructions=request.custom_instructions
-    )
-    
-    # Support both legacy and new AI service response keys
-    msg_text = result.get('message') or result.get('drafted_message') or "Hi! Just checking in—can I help with anything?"
-    reason_text = result.get('reason') or result.get('ai_reason') or "Due for follow-up"
-    confidence_val = result.get('confidence', 0.5)
+        # Draft message using AI
+        drafter = get_drafter()
+        result = await drafter.draft_followup_message(
+            customer_name=customer['name'],
+            customer_data=customer,
+            messages=messages,
+            business_name=business_name,
+            tone=tone,
+            business_knowledge=business_knowledge,
+            custom_instructions=request.custom_instructions,
+            user_id=user["_id"],
+            db=db,
+            customer_id=request.customer_id,
+            user_country=user_country_code,
+            customer_phone=customer.get('phone', '')
+        )
+        
+        # Support both legacy and new AI service response keys
+        msg_text = result.get('message') or result.get('drafted_message') or "Hi! Just checking in—can I help with anything?"
+        reason_text = result.get('reason') or result.get('ai_reason') or "Due for follow-up"
+        confidence_val = result.get('confidence', 0.5)
 
-    return DraftMessageResponse(
-        message=msg_text,
-        confidence=confidence_val,
-        reason=reason_text
-    )
+        return DraftMessageResponse(
+            message=msg_text,
+            confidence=confidence_val,
+            reason=reason_text
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logging.error(f"Error in draft_ai_message: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/ai/send-auto-message")
 async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_current_user)):
@@ -3276,6 +3370,48 @@ async def get_user_settings(user = Depends(get_current_user)):
     """Get user settings"""
     settings = user.get('settings', {})
     
+    # Auto-detect currency from phone number if not explicitly set
+    currency = settings.get('currency', '')
+    country_code = settings.get('country_code', '')
+    if not currency or currency == 'USD':
+        phone = user.get('phone_number', '')
+        if phone:
+            from ai_service import detect_language_from_phone, PHONE_PREFIX_LANGUAGES
+            lang_info = detect_language_from_phone(phone)
+            if lang_info.get('country'):
+                # Map country to currency
+                country_currency_map = {
+                    'Kenya': ('KE', 'KES'), 'Tanzania': ('TZ', 'TZS'), 'Uganda': ('UG', 'UGX'),
+                    'Ethiopia': ('ET', 'ETB'), 'Nigeria': ('NG', 'NGN'), 'Ghana': ('GH', 'GHS'),
+                    'South Africa': ('ZA', 'ZAR'), 'Cameroon': ('CM', 'XAF'), 'Ivory Coast': ('CI', 'XOF'),
+                    'Senegal': ('SN', 'XOF'), 'DR Congo': ('CD', 'CDF'), 'Rwanda': ('RW', 'RWF'),
+                    'Burundi': ('BI', 'BIF'), 'Somalia': ('SO', 'SOS'),
+                    'India': ('IN', 'INR'), 'Pakistan': ('PK', 'PKR'), 'Bangladesh': ('BD', 'BDT'),
+                    'Philippines': ('PH', 'PHP'), 'Indonesia': ('ID', 'IDR'), 'Malaysia': ('MY', 'MYR'),
+                    'Thailand': ('TH', 'THB'), 'Vietnam': ('VN', 'VND'),
+                    'China': ('CN', 'CNY'), 'Japan': ('JP', 'JPY'), 'South Korea': ('KR', 'KRW'),
+                    'UAE': ('AE', 'AED'), 'Saudi Arabia': ('SA', 'SAR'), 'Egypt': ('EG', 'EGP'),
+                    'Morocco': ('MA', 'MAD'), 'Tunisia': ('TN', 'TND'),
+                    'USA/Canada': ('US', 'USD'), 'UK': ('GB', 'GBP'),
+                    'France': ('FR', 'EUR'), 'Germany': ('DE', 'EUR'), 'Spain': ('ES', 'EUR'),
+                    'Italy': ('IT', 'EUR'), 'Portugal': ('PT', 'EUR'),
+                    'Brazil': ('BR', 'BRL'), 'Mexico': ('MX', 'MXN'), 'Colombia': ('CO', 'COP'),
+                    'Chile': ('CL', 'CLP'), 'Argentina': ('AR', 'ARS'),
+                }
+                detected = country_currency_map.get(lang_info['country'])
+                if detected:
+                    currency = detected[1]
+                    if not country_code:
+                        country_code = detected[0]
+                    # Persist so we don't detect every time
+                    await db.users.update_one(
+                        {"_id": user["_id"]},
+                        {"$set": {"settings.currency": currency, "settings.country_code": country_code}}
+                    )
+    
+    if not currency:
+        currency = 'USD'
+    
     # Return with defaults
     return {
         "auto_reply_enabled": settings.get('auto_reply_enabled', False),
@@ -3286,8 +3422,8 @@ async def get_user_settings(user = Depends(get_current_user)):
         "push_token": user.get('push_token'),
         "daily_pulse_enabled": settings.get('daily_pulse_enabled', False),
         "daily_pulse_time": settings.get('daily_pulse_time', '20:00'),
-        "currency": settings.get('currency', 'USD'),
-        "country_code": settings.get('country_code', '')
+        "currency": currency,
+        "country_code": country_code
     }
 
 @api_router.put("/settings")

@@ -24,6 +24,7 @@ interface SubscriptionPlan {
   id: string;
   name: string;
   amount: number;
+  currency: string;
   amount_display: string;
   interval: string;
   features: string[];
@@ -93,7 +94,7 @@ export default function AccountScreen() {
 
     Alert.alert(
       'Subscribe',
-      `Subscribe to ${plan.name} plan (${currency} ${plan.amount_display})?`,
+      `Subscribe to ${plan.name} plan (${plan.currency || currency} ${plan.amount_display})?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -282,7 +283,7 @@ export default function AccountScreen() {
             >
               <View style={styles.planHeader}>
                 <Text style={styles.planName}>{plan.name}</Text>
-                <Text style={styles.planPrice}>{plan.amount_display}</Text>
+                <Text style={styles.planPrice}>{plan.currency || currency} {plan.amount_display}</Text>
               </View>
               <View style={styles.planFeatures}>
                 {plan.features.map((feature, index) => (

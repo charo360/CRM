@@ -12,6 +12,64 @@ logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
+# Map phone prefixes to country and common languages
+PHONE_PREFIX_LANGUAGES = {
+    '+254': {'country': 'Kenya', 'languages': ['English', 'Swahili (Kiswahili)', 'Sheng']},
+    '+255': {'country': 'Tanzania', 'languages': ['Swahili', 'English']},
+    '+256': {'country': 'Uganda', 'languages': ['English', 'Luganda', 'Swahili']},
+    '+251': {'country': 'Ethiopia', 'languages': ['Amharic', 'English', 'Oromo']},
+    '+234': {'country': 'Nigeria', 'languages': ['English', 'Pidgin English', 'Yoruba', 'Igbo', 'Hausa']},
+    '+233': {'country': 'Ghana', 'languages': ['English', 'Twi', 'Pidgin English']},
+    '+27': {'country': 'South Africa', 'languages': ['English', 'Zulu', 'Afrikaans', 'Xhosa']},
+    '+237': {'country': 'Cameroon', 'languages': ['French', 'English', 'Pidgin English']},
+    '+225': {'country': 'Ivory Coast', 'languages': ['French', 'Dioula']},
+    '+221': {'country': 'Senegal', 'languages': ['French', 'Wolof']},
+    '+243': {'country': 'DR Congo', 'languages': ['French', 'Lingala', 'Swahili']},
+    '+250': {'country': 'Rwanda', 'languages': ['Kinyarwanda', 'English', 'French']},
+    '+257': {'country': 'Burundi', 'languages': ['Kirundi', 'French']},
+    '+252': {'country': 'Somalia', 'languages': ['Somali', 'Arabic', 'English']},
+    '+91': {'country': 'India', 'languages': ['Hindi', 'English', 'Tamil', 'Telugu', 'Bengali']},
+    '+92': {'country': 'Pakistan', 'languages': ['Urdu', 'English', 'Punjabi']},
+    '+880': {'country': 'Bangladesh', 'languages': ['Bengali', 'English']},
+    '+63': {'country': 'Philippines', 'languages': ['Filipino/Tagalog', 'English']},
+    '+62': {'country': 'Indonesia', 'languages': ['Bahasa Indonesia', 'English']},
+    '+60': {'country': 'Malaysia', 'languages': ['Malay', 'English', 'Mandarin']},
+    '+66': {'country': 'Thailand', 'languages': ['Thai', 'English']},
+    '+84': {'country': 'Vietnam', 'languages': ['Vietnamese', 'English']},
+    '+86': {'country': 'China', 'languages': ['Mandarin Chinese', 'English']},
+    '+81': {'country': 'Japan', 'languages': ['Japanese', 'English']},
+    '+82': {'country': 'South Korea', 'languages': ['Korean', 'English']},
+    '+971': {'country': 'UAE', 'languages': ['Arabic', 'English']},
+    '+966': {'country': 'Saudi Arabia', 'languages': ['Arabic', 'English']},
+    '+20': {'country': 'Egypt', 'languages': ['Arabic', 'English']},
+    '+212': {'country': 'Morocco', 'languages': ['Arabic', 'French', 'Darija']},
+    '+216': {'country': 'Tunisia', 'languages': ['Arabic', 'French']},
+    '+1': {'country': 'USA/Canada', 'languages': ['English', 'Spanish', 'French']},
+    '+44': {'country': 'UK', 'languages': ['English']},
+    '+33': {'country': 'France', 'languages': ['French', 'English']},
+    '+49': {'country': 'Germany', 'languages': ['German', 'English']},
+    '+34': {'country': 'Spain', 'languages': ['Spanish', 'Catalan', 'English']},
+    '+39': {'country': 'Italy', 'languages': ['Italian', 'English']},
+    '+351': {'country': 'Portugal', 'languages': ['Portuguese', 'English']},
+    '+55': {'country': 'Brazil', 'languages': ['Portuguese', 'English']},
+    '+52': {'country': 'Mexico', 'languages': ['Spanish', 'English']},
+    '+57': {'country': 'Colombia', 'languages': ['Spanish', 'English']},
+    '+56': {'country': 'Chile', 'languages': ['Spanish', 'English']},
+    '+54': {'country': 'Argentina', 'languages': ['Spanish', 'English']},
+}
+
+def detect_language_from_phone(phone: str) -> Dict:
+    """Detect likely country and languages from phone number prefix"""
+    if not phone:
+        return {'country': None, 'languages': []}
+    phone = phone.strip()
+    # Try longest prefix first (4 digits, then 3, then 2)
+    for length in [4, 3, 2]:
+        prefix = phone[:length] if phone.startswith('+') else '+' + phone[:length-1]
+        if prefix in PHONE_PREFIX_LANGUAGES:
+            return PHONE_PREFIX_LANGUAGES[prefix]
+    return {'country': None, 'languages': []}
+
 class AIMessageDrafter:
     """Service for drafting personalized follow-up messages using AI"""
     
@@ -48,7 +106,9 @@ class AIMessageDrafter:
         custom_instructions: str = None,
         user_id: str = None,
         db = None,
-        customer_id: str = None
+        customer_id: str = None,
+        user_country: str = None,
+        customer_phone: str = None
     ) -> Dict[str, any]:
         """
         Draft a personalized follow-up message for a customer using learned user writing style
@@ -65,7 +125,7 @@ class AIMessageDrafter:
         
         # Learn user's writing style if user_id and db are provided
         user_style = {"style": tone, "patterns": []}
-        if user_id and db:
+        if user_id and db is not None:
             user_style = await self._analyze_user_writing_style(user_id, db)
             # Override tone with learned style
             tone = user_style["style"]
@@ -74,11 +134,23 @@ class AIMessageDrafter:
         past_answers_context = ""
         incoming_msg = messages[-1].get("content", "") if messages and messages[-1].get("direction") == "incoming" else ""
         cid = customer_id or customer_data.get("_id", "")
-        if user_id and db and incoming_msg:
+        if user_id and db is not None and incoming_msg:
             past_answers_context = await self._find_similar_past_answers(user_id, incoming_msg, cid, db)
         
+        # Detect customer language from phone number
+        phone = customer_phone or customer_data.get('phone', '')
+        customer_lang_info = detect_language_from_phone(phone)
+        
+        # Build language context string
+        language_context = ""
+        if customer_lang_info.get('country'):
+            language_context += f"\nCustomer is from {customer_lang_info['country']}."
+            language_context += f" Common languages: {', '.join(customer_lang_info['languages'])}."
+        if user_country:
+            language_context += f"\nBusiness is based in {user_country}."
+        
         # Create AI prompt with personalized style
-        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions, past_answers_context)
+        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions, past_answers_context, language_context)
         
         # Call OpenAI API
         try:
@@ -167,7 +239,7 @@ class AIMessageDrafter:
     
     async def _find_similar_past_answers(self, user_id: str, incoming_message: str, current_customer_id: str, db) -> str:
         """Find how the business owner previously answered similar questions from other customers"""
-        if not db or not incoming_message:
+        if db is None or not incoming_message:
             return ""
         
         try:
@@ -258,7 +330,7 @@ class AIMessageDrafter:
         # Detect language from last message
         language_hint = ""
         if context['last_message']:
-            language_hint = "\n- Detect the language the customer used and respond in the SAME language"
+            language_hint = "\n- Detect the language(s) the customer used and respond in the EXACT SAME way — if they mix languages, you mix too"
         
         # Tone instructions
         tone_instructions = {
@@ -287,36 +359,67 @@ Customer Context:
 
 CRITICAL INSTRUCTIONS:
 1. Write as if YOU are the business owner - use "I" and "we", be personal
-2. Sound NATURAL - like you're texting a customer, not writing a formal email
+2. MIRROR THE CUSTOMER'S STYLE: Match their tone and formality level exactly:
+   - If they text casually ("hey bro whats the price"), reply casually ("Hey! It's 2,500. Want me to set one aside for you?")
+   - If they text formally ("Good morning, I would like to inquire about pricing"), reply formally ("Good morning! Thank you for reaching out. The price is 2,500. Would you like me to share more details?")
+   - If they mix casual and formal, match that balance
 3. Be BRIEF - 1-3 sentences maximum (WhatsApp style)
 4. Reference their last interaction if relevant
 5. If they asked a question, ANSWER it directly
-6. Detect the language they used and respond in the SAME language
-7. Match the customer's language naturally - if they mix languages, you can too
-8. Be {tone_desc}
+6. LANGUAGE IS KEY: Detect the language(s) the customer uses and reply the SAME way
+7. Many people naturally mix languages when chatting (code-switching) — this is normal. Match their style exactly. If they mix English and Swahili, you mix English and Swahili. If they use Pidgin, you use Pidgin.
+8. Default tone if no messages yet: {tone_desc}
 9. Include a clear next step or question
-10. NO emojis unless it fits naturally (max 1-2)
+10. NO emojis unless the customer uses them or it fits naturally (max 1-2)
 11. If you don't have enough information to answer their question, say you'll check and get back to them
 
-Examples of GOOD messages:
-- "Hi John! Saw you were asking about the price last week. It's 2,500. Still interested?"
-- "Hey Mary! That product is back in stock. Want me to deliver it?"
-- "Hey! Been a while 😊 We have a new offer - 20% off this week. Want details?"
+Examples of GOOD messages — notice how they match the customer's style:
+CASUAL customer → casual reply:
+- "Hi John! Ulikuwa unauliza bei last week. It's 2,500. Bado uko interested?"
+- "Abeg that thing don come back o! You still wan am? Na 5,000 naira"
+- "Bhai wo product available hai, price 2,500 hai. Order kar doon?"
 
-Examples of BAD messages (too formal/generic):
-- "Dear valued customer, we hope this message finds you well..."
-- "Thank you for your interest in our products and services..."
-- "We would like to follow up on your previous inquiry..."
+FORMAL customer → formal reply:
+- "Good morning John. The item you inquired about is priced at 2,500. Shall I arrange delivery for you?"
+- "Thank you for your patience. The product is now back in stock at 5,000. Would you like to place an order?"
+
+Examples of BAD messages:
+- Replying formally when the customer is casual and friendly
+- Replying with slang when the customer writes formally
+- Generic templates: "Dear valued customer, we hope this message finds you well..."
+- Using pure formal English when the customer texts in Swahili or Pidgin
 
 Write ONLY the message text. No quotes, no explanations, no subject lines."""
 
         return prompt
     
-    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None, past_answers_context: str = None) -> str:
+    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None, past_answers_context: str = None, language_context: str = None) -> str:
         """Create personalized prompt using learned user writing style and custom instructions"""
         
         # Start with the base prompt
         base_prompt = self._create_prompt(context, business_name, tone, business_knowledge)
+        
+        # Add language awareness context
+        if language_context:
+            lang_section = f"""
+
+LANGUAGE & CULTURAL AWARENESS:{language_context}
+IMPORTANT LANGUAGE RULES:
+- Carefully read the customer's recent messages and detect what language(s) they actually use
+- ALWAYS reply in the SAME language(s) the customer used — match their style exactly
+- In many countries, people naturally MIX languages in everyday conversation (code-switching). This is NORMAL. Examples:
+  * Kenya: "Hey, uko na hiyo product? Nilitaka kujua bei" (English + Swahili mix)
+  * Nigeria: "Abeg how much be this thing? I wan order am" (Pidgin English)
+  * India: "Bhai ye product available hai kya? Price kya hai?" (Hindi + English mix)
+  * South Africa: "Sharp sharp, how much is this? Ngicela ungisize" (English + Zulu mix)
+  * Senegal: "Salam, combien ça coûte? Mangi bëgg" (French + Wolof mix)
+  * Morocco: "Salam, bchhal hada? I want to order" (Darija + English mix)
+- If the customer mixes languages, you MUST mix the same way — do NOT "correct" them into one pure language
+- If no messages exist yet, use the most natural everyday language for the customer's country (which is often a mix)
+- Use local greetings, slang, and expressions that real people use in that region
+- Sound like a real local business owner texting a customer, NOT like a formal translator
+- Do NOT default to pure English if the customer's country commonly uses another language or a mix"""
+            base_prompt = base_prompt + lang_section
         
         # Add past similar answers context
         if past_answers_context:

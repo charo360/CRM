@@ -13,6 +13,8 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import { settingsAPI } from '../../context/api';
+import { COUNTRIES } from '../../components/CountryPicker';
 
 export default function VerifyScreen() {
   const { phone, devOtp, countryCode } = useLocalSearchParams<{ phone: string; devOtp: string; countryCode: string }>();
@@ -65,6 +67,19 @@ export default function VerifyScreen() {
             params: { phone: phone, countryCode: countryCode || '' },
           });
         } else {
+          // Existing user — ensure currency/country is set from their selected country
+          if (countryCode) {
+            try {
+              const settings = await settingsAPI.getSettings();
+              const country = COUNTRIES.find(c => c.code === countryCode);
+              if (country && (!settings.currency || settings.currency === 'USD')) {
+                await settingsAPI.updateSettings({
+                  country_code: country.code,
+                  currency: country.currency,
+                });
+              }
+            } catch (e) {}
+          }
           router.replace('/(tabs)/customers');
         }
       } else {

@@ -105,6 +105,8 @@ export default function FollowupsScreen() {
   const [recentMessages, setRecentMessages] = useState<Message[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [showRecentMessages, setShowRecentMessages] = useState(false);
+  const [analyzeRetries, setAnalyzeRetries] = useState(0);
+  const MAX_ANALYZE_RETRIES = 3;
 
   const fetchData = useCallback(async () => {
     try {
@@ -122,11 +124,13 @@ export default function FollowupsScreen() {
       setSuggestions(suggestionsRes.data);
       setCustomers(customersRes.data);
 
-      // If we have no cold customers with reasons yet, it might be because analysis is running in background
-      if (coldRes.data.length === 0) {
+      // Only keep analyzing if we have customers but no cold results yet (analysis still running)
+      if (coldRes.data.length === 0 && customersRes.data.length > 0) {
         setIsAnalyzing(true);
+        setAnalyzeRetries(prev => prev + 1);
       } else {
         setIsAnalyzing(false);
+        setAnalyzeRetries(0);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -136,18 +140,21 @@ export default function FollowupsScreen() {
     }
   }, []);
 
-  // Poll for insights if analysis is running
+  // Poll for insights if analysis is running (max 3 retries, 15s interval)
   useEffect(() => {
     let interval: any;
-    if (isAnalyzing && coldCustomers.length === 0) {
+    if (isAnalyzing && coldCustomers.length === 0 && analyzeRetries < MAX_ANALYZE_RETRIES) {
       interval = setInterval(() => {
         fetchData();
-      }, 8000); // Check every 8 seconds
+      }, 15000);
+    }
+    if (analyzeRetries >= MAX_ANALYZE_RETRIES) {
+      setIsAnalyzing(false);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isAnalyzing, coldCustomers.length, fetchData]);
+  }, [isAnalyzing, coldCustomers.length, analyzeRetries, fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -662,11 +669,23 @@ export default function FollowupsScreen() {
               <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
             }
             ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <Ionicons name="checkmark-circle-outline" size={64} color="#25D366" />
-                <Text style={styles.emptyText}>All caught up!</Text>
-                <Text style={styles.emptySubtext}>No customers need immediate attention</Text>
-              </View>
+              !isAnalyzing ? (
+                <View style={styles.emptyContainer}>
+                  {customers.length === 0 ? (
+                    <>
+                      <Ionicons name="people-outline" size={64} color="#25D366" />
+                      <Text style={styles.emptyText}>Add customers to get started</Text>
+                      <Text style={styles.emptySubtext}>AI will analyze your conversations and suggest follow-ups</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-circle-outline" size={64} color="#25D366" />
+                      <Text style={styles.emptyText}>All caught up!</Text>
+                      <Text style={styles.emptySubtext}>No customers need immediate attention</Text>
+                    </>
+                  )}
+                </View>
+              ) : null
             }
           />
         </>
@@ -988,8 +1007,9 @@ export default function FollowupsScreen() {
       >
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.keyboardView}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
           >
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
@@ -1008,7 +1028,11 @@ export default function FollowupsScreen() {
                   <Text style={styles.draftLoadingText}>Writing perfect message...</Text>
                 </View>
               ) : (
-                <>
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={{ paddingBottom: 20 }}
+                >
                   <Text style={styles.inputLabel}>Message Preview (tap to edit)</Text>
                   <TextInput
                     style={[styles.messageInput, { minHeight: 120 }]}
@@ -1111,7 +1135,7 @@ export default function FollowupsScreen() {
                     <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
                     <Text style={styles.whatsappSendText}>Open in WhatsApp</Text>
                   </TouchableOpacity>
-                </>
+                </ScrollView>
               )}
             </View>
           </KeyboardAvoidingView>
@@ -1489,6 +1513,7 @@ const styles = StyleSheet.create({
   },
   keyboardView: {
     width: '100%',
+    justifyContent: 'flex-end' as const,
   },
   modalScrollContent: {
     paddingBottom: 40,
