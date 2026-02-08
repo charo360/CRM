@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -72,6 +72,8 @@ export default function CustomersScreen() {
   const [newNotes, setNewNotes] = useState('');
   const [newTags, setNewTags] = useState<string[]>(['New']);
   const [saving, setSaving] = useState(false);
+  const [showTagInput, setShowTagInput] = useState(false);
+  const [newTagText, setNewTagText] = useState('');
 
   // Contact import
   const [contactsModalVisible, setContactsModalVisible] = useState(false);
@@ -544,56 +546,73 @@ export default function CustomersScreen() {
     setCustomDirection('');
   };
 
+  const TAG_COLORS: Record<string, string> = {
+    VIP: '#FFD700',
+    New: '#25D366',
+    Returning: '#4A90D9',
+    Wholesale: '#9B59B6',
+  };
+
+  const RotatingBadge = ({ tags, purchaseCount }: { tags: string[]; purchaseCount: number }) => {
+    const items: { label: string; color: string }[] = [];
+    tags.forEach(t => items.push({ label: t, color: TAG_COLORS[t] || '#8696A0' }));
+    if (purchaseCount > 0) {
+      items.push({ label: `${purchaseCount} ${purchaseCount === 1 ? 'Sale' : 'Sales'}`, color: '#00A884' });
+    }
+
+    const [index, setIndex] = useState(0);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    useEffect(() => {
+      if (items.length <= 1) return;
+      timerRef.current = setInterval(() => {
+        setIndex(prev => (prev + 1) % items.length);
+      }, 2000);
+      return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    }, [items.length]);
+
+    if (items.length === 0) return null;
+    const item = items[index % items.length];
+
+    return (
+      <View style={[styles.chatRowBadge, { backgroundColor: item.color }]}>
+        <Text style={styles.chatRowBadgeText}>{item.label}</Text>
+      </View>
+    );
+  };
+
+  const formatLastContact = (dateStr: string | null) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  };
+
   const renderCustomer = ({ item }: { item: Customer }) => (
-    <TouchableOpacity style={styles.customerCard} onPress={() => openEditModal(item)}>
-      <View style={styles.customerAvatar}>
+    <TouchableOpacity
+      style={styles.chatRow}
+      onPress={() => handleWhatsApp(item)}
+      onLongPress={() => openEditModal(item)}
+      delayLongPress={400}
+    >
+      <View style={[styles.customerAvatar, item.tags.includes('VIP') && { backgroundColor: '#FFD700' }]}>
         <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
       </View>
-      <View style={styles.customerInfo}>
-        <View style={styles.customerTopRow}>
-          <View style={styles.customerNameSection}>
-            <Text style={styles.customerName}>{item.name}</Text>
-            <Text style={styles.customerPhone}>{item.phone_number}</Text>
-          </View>
-          {item.notes && (
-            <View style={styles.notesPreview}>
-              <Ionicons name="document-text-outline" size={12} color="#25D366" />
-              <Text style={styles.notesPreviewText} numberOfLines={1}>{item.notes}</Text>
-            </View>
-          )}
+      <View style={styles.chatRowContent}>
+        <View style={styles.chatRowTop}>
+          <Text style={styles.chatRowName} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.chatRowTime}>{formatLastContact(item.last_contacted)}</Text>
         </View>
-        <View style={styles.customerBottomRow}>
-          <View style={styles.tagsContainer}>
-            {item.purchase_count > 0 && (
-              <View style={[styles.tag, styles.tagCount]}>
-                <Text style={styles.tagText}>{item.purchase_count} {item.purchase_count === 1 ? 'Sale' : 'Sales'}</Text>
-              </View>
-            )}
-            {item.total_spent > 0 && (
-              <View style={[styles.tag, styles.tagMoney]}>
-                <Text style={[styles.tagText, styles.tagMoneyText]}>{currency} {item.total_spent.toLocaleString()}</Text>
-              </View>
-            )}
-            {item.tags.map((tag, index) => (
-              <View key={index} style={[styles.tag, tag === 'VIP' && styles.tagVip, tag === 'Returning' && styles.tagReturning]}>
-                <Text style={styles.tagText}>{tag}</Text>
-              </View>
-            ))}
-          </View>
-          <View style={styles.actionButtons}>
-            <TouchableOpacity onPress={() => handleWhatsApp(item)} style={styles.iconButton}>
-              <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => handleShowDraftMessage(item)} style={styles.iconButton}>
-              <Ionicons name="sparkles" size={22} color="#FFD700" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => handleOpenProductPicker(item)} style={styles.iconButton}>
-              <Ionicons name="storefront-outline" size={20} color="#4A90D9" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
-              <Ionicons name="trash-outline" size={20} color="#FF4444" />
-            </TouchableOpacity>
-          </View>
+        <View style={styles.chatRowBottom}>
+          <Text style={styles.chatRowMessage} numberOfLines={1}>
+            {item.last_message || item.notes || item.phone_number}
+          </Text>
+          <RotatingBadge tags={item.tags} purchaseCount={item.purchase_count} />
         </View>
       </View>
     </TouchableOpacity>
@@ -676,7 +695,7 @@ export default function CustomersScreen() {
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Tags</Text>
             <View style={styles.tagsSelector}>
-              {TAGS.map((tag) => (
+              {[...new Set([...TAGS, ...newTags])].map((tag) => (
                 <TouchableOpacity
                   key={tag}
                   style={[
@@ -691,6 +710,41 @@ export default function CustomersScreen() {
                   ]}>{tag}</Text>
                 </TouchableOpacity>
               ))}
+              {showTagInput ? (
+                <View style={styles.addTagInputRow}>
+                  <TextInput
+                    style={styles.addTagInput}
+                    value={newTagText}
+                    onChangeText={setNewTagText}
+                    placeholder="Tag name"
+                    placeholderTextColor="#666"
+                    autoFocus
+                    onSubmitEditing={() => {
+                      const t = newTagText.trim();
+                      if (t && !newTags.includes(t)) setNewTags(prev => [...prev, t]);
+                      setNewTagText('');
+                      setShowTagInput(false);
+                    }}
+                    returnKeyType="done"
+                  />
+                  <TouchableOpacity onPress={() => {
+                    const t = newTagText.trim();
+                    if (t && !newTags.includes(t)) setNewTags(prev => [...prev, t]);
+                    setNewTagText('');
+                    setShowTagInput(false);
+                  }}>
+                    <Ionicons name="checkmark" size={18} color="#25D366" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setShowTagInput(false); setNewTagText(''); }} style={{ marginLeft: 4 }}>
+                    <Ionicons name="close" size={18} color="#666" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.addTagButton} onPress={() => setShowTagInput(true)}>
+                  <Ionicons name="add" size={16} color="#25D366" />
+                  <Text style={styles.addTagButtonText}>Add Tag</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </View>
@@ -1280,126 +1334,70 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   listContent: {
-    paddingHorizontal: 20,
     paddingBottom: 150,
   },
-  customerCard: {
+  chatRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   customerAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 14,
   },
   avatarText: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
-  customerInfo: {
+  chatRowContent: {
     flex: 1,
   },
-  customerTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
-  customerBottomRow: {
+  chatRowTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 4,
   },
-  customerNameSection: {
-    flex: 1,
-  },
-  customerRight: {
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    marginLeft: 8,
-    maxWidth: 120,
-  },
-  notesPreview: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0D2137',
-    borderRadius: 8,
-    padding: 6,
-    marginLeft: 8,
-    maxWidth: 120,
-  },
-  notesPreviewText: {
-    fontSize: 10,
-    color: '#25D366',
-    marginLeft: 4,
-    flex: 1,
-  },
-  customerName: {
+  chatRowName: {
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  customerPhone: {
-    fontSize: 14,
-    color: '#666',
-  },
-  tagsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     flex: 1,
-    alignItems: 'center',
+    marginRight: 8,
   },
-  tag: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    backgroundColor: '#25D366',
-    borderRadius: 10,
-    marginRight: 6,
+  chatRowTime: {
+    fontSize: 12,
+    color: '#8B9DC3',
   },
-  tagVip: {
-    backgroundColor: '#FFD700',
-  },
-  tagReturning: {
-    backgroundColor: '#4A90D9',
-  },
-  tagText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  tagCount: {
-    backgroundColor: '#1A2942',
-    borderWidth: 1,
-    borderColor: '#4A90D9',
-  },
-  tagMoney: {
-    backgroundColor: '#1A2942',
-    borderWidth: 1,
-    borderColor: '#25D366',
-  },
-  tagMoneyText: {
-    color: '#25D366',
-  },
-  actionButtons: {
+  chatRowBottom: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
   },
-  iconButton: {
-    padding: 8,
+  chatRowMessage: {
+    fontSize: 14,
+    color: '#8B9DC3',
+    flex: 1,
+    marginRight: 8,
   },
-  deleteButton: {
-    padding: 8,
+  chatRowBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: 4,
+  },
+  chatRowBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   emptyContainer: {
     alignItems: 'center',
@@ -1481,6 +1479,8 @@ const styles = StyleSheet.create({
   },
   tagsSelector: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   tagOption: {
     paddingHorizontal: 20,
@@ -1491,6 +1491,40 @@ const styles = StyleSheet.create({
   },
   tagOptionSelected: {
     backgroundColor: '#25D366',
+  },
+  addTagButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(37,211,102,0.1)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#25D366',
+    borderStyle: 'dashed',
+  },
+  addTagButtonText: {
+    fontSize: 14,
+    color: '#25D366',
+    fontWeight: '500',
+  },
+  addTagInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#25D366',
+    gap: 6,
+  },
+  addTagInput: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    minWidth: 80,
+    paddingVertical: 0,
   },
   tagOptionText: {
     fontSize: 14,

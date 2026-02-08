@@ -9,11 +9,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
+  Modal,
+  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { apiClient, whatsappAPI, messagesAPI } from '../context/api';
+import { apiClient, whatsappAPI, messagesAPI, productsAPI } from '../context/api';
 
 interface Message {
   id: string;
@@ -42,6 +45,13 @@ export default function ChatScreen() {
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [drafting, setDrafting] = useState(false);
+  const [showProducts, setShowProducts] = useState(false);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [products, setProducts] = useState<any[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [sendingProduct, setSendingProduct] = useState<string | null>(null);
+  const [currency, setCurrency] = useState('USD');
   const flatListRef = useRef<FlatList>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -73,6 +83,57 @@ export default function ChatScreen() {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [fetchMessages]);
+
+  const handleAIDraft = async () => {
+    if (!customerId || drafting) return;
+    setDrafting(true);
+    try {
+      const direction = inputText.trim();
+      const res = await apiClient.post('/ai/draft-message', {
+        customer_id: customerId,
+        ...(direction ? { custom_instructions: direction } : {}),
+      });
+      const msg = res.data.message || res.data.drafted_message || '';
+      if (msg) setInputText(msg);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to generate AI draft');
+    } finally {
+      setDrafting(false);
+    }
+  };
+
+  const handleOpenProducts = async () => {
+    setShowProducts(true);
+    setLoadingProducts(true);
+    try {
+      const [prodsRes, settingsRes] = await Promise.all([
+        apiClient.get('/products'),
+        apiClient.get('/settings'),
+      ]);
+      setProducts(prodsRes.data || []);
+      if (settingsRes.data?.currency) setCurrency(settingsRes.data.currency);
+    } catch (error) {
+      console.error('Error loading products:', error);
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
+
+  const handleSendProduct = async (product: any) => {
+    setSendingProduct(product.id);
+    try {
+      await productsAPI.sendProductToCustomer(product.id, customerId);
+      Alert.alert('Sent!', `${product.name} sent to ${customerName}`);
+      setShowProducts(false);
+    } catch (error) {
+      const desc = product.description ? `\n${product.description}` : '';
+      const text = `*${product.name}*\n${currency} ${product.price.toLocaleString()}${desc}\n\nInterested? Let me know!`;
+      setShowProducts(false);
+      setInputText(text);
+    } finally {
+      setSendingProduct(null);
+    }
+  };
 
   const handleSend = async () => {
     const text = inputText.trim();
@@ -153,17 +214,24 @@ export default function ChatScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
-        <View style={styles.headerInfo}>
+        <TouchableOpacity
+          style={styles.headerInfo}
+          onPress={() => router.push({
+            pathname: '/customer-profile',
+            params: { customerId, customerName, customerPhone },
+          })}
+          activeOpacity={0.7}
+        >
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
               {customerName.charAt(0).toUpperCase()}
             </Text>
           </View>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.headerName}>{customerName}</Text>
             <Text style={styles.headerPhone}>{customerPhone}</Text>
           </View>
-        </View>
+        </TouchableOpacity>
       </View>
 
       {/* Messages */}
@@ -194,19 +262,60 @@ export default function ChatScreen() {
           />
         )}
 
-        {/* Input */}
-        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-          <TextInput
-            style={styles.input}
-            value={inputText}
-            onChangeText={setInputText}
-            placeholder="Type a message..."
-            placeholderTextColor="#666"
-            multiline
-            maxLength={4096}
-          />
+        {/* Attach menu (above input) */}
+        {showAttachMenu && (
+          <View style={styles.attachMenu}>
+            <TouchableOpacity style={styles.attachOption} onPress={() => { setShowAttachMenu(false); /* TODO: camera */ }}>
+              <View style={[styles.attachIconCircle, { backgroundColor: '#25D366' }]}>
+                <Ionicons name="camera" size={22} color="#FFFFFF" />
+              </View>
+              <Text style={styles.attachLabel}>Camera</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.attachOption} onPress={() => { setShowAttachMenu(false); /* TODO: gallery */ }}>
+              <View style={[styles.attachIconCircle, { backgroundColor: '#7C4DFF' }]}>
+                <Ionicons name="image" size={22} color="#FFFFFF" />
+              </View>
+              <Text style={styles.attachLabel}>Gallery</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.attachOption} onPress={() => { setShowAttachMenu(false); /* TODO: file picker */ }}>
+              <View style={[styles.attachIconCircle, { backgroundColor: '#4A90D9' }]}>
+                <Ionicons name="document" size={22} color="#FFFFFF" />
+              </View>
+              <Text style={styles.attachLabel}>Document</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Input bar — WhatsApp style */}
+        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 6) }]}>
+          <View style={styles.inputPill}>
+            <TouchableOpacity style={styles.pillIcon} onPress={() => setShowAttachMenu(!showAttachMenu)}>
+              <Ionicons name="attach" size={24} color="#8B9DC3" />
+            </TouchableOpacity>
+            <TextInput
+              style={styles.pillInput}
+              value={inputText}
+              onChangeText={(text) => { setInputText(text); if (text.length > 0) setShowAttachMenu(false); }}
+              placeholder="Message"
+              placeholderTextColor="#8B9DC3"
+              multiline
+              maxLength={4096}
+            />
+            <TouchableOpacity style={styles.pillIcon} onPress={handleAIDraft} disabled={drafting}>
+              {drafting ? (
+                <ActivityIndicator size="small" color="#FFD700" />
+              ) : (
+                <Ionicons name="sparkles" size={22} color="#FFD700" />
+              )}
+            </TouchableOpacity>
+            {!inputText.trim() && (
+              <TouchableOpacity style={styles.pillIcon} onPress={handleOpenProducts}>
+                <Ionicons name="storefront-outline" size={22} color="#8B9DC3" />
+              </TouchableOpacity>
+            )}
+          </View>
           <TouchableOpacity
-            style={[styles.sendButton, (!inputText.trim() || sending) && styles.sendButtonDisabled]}
+            style={[styles.sendCircle, (!inputText.trim() || sending) && styles.sendCircleDisabled]}
             onPress={handleSend}
             disabled={!inputText.trim() || sending}
           >
@@ -218,6 +327,70 @@ export default function ChatScreen() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Product Picker Modal */}
+      <Modal
+        visible={showProducts}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowProducts(false)}
+      >
+        <SafeAreaView style={styles.container}>
+          <View style={styles.productModalHeader}>
+            <TouchableOpacity onPress={() => setShowProducts(false)}>
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Text style={styles.productModalTitle}>Send Product</Text>
+            <View style={{ width: 24 }} />
+          </View>
+          {loadingProducts ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#25D366" />
+            </View>
+          ) : products.length > 0 ? (
+            <FlatList
+              data={products}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ padding: 16 }}
+              renderItem={({ item: product }) => {
+                const imageUri = product.image_url
+                  ? (product.image_url.startsWith('http') ? product.image_url : `${process.env.EXPO_PUBLIC_BACKEND_URL}${product.image_url}`)
+                  : null;
+                const isSending = sendingProduct === product.id;
+                return (
+                  <TouchableOpacity
+                    style={styles.productRow}
+                    onPress={() => handleSendProduct(product)}
+                    disabled={isSending}
+                  >
+                    {imageUri ? (
+                      <Image source={{ uri: imageUri }} style={styles.productImage} resizeMode="cover" />
+                    ) : (
+                      <View style={[styles.productImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A2A4A' }]}>
+                        <Ionicons name="image-outline" size={20} color="#3A4A5C" />
+                      </View>
+                    )}
+                    <View style={{ flex: 1, marginLeft: 12 }}>
+                      <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }} numberOfLines={1}>{product.name}</Text>
+                      <Text style={{ color: '#25D366', fontSize: 14, marginTop: 2 }}>{currency} {product.price?.toLocaleString()}</Text>
+                    </View>
+                    {isSending ? (
+                      <ActivityIndicator size="small" color="#25D366" />
+                    ) : (
+                      <Ionicons name="send" size={18} color="#25D366" />
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          ) : (
+            <View style={styles.loadingContainer}>
+              <Ionicons name="storefront-outline" size={48} color="#3A4A5C" />
+              <Text style={{ color: '#8B9DC3', fontSize: 16, marginTop: 12 }}>No products yet</Text>
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -225,25 +398,24 @@ export default function ChatScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A1628',
+    backgroundColor: '#0B141A',
   },
+  // ── Header (WhatsApp dark green bar) ──
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#0F1F3D',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+    backgroundColor: '#1F2C34',
   },
   backButton: {
-    marginRight: 12,
-    padding: 4,
+    padding: 8,
   },
   headerInfo: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    marginLeft: 4,
   },
   avatar: {
     width: 40,
@@ -252,7 +424,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#25D366',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   avatarText: {
     fontSize: 18,
@@ -262,15 +434,17 @@ const styles = StyleSheet.create({
   headerName: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: '#E9EDEF',
   },
   headerPhone: {
     fontSize: 12,
-    color: '#8B9DC3',
+    color: '#8696A0',
     marginTop: 1,
   },
+  // ── Chat area ──
   chatArea: {
     flex: 1,
+    backgroundColor: '#0B141A',
   },
   loadingContainer: {
     flex: 1,
@@ -278,48 +452,51 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   messagesList: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     flexGrow: 1,
     justifyContent: 'flex-end',
   },
+  // ── Bubbles ──
   messageBubble: {
-    maxWidth: '78%',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 16,
-    marginBottom: 8,
+    maxWidth: '80%',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 6,
+    borderRadius: 10,
+    marginBottom: 3,
   },
   outgoing: {
     alignSelf: 'flex-end',
-    backgroundColor: '#25D366',
-    borderBottomRightRadius: 4,
+    backgroundColor: '#005C4B',
+    borderTopRightRadius: 2,
   },
   incoming: {
     alignSelf: 'flex-start',
-    backgroundColor: '#1A2A4A',
-    borderBottomLeftRadius: 4,
+    backgroundColor: '#1F2C34',
+    borderTopLeftRadius: 2,
   },
   messageText: {
     fontSize: 15,
     lineHeight: 20,
   },
   outgoingText: {
-    color: '#FFFFFF',
+    color: '#E9EDEF',
   },
   incomingText: {
-    color: '#E0E0E0',
+    color: '#E9EDEF',
   },
   messageFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    marginTop: 4,
+    marginTop: 2,
   },
   messageTime: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.5)',
+    fontSize: 11,
+    color: 'rgba(233,237,239,0.5)',
   },
+  // ── Empty state ──
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -328,43 +505,110 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 16,
-    color: '#8B9DC3',
+    color: '#8696A0',
     marginTop: 12,
   },
   emptySubtext: {
     fontSize: 13,
-    color: '#5A6B8A',
+    color: '#8696A0',
     marginTop: 4,
   },
-  inputContainer: {
+  // ── Attach menu (above input) ──
+  attachMenu: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    backgroundColor: '#1F2C34',
+    borderRadius: 16,
+    marginHorizontal: 8,
+    marginBottom: 4,
+  },
+  attachOption: {
+    alignItems: 'center',
+    gap: 8,
+  },
+  attachIconCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachLabel: {
+    fontSize: 12,
+    color: '#8696A0',
+    fontWeight: '500',
+  },
+  // ── Input bar ──
+  inputBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#0F1F3D',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 6,
+    paddingTop: 4,
   },
-  input: {
+  inputPill: {
     flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: '#FFFFFF',
-    maxHeight: 100,
-    marginRight: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    backgroundColor: '#1F2C34',
+    borderRadius: 24,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    marginRight: 6,
+    minHeight: 48,
   },
-  sendButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#25D366',
+  pillIcon: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pillInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#E9EDEF',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    maxHeight: 120,
+  },
+  sendCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#00A884',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendButtonDisabled: {
-    backgroundColor: '#1A3A2A',
+  sendCircleDisabled: {
+    backgroundColor: '#1D3D35',
+  },
+  // ── Product modal ──
+  productModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: '#1F2C34',
+  },
+  productModalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#E9EDEF',
+  },
+  productRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1F2C34',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+  },
+  productImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: '#0B141A',
   },
 });
