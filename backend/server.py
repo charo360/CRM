@@ -31,6 +31,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import logging
+import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -52,7 +53,9 @@ from wow_enhancements import get_wow_generator
 from whatsapp_service import get_whatsapp_service
 from followup_analytics import get_analytics
 from smart_notifications import get_smart_notifications
-from fastapi import UploadFile, File
+from supplier_analyzer import SupplierAnalyzer
+from contact_classifier import get_classifier
+from fastapi import UploadFile, File, Body
 from fastapi.staticfiles import StaticFiles
 from daily_scheduler import start_daily_scheduler
 
@@ -761,6 +764,181 @@ async def get_me(user = Depends(get_current_user)):
         "currency": user.get("currency", "USD"),
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
     }
+
+# ============ SUPPLIER ENDPOINTS ============
+
+SUPPLIER_CATEGORIES = [
+    "Electronics", "Clothing", "Food & Beverage", "Beauty & Health",
+    "Home & Garden", "Automotive", "Raw Materials", "Packaging",
+    "Stationery", "Services", "Other"
+]
+
+@api_router.get("/suppliers/categories")
+async def get_supplier_categories():
+    """Get available supplier categories"""
+    return SUPPLIER_CATEGORIES
+
+@api_router.get("/suppliers/insights")
+async def get_supplier_insights(user = Depends(get_current_user)):
+    """Get supplier insights and potential suppliers"""
+    analyzer = SupplierAnalyzer(db)
+    potential = await analyzer.identify_potential_suppliers(user["_id"])
+    restock = await analyzer.get_restock_suggestions(user["_id"])
+    return {
+        "potential_suppliers": potential,
+        "restock_suggestions": restock
+    }
+
+@api_router.get("/suppliers")
+async def get_suppliers(user = Depends(get_current_user)):
+    """Get all suppliers with their details"""
+    suppliers = await db.customers.find({
+        "user_id": user["_id"],
+        "tags": "Supplier"
+    }).to_list(100)
+    
+    # Enrich with product links
+    for s in suppliers:
+        s["id"] = s["_id"]
+        s["supplier_category"] = s.get("supplier_category", "Other")
+        s["products_supplied"] = s.get("products_supplied", [])
+        s["payment_terms"] = s.get("payment_terms", "")
+        s["lead_time"] = s.get("lead_time", "")
+        s["rating"] = s.get("rating", 0)
+    
+    return suppliers
+
+@api_router.post("/suppliers/{customer_id}/tag")
+async def tag_supplier(customer_id: str, user = Depends(get_current_user)):
+    """Tag a customer as a supplier"""
+    await db.customers.update_one(
+        {"_id": customer_id, "user_id": user["_id"]},
+        {"$addToSet": {"tags": "Supplier"}}
+    )
+    return {"status": "success"}
+
+@api_router.put("/suppliers/{customer_id}")
+async def update_supplier_details(customer_id: str, body: dict = Body(...), user = Depends(get_current_user)):
+    """Update supplier-specific details like category, products, payment terms"""
+    update_fields = {}
+    if "supplier_category" in body:
+        update_fields["supplier_category"] = body["supplier_category"]
+    if "products_supplied" in body:
+        update_fields["products_supplied"] = body["products_supplied"]
+    if "payment_terms" in body:
+        update_fields["payment_terms"] = body["payment_terms"]
+    if "lead_time" in body:
+        update_fields["lead_time"] = body["lead_time"]
+    if "rating" in body:
+        update_fields["rating"] = int(body["rating"])
+    
+    if update_fields:
+        await db.customers.update_one(
+            {"_id": customer_id, "user_id": user["_id"]},
+            {"$set": update_fields}
+        )
+    
+    return {"status": "success"}
+
+@api_router.delete("/suppliers/{customer_id}")
+async def remove_supplier_tag(customer_id: str, user = Depends(get_current_user)):
+    """Remove supplier tag from a customer"""
+    await db.customers.update_one(
+        {"_id": customer_id, "user_id": user["_id"]},
+        {"$pull": {"tags": "Supplier"}, "$unset": {"supplier_category": "", "products_supplied": "", "payment_terms": "", "lead_time": "", "rating": ""}}
+    )
+    return {"status": "success"}
+
+# ============ CONTACT CLASSIFICATION ============
+
+@api_router.post("/contacts/classify")
+async def classify_contacts(background_tasks: BackgroundTasks, user = Depends(get_current_user)):
+    """Scan all contacts and classify them as customer/supplier using AI"""
+    classifier = get_classifier(db)
+    results = await classifier.classify_all_contacts(user["_id"])
+    return {
+        "classified": len(results),
+        "results": results
+    }
+
+@api_router.get("/contacts/pending")
+async def get_pending_classifications(user = Depends(get_current_user)):
+    """Get all pending AI classifications awaiting user approval"""
+    pending = await db.pending_classifications.find({
+        "user_id": user["_id"],
+        "status": "pending"
+    }).sort("confidence", -1).to_list(50)
+    
+    for p in pending:
+        p["id"] = p["_id"] if isinstance(p["_id"], str) else str(p["_id"])
+    
+    return pending
+
+@api_router.post("/contacts/{customer_id}/confirm")
+async def confirm_classification(customer_id: str, body: dict = Body(...), user = Depends(get_current_user)):
+    """
+    Confirm or reject an AI classification.
+    body: { "action": "approve" | "reject", "type": "customer" | "supplier" }
+    If approved, tags the contact accordingly. If rejected, dismisses the suggestion.
+    """
+    action = body.get("action", "approve")
+    contact_type = body.get("type", "customer")
+    
+    if action == "approve":
+        update_tags = {}
+        if contact_type == "supplier":
+            # Add Supplier tag
+            update_tags = {
+                "$addToSet": {"tags": "Supplier"},
+                "$set": {
+                    "classification_confirmed": True,
+                    "classification_type": "supplier",
+                    "classified_at": datetime.utcnow(),
+                }
+            }
+            # If AI detected a category, apply it
+            pending = await db.pending_classifications.find_one({
+                "customer_id": customer_id, "user_id": user["_id"]
+            })
+            if pending and pending.get("detected_details", {}).get("suggested_category"):
+                update_tags["$set"]["supplier_category"] = pending["detected_details"]["suggested_category"]
+            if pending and pending.get("detected_details", {}).get("products"):
+                update_tags["$set"]["products_supplied"] = pending["detected_details"]["products"]
+        else:
+            # Confirm as customer (remove Supplier tag if present)
+            update_tags = {
+                "$pull": {"tags": "Supplier"},
+                "$set": {
+                    "classification_confirmed": True,
+                    "classification_type": "customer",
+                    "classified_at": datetime.utcnow(),
+                }
+            }
+        
+        await db.customers.update_one(
+            {"_id": customer_id, "user_id": user["_id"]},
+            update_tags
+        )
+    
+    # Mark classification as handled
+    await db.pending_classifications.update_one(
+        {"customer_id": customer_id, "user_id": user["_id"]},
+        {"$set": {
+            "status": "approved" if action == "approve" else "rejected",
+            "resolved_at": datetime.utcnow(),
+        }}
+    )
+    
+    return {"status": "success", "action": action, "type": contact_type}
+
+@api_router.post("/contacts/{customer_id}/dismiss")
+async def dismiss_classification(customer_id: str, user = Depends(get_current_user)):
+    """Dismiss a pending classification without confirming"""
+    await db.pending_classifications.update_one(
+        {"customer_id": customer_id, "user_id": user["_id"]},
+        {"$set": {"status": "dismissed", "resolved_at": datetime.utcnow()}}
+    )
+    return {"status": "success"}
 
 # ============ CUSTOMER ENDPOINTS ============
 
@@ -2469,6 +2647,15 @@ async def evolution_webhook(request: Request):
                     "from_number": from_number,
                     "created_at": datetime.utcnow(),
                 })
+                
+                # Auto-classify contact in background (customer vs supplier)
+                try:
+                    classifier = get_classifier(db)
+                    asyncio.create_task(
+                        classifier.classify_single_on_message(user["_id"], customer_id)
+                    )
+                except Exception as classify_err:
+                    logging.error(f"Classification error: {classify_err}")
                 
                 # Check if customer is ordering from a catalog
                 body_lower = body.strip().lower().strip("*").strip()

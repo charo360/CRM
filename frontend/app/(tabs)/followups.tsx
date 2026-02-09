@@ -398,29 +398,24 @@ export default function FollowupsScreen() {
 
     return (
       <View key={item.id} style={[styles.followupCard, isOverdue && styles.followupCardOverdue]}>
-        <View style={styles.followupInfo}>
-          <View style={styles.followupHeader}>
-            <Ionicons
-              name={typeIcons[item.type] as any || 'notifications'}
-              size={20}
-              color={isOverdue ? '#FF4444' : (typeColors[item.type] || '#25D366')}
-            />
-            <Text style={styles.customerName}>{item.customer_name}</Text>
+        <View style={styles.followupTop}>
+          <Ionicons
+            name={typeIcons[item.type] as any || 'notifications'}
+            size={16}
+            color={isOverdue ? '#FF4444' : (typeColors[item.type] || '#25D366')}
+          />
+          <View style={styles.followupInfo}>
+            <Text style={styles.customerName} numberOfLines={1}>{item.customer_name}</Text>
+            <Text style={styles.customerPhone}>{item.customer_phone}</Text>
           </View>
-          <Text style={styles.customerPhone}>{item.customer_phone}</Text>
-          {item.message && (
-            <Text style={styles.message} numberOfLines={2}>{item.message}</Text>
-          )}
-          <View style={styles.dateRow}>
+          <View style={styles.followupDateBadge}>
             <Text style={[styles.dateText, isOverdue && styles.dateTextOverdue]}>
-              {isOverdue ? 'Overdue: ' : ''}
+              {isOverdue ? 'Overdue · ' : ''}
               {new Date(item.reminder_date).toLocaleDateString('en-KE', {
-                weekday: 'short',
                 month: 'short',
                 day: 'numeric',
               })}
-            </Text>
-            <Text style={styles.timeText}>
+              {' · '}
               {new Date(item.reminder_date).toLocaleTimeString('en-KE', {
                 hour: '2-digit',
                 minute: '2-digit',
@@ -428,30 +423,37 @@ export default function FollowupsScreen() {
             </Text>
           </View>
         </View>
+        {item.message && (
+          <Text style={styles.message} numberOfLines={1}>{item.message}</Text>
+        )}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={styles.whatsappButton}
+            style={styles.actionBtn}
             onPress={() => handleSendMessage(item.customer_id, item.customer_phone, item.customer_name, item.message)}
           >
-            <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
+            <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+            <Text style={[styles.actionBtnText, { color: '#25D366' }]}>Message</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.editButton}
+            style={styles.actionBtn}
             onPress={() => openEditModal(item)}
           >
-            <Ionicons name="create-outline" size={24} color="#4A90D9" />
+            <Ionicons name="create-outline" size={16} color="#4A90D9" />
+            <Text style={[styles.actionBtnText, { color: '#4A90D9' }]}>Edit</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.completeButton}
+            style={styles.actionBtn}
             onPress={() => handleComplete(item)}
           >
-            <Ionicons name="checkmark" size={24} color="#25D366" />
+            <Ionicons name="checkmark-circle-outline" size={16} color="#25D366" />
+            <Text style={[styles.actionBtnText, { color: '#25D366' }]}>Done</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.deleteButton}
+            style={styles.actionBtn}
             onPress={() => handleDelete(item)}
           >
-            <Ionicons name="trash-outline" size={20} color="#FF4444" />
+            <Ionicons name="trash-outline" size={16} color="#FF4444" />
+            <Text style={[styles.actionBtnText, { color: '#FF4444' }]}>Delete</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -475,90 +477,61 @@ export default function FollowupsScreen() {
 
   const renderColdCustomer = (customer: ColdCustomer) => (
     <View key={customer.id} style={styles.coldCustomerCard}>
-      <View style={styles.coldCustomerInfo}>
-        <View style={styles.coldCustomerHeader}>
-          <View style={styles.coldAvatar}>
-            <Text style={styles.coldAvatarText}>{customer.name.charAt(0)}</Text>
-          </View>
-          <View style={styles.coldCustomerDetails}>
-            <Text style={styles.coldCustomerName}>{customer.name}</Text>
-            <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
-          </View>
+      <View style={styles.coldCustomerHeader}>
+        <View style={styles.coldAvatar}>
+          <Text style={styles.coldAvatarText}>{customer.name.charAt(0)}</Text>
         </View>
-
-        {/* Urgency Badge */}
-        {customer.urgency_level && (
-          <View style={[
-            styles.urgencyBadge,
-            customer.urgency_level === 'high' && styles.urgencyBadgeHigh,
-            customer.urgency_level === 'medium' && styles.urgencyBadgeMedium,
-            customer.urgency_level === 'low' && styles.urgencyBadgeLow,
-          ]}>
-            <Text style={styles.urgencyBadgeIcon}>
-              {customer.urgency_level === 'high' ? '🔥' : customer.urgency_level === 'medium' ? '⚡' : '📋'}
-            </Text>
-            <Text style={styles.urgencyBadgeText}>
-              {customer.urgency_level === 'high' ? 'High Priority' :
-                customer.urgency_level === 'medium' ? 'Medium Priority' : 'Low Priority'}
-            </Text>
-            {customer.urgency_score !== undefined && (
-              <Text style={styles.urgencyScore}>{customer.urgency_score}</Text>
-            )}
-          </View>
-        )}
-
-        {/* AI-Generated Reason */}
-        <View style={styles.aiReasonContainer}>
-          <Ionicons name="bulb" size={14} color="#FFD700" />
-          <Text style={styles.aiReasonText}>
-            {customer.ai_reason || (customer.days_since_contact !== null
-              ? `No contact in ${customer.days_since_contact} days`
-              : 'Never contacted')}
-          </Text>
+        <View style={styles.coldCustomerDetails}>
+          <Text style={styles.coldCustomerName} numberOfLines={1}>{customer.name}</Text>
+          <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
         </View>
-
-        {customer.last_message && (
-          <Text style={styles.coldLastMessage} numberOfLines={1}>
-            Last: "{customer.last_message}"
-          </Text>
-        )}
-
-        <View style={styles.coldCustomerMeta}>
-          <Ionicons name="time-outline" size={14} color="#FF6B6B" />
+        <View style={styles.coldMetaRight}>
+          <Ionicons name="time-outline" size={12} color="#FF6B6B" />
           <Text style={styles.coldDaysText}>
             {customer.days_since_contact !== null
-              ? `${customer.days_since_contact} days ago`
+              ? `${customer.days_since_contact}d ago`
               : 'Never'}
           </Text>
-          {customer.has_pending_followup && (
-            <View style={styles.hasFollowupBadge}>
-              <Text style={styles.hasFollowupText}>Has reminder</Text>
-            </View>
-          )}
         </View>
       </View>
 
+      {/* AI-Generated Reason */}
+      <View style={styles.aiReasonContainer}>
+        <Ionicons name="bulb" size={12} color="#FFD700" />
+        <Text style={styles.aiReasonText} numberOfLines={1}>
+          {customer.ai_reason || (customer.days_since_contact !== null
+            ? `No contact in ${customer.days_since_contact} days`
+            : 'New customer - never contacted')}
+        </Text>
+        {customer.has_pending_followup && (
+          <View style={styles.hasFollowupBadge}>
+            <Text style={styles.hasFollowupText}>Reminder</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Action Bar */}
       <View style={styles.coldActions}>
         <TouchableOpacity
-          style={styles.coldWhatsappButton}
+          style={styles.coldActionBtn}
           onPress={() => handleSendMessage(customer.id, customer.phone_number, customer.name)}
         >
-          <Ionicons name="logo-whatsapp" size={22} color="#FFFFFF" />
+          <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+          <Text style={[styles.coldActionText, { color: '#25D366' }]}>Message</Text>
         </TouchableOpacity>
-
-        {/* AI Draft Button */}
         <TouchableOpacity
-          style={styles.aiDraftButton}
+          style={styles.coldActionBtn}
           onPress={() => handleShowDraftMessage(customer)}
         >
-          <Ionicons name="sparkles" size={20} color="#FFD700" />
+          <Ionicons name="sparkles" size={16} color="#FFD700" />
+          <Text style={[styles.coldActionText, { color: '#FFD700' }]}>AI Draft</Text>
         </TouchableOpacity>
-
         <TouchableOpacity
-          style={styles.addReminderButton}
+          style={styles.coldActionBtn}
           onPress={() => handleCreateFollowupFromCold(customer)}
         >
-          <Ionicons name="alarm-outline" size={20} color="#4A90D9" />
+          <Ionicons name="alarm-outline" size={16} color="#4A90D9" />
+          <Text style={[styles.coldActionText, { color: '#4A90D9' }]}>Remind</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -739,7 +712,7 @@ export default function FollowupsScreen() {
         style={styles.addButton}
         onPress={() => setShowAddModal(true)}
       >
-        <Ionicons name="add" size={30} color="#FFFFFF" />
+        <Ionicons name="add" size={22} color="#FFFFFF" />
       </TouchableOpacity>
 
 
@@ -1162,8 +1135,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   header: {
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   headerTop: {
     flexDirection: 'row',
@@ -1171,43 +1144,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
   headerSubtitle: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#25D366',
-    marginTop: 4,
+    marginTop: 2,
   },
   addButton: {
     position: 'absolute',
-    right: 20,
-    bottom: 30,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    right: 16,
+    bottom: 20,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 5,
+    elevation: 6,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 4,
     zIndex: 10,
   },
   statsRow: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginBottom: 16,
-    gap: 12,
+    paddingHorizontal: 16,
+    marginBottom: 10,
+    gap: 8,
   },
   statCard: {
     flex: 1,
     backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 10,
+    padding: 10,
     alignItems: 'center',
   },
   statCardWarning: {
@@ -1219,37 +1192,37 @@ const styles = StyleSheet.create({
     borderLeftColor: '#FF4444',
   },
   statNumber: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666',
-    marginTop: 4,
+    marginTop: 2,
   },
   tabContainer: {
     flexDirection: 'row',
-    marginHorizontal: 20,
+    marginHorizontal: 16,
     backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 12,
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 8,
   },
   tab: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 10,
-    gap: 6,
+    paddingVertical: 8,
+    borderRadius: 8,
+    gap: 4,
   },
   tabActive: {
     backgroundColor: '#25D366',
   },
   tabText: {
-    fontSize: 13,
+    fontSize: 11,
     color: '#666',
     fontWeight: '500',
   },
@@ -1257,42 +1230,42 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   filterContainer: {
-    maxHeight: 44,
-    marginBottom: 12,
+    maxHeight: 36,
+    marginBottom: 8,
   },
   filterContent: {
-    paddingHorizontal: 20,
-    gap: 8,
+    paddingHorizontal: 16,
+    gap: 6,
   },
   filterChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
     backgroundColor: '#1A2942',
-    borderRadius: 20,
-    marginRight: 8,
+    borderRadius: 14,
+    marginRight: 6,
   },
   filterChipActive: {
     backgroundColor: '#25D366',
   },
   filterText: {
     color: '#666',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
   },
   filterTextActive: {
     color: '#FFFFFF',
   },
   listContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingBottom: 100,
   },
   section: {
-    marginBottom: 24,
+    marginBottom: 16,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   sectionDot: {
     width: 8,
@@ -1301,7 +1274,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
     color: '#FFFFFF',
     flex: 1,
@@ -1315,72 +1288,67 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   followupCard: {
-    flexDirection: 'row',
     backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
   },
   followupCardOverdue: {
     borderLeftWidth: 3,
     borderLeftColor: '#FF4444',
   },
-  followupInfo: {
-    flex: 1,
-  },
-  followupHeader: {
+  followupTop: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 4,
   },
-  customerName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
+  followupInfo: {
+    flex: 1,
     marginLeft: 8,
   },
+  followupDateBadge: {
+    marginLeft: 8,
+  },
+  customerName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
   customerPhone: {
-    fontSize: 14,
+    fontSize: 11,
     color: '#666',
-    marginBottom: 4,
   },
   message: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#888',
-    marginBottom: 8,
+    marginBottom: 6,
+    marginLeft: 24,
   },
   dateText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666',
   },
   dateTextOverdue: {
     color: '#FF4444',
   },
   actions: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+    paddingTop: 8,
+    marginTop: 4,
   },
-  whatsappButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#25D366',
-    justifyContent: 'center',
+  actionBtn: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
-  },
-  completeButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#1A2942',
-    borderWidth: 2,
-    borderColor: '#25D366',
     justifyContent: 'center',
-    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
   },
-  deleteButton: {
-    padding: 8,
+  actionBtnText: {
+    fontSize: 11,
+    fontWeight: '500',
   },
   emptyContainer: {
     alignItems: 'center',
@@ -1399,33 +1367,29 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   coldCustomerCard: {
-    flexDirection: 'row',
     backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
     borderLeftWidth: 3,
     borderLeftColor: '#FF6B6B',
-  },
-  coldCustomerInfo: {
-    flex: 1,
   },
   coldCustomerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   coldAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#FF6B6B',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   coldAvatarText: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
@@ -1433,43 +1397,37 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   coldCustomerName: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '600',
     color: '#FFFFFF',
   },
   coldCustomerPhone: {
-    fontSize: 13,
+    fontSize: 11,
     color: '#666',
+  },
+  coldMetaRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
   },
   aiReasonContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 215, 0, 0.1)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+    backgroundColor: 'rgba(255, 215, 0, 0.08)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
     marginBottom: 8,
   },
   aiReasonText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#FFD700',
-    marginLeft: 6,
+    marginLeft: 5,
     flex: 1,
   },
-  coldLastMessage: {
-    fontSize: 12,
-    color: '#888',
-    fontStyle: 'italic',
-    marginBottom: 8,
-  },
-  coldCustomerMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   coldDaysText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#FF6B6B',
-    marginLeft: 4,
   },
   hasFollowupBadge: {
     backgroundColor: '#25D366',
@@ -1484,25 +1442,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   coldActions: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+    paddingTop: 8,
+    marginTop: 6,
   },
-  coldWhatsappButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#25D366',
-    justifyContent: 'center',
+  coldActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 2,
   },
-  addReminderButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(74, 144, 217, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  coldActionText: {
+    fontSize: 11,
+    fontWeight: '500',
   },
   // Modal Styles
   modalOverlay: {

@@ -6,6 +6,7 @@ export const apiClient = axios.create({
   baseURL: `${API_URL}/api`,
   headers: {
     'Content-Type': 'application/json',
+    'Bypass-Tunnel-Reminder': 'true',
   },
   timeout: 60000,
 });
@@ -15,7 +16,10 @@ const uploadFetch = async (path: string, formData: FormData) => {
   const token = apiClient.defaults.headers.common['Authorization'];
   const res = await fetch(`${API_URL}/api${path}`, {
     method: 'POST',
-    headers: token ? { 'Authorization': token as string } : {},
+    headers: {
+      'Bypass-Tunnel-Reminder': 'true',
+      ...(token ? { 'Authorization': token as string } : {}),
+    },
     body: formData,
   });
   if (!res.ok) {
@@ -241,6 +245,62 @@ export const messagesAPI = {
     const response = await apiClient.get(`/customers/${customerId}/messages`);
     return response.data;
   }
+};
+
+// ============ Contact Classification API ============
+
+export const classificationAPI = {
+  scanContacts: async () => {
+    const response = await apiClient.post('/contacts/classify');
+    return response.data;
+  },
+  getPending: async () => {
+    const response = await apiClient.get('/contacts/pending');
+    return response.data;
+  },
+  confirm: async (customerId: string, action: 'approve' | 'reject', type: 'customer' | 'supplier') => {
+    const response = await apiClient.post(`/contacts/${customerId}/confirm`, { action, type });
+    return response.data;
+  },
+  dismiss: async (customerId: string) => {
+    const response = await apiClient.post(`/contacts/${customerId}/dismiss`);
+    return response.data;
+  },
+};
+
+// ============ Suppliers API Methods ============
+
+export const suppliersAPI = {
+  getInsights: async () => {
+    const response = await apiClient.get('/suppliers/insights');
+    return response.data;
+  },
+  getSuppliers: async () => {
+    const response = await apiClient.get('/suppliers');
+    return response.data;
+  },
+  getCategories: async () => {
+    const response = await apiClient.get('/suppliers/categories');
+    return response.data;
+  },
+  tagSupplier: async (customerId: string) => {
+    const response = await apiClient.post(`/suppliers/${customerId}/tag`);
+    return response.data;
+  },
+  updateSupplier: async (customerId: string, data: {
+    supplier_category?: string;
+    products_supplied?: string[];
+    payment_terms?: string;
+    lead_time?: string;
+    rating?: number;
+  }) => {
+    const response = await apiClient.put(`/suppliers/${customerId}`, data);
+    return response.data;
+  },
+  removeSupplier: async (customerId: string) => {
+    const response = await apiClient.delete(`/suppliers/${customerId}`);
+    return response.data;
+  },
 };
 
 // ============ Products API Methods ============

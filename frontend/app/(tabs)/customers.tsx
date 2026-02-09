@@ -17,8 +17,8 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient, productsAPI, settingsAPI } from '../../context/api';
-import { useRouter } from 'expo-router';
+import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI } from '../../context/api';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
@@ -44,6 +44,34 @@ interface PhoneContact {
 
 const TAGS = ['New', 'Returning', 'VIP'];
 
+const CATEGORY_COLORS: Record<string, string> = {
+  'Electronics': '#4A90D9',
+  'Clothing': '#9B59B6',
+  'Food & Beverage': '#E67E22',
+  'Beauty & Health': '#E91E63',
+  'Home & Garden': '#27AE60',
+  'Automotive': '#607D8B',
+  'Raw Materials': '#795548',
+  'Packaging': '#00BCD4',
+  'Stationery': '#FF9800',
+  'Services': '#3F51B5',
+  'Other': '#8696A0',
+};
+
+const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
+  'Electronics': 'hardware-chip-outline',
+  'Clothing': 'shirt-outline',
+  'Food & Beverage': 'restaurant-outline',
+  'Beauty & Health': 'heart-outline',
+  'Home & Garden': 'home-outline',
+  'Automotive': 'car-outline',
+  'Raw Materials': 'cube-outline',
+  'Packaging': 'gift-outline',
+  'Stationery': 'pencil-outline',
+  'Services': 'construct-outline',
+  'Other': 'business-outline',
+};
+
 interface Message {
   id: string;
   direction: 'incoming' | 'outgoing';
@@ -53,6 +81,7 @@ interface Message {
 
 export default function CustomersScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string }>();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -62,6 +91,24 @@ export default function CustomersScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+
+  // Suppliers mode state
+  const [viewMode, setViewMode] = useState<'customers' | 'suppliers'>('customers');
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [supplierCategories, setSupplierCategories] = useState<string[]>([]);
+  const [selectedSupplierCategory, setSelectedSupplierCategory] = useState<string | null>(null);
+  const [loadingSupplierData, setLoadingSupplierData] = useState(false);
+  const [supplierDetailVisible, setSupplierDetailVisible] = useState(false);
+  const [selectedSupplier, setSelectedSupplier] = useState<any | null>(null);
+  const [editingSupplierCategory, setEditingSupplierCategory] = useState('Other');
+  const [editingPaymentTerms, setEditingPaymentTerms] = useState('');
+  const [editingLeadTime, setEditingLeadTime] = useState('');
+  const [editingRating, setEditingRating] = useState(0);
+  const [savingSupplier, setSavingSupplier] = useState(false);
+
+  // AI Classification
+  const [pendingClassifications, setPendingClassifications] = useState<any[]>([]);
+  const [scanningContacts, setScanningContacts] = useState(false);
 
   // New customer form
   const [newName, setNewName] = useState('');
@@ -143,7 +190,7 @@ export default function CustomersScreen() {
       try {
         const settings = await settingsAPI.getSettings();
         if (settings.currency) setCurrency(settings.currency);
-      } catch (e) {}
+      } catch (e) { }
     };
     loadCurrency();
   }, []);
@@ -156,10 +203,149 @@ export default function CustomersScreen() {
     return () => clearTimeout(timeoutId);
   }, [fetchCustomers]);
 
+  // Load pending classifications on mount
+  useEffect(() => {
+    fetchPendingClassifications();
+  }, [fetchPendingClassifications]);
+
+  // Handle route param from account tab
+  useEffect(() => {
+    if (params.mode === 'suppliers') {
+      setViewMode('suppliers');
+    }
+  }, [params.mode]);
+
   const handleRefresh = () => {
     setRefreshing(true);
     fetchCustomers();
+    fetchPendingClassifications();
+    if (viewMode === 'suppliers') {
+      fetchSupplierData();
+    }
   };
+
+  const fetchSupplierData = useCallback(async () => {
+    setLoadingSupplierData(true);
+    try {
+      const suppliersData = await suppliersAPI.getSuppliers();
+      setSuppliers(suppliersData);
+      setSupplierCategories(Object.keys(CATEGORY_COLORS));
+    } catch (error) {
+      console.error('Error fetching supplier data:', error);
+    } finally {
+      setLoadingSupplierData(false);
+    }
+  }, []);
+
+  const openSupplierDetail = (supplier: any) => {
+    setSelectedSupplier(supplier);
+    setEditingSupplierCategory(supplier.supplier_category || 'Other');
+    setEditingPaymentTerms(supplier.payment_terms || '');
+    setEditingLeadTime(supplier.lead_time || '');
+    setEditingRating(supplier.rating || 0);
+    setSupplierDetailVisible(true);
+  };
+
+  const saveSupplierDetails = async () => {
+    if (!selectedSupplier) return;
+    setSavingSupplier(true);
+    try {
+      await suppliersAPI.updateSupplier(selectedSupplier.id || selectedSupplier._id, {
+        supplier_category: editingSupplierCategory,
+        payment_terms: editingPaymentTerms,
+        lead_time: editingLeadTime,
+        rating: editingRating,
+      });
+      setSupplierDetailVisible(false);
+      fetchSupplierData();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to save supplier details');
+    } finally {
+      setSavingSupplier(false);
+    }
+  };
+
+  const removeSupplier = async (supplierId: string) => {
+    Alert.alert('Remove Supplier', 'This will remove the supplier tag. The contact will remain as a customer.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove', style: 'destructive', onPress: async () => {
+          try {
+            await suppliersAPI.removeSupplier(supplierId);
+            setSupplierDetailVisible(false);
+            fetchSupplierData();
+            fetchCustomers();
+          } catch (error) {
+            Alert.alert('Error', 'Failed to remove supplier');
+          }
+        }
+      }
+    ]);
+  };
+
+  // AI Classification functions
+  const fetchPendingClassifications = useCallback(async () => {
+    try {
+      const data = await classificationAPI.getPending();
+      setPendingClassifications(data || []);
+    } catch (error) {
+      console.error('Error fetching pending classifications:', error);
+    }
+  }, []);
+
+  const scanAllContacts = async () => {
+    setScanningContacts(true);
+    try {
+      await classificationAPI.scanContacts();
+      await fetchPendingClassifications();
+    } catch (error) {
+      console.error('Error scanning contacts:', error);
+    } finally {
+      setScanningContacts(false);
+    }
+  };
+
+  const confirmClassification = async (customerId: string, type: 'customer' | 'supplier') => {
+    try {
+      await classificationAPI.confirm(customerId, 'approve', type);
+      setPendingClassifications(prev => prev.filter(p => p.customer_id !== customerId));
+      fetchCustomers();
+      if (type === 'supplier') fetchSupplierData();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to confirm classification');
+    }
+  };
+
+  const dismissClassification = async (customerId: string) => {
+    try {
+      await classificationAPI.dismiss(customerId);
+      setPendingClassifications(prev => prev.filter(p => p.customer_id !== customerId));
+    } catch (error) {
+      console.error('Error dismissing classification:', error);
+    }
+  };
+
+  const filteredSuppliers = suppliers.filter(s => {
+    const matchesSearch = !searchQuery || s.name.toLowerCase().includes(searchQuery.toLowerCase()) || s.phone_number.includes(searchQuery);
+    const matchesCategory = !selectedSupplierCategory || s.supplier_category === selectedSupplierCategory;
+    return matchesSearch && matchesCategory;
+  });
+
+  const supplierCategoryCounts = suppliers.reduce((acc: Record<string, number>, s: any) => {
+    const cat = s.supplier_category || 'Other';
+    acc[cat] = (acc[cat] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  // Fetch supplier data when mode changes
+  useEffect(() => {
+    if (viewMode === 'suppliers') {
+      fetchSupplierData();
+      setNewTags(['Supplier', 'New']);
+    } else {
+      setNewTags(['New']);
+    }
+  }, [viewMode, fetchSupplierData]);
 
   const handleAddCustomer = async () => {
     if (!newName.trim() || !newPhone.trim()) {
@@ -189,6 +375,10 @@ export default function CustomersScreen() {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to add customer');
     } finally {
       setSaving(false);
+      // If we are in suppliers mode, refresh supplier data too
+      if (viewMode === 'suppliers') {
+        fetchSupplierData();
+      }
     }
   };
 
@@ -239,7 +429,7 @@ export default function CustomersScreen() {
     setNewName('');
     setNewPhone('');
     setNewNotes('');
-    setNewTags(['New']);
+    setNewTags(viewMode === 'suppliers' ? ['Supplier', 'New'] : ['New']);
     setSelectedCustomer(null);
   };
 
@@ -317,18 +507,29 @@ export default function CustomersScreen() {
       return;
     }
 
+    const isSupplierImport = viewMode === 'suppliers';
     setImportingContacts(true);
     let imported = 0;
     let failed = 0;
 
     for (const contact of selected) {
       try {
-        await apiClient.post('/customers', {
+        const tags = isSupplierImport ? ['Supplier'] : ['New'];
+        const res = await apiClient.post('/customers', {
           name: contact.name,
           phone_number: contact.phoneNumber,
-          notes: null,
-          tags: ['New'],
+          notes: isSupplierImport ? 'Imported as supplier from contacts' : null,
+          tags,
         });
+        // If importing as supplier, also mark classification as confirmed
+        if (isSupplierImport && res.data?.id) {
+          try {
+            await apiClient.put(`/customers/${res.data.id}`, {
+              classification_confirmed: true,
+              classification_type: 'supplier',
+            });
+          } catch (_) {}
+        }
         imported++;
       } catch (error) {
         failed++;
@@ -339,10 +540,12 @@ export default function CustomersScreen() {
     setContactsModalVisible(false);
     setPhoneContacts([]);
     fetchCustomers();
+    if (isSupplierImport) fetchSupplierData();
 
+    const label = isSupplierImport ? 'supplier' : 'contact';
     Alert.alert(
       'Import Complete',
-      `Successfully imported ${imported} contact${imported !== 1 ? 's' : ''}${failed > 0 ? `\n${failed} failed (may already exist)` : ''}`
+      `Successfully imported ${imported} ${label}${imported !== 1 ? 's' : ''}${failed > 0 ? `\n${failed} failed (may already exist)` : ''}`
     );
   };
 
@@ -363,11 +566,10 @@ export default function CustomersScreen() {
   };
 
   const filteredCustomers = customers.filter(c => {
-    // If search query is a "command" (handled by backend), don't filter client-side
     const queryLower = searchQuery.toLowerCase();
     if (queryLower.includes('top') || queryLower.includes('best') ||
       queryLower.includes('highest') || queryLower.includes('vip') ||
-      queryLower.includes('returning') || (queryLower.includes('new') && !queryLower.includes('news'))) { // simple check
+      queryLower.includes('returning') || (queryLower.includes('new') && !queryLower.includes('news'))) {
       return true;
     }
 
@@ -546,6 +748,7 @@ export default function CustomersScreen() {
     setCustomDirection('');
   };
 
+
   const TAG_COLORS: Record<string, string> = {
     VIP: '#FFD700',
     New: '#25D366',
@@ -636,7 +839,11 @@ export default function CustomersScreen() {
           }}>
             <Text style={styles.modalCancel}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={styles.modalTitle}>{isEdit ? 'Edit Customer' : 'Add Customer'}</Text>
+          <Text style={styles.modalTitle}>
+            {isEdit
+              ? (viewMode === 'suppliers' ? 'Edit Supplier' : 'Edit Customer')
+              : (viewMode === 'suppliers' ? 'Add Supplier' : 'Add Customer')}
+          </Text>
           <TouchableOpacity onPress={isEdit ? handleUpdateCustomer : handleAddCustomer} disabled={saving}>
             <Text style={[styles.modalSave, saving && styles.modalSaveDisabled]}>
               {saving ? 'Saving...' : 'Save'}
@@ -765,103 +972,461 @@ export default function CustomersScreen() {
   return (
     <SafeAreaView style={styles.container}>
 
-      <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search customers..."
-          placeholderTextColor="#666"
-        />
-      </View>
-
-      {/* Sorting Toggle */}
-      <View style={styles.sortContainer}>
+      {/* Customers / Suppliers Toggle */}
+      <View style={styles.viewToggle}>
         <TouchableOpacity
-          style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
-          onPress={() => setSortBy('recently_contacted')}
+          style={[styles.toggleButton, viewMode === 'customers' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('customers')}
         >
           <Ionicons
-            name="chatbubble-outline"
-            size={16}
-            color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'}
+            name="people"
+            size={18}
+            color={viewMode === 'customers' ? '#FFFFFF' : '#666'}
           />
-          <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
-            Recently Contacted
-          </Text>
+          <Text style={[styles.toggleText, viewMode === 'customers' && styles.toggleTextActive]}>Customers</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
-          onPress={() => setSortBy('recently_added')}
+          style={[styles.toggleButton, viewMode === 'suppliers' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('suppliers')}
         >
           <Ionicons
-            name="time-outline"
-            size={16}
-            color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'}
+            name="business"
+            size={18}
+            color={viewMode === 'suppliers' ? '#FFFFFF' : '#666'}
           />
-          <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
-            Recently Added
-          </Text>
+          <Text style={[styles.toggleText, viewMode === 'suppliers' && styles.toggleTextActive]}>Suppliers</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.filterContainer}>
-        <TouchableOpacity
-          style={[styles.filterChip, !selectedTag && styles.filterChipActive]}
-          onPress={() => setSelectedTag(null)}
-        >
-          <Text style={[styles.filterText, !selectedTag && styles.filterTextActive]}>All</Text>
-        </TouchableOpacity>
-        {TAGS.map((tag) => (
-          <TouchableOpacity
-            key={tag}
-            style={[styles.filterChip, selectedTag === tag && styles.filterChipActive]}
-            onPress={() => setSelectedTag(selectedTag === tag ? null : tag)}
-          >
-            <Text style={[styles.filterText, selectedTag === tag && styles.filterTextActive]}>{tag}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      <FlatList
-        data={filteredCustomers}
-        renderItem={renderCustomer}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Ionicons name="people-outline" size={64} color="#666" />
-            <Text style={styles.emptyText}>No customers yet</Text>
-            <Text style={styles.emptySubtext}>Add your first customer to get started</Text>
+      {/* ===== AI PENDING APPROVALS ===== */}
+      {pendingClassifications.length > 0 && (
+        <View style={styles.pendingBanner}>
+          <View style={styles.pendingHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="sparkles" size={16} color="#FFD700" />
+              <Text style={styles.pendingTitle}>AI Detected ({pendingClassifications.length})</Text>
+            </View>
+            <TouchableOpacity onPress={scanAllContacts} disabled={scanningContacts}>
+              <Ionicons name="refresh" size={16} color="#8899AA" />
+            </TouchableOpacity>
           </View>
-        }
-      />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+            {pendingClassifications.slice(0, 10).map((item: any) => (
+              <View key={item.customer_id} style={styles.pendingCard}>
+                <View style={styles.pendingCardTop}>
+                  <View style={[styles.pendingTypeBadge, { backgroundColor: item.suggested_type === 'supplier' ? '#4A90D920' : '#25D36620' }]}>
+                    <Ionicons
+                      name={item.suggested_type === 'supplier' ? 'business' : 'person'}
+                      size={10}
+                      color={item.suggested_type === 'supplier' ? '#4A90D9' : '#25D366'}
+                    />
+                    <Text style={[styles.pendingTypeText, { color: item.suggested_type === 'supplier' ? '#4A90D9' : '#25D366' }]}>
+                      {item.suggested_type === 'supplier' ? 'Supplier' : 'Customer'}
+                    </Text>
+                  </View>
+                  <Text style={styles.pendingConfidence}>{Math.round((item.confidence || 0) * 100)}%</Text>
+                </View>
+                <Text style={styles.pendingName} numberOfLines={1}>{item.contact_name}</Text>
+                <Text style={styles.pendingReason} numberOfLines={2}>{item.reason}</Text>
+                <View style={styles.pendingActions}>
+                  <TouchableOpacity
+                    style={styles.pendingConfirmBtn}
+                    onPress={() => confirmClassification(item.customer_id, item.suggested_type)}
+                  >
+                    <Ionicons name="checkmark" size={14} color="#FFF" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.pendingDismissBtn}
+                    onPress={() => dismissClassification(item.customer_id)}
+                  >
+                    <Ionicons name="close" size={14} color="#FF4444" />
+                  </TouchableOpacity>
+                  {item.suggested_type === 'supplier' && (
+                    <TouchableOpacity
+                      style={styles.pendingSwapBtn}
+                      onPress={() => confirmClassification(item.customer_id, 'customer')}
+                    >
+                      <Text style={styles.pendingSwapText}>Keep as Customer</Text>
+                    </TouchableOpacity>
+                  )}
+                  {item.suggested_type === 'customer' && (
+                    <TouchableOpacity
+                      style={styles.pendingSwapBtn}
+                      onPress={() => confirmClassification(item.customer_id, 'supplier')}
+                    >
+                      <Text style={styles.pendingSwapText}>Make Supplier</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
-      {/* WhatsApp-style Floating Action Button with Menu */}
-      <View style={[styles.fabContainer, { bottom: insets.bottom + 30 }]}>
-        <TouchableOpacity
-          style={styles.fabSecondary}
-          onPress={() => {
-            setContactsModalVisible(true);
-            loadPhoneContacts();
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="cloud-upload" size={22} color="#FFFFFF" />
-          <Text style={styles.fabSecondaryText}>Import</Text>
+      {/* Scan button when no pending classifications */}
+      {pendingClassifications.length === 0 && (
+        <TouchableOpacity style={styles.scanButton} onPress={scanAllContacts} disabled={scanningContacts}>
+          {scanningContacts ? (
+            <ActivityIndicator size="small" color="#FFD700" />
+          ) : (
+            <>
+              <Ionicons name="sparkles" size={14} color="#FFD700" />
+              <Text style={styles.scanButtonText}>Scan Chats to Classify Contacts</Text>
+            </>
+          )}
         </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => setModalVisible(true)}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="add" size={28} color="#FFFFFF" />
-        </TouchableOpacity>
-      </View>
+      )}
+
+      {/* ===== SUPPLIER MODE ===== */}
+      {viewMode === 'suppliers' ? (
+        <>
+          {/* Supplier Stats Bar */}
+          <View style={styles.supplierStatsBar}>
+            <View style={styles.supplierStatItem}>
+              <Text style={styles.supplierStatValue}>{suppliers.length}</Text>
+              <Text style={styles.supplierStatLabel}>Total</Text>
+            </View>
+            <View style={styles.supplierStatDivider} />
+            <View style={styles.supplierStatItem}>
+              <Text style={styles.supplierStatValue}>{Object.keys(supplierCategoryCounts).length}</Text>
+              <Text style={styles.supplierStatLabel}>Categories</Text>
+            </View>
+            <View style={styles.supplierStatDivider} />
+            <View style={styles.supplierStatItem}>
+              <Text style={[styles.supplierStatValue, { color: '#FFD700' }]}>
+                {suppliers.filter(s => s.rating >= 4).length}
+              </Text>
+              <Text style={styles.supplierStatLabel}>Top Rated</Text>
+            </View>
+          </View>
+
+          {/* Search */}
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search suppliers..."
+              placeholderTextColor="#666"
+            />
+          </View>
+
+          {/* Category Filter Chips */}
+          <View style={{ height: 38, marginBottom: 8 }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6, alignItems: 'center' }}>
+              <TouchableOpacity
+                style={[styles.filterChip, !selectedSupplierCategory && styles.filterChipActive]}
+                onPress={() => setSelectedSupplierCategory(null)}
+              >
+                <Text style={[styles.filterText, !selectedSupplierCategory && styles.filterTextActive]}>All</Text>
+              </TouchableOpacity>
+              {Object.entries(supplierCategoryCounts).map(([cat, count]) => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[styles.filterChip, selectedSupplierCategory === cat && styles.filterChipActive]}
+                  onPress={() => setSelectedSupplierCategory(selectedSupplierCategory === cat ? null : cat)}
+                >
+                  <Text style={[styles.filterText, selectedSupplierCategory === cat && styles.filterTextActive]}>
+                    {cat} ({count})
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+
+          {/* Supplier List */}
+          {loadingSupplierData ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#25D366" />
+            </View>
+          ) : (
+            <FlatList
+              data={filteredSuppliers}
+              keyExtractor={(item) => item.id || item._id}
+              contentContainerStyle={styles.listContent}
+              refreshControl={
+                <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
+              }
+              renderItem={({ item }) => (
+                <TouchableOpacity style={styles.supplierCard} onPress={() => openSupplierDetail(item)}>
+                  <View style={styles.supplierCardLeft}>
+                    <View style={[styles.supplierAvatar, { backgroundColor: CATEGORY_COLORS[item.supplier_category] || '#4A90D9' }]}>
+                      <Ionicons name={CATEGORY_ICONS[item.supplier_category] || ('business' as keyof typeof Ionicons.glyphMap)} size={18} color="#FFF" />
+                    </View>
+                    <View style={styles.supplierCardInfo}>
+                      <Text style={styles.supplierCardName} numberOfLines={1}>{item.name}</Text>
+                      <Text style={styles.supplierCardPhone}>{item.phone_number}</Text>
+                      <View style={styles.supplierCardMeta}>
+                        <View style={[styles.supplierCategoryBadge, { backgroundColor: (CATEGORY_COLORS[item.supplier_category] || '#4A90D9') + '30' }]}>
+                          <Text style={[styles.supplierCategoryText, { color: CATEGORY_COLORS[item.supplier_category] || '#4A90D9' }]}>{item.supplier_category || 'Other'}</Text>
+                        </View>
+                        {item.rating > 0 && (
+                          <View style={styles.supplierRatingRow}>
+                            {[1, 2, 3, 4, 5].map(star => (
+                              <Ionicons key={star} name={star <= item.rating ? 'star' : 'star-outline'} size={12} color="#FFD700" />
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.supplierWhatsappBtn}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      router.push({ pathname: '/chat', params: { customerId: item.id || item._id, customerName: item.name, customerPhone: item.phone_number } });
+                    }}
+                  >
+                    <Ionicons name="chatbubble-ellipses" size={18} color="#25D366" />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="business-outline" size={64} color="#4A90D9" />
+                  <Text style={styles.emptyText}>No suppliers yet</Text>
+                  <Text style={styles.emptySubtext}>Add suppliers from your contacts to track who you buy from</Text>
+                </View>
+              }
+            />
+          )}
+
+          {/* Supplier FABs */}
+          <View style={[styles.fabContainer, { bottom: 20 }]}>
+            <TouchableOpacity
+              style={styles.fabSecondary}
+              onPress={() => {
+                setContactsModalVisible(true);
+                loadPhoneContacts();
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="people" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.fab}
+              onPress={() => setModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Supplier Detail Modal */}
+          <Modal
+            visible={supplierDetailVisible}
+            animationType="slide"
+            presentationStyle="pageSheet"
+            onRequestClose={() => setSupplierDetailVisible(false)}
+          >
+            <SafeAreaView style={styles.modalContainer}>
+              <View style={styles.modalHeader}>
+                <TouchableOpacity onPress={() => setSupplierDetailVisible(false)}>
+                  <Text style={styles.modalCancel}>Close</Text>
+                </TouchableOpacity>
+                <Text style={styles.modalTitle}>Supplier Details</Text>
+                <TouchableOpacity onPress={saveSupplierDetails} disabled={savingSupplier}>
+                  <Text style={[styles.modalSave, savingSupplier && styles.modalSaveDisabled]}>
+                    {savingSupplier ? 'Saving...' : 'Save'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
+                {selectedSupplier && (
+                  <>
+                    {/* Supplier Header */}
+                    <View style={styles.supplierDetailHeader}>
+                      <View style={[styles.supplierDetailAvatar, { backgroundColor: CATEGORY_COLORS[editingSupplierCategory] || '#4A90D9' }]}>
+                        <Text style={styles.supplierDetailAvatarText}>{selectedSupplier.name?.charAt(0)?.toUpperCase()}</Text>
+                      </View>
+                      <Text style={styles.supplierDetailName}>{selectedSupplier.name}</Text>
+                      <Text style={styles.supplierDetailPhone}>{selectedSupplier.phone_number}</Text>
+                    </View>
+
+                    {/* Category */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Category</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                        {supplierCategories.map(cat => (
+                          <TouchableOpacity
+                            key={cat}
+                            style={[styles.supplierCatChip, editingSupplierCategory === cat && styles.supplierCatChipActive]}
+                            onPress={() => setEditingSupplierCategory(cat)}
+                          >
+                            <Ionicons name={CATEGORY_ICONS[cat] || ('business' as keyof typeof Ionicons.glyphMap)} size={14} color={editingSupplierCategory === cat ? '#FFF' : '#888'} />
+                            <Text style={[styles.supplierCatChipText, editingSupplierCategory === cat && styles.supplierCatChipTextActive]}>{cat}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+
+                    {/* Rating */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Rating</Text>
+                      <View style={styles.ratingRow}>
+                        {[1, 2, 3, 4, 5].map(star => (
+                          <TouchableOpacity key={star} onPress={() => setEditingRating(star === editingRating ? 0 : star)}>
+                            <Ionicons name={star <= editingRating ? 'star' : 'star-outline'} size={28} color="#FFD700" style={{ marginRight: 6 }} />
+                          </TouchableOpacity>
+                        ))}
+                        {editingRating > 0 && <Text style={styles.ratingLabel}>{editingRating}/5</Text>}
+                      </View>
+                    </View>
+
+                    {/* Payment Terms */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Payment Terms</Text>
+                      <TextInput
+                        style={styles.supplierDetailInput}
+                        value={editingPaymentTerms}
+                        onChangeText={setEditingPaymentTerms}
+                        placeholder="e.g. Net 30, Cash on delivery, 50% upfront"
+                        placeholderTextColor="#555"
+                      />
+                    </View>
+
+                    {/* Lead Time */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Lead Time</Text>
+                      <TextInput
+                        style={styles.supplierDetailInput}
+                        value={editingLeadTime}
+                        onChangeText={setEditingLeadTime}
+                        placeholder="e.g. 3-5 days, Same day, 2 weeks"
+                        placeholderTextColor="#555"
+                      />
+                    </View>
+
+                    {/* Quick Actions */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Quick Actions</Text>
+                      <TouchableOpacity
+                        style={styles.supplierActionBtn}
+                        onPress={() => {
+                          setSupplierDetailVisible(false);
+                          router.push({ pathname: '/chat', params: { customerId: selectedSupplier.id || selectedSupplier._id, customerName: selectedSupplier.name, customerPhone: selectedSupplier.phone_number } });
+                        }}
+                      >
+                        <Ionicons name="chatbubble-ellipses" size={20} color="#25D366" />
+                        <Text style={styles.supplierActionBtnText}>Message on WhatsApp</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.supplierActionBtn, { borderColor: '#FF4444' }]}
+                        onPress={() => removeSupplier(selectedSupplier.id || selectedSupplier._id)}
+                      >
+                        <Ionicons name="trash-outline" size={20} color="#FF4444" />
+                        <Text style={[styles.supplierActionBtnText, { color: '#FF4444' }]}>Remove Supplier</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+              </ScrollView>
+            </SafeAreaView>
+          </Modal>
+        </>
+      ) : (
+        <>
+          {/* ===== CUSTOMER MODE ===== */}
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search customers..."
+              placeholderTextColor="#666"
+            />
+          </View>
+
+          {/* Sorting Toggle */}
+          <View style={styles.sortContainer}>
+            <TouchableOpacity
+              style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
+              onPress={() => setSortBy('recently_contacted')}
+            >
+              <Ionicons
+                name="chatbubble-outline"
+                size={16}
+                color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'}
+              />
+              <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
+                Recently Contacted
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
+              onPress={() => setSortBy('recently_added')}
+            >
+              <Ionicons
+                name="time-outline"
+                size={16}
+                color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'}
+              />
+              <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
+                Recently Added
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.filterContainer}>
+            <TouchableOpacity
+              style={[styles.filterChip, !selectedTag && styles.filterChipActive]}
+              onPress={() => setSelectedTag(null)}
+            >
+              <Text style={[styles.filterText, !selectedTag && styles.filterTextActive]}>All</Text>
+            </TouchableOpacity>
+            {TAGS.map((tag) => (
+              <TouchableOpacity
+                key={tag}
+                style={[styles.filterChip, selectedTag === tag && styles.filterChipActive]}
+                onPress={() => setSelectedTag(selectedTag === tag ? null : tag)}
+              >
+                <Text style={[styles.filterText, selectedTag === tag && styles.filterTextActive]}>{tag}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <FlatList
+            data={filteredCustomers}
+            renderItem={renderCustomer}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <Ionicons name="people-outline" size={64} color="#666" />
+                <Text style={styles.emptyText}>No customers yet</Text>
+                <Text style={styles.emptySubtext}>Add your first customer to get started</Text>
+              </View>
+            }
+          />
+
+          {/* WhatsApp-style Floating Action Button with Menu */}
+          <View style={[styles.fabContainer, { bottom: 20 }]}>
+            <TouchableOpacity
+              style={styles.fabSecondary}
+              onPress={() => {
+                setContactsModalVisible(true);
+                loadPhoneContacts();
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="people" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.fab}
+              onPress={() => setModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
 
       {renderModal(false)}
       {renderModal(true)}
@@ -1164,7 +1729,7 @@ export default function CustomersScreen() {
             }}>
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>Import Contacts</Text>
+            <Text style={styles.modalTitle}>{viewMode === 'suppliers' ? 'Import Suppliers' : 'Import Contacts'}</Text>
             <TouchableOpacity onPress={importSelectedContacts} disabled={importingContacts || selectedCount === 0}>
               <Text style={[styles.modalSave, (importingContacts || selectedCount === 0) && styles.modalSaveDisabled]}>
                 {importingContacts ? 'Importing...' : `Import (${selectedCount})`}
@@ -1252,11 +1817,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
@@ -1268,25 +1833,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1A2942',
-    marginHorizontal: 20,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    marginBottom: 12,
+    marginHorizontal: 16,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
   },
   searchIcon: {
-    marginRight: 12,
+    marginRight: 8,
   },
   searchInput: {
     flex: 1,
-    height: 48,
-    fontSize: 16,
+    height: 38,
+    fontSize: 14,
     color: '#FFFFFF',
   },
   sortContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginBottom: 12,
-    gap: 8,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    gap: 6,
   },
   sortButton: {
     flex: 1,
@@ -1294,16 +1859,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#1A2942',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 4,
   },
   sortButtonActive: {
     backgroundColor: '#25D366',
   },
   sortText: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '500',
     color: '#666',
   },
@@ -1312,22 +1877,22 @@ const styles = StyleSheet.create({
   },
   filterContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    marginBottom: 10,
   },
   filterChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
     backgroundColor: '#1A2942',
-    borderRadius: 20,
-    marginRight: 8,
+    borderRadius: 14,
+    marginRight: 6,
   },
   filterChipActive: {
     backgroundColor: '#25D366',
   },
   filterText: {
     color: '#666',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
   },
   filterTextActive: {
@@ -1535,36 +2100,36 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   fab: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 8,
+    elevation: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
   },
   fabContainer: {
     position: 'absolute',
-    right: 24,
+    right: 16,
     alignItems: 'flex-end',
-    gap: 12,
+    gap: 10,
   },
   fabSecondary: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: '#4A90D9',
-    borderRadius: 25,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
     elevation: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
-    shadowRadius: 6,
+    shadowRadius: 4,
   },
   fabSecondaryText: {
     color: '#FFFFFF',
@@ -1938,5 +2503,350 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 15,
     fontWeight: '700',
+  },
+  // Suppliers mode styles
+  viewToggle: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    padding: 3,
+  },
+  toggleButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 4,
+  },
+  toggleButtonActive: {
+    backgroundColor: '#25D366',
+  },
+  toggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+  },
+  toggleTextActive: {
+    color: '#FFFFFF',
+  },
+  // Supplier Stats Bar
+  supplierStatsBar: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+  },
+  supplierStatItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  supplierStatValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  supplierStatLabel: {
+    fontSize: 10,
+    color: '#8899AA',
+    marginTop: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  supplierStatDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: '#2A3F5F',
+  },
+  // Supplier Card
+  supplierCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1A2942',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 10,
+    padding: 12,
+  },
+  supplierCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  supplierAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  supplierCardInfo: {
+    flex: 1,
+  },
+  supplierCardName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 1,
+  },
+  supplierCardPhone: {
+    fontSize: 12,
+    color: '#8899AA',
+    marginBottom: 4,
+  },
+  supplierCardMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  supplierCategoryBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  supplierCategoryText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  supplierRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 1,
+  },
+  supplierWhatsappBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(37, 211, 102, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Supplier Detail Modal
+  modalBody: {
+    flex: 1,
+    padding: 20,
+  },
+  supplierDetailHeader: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  supplierDetailAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  supplierDetailAvatarText: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  supplierDetailName: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  supplierDetailPhone: {
+    fontSize: 14,
+    color: '#8899AA',
+  },
+  supplierDetailSection: {
+    marginBottom: 20,
+  },
+  supplierDetailLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8899AA',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  supplierDetailInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#FFFFFF',
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#2A3F5F',
+  },
+  supplierCatChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1A2942',
+    borderWidth: 1,
+    borderColor: '#2A3F5F',
+    gap: 4,
+  },
+  supplierCatChipActive: {
+    backgroundColor: '#25D366',
+    borderColor: '#25D366',
+  },
+  supplierCatChipText: {
+    fontSize: 12,
+    color: '#888',
+    fontWeight: '500',
+  },
+  supplierCatChipTextActive: {
+    color: '#FFFFFF',
+  },
+  ratingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  ratingLabel: {
+    color: '#FFD700',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  supplierActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#25D366',
+    marginBottom: 10,
+  },
+  supplierActionBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#25D366',
+  },
+  // AI Pending Approvals
+  pendingBanner: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    padding: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FFD700',
+  },
+  pendingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  pendingTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFD700',
+  },
+  pendingCard: {
+    width: 160,
+    backgroundColor: '#0F1D32',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#2A3F5F',
+  },
+  pendingCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  pendingTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    gap: 3,
+  },
+  pendingTypeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  pendingConfidence: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#8899AA',
+  },
+  pendingName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  pendingReason: {
+    fontSize: 10,
+    color: '#8899AA',
+    marginBottom: 8,
+    lineHeight: 14,
+  },
+  pendingActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pendingConfirmBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingDismissBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#FF444420',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingSwapBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: '#2A3F5F',
+  },
+  pendingSwapText: {
+    fontSize: 9,
+    color: '#8899AA',
+    fontWeight: '500',
+  },
+  scanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingVertical: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFD70040',
+  },
+  scanButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFD700',
   },
 });

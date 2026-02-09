@@ -764,7 +764,7 @@ export default function BroadcastScreen() {
         onPress={() => setModalVisible(true)}
         activeOpacity={0.8}
       >
-        <Ionicons name="add" size={28} color="#FFFFFF" />
+        <Ionicons name="add" size={22} color="#FFFFFF" />
       </TouchableOpacity>
 
       {/* Main Broadcast Modal */}
@@ -1422,17 +1422,17 @@ export default function BroadcastScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A1628' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { padding: 20 },
-  headerTitle: { fontSize: 28, fontWeight: 'bold', color: '#FFFFFF' },
-  headerSubtitle: { color: '#666' },
-  statsRow: { flexDirection: 'row', paddingHorizontal: 20, gap: 12, marginBottom: 16 },
-  statCard: { flex: 1, backgroundColor: '#1A2942', padding: 16, borderRadius: 12, alignItems: 'center' },
-  statValue: { fontSize: 24, fontWeight: 'bold', color: '#25D366' },
-  statLabel: { color: '#666', fontSize: 12 },
-  listContent: { padding: 20 },
-  broadcastCard: { backgroundColor: '#1A2942', padding: 16, borderRadius: 12, marginBottom: 12 },
+  header: { paddingHorizontal: 16, paddingVertical: 10 },
+  headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' },
+  headerSubtitle: { color: '#666', fontSize: 12 },
+  statsRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 10 },
+  statCard: { flex: 1, backgroundColor: '#1A2942', padding: 10, borderRadius: 10, alignItems: 'center' },
+  statValue: { fontSize: 20, fontWeight: 'bold', color: '#25D366' },
+  statLabel: { color: '#666', fontSize: 11 },
+  listContent: { padding: 16 },
+  broadcastCard: { backgroundColor: '#1A2942', padding: 12, borderRadius: 10, marginBottom: 10 },
   broadcastHeader: { flexDirection: 'row', marginBottom: 12 },
-  broadcastIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#0A1628', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  broadcastIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#0A1628', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
   broadcastInfo: { flex: 1 },
   broadcastDate: { color: '#FFF', fontWeight: '600', marginBottom: 4 },
   statusRow: { flexDirection: 'row', alignItems: 'center' },
@@ -1442,7 +1442,7 @@ const styles = StyleSheet.create({
   statusText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   recipientCount: { color: '#666', fontSize: 12 },
   broadcastMessage: { color: '#CCD6E0' },
-  fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: '#25D366', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6 },
+  fab: { position: 'absolute', bottom: 20, right: 16, width: 46, height: 46, borderRadius: 23, backgroundColor: '#25D366', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 6 },
 
   // Modal Styles
   modalContainer: { flex: 1, backgroundColor: '#0A1628' },
@@ -1451,18 +1451,18 @@ const styles = StyleSheet.create({
   modalCancel: { color: '#FF4444', fontSize: 16 },
   modalSave: { color: '#25D366', fontSize: 16, fontWeight: 'bold' },
   modalSaveDisabled: { opacity: 0.5 },
-  modalContent: { padding: 20 },
+  modalContent: { padding: 16 },
 
-  formGroup: { marginBottom: 24 },
+  formGroup: { marginBottom: 18 },
   labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  formLabel: { color: '#FFF', fontSize: 16, fontWeight: '600', marginBottom: 8 },
-  formInput: { backgroundColor: '#1A2942', borderRadius: 8, padding: 12, color: '#FFF', fontSize: 16 },
-  messageInput: { backgroundColor: '#1A2942', borderRadius: 8, padding: 12, color: '#FFF', fontSize: 16, minHeight: 100 },
+  formLabel: { color: '#FFF', fontSize: 14, fontWeight: '600', marginBottom: 6 },
+  formInput: { backgroundColor: '#1A2942', borderRadius: 8, padding: 10, color: '#FFF', fontSize: 14 },
+  messageInput: { backgroundColor: '#1A2942', borderRadius: 8, padding: 10, color: '#FFF', fontSize: 14, minHeight: 80 },
   charCount: { color: '#666', fontSize: 12, textAlign: 'right', marginTop: 4 },
 
   // Filters & Groups
   filtersScroll: { flexDirection: 'row', marginBottom: 8 },
-  filterOption: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A2942', padding: 10, borderRadius: 20, marginRight: 8 },
+  filterOption: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A2942', padding: 8, borderRadius: 14, marginRight: 6 },
   filterOptionSelected: { backgroundColor: '#25D366' },
   filterOptionText: { color: '#666', marginLeft: 6, fontWeight: '500' },
   filterOptionTextSelected: { color: '#FFF' },

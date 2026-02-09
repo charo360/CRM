@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, settingsAPI, whatsappAPI } from '../../context/api';
+
 import { NotificationHandler } from '../../utils/notification-handler';
 
 interface SubscriptionPlan {
@@ -70,6 +71,7 @@ export default function AccountScreen() {
   const [pulsePreview, setPulsePreview] = useState<string | null>(null);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
+
   const [sendingPulse, setSendingPulse] = useState(false);
 
   const { user, logout, refreshUser } = useAuth();
@@ -430,6 +432,24 @@ export default function AccountScreen() {
           )
         }
 
+        {/* Smart Sourcing Agent - Prominent Access */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Smart Sourcing</Text>
+          <TouchableOpacity
+            style={styles.businessCard} // Reusing business card style for consistency
+            onPress={() => router.push('/(tabs)/customers?mode=suppliers')}
+          >
+            <View style={[styles.businessAvatar, { backgroundColor: '#4A90D9' }]}>
+              <Ionicons name="cube" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.businessInfo}>
+              <Text style={styles.businessName}>Sourcing Agent</Text>
+              <Text style={styles.businessPhone}>Manage suppliers & inventory alerts</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={24} color="#666" />
+          </TouchableOpacity>
+        </View>
+
         {/* Subscription Plans */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Subscription Plans</Text>
@@ -476,7 +496,7 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Settings</Text>
           <View style={styles.settingsCard}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.settingItem}
               onPress={() => router.push('../analytics' as any)}
             >
@@ -499,7 +519,7 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Auto Reply</Text>
               <Switch
                 value={false}
-                onValueChange={() => {}}
+                onValueChange={() => { }}
                 trackColor={{ false: '#3e3e3e', true: '#25D366' }}
                 thumbColor="#f4f3f4"
               />
@@ -509,7 +529,7 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Notifications</Text>
               <Switch
                 value={true}
-                onValueChange={() => {}}
+                onValueChange={() => { }}
                 trackColor={{ false: '#3e3e3e', true: '#25D366' }}
                 thumbColor="#f4f3f4"
               />
@@ -652,7 +672,8 @@ export default function AccountScreen() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
-    </SafeAreaView>
+
+    </SafeAreaView >
   );
 }
 
@@ -670,50 +691,50 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   header: {
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
   section: {
-    paddingHorizontal: 20,
-    marginBottom: 24,
+    paddingHorizontal: 16,
+    marginBottom: 16,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
     color: '#FFFFFF',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   businessCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1A2942',
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 12,
+    padding: 12,
   },
   businessAvatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
   },
   businessAvatarText: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
   businessInfo: {
     flex: 1,
-    marginLeft: 16,
+    marginLeft: 12,
   },
   businessName: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
   },
@@ -745,32 +766,32 @@ const styles = StyleSheet.create({
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 8,
   },
   statCard: {
     flex: 1,
     minWidth: '45%',
     backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 10,
+    padding: 10,
     alignItems: 'center',
   },
   statValue: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 'bold',
     color: '#FFFFFF',
-    marginTop: 8,
+    marginTop: 6,
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666',
-    marginTop: 4,
+    marginTop: 2,
   },
   planCard: {
     backgroundColor: '#1A2942',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 12,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
   },
   planCardActive: {
     borderWidth: 2,
@@ -780,20 +801,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 10,
   },
   planName: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
   },
   planPrice: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
     color: '#25D366',
   },
   planFeatures: {
-    marginBottom: 16,
+    marginBottom: 10,
   },
   featureRow: {
     flexDirection: 'row',
@@ -801,7 +822,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   featureText: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#888',
     marginLeft: 8,
   },
@@ -829,34 +850,34 @@ const styles = StyleSheet.create({
   },
   settingsCard: {
     backgroundColor: '#1A2942',
-    borderRadius: 16,
+    borderRadius: 12,
     overflow: 'hidden',
   },
   settingItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
+    padding: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#0A1628',
   },
   settingText: {
     flex: 1,
-    fontSize: 16,
+    fontSize: 14,
     color: '#FFFFFF',
-    marginLeft: 12,
+    marginLeft: 10,
   },
   logoutButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginHorizontal: 20,
+    marginHorizontal: 16,
     backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 10,
+    padding: 12,
     marginTop: 8,
   },
   logoutText: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
     color: '#FF4444',
     marginLeft: 8,
