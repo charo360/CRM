@@ -7,6 +7,7 @@ import os
 import logging
 import asyncio
 import httpx
+import random
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 import uuid
@@ -28,6 +29,28 @@ PLAN_MESSAGE_LIMITS = {
 # Rate limiting
 DAILY_MESSAGE_LIMIT = 500  # Max messages per user per day (WhatsApp safety)
 BROADCAST_COOLDOWN_HOURS = 24  # Min hours between broadcasts
+
+# ============ HUMAN BEHAVIOR SETTINGS (anti-ban) ============
+# These make automated messages look human to WhatsApp's detection systems.
+# All delays are in seconds. Ranges are (min, max) for random selection.
+
+# Typing speed: average human types 30-50 WPM on phone, ~5-8 chars/sec
+TYPING_CHARS_PER_SECOND = (4, 7)
+
+# Read delay: time between receiving a message and starting to type
+AUTO_REPLY_READ_DELAY = (8, 45)     # For auto-replies (AI responses)
+ORDER_CONFIRM_READ_DELAY = (3, 10)  # For order confirmations
+MANUAL_SEND_READ_DELAY = (1, 3)     # For manual sends from app (user is waiting)
+
+# Typing pause: humans pause mid-typing (thinking, correcting)
+TYPING_PAUSE_CHANCE = 0.7           # 70% chance of a pause per slot
+TYPING_PAUSE_DURATION = (1.5, 4.0)  # How long each pause lasts
+
+# Broadcast delays: time between each broadcast message
+BROADCAST_DELAY = (15, 45)          # Random delay between broadcast sends
+
+# Max typing indicator duration (WhatsApp resets typing after ~25s)
+MAX_TYPING_DURATION = 22
 
 
 class WhatsAppService:
@@ -304,6 +327,80 @@ class WhatsAppService:
             "plan": plan,
         }
 
+    # ============ HUMAN BEHAVIOR (anti-ban) ============
+
+    async def _send_presence(self, instance_name: str, to_number: str, presence: str = "composing"):
+        """Send typing/presence indicator via Evolution API.
+        presence: 'composing' (typing...) or 'paused' (stopped typing)
+        """
+        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"{self.base_url}/chat/sendPresence/{instance_name}",
+                    headers=self._headers(),
+                    json={
+                        "number": clean_to,
+                        "options": {
+                            "presence": presence,
+                        }
+                    },
+                )
+        except Exception as e:
+            logger.debug(f"Presence send failed (non-critical): {e}")
+
+    async def _simulate_typing(self, instance_name: str, to_number: str, message: str):
+        """Simulate realistic human typing with pauses before sending a message."""
+        msg_len = len(message)
+        if msg_len == 0:
+            return
+
+        # Calculate typing time based on message length
+        chars_per_sec = random.uniform(*TYPING_CHARS_PER_SECOND)
+        base_typing_time = msg_len / chars_per_sec
+        base_typing_time = min(base_typing_time, 55)  # Cap at ~1 min
+        base_typing_time = max(base_typing_time, 1.5)  # Min so it's not instant
+
+        # Determine pause slots for longer messages
+        num_pauses = 0
+        if msg_len > 80:
+            num_pauses = 1
+        if msg_len > 200:
+            num_pauses = 2
+
+        # Build typing schedule: list of (action, duration)
+        schedule = []
+        if num_pauses == 0:
+            schedule.append(("composing", base_typing_time))
+        else:
+            chunk_time = base_typing_time / (num_pauses + 1)
+            for i in range(num_pauses + 1):
+                schedule.append(("composing", chunk_time))
+                if i < num_pauses and random.random() < TYPING_PAUSE_CHANCE:
+                    pause_dur = random.uniform(*TYPING_PAUSE_DURATION)
+                    schedule.append(("paused", pause_dur))
+
+        # Execute the typing schedule
+        for action, duration in schedule:
+            await self._send_presence(instance_name, to_number, action)
+            if action == "composing":
+                # WhatsApp resets typing after ~25s, re-send if needed
+                remaining = duration
+                while remaining > 0:
+                    wait = min(remaining, MAX_TYPING_DURATION - 1)
+                    await asyncio.sleep(wait)
+                    remaining -= wait
+                    if remaining > 0:
+                        await self._send_presence(instance_name, to_number, "composing")
+            else:
+                await asyncio.sleep(duration)
+
+    async def _human_delay(self, delay_range: tuple):
+        """Wait a random duration within the given range (simulates reading/thinking)."""
+        delay = random.uniform(*delay_range)
+        logger.info(f"Human behavior: waiting {delay:.1f}s before typing")
+        await asyncio.sleep(delay)
+
     # ============ MESSAGING ============
 
     async def send_message(
@@ -313,11 +410,15 @@ class WhatsAppService:
         message: str,
         customer_name: Optional[str] = None,
         media_url: Optional[str] = None,
+        send_context: str = "manual",
     ) -> Dict:
         """
         Send a WhatsApp message via Evolution API.
         Auto-creates customer contact if needed.
         Enforces rate limits.
+        Simulates human behavior (typing + delays) to prevent bans.
+        
+        send_context: 'manual' | 'auto_reply' | 'order_confirm' | 'broadcast'
         """
         try:
             # Check rate limits
@@ -337,6 +438,21 @@ class WhatsAppService:
 
             # Format recipient number for Evolution API (digits only, no +)
             clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+
+            # --- Human behavior: "read" delay then typing simulation ---
+            try:
+                if send_context == "auto_reply":
+                    await self._human_delay(AUTO_REPLY_READ_DELAY)
+                elif send_context == "order_confirm":
+                    await self._human_delay(ORDER_CONFIRM_READ_DELAY)
+                elif send_context == "broadcast":
+                    pass  # Broadcast delay handled in _process_broadcast
+                else:
+                    await self._human_delay(MANUAL_SEND_READ_DELAY)
+
+                await self._simulate_typing(instance_name, to_number, message)
+            except Exception as e:
+                logger.debug(f"Human behavior simulation error (non-critical): {e}")
 
             # Step 1: Find or create customer
             customer = await self.db.customers.find_one({
@@ -556,6 +672,7 @@ class WhatsAppService:
                     to_number=phone,
                     message=message,
                     media_url=media_url,
+                    send_context="broadcast",
                 )
                 if result.get("status") == "success":
                     sent += 1
@@ -571,8 +688,10 @@ class WhatsAppService:
                 {"$set": {"sent": sent, "failed": failed}}
             )
 
-            # 10-second delay between messages
-            await asyncio.sleep(10)
+            # Randomized delay between broadcast messages (human-like spacing)
+            delay = random.uniform(*BROADCAST_DELAY)
+            logger.info(f"Broadcast delay: {delay:.1f}s before next recipient")
+            await asyncio.sleep(delay)
 
         # Mark broadcast complete
         await self.db.broadcasts.update_one(
