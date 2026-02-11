@@ -768,6 +768,8 @@ class WhatsAppService:
         if not contact_number or not body:
             return
 
+        evo_msg_id = key.get("id", "")
+
         return {
             "user": user,
             "from_number": contact_number,
@@ -775,6 +777,7 @@ class WhatsAppService:
             "push_name": push_name,
             "remote_jid": remote_jid,
             "from_me": from_me,
+            "evo_message_id": evo_msg_id,
         }
 
     async def handle_message_update(self, instance_name: str, data: Dict):

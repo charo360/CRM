@@ -3143,8 +3143,20 @@ async def evolution_webhook(request: Request):
             
             # Store message (both incoming and outgoing)
             if customer_id and body:
+                evo_msg_id = parsed.get("evo_message_id", "")
+                
+                # For outgoing messages, check if already stored by send_message()
+                # (auto-replies and manual sends store the message before the webhook arrives)
+                if from_me and evo_msg_id:
+                    existing = await db.messages.find_one({
+                        "evo_message_id": evo_msg_id,
+                        "user_id": user["_id"],
+                    })
+                    if existing:
+                        return {"status": "ok"}
+                
                 message_id = str(uuid.uuid4())
-                await db.messages.insert_one({
+                msg_doc = {
                     "_id": message_id,
                     "customer_id": customer_id,
                     "user_id": user["_id"],
@@ -3153,7 +3165,10 @@ async def evolution_webhook(request: Request):
                     "message_type": "text",
                     "from_number": from_number,
                     "created_at": datetime.utcnow(),
-                })
+                }
+                if evo_msg_id:
+                    msg_doc["evo_message_id"] = evo_msg_id
+                await db.messages.insert_one(msg_doc)
                 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
