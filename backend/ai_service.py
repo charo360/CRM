@@ -123,6 +123,15 @@ class AIMessageDrafter:
         # Build context from customer data
         context = self._build_customer_context(customer_name, customer_data, messages)
         
+        # Load conversation memory for this customer
+        conversation_memory = ""
+        cid = customer_id or customer_data.get("_id", "")
+        if db is not None and cid:
+            mem_doc = await db.conversation_memory.find_one({"customer_id": cid})
+            if mem_doc and mem_doc.get("summary"):
+                conversation_memory = mem_doc["summary"]
+                context['conversation_memory'] = conversation_memory
+        
         # Learn user's writing style if user_id and db are provided
         user_style = {"style": tone, "patterns": []}
         if user_id and db is not None:
@@ -133,7 +142,6 @@ class AIMessageDrafter:
         # Find similar past answers from other customers
         past_answers_context = ""
         incoming_msg = messages[-1].get("content", "") if messages and messages[-1].get("direction") == "incoming" else ""
-        cid = customer_id or customer_data.get("_id", "")
         if user_id and db is not None and incoming_msg:
             past_answers_context = await self._find_similar_past_answers(user_id, incoming_msg, cid, db)
         
@@ -155,6 +163,16 @@ class AIMessageDrafter:
         # Call OpenAI API
         try:
             drafted_message = await self._call_openai(prompt)
+            
+            # Update conversation memory after successful reply
+            if db is not None and cid and drafted_message:
+                try:
+                    await self._update_conversation_memory(
+                        db, cid, customer_name, messages, drafted_message, incoming_msg
+                    )
+                except Exception as mem_err:
+                    logger.debug(f"Conversation memory update failed (non-critical): {mem_err}")
+            
             return {
                 "drafted_message": drafted_message,
                 "confidence": 0.85,
@@ -368,13 +386,23 @@ Use this information to answer questions and provide relevant details about prod
         if context.get('conversation_log'):
             conversation_history = "\n".join(context['conversation_log'][-20:])
         
+        # Format conversation memory (long-term summary)
+        memory_section = ""
+        if context.get('conversation_memory'):
+            memory_section = f"""
+CONVERSATION MEMORY (summary of all past interactions with this customer):
+{context['conversation_memory']}
+
+Use this memory to maintain continuity. Do NOT repeat information you already provided.
+"""
+        
         prompt = f"""You are the owner of {business_name}. You're replying to your customer {context['name']} via WhatsApp.
 
 Customer Context:
 - {context_str}{language_hint}
 
 {business_context}
-
+{memory_section}
 CONVERSATION HISTORY (most recent messages, oldest first):
 \"\"\"
 {conversation_history}
@@ -629,6 +657,67 @@ Format: Just return the message text, nothing else."""
             logger.error(f"Broadcast drafting failed: {e}")
             return f"Error drafting message: {str(e)}"
 
+
+    async def _update_conversation_memory(self, db, customer_id: str, customer_name: str, messages: List[Dict], last_reply: str, last_incoming: str):
+        """Update conversation memory/summary for a customer after each auto-reply.
+        Stores a running summary so the AI always knows what was discussed."""
+        try:
+            # Build recent conversation snippet (last 10 messages + our new reply)
+            recent = messages[-10:] if len(messages) > 10 else messages
+            convo_text = ""
+            for m in recent:
+                label = "Customer" if m.get("direction") == "incoming" else "Business"
+                convo_text += f"{label}: {m.get('content', '')}\n"
+            convo_text += f"Business: {last_reply}\n"
+            
+            # Load existing memory
+            existing = await db.conversation_memory.find_one({"customer_id": customer_id})
+            old_summary = existing.get("summary", "") if existing else ""
+            
+            # Generate updated summary using AI
+            summary_prompt = f"""You are a CRM memory system. Update the conversation summary for customer "{customer_name}".
+
+EXISTING MEMORY (what you knew before):
+{old_summary if old_summary else "(No previous memory)"}
+
+RECENT CONVERSATION:
+{convo_text}
+
+Write an updated summary that captures:
+- What products/services the customer asked about and prices quoted
+- Any decisions made or orders placed
+- Customer preferences or requirements
+- Current status of the conversation (what are they waiting for? what was the last topic?)
+- Key facts about this customer
+
+Keep it concise (max 5-6 bullet points). This summary will be used to continue future conversations naturally.
+Write ONLY the summary bullets, nothing else."""
+
+            import asyncio
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
+                model=self.model_name,
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            new_summary = response.choices[0].message.content.strip()
+            
+            # Upsert the memory
+            await db.conversation_memory.update_one(
+                {"customer_id": customer_id},
+                {"$set": {
+                    "customer_id": customer_id,
+                    "customer_name": customer_name,
+                    "summary": new_summary,
+                    "updated_at": datetime.utcnow(),
+                    "message_count": len(messages) + 1,
+                }},
+                upsert=True
+            )
+            logger.info(f"Updated conversation memory for customer {customer_id}")
+        except Exception as e:
+            logger.debug(f"Memory update error (non-critical): {e}")
 
     async def analyze_conversation_for_notes(
         self,

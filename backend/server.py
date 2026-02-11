@@ -64,12 +64,12 @@ from daily_scheduler import start_daily_scheduler
 
 from bson import ObjectId as _ObjectId
 
-# Anti-duplicate auto-reply guard: tracks (customer_id, message_content_hash) recently replied to
-# Prevents double replies when Evolution API sends duplicate webhooks
+# Anti-duplicate auto-reply guard: tracks evo_message_id to prevent double replies
+# Evolution API often fires messages.upsert webhook multiple times for the same message
 import asyncio as _aio
-_auto_reply_dedup = {}  # key: (user_id, customer_id, msg_hash) -> timestamp
+_auto_reply_dedup = {}  # key: evo_message_id -> timestamp
 _auto_reply_lock = _aio.Lock()
-_AUTO_REPLY_DEDUP_TTL = 60  # seconds - ignore duplicate messages within this window
+_AUTO_REPLY_DEDUP_TTL = 120  # seconds
 
 def serialize_doc(doc):
     """Recursively convert MongoDB ObjectId fields to strings for JSON serialization."""
@@ -3272,25 +3272,23 @@ async def evolution_webhook(request: Request):
                         await db.pending_catalogs.delete_one({"_id": pending["_id"]})
                         return {"status": "ok"}
                 
-                # Auto-reply if enabled (with dedup guard using lock for race conditions)
+                # Auto-reply if enabled (with dedup guard using evo_message_id + lock)
                 user_settings = user.get('settings', {})
                 if user_settings.get('auto_reply_enabled', False):
-                    # Dedup: skip if we already replied to this exact message recently
-                    import hashlib as _hl
                     import time as _time
-                    _msg_hash = _hl.md5(body.encode()).hexdigest()[:12]
-                    _dedup_key = (user["_id"], customer_id, _msg_hash)
+                    _dedup_key = parsed.get("evo_message_id", "")
                     
-                    async with _auto_reply_lock:
-                        _now = _time.time()
-                        # Clean old entries
-                        _expired = [k for k, v in _auto_reply_dedup.items() if _now - v > _AUTO_REPLY_DEDUP_TTL]
-                        for k in _expired:
-                            del _auto_reply_dedup[k]
-                        if _dedup_key in _auto_reply_dedup:
-                            logging.info(f"Auto-reply dedup: skipping duplicate for {from_number} (same message within {_AUTO_REPLY_DEDUP_TTL}s)")
-                            return {"status": "ok"}
-                        _auto_reply_dedup[_dedup_key] = _now
+                    if _dedup_key:
+                        async with _auto_reply_lock:
+                            _now = _time.time()
+                            # Clean old entries
+                            _expired = [k for k, v in _auto_reply_dedup.items() if _now - v > _AUTO_REPLY_DEDUP_TTL]
+                            for k in _expired:
+                                del _auto_reply_dedup[k]
+                            if _dedup_key in _auto_reply_dedup:
+                                logging.info(f"Auto-reply dedup: skipping duplicate evo_id={_dedup_key} for {from_number}")
+                                return {"status": "ok"}
+                            _auto_reply_dedup[_dedup_key] = _now
                     try:
                         recent_messages = await db.messages.find({
                             "customer_id": customer_id,
@@ -3330,7 +3328,7 @@ async def evolution_webhook(request: Request):
                             business_name=user.get("business_name", "Our Business"),
                             tone=user_settings.get("message_tone", "friendly"),
                             business_knowledge=business_knowledge,
-                            custom_instructions=f"The customer just sent: '{body}'. Reply naturally to their message.",
+                            custom_instructions=f"IMPORTANT: The customer's LATEST message is: '{body}'. Read the FULL conversation history above carefully. Continue the conversation naturally — do NOT repeat information you already gave, do NOT re-introduce yourself, do NOT ask questions you already asked. If they are following up on something discussed earlier, reference it directly.",
                             user_id=user["_id"],
                             db=db,
                             customer_id=customer_id,
