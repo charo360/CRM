@@ -195,6 +195,15 @@ class AIMessageDrafter:
         # Extract conversation topics
         topics = self._extract_topics(messages)
         
+        # Build full conversation history for AI context
+        conversation_log = []
+        for msg in messages:
+            direction = msg.get('direction', 'incoming')
+            content = msg.get('content', '').strip()
+            if content:
+                label = "Customer" if direction == "incoming" else "You"
+                conversation_log.append(f"{label}: {content}")
+        
         # Get customer tags
         tags = customer_data.get('tags', [])
         is_vip = 'VIP' in tags
@@ -206,6 +215,7 @@ class AIMessageDrafter:
             'last_message': last_message,
             'last_message_direction': last_message_direction,
             'topics': topics,
+            'conversation_log': conversation_log,
             'is_vip': is_vip,
             'is_new': is_new,
             'purchase_count': customer_data.get('purchase_count', 0),
@@ -316,7 +326,10 @@ class AIMessageDrafter:
         if context['purchase_count'] > 0:
             context_parts.append(f"Made {context['purchase_count']} purchases ({context['total_spent']:.0f} total spent)")
         
-        if context['last_message']:
+        if context.get('conversation_log'):
+            # Full conversation history is added separately below
+            pass
+        elif context['last_message']:
             context_parts.append(f"Last message from {'them' if context['last_message_direction'] == 'incoming' else 'us'}: \"{context['last_message'][:100]}\"")
         
         if context['topics']:
@@ -350,15 +363,26 @@ Business Information:
 Use this information to answer questions and provide relevant details about products/services.
 """
         
-        prompt = f"""You are the owner of {business_name}. You're reaching out to your customer {context['name']} via WhatsApp.
+        # Format conversation history
+        conversation_history = "No previous messages yet."
+        if context.get('conversation_log'):
+            conversation_history = "\n".join(context['conversation_log'][-20:])
+        
+        prompt = f"""You are the owner of {business_name}. You're replying to your customer {context['name']} via WhatsApp.
 
 Customer Context:
 - {context_str}{language_hint}
 
 {business_context}
 
+CONVERSATION HISTORY (most recent messages, oldest first):
+\"\"\"
+{conversation_history}
+\"\"\"
+
 CRITICAL INSTRUCTIONS:
-1. Write as if YOU are the business owner - use "I" and "we", be personal
+1. This is a CONTINUING conversation — read the full history above and reply in context
+2. Write as if YOU are the business owner - use "I" and "we", be personal
 2. MIRROR THE CUSTOMER'S STYLE: Match their tone and formality level exactly:
    - If they text casually ("hey bro whats the price"), reply casually ("Hey! It's 2,500. Want me to set one aside for you?")
    - If they text formally ("Good morning, I would like to inquire about pricing"), reply formally ("Good morning! Thank you for reaching out. The price is 2,500. Would you like me to share more details?")
