@@ -60,14 +60,26 @@ export default function ChatScreen() {
     if (prefill) setInputText(prefill);
   }, [prefill]);
 
-  const fetchMessages = useCallback(async () => {
+  const fetchMessages = useCallback(async (isPolling = false) => {
     if (!customerId) {
       setLoading(false);
       return;
     }
     try {
       const data = await messagesAPI.getMessages(customerId);
-      setMessages(data || []);
+      const newMessages = data || [];
+      if (isPolling) {
+        // Only update if message count changed or latest message is different
+        setMessages(prev => {
+          if (prev.length !== newMessages.length || 
+              (newMessages.length > 0 && prev.length > 0 && newMessages[0].id !== prev[0].id)) {
+            return newMessages;
+          }
+          return prev;
+        });
+      } else {
+        setMessages(newMessages);
+      }
     } catch (error) {
       console.error('Error fetching messages:', error);
     } finally {
@@ -78,7 +90,7 @@ export default function ChatScreen() {
   useEffect(() => {
     fetchMessages();
     // Poll for new messages every 5 seconds
-    pollRef.current = setInterval(fetchMessages, 5000);
+    pollRef.current = setInterval(() => fetchMessages(true), 5000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -151,7 +163,7 @@ export default function ChatScreen() {
       created_at: new Date().toISOString(),
       status: 'sending',
     };
-    setMessages(prev => [...prev, optimisticMsg]);
+    setMessages(prev => [optimisticMsg, ...prev]);
 
     try {
       const result = await whatsappAPI.sendMessage(customerPhone, text, customerName);
@@ -166,6 +178,13 @@ export default function ChatScreen() {
       );
     } catch (error: any) {
       console.error('Send error:', error);
+      // Show friendly error for rate limits
+      if (error?.response?.status === 429) {
+        const detail = error.response?.data?.detail || 'Message limit reached. Please upgrade your plan.';
+        Alert.alert('Message Limit', detail);
+      } else {
+        Alert.alert('Send Failed', 'Could not send message. Please try again.');
+      }
       // Mark as failed
       setMessages(prev =>
         prev.map(m =>
@@ -196,11 +215,23 @@ export default function ChatScreen() {
           {isOutgoing && item.status === 'sending' && (
             <Ionicons name="time-outline" size={12} color="#8B9DC3" style={{ marginLeft: 4 }} />
           )}
+          {isOutgoing && item.status === 'pending' && (
+            <Ionicons name="time-outline" size={12} color="#8B9DC3" style={{ marginLeft: 4 }} />
+          )}
           {isOutgoing && item.status === 'sent' && (
-            <Ionicons name="checkmark-done" size={12} color="#25D366" style={{ marginLeft: 4 }} />
+            <Ionicons name="checkmark" size={14} color="#8B9DC3" style={{ marginLeft: 4 }} />
+          )}
+          {isOutgoing && item.status === 'delivered' && (
+            <Ionicons name="checkmark-done" size={14} color="#8B9DC3" style={{ marginLeft: 4 }} />
+          )}
+          {isOutgoing && item.status === 'read' && (
+            <Ionicons name="checkmark-done" size={14} color="#53BDEB" style={{ marginLeft: 4 }} />
           )}
           {isOutgoing && item.status === 'failed' && (
             <Ionicons name="alert-circle" size={12} color="#FF4444" style={{ marginLeft: 4 }} />
+          )}
+          {isOutgoing && !item.status && (
+            <Ionicons name="checkmark" size={14} color="#8B9DC3" style={{ marginLeft: 4 }} />
           )}
         </View>
       </View>
@@ -247,11 +278,11 @@ export default function ChatScreen() {
         ) : (
           <FlatList
             ref={flatListRef}
+            inverted
             data={messages}
             keyExtractor={(item) => item.id}
             renderItem={renderMessage}
             contentContainerStyle={styles.messagesList}
-            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
                 <Ionicons name="chatbubbles-outline" size={48} color="#8B9DC3" />
@@ -454,8 +485,6 @@ const styles = StyleSheet.create({
   messagesList: {
     paddingHorizontal: 12,
     paddingVertical: 8,
-    flexGrow: 1,
-    justifyContent: 'flex-end',
   },
   // ── Bubbles ──
   messageBubble: {

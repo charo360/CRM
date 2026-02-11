@@ -42,6 +42,7 @@ import httpx
 import hmac
 import hashlib
 import json
+import re as _re
 # Evolution API replaces Twilio — config in whatsapp_service.py
 # from emergentintegrations.llm.chat import LlmChat, UserMessage
 from ai_service import get_drafter, AIMessageDrafter
@@ -61,6 +62,38 @@ from daily_scheduler import start_daily_scheduler
 
 
 
+from bson import ObjectId as _ObjectId
+
+def serialize_doc(doc):
+    """Recursively convert MongoDB ObjectId fields to strings for JSON serialization."""
+    if isinstance(doc, dict):
+        return {k: serialize_doc(v) for k, v in doc.items()}
+    elif isinstance(doc, list):
+        return [serialize_doc(item) for item in doc]
+    elif isinstance(doc, _ObjectId):
+        return str(doc)
+    return doc
+
+def sanitize_string(value: str, max_length: int = 500) -> str:
+    """Strip dangerous characters and limit length for user input."""
+    if not value:
+        return value
+    # Remove null bytes and control characters (keep newlines/tabs)
+    value = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', value)
+    # Strip leading/trailing whitespace
+    value = value.strip()
+    # Enforce max length
+    return value[:max_length]
+
+def sanitize_phone(phone: str) -> str:
+    """Normalize phone number: keep only digits and leading +."""
+    if not phone:
+        return phone
+    phone = phone.strip()
+    if phone.startswith('+'):
+        return '+' + _re.sub(r'[^\d]', '', phone[1:])
+    return _re.sub(r'[^\d]', '', phone)
+
 # OpenAI API Key
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
@@ -71,8 +104,16 @@ db = client[os.environ.get('DB_NAME', 'whatsapp_crm')]
 
 # WhatsApp via Evolution API (config in .env: EVOLUTION_API_URL, EVOLUTION_API_KEY)
 
-# JWT Config
-JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret-key')
+# JWT Config — enforce strong secret
+_jwt_secret_raw = os.environ.get('JWT_SECRET', '')
+if not _jwt_secret_raw or _jwt_secret_raw == 'default-secret-key':
+    import secrets as _secrets
+    _jwt_secret_raw = _secrets.token_urlsafe(64)
+    print("\n" + "="*60)
+    print("⚠️  WARNING: JWT_SECRET not set in .env — auto-generated for this session.")
+    print("   Add a strong JWT_SECRET to .env for persistence across restarts.")
+    print("="*60 + "\n")
+JWT_SECRET = _jwt_secret_raw
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
 
 # Google Play / App Store IAP Config
@@ -82,11 +123,13 @@ app = FastAPI(title="WhatsApp CRM")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
-# Configure CORS to allow mobile app connections
+# Configure CORS — use ALLOWED_ORIGINS env var in production (comma-separated)
+_allowed_origins = os.environ.get('ALLOWED_ORIGINS', '*')
+_origins_list = [o.strip() for o in _allowed_origins.split(',')] if _allowed_origins != '*' else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
-    allow_credentials=False,
+    allow_origins=_origins_list,
+    allow_credentials=_allowed_origins != '*',
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -123,13 +166,6 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
-
-# Store OTPs temporarily (in production, use Redis)
-otp_store = {}
-
-def generate_otp():
-    import random
-    return str(random.randint(100000, 999999))
 
 def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
     """Generate a simple follow-up reason without AI calls for performance"""
@@ -229,6 +265,13 @@ class OTPVerify(BaseModel):
     phone_number: str
     code: str
 
+class WhatsAppAuthStart(BaseModel):
+    phone_number: str  # E.164 format: +<country_code><number>
+    country_code: Optional[str] = None  # ISO 3166-1 alpha-2 e.g. 'KE'
+
+class WhatsAppAuthCheck(BaseModel):
+    session_token: str
+
 class UserCreate(BaseModel):
     phone_number: str
     business_name: str
@@ -269,6 +312,7 @@ class CustomerResponse(BaseModel):
     total_spent: float = 0.0
     last_message: Optional[str] = None
     last_contacted: Optional[datetime] = None
+    profile_picture: Optional[str] = None
     created_at: datetime
 
 # Follow-up Models
@@ -639,121 +683,218 @@ class Product(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-# ============ AUTH ENDPOINTS ============
+# ============ AUTH ENDPOINTS (WhatsApp-Only) ============
 
-@api_router.post("/auth/send-otp")
-async def send_otp(request: OTPRequest):
-    """Send OTP to phone number via SMS"""
-    phone = request.phone_number
-    
-    # Generate OTP
-    otp = generate_otp()
-    otp_store[phone] = {
-        "code": otp,
-        "expires": datetime.utcnow() + timedelta(minutes=10)
-    }
-    
-    # OTP delivery: send via WhatsApp if user has connected instance, else sandbox
-    # In production, integrate an SMS gateway (e.g. Vonage, Africa's Talking)
-    logging.info(f"SANDBOX MODE: OTP for {phone} is {otp}")
-    return {"status": "success", "message": "OTP sent (sandbox)", "dev_otp": otp}
+# Temporary session store for WhatsApp pairing (in production, use Redis)
+wa_auth_sessions = {}
 
-@api_router.post("/auth/verify-otp")
-async def verify_otp(request: OTPVerify):
-    """Verify OTP and return JWT token"""
-    phone = request.phone_number
-    code = request.code
-    
-    stored = otp_store.get(phone)
-    if not stored:
-        raise HTTPException(status_code=400, detail="OTP not found. Please request a new one.")
-    
-    if datetime.utcnow() > stored["expires"]:
-        del otp_store[phone]
-        raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
-    
-    if stored["code"] != code:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    # Clear OTP
-    del otp_store[phone]
-    
-    # Check if user exists
-    user = await db.users.find_one({"phone_number": phone})
-    
-    if user:
-        token = create_token(user["_id"], phone)
-        return {
-            "status": "success",
-            "token": token,
-            "is_new_user": False,
-            "user": {
-                "id": user["_id"],
-                "phone_number": user["phone_number"],
-                "business_name": user.get("business_name", ""),
-                "owner_name": user.get("owner_name", ""),
-                "subscription_active": user.get("subscription_active", False)
-            }
-        }
-    else:
-        # Return temporary token for registration
-        temp_token = create_token("temp_" + phone, phone)
-        return {
-            "status": "success",
-            "token": temp_token,
-            "is_new_user": True
-        }
-
-@api_router.post("/auth/register")
-async def register_user(user_data: UserCreate):
-    """Register new user after OTP verification"""
+@api_router.post("/auth/whatsapp-start")
+async def whatsapp_auth_start(request: WhatsAppAuthStart):
+    """
+    Start WhatsApp-based authentication.
+    1. Creates or finds user by phone number
+    2. Starts WhatsApp pairing via Evolution API
+    3. Returns session_token + pairing_code for the frontend
+    """
     from country_utils import detect_country_from_phone, get_payment_methods_for_country
-    
+
+    phone = request.phone_number.strip()
+    if not phone or len(phone) < 8:
+        raise HTTPException(status_code=400, detail="Valid phone number is required")
+
     # Check if user already exists
-    existing = await db.users.find_one({"phone_number": user_data.phone_number})
-    if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
-    
-    # Detect country and get payment methods
-    country_code = detect_country_from_phone(user_data.phone_number)
-    country_config = get_payment_methods_for_country(country_code)
-    
-    user_id = str(uuid.uuid4())
-    user_doc = {
-        "_id": user_id,
-        "phone_number": user_data.phone_number,
-        "business_name": user_data.business_name,
-        "owner_name": user_data.owner_name,
-        "subscription_plan": None,
-        "subscription_active": False,
-        "country_code": country_code,
-        "currency": country_config["currency"],
-        "payment_methods": country_config["methods"],
-        "created_at": datetime.utcnow()
-    }
-    
-    await db.users.insert_one(user_doc)
-    token = create_token(user_id, user_data.phone_number)
-    
-    return {
-        "status": "success",
-        "token": token,
-        "user": {
-            "id": user_id,
-            "phone_number": user_data.phone_number,
-            "business_name": user_data.business_name,
-            "owner_name": user_data.owner_name,
+    user = await db.users.find_one({"phone_number": phone})
+    is_new_user = user is None
+
+    if is_new_user:
+        # Create new user (business_name will be set in /auth/register after connect)
+        country_code = request.country_code or detect_country_from_phone(phone)
+        country_config = get_payment_methods_for_country(country_code)
+
+        user_id = str(uuid.uuid4())
+        user_doc = {
+            "_id": user_id,
+            "phone_number": phone,
+            "business_name": "",
+            "owner_name": "",
+            "subscription_plan": None,
             "subscription_active": False,
             "country_code": country_code,
             "currency": country_config["currency"],
-            "payment_methods": country_config["methods"]
+            "payment_methods": country_config["methods"],
+            "created_at": datetime.utcnow(),
+            "setup_complete": False,
         }
+        await db.users.insert_one(user_doc)
+        user = user_doc
+    else:
+        user_id = user["_id"]
+
+        # If existing user already has WhatsApp connected, skip pairing — issue JWT directly
+        whatsapp_service = get_whatsapp_service(db)
+        try:
+            status = await whatsapp_service.get_instance_status(user_id)
+            if status.get("connected"):
+                token = create_token(user_id, phone)
+                setup_done = user.get("setup_complete", True)
+                return serialize_doc({
+                    "status": "success",
+                    "connected": True,
+                    "token": token,
+                    "is_new_user": not setup_done,
+                    "user": {
+                        "id": user_id,
+                        "phone_number": phone,
+                        "business_name": user.get("business_name", ""),
+                        "owner_name": user.get("owner_name", ""),
+                    },
+                    "message": "WhatsApp already connected. Logged in.",
+                })
+        except Exception as e:
+            logging.warning(f"Error checking existing connection for {user_id}: {e}")
+
+    # Start WhatsApp pairing (new user or existing user not connected)
+    whatsapp_service = get_whatsapp_service(db)
+    result = await whatsapp_service.create_instance(user_id, phone)
+
+    if result.get("status") == "error":
+        # If new user was just created and pairing failed, clean up
+        if is_new_user:
+            await db.users.delete_one({"_id": user_id})
+        raise HTTPException(status_code=500, detail=result.get("message", "Failed to start WhatsApp pairing"))
+
+    # Create a session token to track this auth attempt
+    import secrets
+    session_token = secrets.token_urlsafe(32)
+    wa_auth_sessions[session_token] = {
+        "user_id": user_id,
+        "phone": phone,
+        "is_new_user": is_new_user,
+        "created_at": datetime.utcnow(),
+        "expires": datetime.utcnow() + timedelta(minutes=5),
     }
+
+    return {
+        "status": "pairing",
+        "session_token": session_token,
+        "pairing_code": result.get("pairing_code", ""),
+        "is_new_user": is_new_user,
+        "message": "Enter this code in WhatsApp > Linked Devices > Link with phone number",
+    }
+
+@api_router.post("/auth/whatsapp-check")
+async def whatsapp_auth_check(request: WhatsAppAuthCheck):
+    """
+    Poll WhatsApp connection status during auth.
+    Once connected, issues a JWT token and returns user data.
+    """
+    session = wa_auth_sessions.get(request.session_token)
+    if not session:
+        raise HTTPException(status_code=400, detail="Invalid or expired session")
+
+    if datetime.utcnow() > session["expires"]:
+        wa_auth_sessions.pop(request.session_token, None)
+        raise HTTPException(status_code=400, detail="Session expired. Please start again.")
+
+    user_id = session["user_id"]
+    phone = session["phone"]
+
+    # Check WhatsApp connection status
+    whatsapp_service = get_whatsapp_service(db)
+    status = await whatsapp_service.get_instance_status(user_id)
+
+    if not status.get("connected"):
+        return {"status": "waiting", "connected": False}
+
+    # WhatsApp connected! Issue JWT
+    token = create_token(user_id, phone)
+
+    # Clean up session
+    wa_auth_sessions.pop(request.session_token, None)
+
+    user = await db.users.find_one({"_id": user_id})
+    is_new_user = session["is_new_user"] or not user.get("setup_complete", True)
+
+    return serialize_doc({
+        "status": "success",
+        "connected": True,
+        "token": token,
+        "is_new_user": is_new_user,
+        "user": {
+            "id": user_id,
+            "phone_number": phone,
+            "business_name": user.get("business_name", ""),
+            "owner_name": user.get("owner_name", ""),
+            "subscription_active": user.get("subscription_active", False),
+        }
+    })
+
+@api_router.post("/auth/whatsapp-refresh")
+async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
+    """
+    Refresh the pairing code during auth (called before 60s expiry).
+    """
+    session = wa_auth_sessions.get(request.session_token)
+    if not session:
+        raise HTTPException(status_code=400, detail="Invalid or expired session")
+
+    if datetime.utcnow() > session["expires"]:
+        wa_auth_sessions.pop(request.session_token, None)
+        raise HTTPException(status_code=400, detail="Session expired. Please start again.")
+
+    user_id = session["user_id"]
+    phone = session["phone"]
+
+    # Request new pairing code
+    whatsapp_service = get_whatsapp_service(db)
+    result = await whatsapp_service.create_instance(user_id, phone)
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message", "Failed to refresh pairing code"))
+
+    # Extend session expiry
+    session["expires"] = datetime.utcnow() + timedelta(minutes=5)
+
+    return {
+        "status": "pairing",
+        "pairing_code": result.get("pairing_code", ""),
+    }
+
+@api_router.post("/auth/register")
+async def register_user(user_data: UserCreate, user = Depends(get_current_user)):
+    """
+    Complete registration after WhatsApp auth.
+    Sets business name and owner name for a newly created user.
+    Requires JWT (issued after WhatsApp connects).
+    """
+    # Update the user's business info
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "business_name": user_data.business_name,
+            "owner_name": user_data.owner_name or "",
+            "setup_complete": True,
+        }}
+    )
+
+    return serialize_doc({
+        "status": "success",
+        "user": {
+            "id": user["_id"],
+            "phone_number": user["phone_number"],
+            "business_name": user_data.business_name,
+            "owner_name": user_data.owner_name or "",
+            "subscription_active": user.get("subscription_active", False),
+            "country_code": user.get("country_code"),
+            "currency": user.get("currency", "USD"),
+            "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"]),
+        }
+    })
 
 @api_router.get("/auth/me")
 async def get_me(user = Depends(get_current_user)):
     """Get current user info"""
-    return {
+    return serialize_doc({
         "id": user["_id"],
         "phone_number": user["phone_number"],
         "business_name": user.get("business_name", ""),
@@ -763,7 +904,7 @@ async def get_me(user = Depends(get_current_user)):
         "country_code": user.get("country_code"),
         "currency": user.get("currency", "USD"),
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
-    }
+    })
 
 # ============ SUPPLIER ENDPOINTS ============
 
@@ -784,10 +925,10 @@ async def get_supplier_insights(user = Depends(get_current_user)):
     analyzer = SupplierAnalyzer(db)
     potential = await analyzer.identify_potential_suppliers(user["_id"])
     restock = await analyzer.get_restock_suggestions(user["_id"])
-    return {
+    return serialize_doc({
         "potential_suppliers": potential,
         "restock_suggestions": restock
-    }
+    })
 
 @api_router.get("/suppliers")
 async def get_suppliers(user = Depends(get_current_user)):
@@ -806,7 +947,7 @@ async def get_suppliers(user = Depends(get_current_user)):
         s["lead_time"] = s.get("lead_time", "")
         s["rating"] = s.get("rating", 0)
     
-    return suppliers
+    return serialize_doc(suppliers)
 
 @api_router.post("/suppliers/{customer_id}/tag")
 async def tag_supplier(customer_id: str, user = Depends(get_current_user)):
@@ -872,7 +1013,7 @@ async def get_pending_classifications(user = Depends(get_current_user)):
     for p in pending:
         p["id"] = p["_id"] if isinstance(p["_id"], str) else str(p["_id"])
     
-    return pending
+    return serialize_doc(pending)
 
 @api_router.post("/contacts/{customer_id}/confirm")
 async def confirm_classification(customer_id: str, body: dict = Body(...), user = Depends(get_current_user)):
@@ -945,14 +1086,25 @@ async def dismiss_classification(customer_id: str, user = Depends(get_current_us
 @api_router.post("/customers", response_model=CustomerResponse)
 async def create_customer(customer: CustomerCreate, user = Depends(get_current_user)):
     """Create a new customer"""
+    # Sanitize inputs
+    clean_name = sanitize_string(customer.name, 200)
+    clean_phone = sanitize_phone(customer.phone_number)
+    clean_notes = sanitize_string(customer.notes, 2000) if customer.notes else None
+    clean_tags = [sanitize_string(t, 50) for t in (customer.tags or []) if t.strip()][:20]
+
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Customer name is required")
+    if not clean_phone or len(clean_phone) < 6:
+        raise HTTPException(status_code=400, detail="Valid phone number is required")
+
     customer_id = str(uuid.uuid4())
     customer_doc = {
         "_id": customer_id,
         "user_id": user["_id"],
-        "name": customer.name,
-        "phone_number": customer.phone_number,
-        "notes": customer.notes,
-        "tags": customer.tags if customer.tags else ["New"],
+        "name": clean_name,
+        "phone_number": clean_phone,
+        "notes": clean_notes,
+        "tags": clean_tags if clean_tags else ["New"],
         "purchase_count": 0,
         "total_spent": 0.0,
         "last_message": None,
@@ -1012,6 +1164,7 @@ async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None
             total_spent=c.get("total_spent", 0.0),
             last_message=c.get("last_message"),
             last_contacted=c.get("last_contacted"),
+            profile_picture=c.get("profile_picture"),
             created_at=c["created_at"]
         )
         for c in customers
@@ -1085,7 +1238,7 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
             
     # Sort by urgency/days and limit to top 30 most urgent
     result.sort(key=lambda x: x.get("urgency_score", 0) if "urgency_score" in x else (x["days_since_contact"] if x["days_since_contact"] else 999), reverse=True)
-    return result[:30]  # Only return top 30 most urgent customers
+    return serialize_doc(result[:30])  # Only return top 30 most urgent customers
 
 @api_router.get("/customers/cold-with-reasons")
 async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
@@ -1108,6 +1261,7 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         tags=customer.get("tags", []),
         last_message=customer.get("last_message"),
         last_contacted=customer.get("last_contacted"),
+        profile_picture=customer.get("profile_picture"),
         created_at=customer["created_at"]
     )
 
@@ -1118,7 +1272,13 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    update_data = {k: v for k, v in update.dict().items() if v is not None}
+    update_data = {}
+    if update.name is not None:
+        update_data["name"] = sanitize_string(update.name, 200)
+    if update.notes is not None:
+        update_data["notes"] = sanitize_string(update.notes, 2000)
+    if update.tags is not None:
+        update_data["tags"] = [sanitize_string(t, 50) for t in update.tags if t.strip()][:20]
     if update_data:
         await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
     
@@ -1133,6 +1293,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         tags=updated.get("tags", []),
         last_message=updated.get("last_message"),
         last_contacted=updated.get("last_contacted"),
+        profile_picture=updated.get("profile_picture"),
         created_at=updated["created_at"]
     )
 
@@ -2171,6 +2332,16 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
     if count >= MAX_PRODUCTS:
         raise HTTPException(status_code=400, detail=f"Product limit reached. Maximum {MAX_PRODUCTS} products allowed.")
     
+    # Sanitize inputs
+    clean_name = sanitize_string(product.name, 200)
+    clean_category = sanitize_string(product.category or "Other", 100)
+    clean_description = sanitize_string(product.description, 1000) if product.description else None
+
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Product name is required")
+    if product.price is not None and product.price < 0:
+        raise HTTPException(status_code=400, detail="Price cannot be negative")
+
     # Ensure images list is populated if image_url is provided
     images = product.images
     if not images and product.image_url:
@@ -2179,12 +2350,12 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
     product_doc = {
         "_id": str(uuid.uuid4()),
         "user_id": user["_id"],
-        "name": product.name,
+        "name": clean_name,
         "price": product.price,
-        "category": product.category,
+        "category": clean_category,
         "image_url": product.image_url,
         "images": images,
-        "description": product.description,
+        "description": clean_description,
         "in_stock": product.in_stock,
         "created_at": datetime.utcnow()
     }
@@ -2445,15 +2616,112 @@ async def get_subscription_plans(user = Depends(get_current_user)):
     currency = user_settings.get('currency', 'USD')
     return get_regional_plans(currency)
 
+async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dict:
+    """Verify a Google Play purchase token with the Android Publisher API."""
+    # Google Play product IDs follow the pattern: crm_{plan}_monthly
+    product_id = f"crm_{plan_id}_monthly"
+    package_name = GOOGLE_PLAY_PACKAGE_NAME
+    sa_key_path = os.environ.get('GOOGLE_SA_KEY_PATH', '')
+
+    if not package_name:
+        logging.warning("GOOGLE_PLAY_PACKAGE_NAME not set — skipping server verification")
+        return {"valid": True, "reason": "no_server_config"}
+
+    if not sa_key_path or not os.path.exists(sa_key_path):
+        logging.warning("GOOGLE_SA_KEY_PATH not set or file missing — skipping server verification")
+        return {"valid": True, "reason": "no_server_config"}
+
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request as GRequest
+        import httpx
+
+        creds = service_account.Credentials.from_service_account_file(
+            sa_key_path,
+            scopes=["https://www.googleapis.com/auth/androidpublisher"],
+        )
+        creds.refresh(GRequest())
+
+        url = (
+            f"https://androidpublisher.googleapis.com/androidpublisher/v3"
+            f"/applications/{package_name}/purchases/products/{product_id}"
+            f"/tokens/{purchase_token}"
+        )
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {creds.token}"})
+
+        if resp.status_code != 200:
+            return {"valid": False, "reason": f"Google API error: {resp.status_code}"}
+
+        data = resp.json()
+        # purchaseState 0 = purchased, 1 = canceled
+        if data.get("purchaseState", -1) != 0:
+            return {"valid": False, "reason": "Purchase not completed"}
+
+        return {"valid": True, "order_id": data.get("orderId")}
+    except ImportError:
+        logging.warning("google-auth not installed — skipping Google Play verification")
+        return {"valid": True, "reason": "no_google_auth_lib"}
+    except Exception as e:
+        logging.error(f"Google Play verification error: {e}")
+        return {"valid": False, "reason": str(e)}
+
+
+async def _verify_apple_receipt(purchase_token: str) -> dict:
+    """Verify an Apple App Store receipt."""
+    apple_shared_secret = os.environ.get('APPLE_SHARED_SECRET', '')
+    if not apple_shared_secret:
+        logging.warning("APPLE_SHARED_SECRET not set — skipping Apple verification")
+        return {"valid": True, "reason": "no_server_config"}
+
+    try:
+        import httpx
+        payload = {"receipt-data": purchase_token, "password": apple_shared_secret}
+
+        # Try production first, then sandbox
+        for url in [
+            "https://buy.itunes.apple.com/verifyReceipt",
+            "https://sandbox.itunes.apple.com/verifyReceipt",
+        ]:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(url, json=payload)
+            data = resp.json()
+            status = data.get("status", -1)
+            if status == 21007:
+                continue  # sandbox receipt sent to production — retry sandbox
+            if status == 0:
+                return {"valid": True, "receipt": data.get("receipt", {})}
+            return {"valid": False, "reason": f"Apple status {status}"}
+
+        return {"valid": False, "reason": "Verification failed on both endpoints"}
+    except Exception as e:
+        logging.error(f"Apple receipt verification error: {e}")
+        return {"valid": False, "reason": str(e)}
+
+
 @api_router.post("/subscription/verify-purchase")
 async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_current_user)):
     """Verify in-app purchase from Google Play or App Store"""
     if request.plan_id not in PLAN_FEATURES:
         raise HTTPException(status_code=400, detail="Invalid plan")
-    
-    # For now, trust the client-side purchase verification
-    # In production, verify with Google Play Developer API or Apple App Store Server API
-    
+
+    # Prevent duplicate token usage
+    existing_txn = await db.transactions.find_one({"purchase_token": request.purchase_token, "status": "success"})
+    if existing_txn:
+        raise HTTPException(status_code=400, detail="This purchase has already been redeemed")
+
+    # Server-side receipt verification
+    if request.platform == "android":
+        verification = await _verify_google_play_purchase(request.purchase_token, request.plan_id)
+    elif request.platform == "ios":
+        verification = await _verify_apple_receipt(request.purchase_token)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
+    if not verification.get("valid"):
+        logging.warning(f"IAP verification failed for user {user['_id']}: {verification.get('reason')}")
+        raise HTTPException(status_code=403, detail=f"Purchase verification failed: {verification.get('reason', 'unknown')}")
+
     # Update user subscription
     await db.users.update_one(
         {"_id": user["_id"]},
@@ -2473,6 +2741,7 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
         "purchase_token": request.purchase_token,
         "plan_id": request.plan_id,
         "platform": request.platform,
+        "verification": verification,
         "status": "success",
         "created_at": datetime.utcnow()
     })
@@ -2491,6 +2760,81 @@ async def get_subscription_status(user = Depends(get_current_user)):
         "subscription_active": user.get("subscription_active", False),
         "subscription_date": user.get("subscription_date")
     }
+
+# ============ ACCOUNT MANAGEMENT ============
+
+@api_router.delete("/account")
+async def delete_account(user = Depends(get_current_user)):
+    """
+    Permanently delete user account and all associated data.
+    Required for GDPR/CCPA compliance and app store policies.
+    """
+    user_id = user["_id"]
+
+    # Disconnect WhatsApp instance first
+    try:
+        whatsapp_service = get_whatsapp_service(db)
+        await whatsapp_service.disconnect_instance(user_id)
+    except Exception as e:
+        logging.error(f"Error disconnecting WhatsApp during account deletion: {e}")
+
+    # Delete all user data from every collection
+    await db.customers.delete_many({"user_id": user_id})
+    await db.messages.delete_many({"user_id": user_id})
+    await db.sales.delete_many({"user_id": user_id})
+    await db.expenses.delete_many({"user_id": user_id})
+    await db.followups.delete_many({"user_id": user_id})
+    await db.orders.delete_many({"user_id": user_id})
+    await db.products.delete_many({"user_id": user_id})
+    await db.broadcasts.delete_many({"user_id": user_id})
+    await db.broadcast_templates.delete_many({"user_id": user_id})
+    await db.transactions.delete_many({"user_id": user_id})
+    await db.customer_analysis.delete_many({"user_id": user_id})
+    await db.pending_classifications.delete_many({"user_id": user_id})
+    await db.pending_catalogs.delete_many({"user_id": user_id})
+
+    # Delete the user record itself
+    await db.users.delete_one({"_id": user_id})
+
+    logging.info(f"Account deleted for user {user_id}")
+    return {"status": "success", "message": "Account and all data permanently deleted"}
+
+@api_router.get("/account/export")
+async def export_account_data(user = Depends(get_current_user)):
+    """
+    Export all user data as JSON. Required for GDPR data portability.
+    Returns customers, messages, sales, expenses, follow-ups, orders, products.
+    """
+    user_id = user["_id"]
+
+    customers = await db.customers.find({"user_id": user_id}).to_list(None)
+    messages = await db.messages.find({"user_id": user_id}).to_list(None)
+    sales = await db.sales.find({"user_id": user_id}).to_list(None)
+    expenses = await db.expenses.find({"user_id": user_id}).to_list(None)
+    followups = await db.followups.find({"user_id": user_id}).to_list(None)
+    orders = await db.orders.find({"user_id": user_id}).to_list(None)
+    products = await db.products.find({"user_id": user_id}).to_list(None)
+
+    export = {
+        "exported_at": datetime.utcnow().isoformat(),
+        "user": {
+            "id": user_id,
+            "phone_number": user.get("phone_number"),
+            "business_name": user.get("business_name"),
+            "owner_name": user.get("owner_name"),
+            "country_code": user.get("country_code"),
+            "created_at": str(user.get("created_at", "")),
+        },
+        "customers": serialize_doc(customers),
+        "messages": serialize_doc(messages),
+        "sales": serialize_doc(sales),
+        "expenses": serialize_doc(expenses),
+        "followups": serialize_doc(followups),
+        "orders": serialize_doc(orders),
+        "products": serialize_doc(products),
+    }
+
+    return export
 
 # ============ WHATSAPP (EVOLUTION API) ENDPOINTS ============
 
@@ -2532,6 +2876,82 @@ async def whatsapp_status(user = Depends(get_current_user)):
         "plan": limits.get("plan", "free"),
     }
 
+@api_router.post("/whatsapp/sync")
+async def whatsapp_sync(user = Depends(get_current_user)):
+    """
+    Manually trigger WhatsApp contact + chat history sync.
+    Pulls all contacts and recent conversations from WhatsApp into the CRM.
+    """
+    logging.info(f"WhatsApp sync requested by user {user['_id']}")
+    whatsapp_service = get_whatsapp_service(db)
+    status = await whatsapp_service.get_instance_status(user["_id"])
+    if not status.get("connected"):
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+
+    contacts_result = await whatsapp_service.fetch_contacts(user["_id"])
+    logging.info(f"Contact sync result: {contacts_result}")
+    history_result = await whatsapp_service.fetch_chat_history(user["_id"])
+    logging.info(f"History sync result: {history_result}")
+
+    # Get current DB totals so user sees actual state
+    total_customers = await db.customers.count_documents({"user_id": user["_id"]})
+    total_messages = await db.messages.count_documents({"user_id": user["_id"]})
+    synced_messages = await db.messages.count_documents({"user_id": user["_id"], "synced_from_history": True})
+
+    # Run AI classification in background to avoid blocking the sync response
+    async def _classify_after_sync(uid):
+        classified = 0
+        try:
+            classifier = get_classifier(db)
+            customers = await db.customers.find({"user_id": uid}).to_list(None)
+            for c in customers:
+                msg_count = await db.messages.count_documents({"customer_id": c["_id"], "user_id": uid})
+                if msg_count >= 2:
+                    await classifier.classify_contact(uid, c["_id"])
+                    classified += 1
+        except Exception as e:
+            logging.error(f"Post-sync classification error: {e}")
+        logging.info(f"Post-sync classification done: {classified} contacts classified for user {uid}")
+
+    asyncio.create_task(_classify_after_sync(user["_id"]))
+
+    # Fetch profile pictures in background
+    async def _fetch_pics(uid):
+        try:
+            ws = get_whatsapp_service(db)
+            result = await ws.fetch_profile_pictures_bulk(uid)
+            logging.info(f"Profile pictures: {result}")
+        except Exception as e:
+            logging.error(f"Profile picture fetch error: {e}")
+    asyncio.create_task(_fetch_pics(user["_id"]))
+
+    return {
+        "status": "success",
+        "contacts": contacts_result,
+        "history": history_result,
+        "totals": {
+            "customers": total_customers,
+            "messages": total_messages,
+            "synced_messages": synced_messages,
+        }
+    }
+
+@api_router.post("/customers/refresh-profile-pictures")
+async def refresh_profile_pictures(user = Depends(get_current_user)):
+    """Fetch profile pictures for customers that are missing them"""
+    whatsapp_service = get_whatsapp_service(db)
+    
+    # Run bulk fetch in background (only fetches for customers missing pictures)
+    async def _refresh(uid):
+        try:
+            result = await whatsapp_service.fetch_profile_pictures_bulk(uid)
+            logging.info(f"Profile pictures refreshed: {result}")
+        except Exception as e:
+            logging.error(f"Profile picture refresh error: {e}")
+    asyncio.create_task(_refresh(user["_id"]))
+    
+    return {"status": "started", "message": "Profile pictures are being refreshed in the background."}
+
 @api_router.post("/whatsapp/disconnect")
 async def whatsapp_disconnect(user = Depends(get_current_user)):
     """Disconnect and remove WhatsApp instance"""
@@ -2564,6 +2984,9 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
 
 # ============ EVOLUTION API WEBHOOK ============
 
+# Webhook secret for verifying Evolution API callbacks
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', os.environ.get('EVOLUTION_API_KEY', ''))
+
 @api_router.post("/webhooks/evolution")
 async def evolution_webhook(request: Request):
     """
@@ -2571,22 +2994,80 @@ async def evolution_webhook(request: Request):
     Handles: connection.update, messages.upsert
     Configure in Evolution API: webhook URL = https://your-domain/api/webhooks/evolution
     """
+    # Verify webhook authenticity via API key header or query param
+    incoming_key = (
+        request.headers.get("apikey")
+        or request.headers.get("x-webhook-secret")
+        or request.query_params.get("key")
+    )
+    if WEBHOOK_SECRET and incoming_key and incoming_key != WEBHOOK_SECRET:
+        logging.warning(f"Webhook auth failed: got key={incoming_key!r}")
+        raise HTTPException(status_code=401, detail="Unauthorized webhook")
+
     try:
         payload = await request.json()
-        event = payload.get("event", "")
+        raw_event = payload.get("event", "")
         instance_name = payload.get("instance", "")
         data = payload.get("data", payload)
         
-        logging.info(f"Evolution webhook: event={event}, instance={instance_name}")
+        # Normalize event name: Evolution API may send "messages.update" or "MESSAGES_UPDATE"
+        event = raw_event.lower().replace("_", ".")
+        
+        logging.info(f"Evolution webhook: raw_event={raw_event!r}, normalized={event!r}, instance={instance_name}")
+        
         
         whatsapp_service = get_whatsapp_service(db)
         
         # Handle connection status changes
         if event == "connection.update":
             await whatsapp_service.handle_connection_update(instance_name, data)
+
+            # When WhatsApp first connects, sync contacts and chat history in background
+            state = data.get("state") or data.get("instance", {}).get("state", "")
+            if state == "open":
+                user = await whatsapp_service.find_user_by_instance(instance_name)
+                if user:
+                    user_id = user["_id"]
+                    # Check if this is first sync (no synced_contacts flag)
+                    if not user.get("whatsapp", {}).get("initial_sync_done"):
+                        async def _run_initial_sync(uid):
+                            try:
+                                logging.info(f"Starting initial WhatsApp sync for user {uid}")
+                                contacts_result = await whatsapp_service.fetch_contacts(uid)
+                                logging.info(f"Contact sync: {contacts_result}")
+                                history_result = await whatsapp_service.fetch_chat_history(uid)
+                                logging.info(f"History sync: {history_result}")
+                                # Mark sync as done so we don't re-run
+                                await db.users.update_one(
+                                    {"_id": uid},
+                                    {"$set": {"whatsapp.initial_sync_done": True}}
+                                )
+                                # Run AI classification on all synced contacts
+                                try:
+                                    classifier = get_classifier(db)
+                                    customers = await db.customers.find({"user_id": uid, "synced_from_whatsapp": True}).to_list(None)
+                                    for c in customers:
+                                        msg_count = await db.messages.count_documents({"customer_id": c["_id"], "user_id": uid})
+                                        if msg_count >= 2:
+                                            await classifier.classify_contact(uid, c["_id"])
+                                    logging.info(f"AI classification done for {len(customers)} synced contacts")
+                                except Exception as cls_err:
+                                    logging.error(f"Post-sync classification error: {cls_err}")
+                            except Exception as sync_err:
+                                logging.error(f"Initial sync failed for user {uid}: {sync_err}")
+
+                        asyncio.create_task(_run_initial_sync(user_id))
+
             return {"status": "ok"}
         
-        # Handle incoming messages
+        # Handle message status updates (sent/delivered/read receipts)
+        if event == "messages.update":
+            import json as _json
+            logging.info(f"messages.update payload: {_json.dumps(data, default=str)[:800]}")
+            await whatsapp_service.handle_message_update(instance_name, data)
+            return {"status": "ok"}
+
+        # Handle incoming AND outgoing messages
         if event == "messages.upsert":
             parsed = await whatsapp_service.handle_incoming_message(instance_name, data)
             
@@ -2597,15 +3078,17 @@ async def evolution_webhook(request: Request):
             from_number = parsed["from_number"]
             body = parsed["body"]
             push_name = parsed["push_name"]
+            from_me = parsed.get("from_me", False)
+            direction = "outgoing" if from_me else "incoming"
             
-            # Find or create customer
+            # Find or create customer (the contact on the other end)
             customer = await db.customers.find_one({
                 "user_id": user["_id"],
                 "phone_number": from_number
             })
             
             customer_id = None
-            customer_name = push_name or f"Customer {from_number[-4:]}"
+            customer_name = push_name or f"Contact {from_number[-4:]}"
             
             if customer:
                 customer_id = customer["_id"]
@@ -2624,29 +3107,48 @@ async def evolution_webhook(request: Request):
                     "user_id": user["_id"],
                     "name": customer_name,
                     "phone_number": from_number,
-                    "notes": "Customer reached out via WhatsApp",
+                    "notes": "",
                     "tags": ["New"],
                     "last_message": body[:200] if body else None,
                     "last_contacted": datetime.utcnow(),
                     "created_at": datetime.utcnow(),
                     "auto_created": True,
-                    "customer_initiated": True,
+                    "customer_initiated": not from_me,
                 })
-                logging.info(f"Auto-created customer from WhatsApp: {customer_name} ({from_number})")
+                logging.info(f"Auto-created contact from WhatsApp: {customer_name} ({from_number})")
+                
+                # Fetch profile picture in background for new contact
+                async def _fetch_pic(uid, cid, phone):
+                    try:
+                        ws = get_whatsapp_service(db)
+                        pic_url = await ws.fetch_profile_picture(uid, phone)
+                        if pic_url:
+                            await db.customers.update_one(
+                                {"_id": cid},
+                                {"$set": {"profile_picture": pic_url}}
+                            )
+                            logging.info(f"Profile picture set for new contact {phone}")
+                    except Exception as e:
+                        logging.debug(f"Could not fetch profile pic for new contact {phone}: {e}")
+                asyncio.create_task(_fetch_pic(user["_id"], customer_id, from_number))
             
-            # Store message
+            # Store message (both incoming and outgoing)
             if customer_id and body:
                 message_id = str(uuid.uuid4())
                 await db.messages.insert_one({
                     "_id": message_id,
                     "customer_id": customer_id,
                     "user_id": user["_id"],
-                    "direction": "incoming",
+                    "direction": direction,
                     "content": body,
                     "message_type": "text",
                     "from_number": from_number,
                     "created_at": datetime.utcnow(),
                 })
+                
+                # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
+                if from_me:
+                    return {"status": "ok"}
                 
                 # Auto-classify contact in background (customer vs supplier)
                 try:
@@ -3042,17 +3544,18 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
     
     messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", -1).to_list(limit)
     
-    return [
+    return serialize_doc([
         {
             "id": m["_id"],
             "customer_id": m["customer_id"],
             "direction": m["direction"],
             "content": m["content"],
             "message_type": m.get("message_type", "text"),
+            "status": m.get("status"),
             "created_at": m.get("created_at", m.get("timestamp"))
         }
         for m in messages
-    ]
+    ])
 
 @api_router.post("/customers/{customer_id}/messages")
 async def add_customer_message(customer_id: str, message: MessageCreate, user = Depends(get_current_user)):
@@ -3076,8 +3579,7 @@ async def add_customer_message(customer_id: str, message: MessageCreate, user = 
     
     # Update customer's last message and contacted time
     update_data = {"last_contacted": datetime.utcnow()}
-    if message.direction == "incoming":
-        update_data["last_message"] = message.content[:200]
+    update_data["last_message"] = message.content[:200]
     
     await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
     
@@ -3827,7 +4329,7 @@ async def get_products(
     
     products = await db.products.find(query).sort("created_at", -1).to_list(100)
     
-    return [
+    return serialize_doc([
         {
             "id": p["_id"],
             "name": p["name"],
@@ -3839,7 +4341,7 @@ async def get_products(
             "created_at": p["created_at"].isoformat()
         }
         for p in products
-    ]
+    ])
 
 @api_router.get("/products/{product_id}")
 async def get_product(product_id: str, user = Depends(get_current_user)):
@@ -3855,7 +4357,7 @@ async def get_product(product_id: str, user = Depends(get_current_user)):
     if orig and orig not in imgs:
         imgs.insert(0, orig)
     
-    return {
+    return serialize_doc({
         "id": product["_id"],
         "name": product.get("name", "Unnamed Product"),
         "price": product.get("price") or 0.0,
@@ -3867,7 +4369,7 @@ async def get_product(product_id: str, user = Depends(get_current_user)):
         "ai_suggested_name": product.get("ai_suggested_name"),
         "ai_confidence": product.get("ai_confidence"),
         "created_at": product.get("created_at", datetime.utcnow()).isoformat() if hasattr(product.get("created_at", datetime.utcnow()), 'isoformat') else str(product.get("created_at", ""))
-    }
+    })
 
 @api_router.put("/products/{product_id}")
 async def update_product(
@@ -4187,9 +4689,72 @@ app.include_router(api_router)
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
 
-# Startup event - recalculate customer totals
+# Startup event
 async def startup_tasks():
     """Run startup tasks"""
+
+    # ---- P1: Ensure database indexes ----
+    try:
+        logging.info("Ensuring database indexes...")
+
+        # Users
+        await db.users.create_index("phone_number", unique=True)
+
+        # Customers — most queried collection
+        await db.customers.create_index("user_id")
+        await db.customers.create_index([("user_id", 1), ("phone_number", 1)], unique=True)
+        await db.customers.create_index([("user_id", 1), ("last_contacted", 1)])
+        await db.customers.create_index([("user_id", 1), ("tags", 1)])
+        await db.customers.create_index([("user_id", 1), ("created_at", -1)])
+
+        # Messages
+        await db.messages.create_index("user_id")
+        await db.messages.create_index("customer_id")
+        await db.messages.create_index([("customer_id", 1), ("timestamp", -1)])
+        await db.messages.create_index([("user_id", 1), ("timestamp", -1)])
+
+        # Sales
+        await db.sales.create_index("user_id")
+        await db.sales.create_index("customer_id")
+        await db.sales.create_index([("user_id", 1), ("created_at", -1)])
+
+        # Follow-ups
+        await db.followups.create_index("user_id")
+        await db.followups.create_index([("user_id", 1), ("status", 1)])
+        await db.followups.create_index([("user_id", 1), ("reminder_date", 1)])
+        await db.followups.create_index("customer_id")
+
+        # Orders
+        await db.orders.create_index("user_id")
+        await db.orders.create_index("customer_id")
+
+        # Expenses
+        await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
+
+        # Products
+        await db.products.create_index("user_id")
+
+        # Broadcasts
+        await db.broadcasts.create_index([("user_id", 1), ("created_at", -1)])
+
+        # Customer analysis (AI insights)
+        await db.customer_analysis.create_index([("user_id", 1), ("analysis_date", -1)])
+        await db.customer_analysis.create_index("customer_id")
+
+        # Pending classifications
+        await db.pending_classifications.create_index("user_id")
+
+        # Transactions (IAP)
+        await db.transactions.create_index("user_id")
+        await db.transactions.create_index("purchase_token", unique=True, sparse=True)
+
+        # Pending catalogs
+        await db.pending_catalogs.create_index([("customer_id", 1), ("user_id", 1)])
+
+        logging.info("Database indexes ensured successfully")
+    except Exception as e:
+        logging.error(f"Failed to create indexes: {e}")
+
     # Recalculate customer totals from sales (Self-Healing)
     try:
         logging.info("Starting customer totals recalculation...")

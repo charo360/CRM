@@ -196,6 +196,14 @@ export const whatsappAPI = {
   },
 
   /**
+   * Sync WhatsApp contacts and chat history into the CRM
+   */
+  sync: async () => {
+    const response = await apiClient.post('/whatsapp/sync', {}, { timeout: 180000 });
+    return response.data;
+  },
+
+  /**
    * Disconnect WhatsApp instance
    */
   disconnect: async () => {
@@ -445,4 +453,23 @@ export const productsAPI = {
     });
     return response.data;
   }
+};
+
+// ============ ACCOUNT MANAGEMENT ============
+export const accountAPI = {
+  /**
+   * Permanently delete user account and all data (GDPR/CCPA)
+   */
+  deleteAccount: async () => {
+    const response = await apiClient.delete('/account');
+    return response.data;
+  },
+
+  /**
+   * Export all user data as JSON (GDPR data portability)
+   */
+  exportData: async () => {
+    const response = await apiClient.get('/account/export');
+    return response.data;
+  },
 };

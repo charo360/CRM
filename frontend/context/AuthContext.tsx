@@ -11,14 +11,32 @@ interface User {
   subscription_plan?: string;
 }
 
+interface WhatsAppStartResult {
+  success: boolean;
+  message?: string;
+  sessionToken?: string;
+  pairingCode?: string;
+  isNewUser?: boolean;
+  alreadyConnected?: boolean;
+  token?: string;
+}
+
+interface WhatsAppCheckResult {
+  success: boolean;
+  connected: boolean;
+  message?: string;
+  isNewUser?: boolean;
+}
+
 interface AuthContextType {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  sendOTP: (phone: string) => Promise<{ success: boolean; message?: string; devOtp?: string }>;
-  verifyOTP: (phone: string, code: string) => Promise<{ success: boolean; message?: string; isNewUser?: boolean }>;
-  register: (phone: string, businessName: string, ownerName?: string) => Promise<{ success: boolean; message?: string }>;
+  startWhatsAppAuth: (phone: string, countryCode?: string) => Promise<WhatsAppStartResult>;
+  checkWhatsAppAuth: (sessionToken: string) => Promise<WhatsAppCheckResult>;
+  refreshPairingCode: (sessionToken: string) => Promise<{ success: boolean; pairingCode?: string; message?: string }>;
+  register: (businessName: string, ownerName?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -59,64 +77,106 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const sendOTP = async (phone: string) => {
+  const startWhatsAppAuth = async (phone: string, countryCode?: string): Promise<WhatsAppStartResult> => {
     try {
-      const response = await apiClient.post('/auth/send-otp', { phone_number: phone });
-      return {
-        success: true,
-        devOtp: response.data.dev_otp // For development testing
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        message: error.response?.data?.detail || 'Failed to send OTP',
-      };
-    }
-  };
-
-  const verifyOTP = async (phone: string, code: string) => {
-    try {
-      const response = await apiClient.post('/auth/verify-otp', {
+      const response = await apiClient.post('/auth/whatsapp-start', {
         phone_number: phone,
-        code: code,
+        country_code: countryCode,
       });
 
-      const { token: newToken, is_new_user, user: userData } = response.data;
-
-      setToken(newToken);
-      await AsyncStorage.setItem('auth_token', newToken);
-      apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
-
-      if (!is_new_user && userData) {
-        setUser(userData);
+      // If user already has WhatsApp connected, backend returns token directly
+      if (response.data.status === 'success' && response.data.token) {
+        const newToken = response.data.token;
+        setToken(newToken);
+        await AsyncStorage.setItem('auth_token', newToken);
+        apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+        if (response.data.user) {
+          setUser(response.data.user);
+        }
+        return {
+          success: true,
+          alreadyConnected: true,
+          token: newToken,
+          isNewUser: response.data.is_new_user,
+        };
       }
 
+      // Normal pairing flow
       return {
         success: true,
-        isNewUser: is_new_user,
+        sessionToken: response.data.session_token,
+        pairingCode: response.data.pairing_code,
+        isNewUser: response.data.is_new_user,
       };
     } catch (error: any) {
       return {
         success: false,
-        message: error.response?.data?.detail || 'Verification failed',
+        message: error.response?.data?.detail || 'Failed to start WhatsApp pairing',
       };
     }
   };
 
-  const register = async (phone: string, businessName: string, ownerName?: string) => {
+  const checkWhatsAppAuth = async (sessionToken: string): Promise<WhatsAppCheckResult> => {
+    try {
+      const response = await apiClient.post('/auth/whatsapp-check', {
+        session_token: sessionToken,
+      });
+
+      if (response.data.connected && response.data.token) {
+        const newToken = response.data.token;
+        setToken(newToken);
+        await AsyncStorage.setItem('auth_token', newToken);
+        apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+
+        if (response.data.user) {
+          setUser(response.data.user);
+        }
+
+        return {
+          success: true,
+          connected: true,
+          isNewUser: response.data.is_new_user,
+        };
+      }
+
+      return { success: true, connected: false };
+    } catch (error: any) {
+      return {
+        success: false,
+        connected: false,
+        message: error.response?.data?.detail || 'Connection check failed',
+      };
+    }
+  };
+
+  const refreshPairingCode = async (sessionToken: string) => {
+    try {
+      const response = await apiClient.post('/auth/whatsapp-refresh', {
+        session_token: sessionToken,
+      });
+      return {
+        success: true,
+        pairingCode: response.data.pairing_code,
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        message: error.response?.data?.detail || 'Failed to refresh code',
+      };
+    }
+  };
+
+  const register = async (businessName: string, ownerName?: string) => {
     try {
       const response = await apiClient.post('/auth/register', {
-        phone_number: phone,
+        phone_number: user?.phone_number || '',
         business_name: businessName,
         owner_name: ownerName,
       });
 
-      const { token: newToken, user: userData } = response.data;
-
-      setToken(newToken);
-      await AsyncStorage.setItem('auth_token', newToken);
-      apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
-      setUser(userData);
+      if (response.data.user) {
+        setUser(response.data.user);
+      }
 
       return { success: true };
     } catch (error: any) {
@@ -150,8 +210,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         token,
         isAuthenticated: !!user,
         isLoading,
-        sendOTP,
-        verifyOTP,
+        startWhatsAppAuth,
+        checkWhatsAppAuth,
+        refreshPairingCode,
         register,
         logout,
         refreshUser,

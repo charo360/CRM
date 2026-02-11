@@ -32,6 +32,7 @@ interface Customer {
   total_spent: number;
   last_message: string | null;
   last_contacted: string | null;
+  profile_picture: string | null;
   created_at: string;
 }
 
@@ -796,6 +797,24 @@ export default function CustomersScreen() {
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
+  const CustomerAvatar = ({ customer }: { customer: Customer }) => {
+    const [imgError, setImgError] = React.useState(false);
+    if (customer.profile_picture && !imgError) {
+      return (
+        <Image
+          source={{ uri: customer.profile_picture }}
+          style={[styles.customerAvatar, styles.avatarImage]}
+          onError={() => setImgError(true)}
+        />
+      );
+    }
+    return (
+      <View style={[styles.customerAvatar, customer.tags.includes('VIP') && { backgroundColor: '#FFD700' }]}>
+        <Text style={styles.avatarText}>{customer.name.charAt(0).toUpperCase()}</Text>
+      </View>
+    );
+  };
+
   const renderCustomer = ({ item }: { item: Customer }) => (
     <TouchableOpacity
       style={styles.chatRow}
@@ -803,9 +822,7 @@ export default function CustomersScreen() {
       onLongPress={() => openEditModal(item)}
       delayLongPress={400}
     >
-      <View style={[styles.customerAvatar, item.tags.includes('VIP') && { backgroundColor: '#FFD700' }]}>
-        <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
-      </View>
+      <CustomerAvatar customer={item} />
       <View style={styles.chatRowContent}>
         <View style={styles.chatRowTop}>
           <Text style={styles.chatRowName} numberOfLines={1}>{item.name}</Text>
@@ -1917,6 +1934,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 14,
+  },
+  avatarImage: {
+    backgroundColor: '#1A2332',
   },
   avatarText: {
     fontSize: 20,

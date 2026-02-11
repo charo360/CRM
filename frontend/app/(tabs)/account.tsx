@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,13 +11,15 @@ import {
   Modal,
   Platform,
   TextInput,
+  Linking,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient, settingsAPI, whatsappAPI } from '../../context/api';
+import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/api';
 
 import { NotificationHandler } from '../../utils/notification-handler';
 
@@ -63,6 +65,11 @@ export default function AccountScreen() {
   const [waDisconnecting, setWaDisconnecting] = useState(false);
   const [waMsgSent, setWaMsgSent] = useState(0);
   const [waMsgLimit, setWaMsgLimit] = useState(50);
+  const [waCountdown, setWaCountdown] = useState(0);
+  const [waCopied, setWaCopied] = useState(false);
+  const waCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const waPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const waRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Daily Pulse state
   const [pulseEnabled, setPulseEnabled] = useState(false);
@@ -114,6 +121,80 @@ export default function AccountScreen() {
     }
   };
 
+  const clearWaTimers = useCallback(() => {
+    if (waCountdownRef.current) { clearInterval(waCountdownRef.current); waCountdownRef.current = null; }
+    if (waPollingRef.current) { clearInterval(waPollingRef.current); waPollingRef.current = null; }
+    if (waRefreshRef.current) { clearTimeout(waRefreshRef.current); waRefreshRef.current = null; }
+  }, []);
+
+  useEffect(() => {
+    return () => clearWaTimers();
+  }, [clearWaTimers]);
+
+  const startPairingTimers = useCallback((code: string) => {
+    clearWaTimers();
+    setWaPairingCode(code);
+    setWaCountdown(60);
+    setWaCopied(false);
+
+    // Copy to clipboard immediately
+    Clipboard.setStringAsync(code).then(() => {
+      setWaCopied(true);
+      setTimeout(() => setWaCopied(false), 2000);
+    });
+
+    // Countdown timer
+    waCountdownRef.current = setInterval(() => {
+      setWaCountdown(prev => {
+        if (prev <= 1) {
+          if (waCountdownRef.current) clearInterval(waCountdownRef.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Auto-refresh code at 50s (before 60s expiry)
+    waRefreshRef.current = setTimeout(async () => {
+      try {
+        const res = await whatsappAPI.connect(waPhoneInput.trim());
+        if (res.pairing_code) {
+          startPairingTimers(res.pairing_code);
+        }
+      } catch (e) {
+        console.log('Auto-refresh pairing code failed');
+      }
+    }, 50000);
+
+    // Poll for connection every 5s
+    waPollingRef.current = setInterval(async () => {
+      try {
+        const waRes = await whatsappAPI.getStatus();
+        if (waRes.connected) {
+          clearWaTimers();
+          setWaConnected(true);
+          setWaStatus(waRes.status);
+          setWaNumber(waRes.number || '');
+          setWaPairingCode('');
+          setWaMsgSent(waRes.messages_sent || 0);
+          setWaMsgLimit(waRes.messages_limit || 50);
+          Alert.alert('Connected!', 'WhatsApp linked successfully.');
+        }
+      } catch (e) { /* ignore */ }
+    }, 5000);
+  }, [clearWaTimers, waPhoneInput]);
+
+  const handleCopyCode = async () => {
+    if (!waPairingCode) return;
+    await Clipboard.setStringAsync(waPairingCode);
+    setWaCopied(true);
+    setTimeout(() => setWaCopied(false), 2000);
+  };
+
+  const handleOpenWhatsApp = () => {
+    Linking.openURL('whatsapp://settings');
+  };
+
   const handleWhatsAppConnect = async () => {
     if (!waPhoneInput.trim()) {
       Alert.alert('Error', 'Please enter your WhatsApp phone number');
@@ -124,7 +205,7 @@ export default function AccountScreen() {
     try {
       const res = await whatsappAPI.connect(waPhoneInput.trim());
       if (res.pairing_code) {
-        setWaPairingCode(res.pairing_code);
+        startPairingTimers(res.pairing_code);
       } else {
         Alert.alert('Error', res.message || 'Failed to get pairing code');
       }
@@ -335,21 +416,65 @@ export default function AccountScreen() {
                 <View style={{ height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2, marginTop: 6 }}>
                   <View style={{ height: 4, backgroundColor: waMsgSent / waMsgLimit > 0.9 ? '#FF4444' : '#25D366', borderRadius: 2, width: `${Math.min((waMsgSent / waMsgLimit) * 100, 100)}%` }} />
                 </View>
+                <TouchableOpacity
+                  style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 10, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12 }}
+                  onPress={async () => {
+                    try {
+                      Alert.alert('Syncing...', 'Pulling contacts and chat history from WhatsApp. This may take a few minutes...');
+                      const result = await whatsappAPI.sync();
+                      const c = result.contacts || {};
+                      const h = result.history || {};
+                      const t = result.totals || {};
+                      Alert.alert(
+                        'Sync Complete',
+                        `This sync: ${c.created || 0} new contacts, ${c.updated || 0} updated, ${h.chats_synced || 0} chats synced, ${h.messages_synced || 0} messages pulled\n\nTotal in app: ${t.customers || 0} contacts, ${t.messages || 0} messages (${t.synced_messages || 0} from WhatsApp history)\n\nAI classification running in background. Go to Customers tab to see your contacts and tap any to view chat history.`
+                      );
+                    } catch (e: any) {
+                      Alert.alert('Sync Failed', e.response?.data?.detail || e.message || 'Could not sync WhatsApp data. Try again.');
+                    }
+                  }}
+                >
+                  <Ionicons name="sync-outline" size={18} color="#25D366" />
+                  <Text style={{ color: '#25D366', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>Sync WhatsApp Contacts & Chats</Text>
+                </TouchableOpacity>
               </View>
             ) : waPairingCode ? (
               <View>
                 <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Enter this code in WhatsApp</Text>
-                <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 16 }}>
-                  Open WhatsApp {'>'} Settings {'>'} Linked Devices {'>'} Link a Device {'>'} Link with phone number
+                <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 12 }}>
+                  Open WhatsApp {'>'} Linked Devices {'>'} Link a Device {'>'} Link with phone number
                 </Text>
-                <View style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 16 }}>
-                  <Text style={{ color: '#25D366', fontSize: 32, fontWeight: '700', letterSpacing: 8 }}>{waPairingCode}</Text>
-                </View>
-                <Text style={{ color: '#8B9DC3', fontSize: 12, textAlign: 'center' }}>Code expires in 60 seconds. Waiting for connection...</Text>
-                <ActivityIndicator size="small" color="#25D366" style={{ marginTop: 12 }} />
                 <TouchableOpacity
-                  style={{ marginTop: 16, alignItems: 'center' }}
-                  onPress={() => { setWaPairingCode(''); setWaPhoneInput(''); }}
+                  onPress={handleCopyCode}
+                  activeOpacity={0.7}
+                  style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 8 }}
+                >
+                  <Text style={{ color: '#25D366', fontSize: 32, fontWeight: '700', letterSpacing: 8 }}>{waPairingCode}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
+                    <Ionicons name={waCopied ? 'checkmark-circle' : 'copy-outline'} size={16} color={waCopied ? '#25D366' : '#8B9DC3'} />
+                    <Text style={{ color: waCopied ? '#25D366' : '#8B9DC3', fontSize: 12, marginLeft: 6 }}>
+                      {waCopied ? 'Copied to clipboard!' : 'Tap to copy code'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: waCountdown > 10 ? '#25D366' : '#FF4444', marginRight: 8 }} />
+                  <Text style={{ color: waCountdown > 10 ? '#8B9DC3' : '#FF4444', fontSize: 12 }}>
+                    {waCountdown > 0 ? `Code refreshes in ${waCountdown}s` : 'Refreshing code...'}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={handleOpenWhatsApp}
+                  style={{ backgroundColor: '#25D366', borderRadius: 10, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}
+                >
+                  <Ionicons name="logo-whatsapp" size={20} color="#FFFFFF" />
+                  <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600', marginLeft: 8 }}>Open WhatsApp & Paste Code</Text>
+                </TouchableOpacity>
+                <ActivityIndicator size="small" color="#25D366" />
+                <Text style={{ color: '#8B9DC3', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection... Code auto-refreshes.</Text>
+                <TouchableOpacity
+                  style={{ marginTop: 14, alignItems: 'center' }}
+                  onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaPhoneInput(''); }}
                 >
                   <Text style={{ color: '#8B9DC3', fontSize: 14 }}>Cancel</Text>
                 </TouchableOpacity>
@@ -625,6 +750,70 @@ export default function AccountScreen() {
           />
         )}
 
+        {/* Data & Account Management */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Data & Privacy</Text>
+
+          <TouchableOpacity
+            style={styles.dataButton}
+            onPress={async () => {
+              try {
+                Alert.alert('Exporting...', 'Preparing your data export.');
+                const data = await accountAPI.exportData();
+                await Clipboard.setStringAsync(JSON.stringify(data, null, 2));
+                Alert.alert('Exported!', 'Your data has been copied to clipboard as JSON.');
+              } catch (e: any) {
+                Alert.alert('Error', e.response?.data?.detail || 'Failed to export data');
+              }
+            }}
+          >
+            <Ionicons name="download-outline" size={22} color="#25D366" />
+            <Text style={styles.dataButtonText}>Export My Data</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.dataButton, { borderColor: '#FF4444' }]}
+            onPress={() => {
+              Alert.alert(
+                'Delete Account',
+                'This will permanently delete your account and ALL data (customers, messages, sales, products). This cannot be undone.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete Forever',
+                    style: 'destructive',
+                    onPress: () => {
+                      Alert.alert(
+                        'Are you absolutely sure?',
+                        'Type DELETE to confirm.',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Yes, Delete Everything',
+                            style: 'destructive',
+                            onPress: async () => {
+                              try {
+                                await accountAPI.deleteAccount();
+                                await logout();
+                                router.replace('/');
+                              } catch (e: any) {
+                                Alert.alert('Error', e.response?.data?.detail || 'Failed to delete account');
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    },
+                  },
+                ]
+              );
+            }}
+          >
+            <Ionicons name="trash-outline" size={22} color="#FF4444" />
+            <Text style={[styles.dataButtonText, { color: '#FF4444' }]}>Delete Account</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Logout */}
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={24} color="#FF4444" />
@@ -864,6 +1053,22 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     color: '#FFFFFF',
+    marginLeft: 10,
+  },
+  dataButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D1B2A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1A2942',
+    padding: 14,
+    marginBottom: 10,
+  },
+  dataButtonText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#25D366',
     marginLeft: 10,
   },
   logoutButton: {

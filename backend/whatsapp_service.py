@@ -62,12 +62,13 @@ class WhatsAppService:
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
 
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=60) as client:
                 # Step 1: Create instance
                 create_payload = {
                     "instanceName": instance_name,
                     "token": str(uuid.uuid4()),
                     "number": clean_number,
+                    "qrcode": True,
                     "integration": "WHATSAPP-BAILEYS",
                     "reject_call": False,
                     "groupsIgnore": True,
@@ -88,7 +89,41 @@ class WhatsAppService:
                         logger.error(f"Failed to create instance: {error_detail}")
                         return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}
 
-                # Step 2: Request pairing code
+                # Step 1b: Configure webhook so we receive messages in real-time
+                # Evolution API runs in Docker, so use host.docker.internal
+                webhook_base = os.environ.get(
+                    'WEBHOOK_BASE_URL',
+                    'http://host.docker.internal:8000'
+                )
+                webhook_payload = {
+                    "webhook": {
+                        "enabled": True,
+                        "url": f"{webhook_base}/api/webhooks/evolution",
+                        "webhookByEvents": False,
+                        "webhookBase64": False,
+                        "events": [
+                            "MESSAGES_UPSERT",
+                            "MESSAGES_UPDATE",
+                            "CONNECTION_UPDATE",
+                        ]
+                    }
+                }
+                try:
+                    wh_resp = await client.post(
+                        f"{self.base_url}/webhook/set/{instance_name}",
+                        json=webhook_payload,
+                        headers=self._headers(),
+                    )
+                    if wh_resp.status_code in (200, 201):
+                        logger.info(f"Webhook configured for {instance_name}")
+                    else:
+                        logger.warning(f"Failed to set webhook for {instance_name}: {wh_resp.status_code} {wh_resp.text}")
+                except Exception as wh_err:
+                    logger.warning(f"Webhook setup error for {instance_name}: {wh_err}")
+
+                # Step 2: Wait for Baileys WebSocket to establish before requesting pairing code
+                await asyncio.sleep(10)
+
                 code_resp = await client.get(
                     f"{self.base_url}/instance/connect/{instance_name}",
                     params={"number": clean_number},
@@ -100,7 +135,7 @@ class WhatsAppService:
                     return {"status": "error", "message": "Failed to generate pairing code"}
 
                 code_data = code_resp.json()
-                pairing_code = code_data.get("code") or code_data.get("pairingCode", "")
+                pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
 
                 # Step 3: Store instance info in user record
                 await self.db.users.update_one(
@@ -231,12 +266,14 @@ class WhatsAppService:
             "user_id": user_id,
             "direction": "outgoing",
             "created_at": {"$gte": month_start},
+            "synced_from_history": {"$ne": True},
         })
 
         daily_count = await self.db.messages.count_documents({
             "user_id": user_id,
             "direction": "outgoing",
             "created_at": {"$gte": day_start},
+            "synced_from_history": {"$ne": True},
         })
 
         if daily_count >= DAILY_MESSAGE_LIMIT:
@@ -329,6 +366,19 @@ class WhatsAppService:
                     "business_initiated": True,
                 })
                 created_new = True
+                # Fetch profile picture in background for new contact
+                async def _fetch_pic_bg(uid, cid, phone):
+                    try:
+                        pic_url = await self.fetch_profile_picture(uid, phone)
+                        if pic_url:
+                            await self.db.customers.update_one(
+                                {"_id": cid},
+                                {"$set": {"profile_picture": pic_url}}
+                            )
+                            logger.info(f"Profile picture set for new contact {phone}")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch profile pic for {phone}: {e}")
+                asyncio.create_task(_fetch_pic_bg(user_id, customer_id, to_number))
 
             # Step 2: Store message in DB
             message_id = str(uuid.uuid4())
@@ -348,10 +398,13 @@ class WhatsAppService:
                 message_doc["image_url"] = media_url
             await self.db.messages.insert_one(message_doc)
 
-            # Step 3: Update customer last_contacted
+            # Step 3: Update customer last_contacted and last_message
             await self.db.customers.update_one(
                 {"_id": customer_id},
-                {"$set": {"last_contacted": datetime.utcnow()}}
+                {"$set": {
+                    "last_contacted": datetime.utcnow(),
+                    "last_message": message[:200],
+                }}
             )
 
             # Step 4: Send via Evolution API
@@ -377,7 +430,7 @@ class WhatsAppService:
                         # Send text message
                         payload = {
                             "number": clean_to,
-                            "textMessage": {"text": message},
+                            "text": message,
                         }
                         resp = await client.post(
                             f"{self.base_url}/message/sendText/{instance_name}",
@@ -556,7 +609,9 @@ class WhatsAppService:
             logger.info(f"Instance {instance_name} disconnected for user {user['_id']}")
 
     async def handle_incoming_message(self, instance_name: str, data: Dict):
-        """Handle messages.upsert webhook from Evolution API"""
+        """Handle messages.upsert webhook from Evolution API.
+        Captures BOTH incoming and outgoing messages so AI has full conversation context.
+        """
         # Find the business user who owns this instance
         user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
         if not user:
@@ -568,15 +623,17 @@ class WhatsAppService:
         key = msg.get("key", {})
         from_me = key.get("fromMe", False)
 
-        if from_me:
-            return  # Ignore our own outgoing messages
-
-        # Extract sender info
+        # Extract sender/recipient info
         remote_jid = key.get("remoteJid", "")
+
+        # Skip group messages (only handle 1:1 chats)
+        if "@g.us" in remote_jid:
+            return
+
         # Convert JID to phone number (remove @s.whatsapp.net)
-        from_number = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
-        if from_number and not from_number.startswith("+"):
-            from_number = f"+{from_number}"
+        contact_number = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
+        if contact_number and not contact_number.startswith("+"):
+            contact_number = f"+{contact_number}"
 
         # Get message content
         message_data = msg.get("message", {})
@@ -589,20 +646,517 @@ class WhatsAppService:
 
         push_name = msg.get("pushName", "")
 
-        if not from_number or not body:
+        if not contact_number or not body:
             return
 
         return {
             "user": user,
-            "from_number": from_number,
+            "from_number": contact_number,
             "body": body,
             "push_name": push_name,
             "remote_jid": remote_jid,
+            "from_me": from_me,
         }
+
+    async def handle_message_update(self, instance_name: str, data: Dict):
+        """Handle messages.update webhook — updates message status (sent/delivered/read).
+        Evolution API sends status updates with ack levels:
+          1 = sent (server), 2 = delivered, 3 = read, 4 = played (audio)
+        """
+        logger.info(f"handle_message_update called, data type={type(data).__name__}")
+        
+        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        if not user:
+            logger.warning(f"No user for instance {instance_name}")
+            return
+
+        # data can be a list of updates or a single update
+        updates = data if isinstance(data, list) else [data]
+        logger.info(f"Processing {len(updates)} status updates")
+        for update in updates:
+            logger.info(f"Update keys: {list(update.keys()) if isinstance(update, dict) else type(update)}")
+            
+            # Evolution API sends flat format: keyId, remoteJid, fromMe, status at top level
+            # OR nested format with key: {remoteJid, id, fromMe}
+            key = update.get("key")
+            if isinstance(key, dict):
+                remote_jid = key.get("remoteJid", "")
+                msg_id_field = key.get("id", "")
+                from_me = key.get("fromMe", False)
+            else:
+                # Flat format
+                remote_jid = update.get("remoteJid", "")
+                msg_id_field = update.get("keyId", "")
+                from_me = update.get("fromMe", False)
+
+            logger.info(f"remoteJid={remote_jid}, fromMe={from_me}, msgId={msg_id_field}")
+            # Only track status for outgoing messages
+            if not from_me:
+                logger.info("Skipping: not fromMe")
+                continue
+
+            # Map ack level to status
+            ack = update.get("status")
+            if ack is None:
+                ack = update.get("update", {}).get("status")
+            logger.info(f"ack={ack!r}, type={type(ack).__name__ if ack is not None else 'NoneType'}")
+            
+            # Evolution API uses different formats
+            if isinstance(ack, str):
+                status_map = {
+                    "SERVER_ACK": "sent",
+                    "DELIVERY_ACK": "delivered",
+                    "READ": "read",
+                    "PLAYED": "read",
+                }
+                new_status = status_map.get(ack, ack.lower())
+            elif isinstance(ack, int):
+                ack_map = {0: "pending", 1: "sent", 2: "delivered", 3: "read", 4: "read"}
+                new_status = ack_map.get(ack, "sent")
+            else:
+                continue
+
+            # Match by evo_message_id (the WhatsApp message ID stored when we sent the message)
+            if msg_id_field:
+                result = await self.db.messages.update_one(
+                    {
+                        "user_id": user["_id"],
+                        "evo_message_id": msg_id_field,
+                        "direction": "outgoing",
+                    },
+                    {"$set": {"status": new_status}}
+                )
+                logger.info(f"Updated message evo_message_id={msg_id_field} to status={new_status}, matched={result.matched_count}")
+            else:
+                logger.warning(f"No message ID in update payload, skipping")
+
+    async def fetch_profile_picture(self, user_id: str, phone_number: str) -> Optional[str]:
+        """Fetch a contact's WhatsApp profile picture URL via Evolution API.
+        Returns URL string on success, None on failure/not-found.
+        Raises ConnectionError if the instance doesn't exist (caller should stop retrying).
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        wa = user.get("whatsapp") if user else None
+        if not wa or not wa.get("instance_name"):
+            return None
+
+        instance_name = wa["instance_name"]
+        clean_number = phone_number.lstrip("+").replace(" ", "").replace("-", "")
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.base_url}/chat/fetchProfilePictureUrl/{instance_name}",
+                    headers=self._headers(),
+                    json={"number": clean_number},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pic_url = data.get("profilePictureUrl") or data.get("profilePicUrl") or data.get("url")
+                    return pic_url
+                if resp.status_code == 404:
+                    # Instance doesn't exist in Evolution API — no point retrying
+                    body = resp.text
+                    if "instance does not exist" in body.lower():
+                        raise ConnectionError(f"Instance {instance_name} does not exist in Evolution API")
+                    # 404 for the contact's picture is normal (no profile pic set)
+                    return None
+        except ConnectionError:
+            raise  # Re-raise so callers can handle instance-not-found
+        except Exception as e:
+            logger.debug(f"Could not fetch profile pic for {phone_number}: {e}")
+        return None
+
+    async def fetch_profile_pictures_bulk(self, user_id: str) -> Dict:
+        """Fetch profile pictures for all customers missing them.
+        
+        Strategy:
+        1. Use findContacts (single API call) to get all cached profile pics from Evolution API
+        2. Match by phone number and update customers in our DB
+        3. For remaining customers still missing pics, try fetchProfilePictureUrl individually
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        wa = user.get("whatsapp") if user else None
+        if not wa or not wa.get("instance_name"):
+            return {"updated": 0}
+
+        instance_name = wa["instance_name"]
+        updated = 0
+
+        # --- Phase 1: Bulk update from findContacts cache ---
+        evo_pics = {}  # phone -> pic_url
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{self.base_url}/chat/findContacts/{instance_name}",
+                    headers=self._headers(),
+                    json={"where": {}},
+                )
+                if resp.status_code == 200:
+                    contacts = resp.json()
+                    for c in contacts:
+                        pic_url = c.get("profilePicUrl")
+                        if not pic_url:
+                            continue
+                        remote_jid = c.get("remoteJid") or ""
+                        if "@s.whatsapp.net" in remote_jid:
+                            phone = remote_jid.replace("@s.whatsapp.net", "")
+                            evo_pics[phone] = pic_url
+                    logger.info(f"findContacts returned {len(contacts)} contacts, {len(evo_pics)} with profile pics")
+                elif resp.status_code == 404 and "instance does not exist" in resp.text.lower():
+                    logger.warning(f"Instance {instance_name} not found, skipping bulk profile fetch")
+                    return {"updated": 0}
+                else:
+                    logger.warning(f"findContacts returned {resp.status_code}, skipping cache phase")
+        except Exception as e:
+            logger.warning(f"findContacts failed: {e}")
+
+        # Get customers missing profile pictures
+        customers = await self.db.customers.find(
+            {"user_id": user_id, "phone_number": {"$exists": True},
+             "$or": [{"profile_picture": None}, {"profile_picture": {"$exists": False}}, {"profile_picture": ""}]},
+            {"_id": 1, "phone_number": 1}
+        ).to_list(None)
+
+        if not customers:
+            logger.info(f"All customers already have profile pictures (user {user_id})")
+            return {"updated": 0}
+
+        logger.info(f"{len(customers)} customers missing profile pictures")
+
+        # Match customers to cached pics
+        still_missing = []
+        for cust in customers:
+            phone = cust.get("phone_number", "").lstrip("+").replace(" ", "").replace("-", "")
+            if not phone:
+                continue
+            pic_url = evo_pics.get(phone)
+            if pic_url:
+                await self.db.customers.update_one(
+                    {"_id": cust["_id"]},
+                    {"$set": {"profile_picture": pic_url}}
+                )
+                updated += 1
+            else:
+                still_missing.append(cust)
+
+        logger.info(f"Phase 1 (findContacts cache): updated {updated} customers")
+
+        # --- Phase 2: Individual fetch for remaining (capped to avoid spam) ---
+        MAX_INDIVIDUAL = 50
+        errors = 0
+        phase2_updated = 0
+        for cust in still_missing[:MAX_INDIVIDUAL]:
+            phone = cust.get("phone_number", "").lstrip("+").replace(" ", "").replace("-", "")
+            if not phone:
+                continue
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.post(
+                        f"{self.base_url}/chat/fetchProfilePictureUrl/{instance_name}",
+                        headers=self._headers(),
+                        json={"number": phone},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        pic_url = data.get("profilePictureUrl") or data.get("profilePicUrl") or data.get("url")
+                        if pic_url:
+                            await self.db.customers.update_one(
+                                {"_id": cust["_id"]},
+                                {"$set": {"profile_picture": pic_url}}
+                            )
+                            phase2_updated += 1
+                    elif resp.status_code == 404 and "instance does not exist" in resp.text.lower():
+                        logger.warning(f"Instance {instance_name} gone, aborting individual fetch")
+                        break
+                    else:
+                        errors += 1
+            except Exception:
+                errors += 1
+
+            await asyncio.sleep(0.3)
+            if errors >= 5:
+                logger.warning(f"Too many errors in phase 2, stopping early")
+                break
+
+        updated += phase2_updated
+        logger.info(f"Phase 2 (individual fetch): updated {phase2_updated}, errors: {errors}")
+        logger.info(f"Total profile pictures updated: {updated} (user {user_id})")
+        return {"updated": updated, "errors": errors}
 
     async def find_user_by_instance(self, instance_name: str) -> Optional[Dict]:
         """Find user by their Evolution API instance name"""
         return await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+
+    # ============ CONTACT & HISTORY SYNC ============
+
+    async def fetch_contacts(self, user_id: str) -> Dict:
+        """
+        Fetch all WhatsApp contacts from Evolution API and create them in the CRM.
+        Called once after initial WhatsApp connection to seed the contact list.
+        Uses POST /chat/findContacts/{instance} endpoint.
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "phone_number": 1})
+        wa = user.get("whatsapp") if user else None
+        if not wa or not wa.get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = wa["instance_name"]
+        own_number = (user.get("phone_number") or "").lstrip("+")
+        created = 0
+        updated = 0
+        skipped = 0
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{self.base_url}/chat/findContacts/{instance_name}",
+                    headers=self._headers(),
+                    json={},
+                )
+
+                if resp.status_code != 200:
+                    logger.error(f"Failed to fetch contacts: {resp.status_code} {resp.text}")
+                    return {"status": "error", "message": "Failed to fetch contacts from WhatsApp"}
+
+                contacts = resp.json()
+                if not isinstance(contacts, list):
+                    contacts = contacts.get("data", contacts.get("contacts", []))
+
+                for contact in contacts:
+                    # Extract phone from remoteJid
+                    jid = contact.get("remoteJid", "")
+                    if not jid or "@g.us" in jid or "status@" in jid or "0@s.whatsapp.net" == jid:
+                        continue  # Skip groups, status broadcasts, system contacts
+                    phone = jid.split("@")[0] if "@" in jid else jid
+                    if not phone or not phone.isdigit():
+                        continue
+                    # Skip own number
+                    if phone == own_number:
+                        continue
+                    phone = f"+{phone}"
+
+                    name = (
+                        contact.get("pushName")
+                        or contact.get("name")
+                        or contact.get("notify")
+                        or f"Contact {phone[-4:]}"
+                    )
+
+                    # Check if contact already exists
+                    existing = await self.db.customers.find_one({
+                        "user_id": user_id,
+                        "phone_number": phone
+                    })
+                    if existing:
+                        # Mark existing contact as synced so chat history gets pulled
+                        if not existing.get("synced_from_whatsapp"):
+                            await self.db.customers.update_one(
+                                {"_id": existing["_id"]},
+                                {"$set": {"synced_from_whatsapp": True}}
+                            )
+                            updated += 1
+                        else:
+                            skipped += 1
+                        continue
+
+                    await self.db.customers.insert_one({
+                        "_id": str(uuid.uuid4()),
+                        "user_id": user_id,
+                        "name": name,
+                        "phone_number": phone,
+                        "notes": "",
+                        "tags": ["New"],
+                        "purchase_count": 0,
+                        "total_spent": 0.0,
+                        "last_message": None,
+                        "last_contacted": None,
+                        "created_at": datetime.utcnow(),
+                        "auto_created": True,
+                        "synced_from_whatsapp": True,
+                    })
+                    created += 1
+
+            logger.info(f"Contact sync for user {user_id}: {created} created, {updated} updated, {skipped} already synced")
+            return {"status": "success", "created": created, "updated": updated, "skipped": skipped}
+
+        except httpx.ConnectError:
+            return {"status": "error", "message": "Evolution API not reachable"}
+        except Exception as e:
+            logger.error(f"Error fetching contacts: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def fetch_chat_history(self, user_id: str, max_messages_per_chat: int = 50) -> Dict:
+        """
+        Fetch recent chat history from Evolution API for all contacts.
+        Called once after initial WhatsApp connection to populate past conversations.
+        Uses POST /chat/findChats and POST /chat/findMessages endpoints.
+        Evolution API returns messages as: {"messages": {"total": N, "records": [...]}}
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "phone_number": 1})
+        wa = user.get("whatsapp") if user else None
+        if not wa or not wa.get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = wa["instance_name"]
+        own_number = (user.get("phone_number") or "").lstrip("+")
+        total_messages = 0
+        chats_synced = 0
+
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                # Step 1: Get list of chats via POST
+                chats_resp = await client.post(
+                    f"{self.base_url}/chat/findChats/{instance_name}",
+                    headers=self._headers(),
+                    json={},
+                )
+
+                if chats_resp.status_code != 200:
+                    logger.error(f"Failed to fetch chats: {chats_resp.status_code} {chats_resp.text}")
+                    return {"status": "error", "message": "Failed to fetch chat list"}
+
+                chats = chats_resp.json()
+                if not isinstance(chats, list):
+                    chats = chats.get("data", chats.get("chats", []))
+
+                for chat in chats:
+                    chat_jid = chat.get("remoteJid", "")
+                    if not chat_jid or "@g.us" in chat_jid or "status@" in chat_jid:
+                        continue  # Skip groups and status broadcasts
+
+                    phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+                    if not phone or not phone.isdigit():
+                        continue
+                    # Skip own number
+                    if phone == own_number:
+                        continue
+                    phone = f"+{phone}"
+
+                    # Find or create customer record
+                    customer = await self.db.customers.find_one({
+                        "user_id": user_id,
+                        "phone_number": phone
+                    })
+                    if not customer:
+                        # Auto-create from chat
+                        push_name = chat.get("pushName") or f"Contact {phone[-4:]}"
+                        customer_id = str(uuid.uuid4())
+                        customer = {
+                            "_id": customer_id,
+                            "user_id": user_id,
+                            "name": push_name,
+                            "phone_number": phone,
+                            "notes": "",
+                            "tags": ["New"],
+                            "purchase_count": 0,
+                            "total_spent": 0.0,
+                            "last_message": None,
+                            "last_contacted": None,
+                            "created_at": datetime.utcnow(),
+                            "auto_created": True,
+                            "synced_from_whatsapp": True,
+                        }
+                        await self.db.customers.insert_one(customer)
+
+                    # Skip only if we already synced history for this customer
+                    already_synced = await self.db.messages.count_documents({
+                        "customer_id": customer["_id"],
+                        "user_id": user_id,
+                        "synced_from_history": True
+                    })
+                    if already_synced > 0:
+                        continue  # History already pulled for this contact
+
+                    # Step 2: Fetch messages for this chat
+                    try:
+                        msgs_resp = await client.post(
+                            f"{self.base_url}/chat/findMessages/{instance_name}",
+                            headers=self._headers(),
+                            json={
+                                "where": {"key": {"remoteJid": chat_jid}},
+                                "limit": max_messages_per_chat,
+                            },
+                        )
+
+                        if msgs_resp.status_code != 200:
+                            continue
+
+                        raw = msgs_resp.json()
+                        # Evolution API returns: {"messages": {"total": N, "pages": N, "records": [...]}}
+                        if isinstance(raw, dict):
+                            msg_container = raw.get("messages", raw)
+                            if isinstance(msg_container, dict):
+                                records = msg_container.get("records", [])
+                            elif isinstance(msg_container, list):
+                                records = msg_container
+                            else:
+                                records = []
+                        elif isinstance(raw, list):
+                            records = raw
+                        else:
+                            records = []
+
+                        last_body = None
+                        for msg in records:
+                            key = msg.get("key", {})
+                            from_me = key.get("fromMe", False)
+                            msg_data = msg.get("message", {})
+                            body = (
+                                msg_data.get("conversation")
+                                or msg_data.get("extendedTextMessage", {}).get("text")
+                                or msg_data.get("imageMessage", {}).get("caption")
+                                or ""
+                            )
+                            if not body:
+                                continue
+
+                            # Parse timestamp
+                            ts = msg.get("messageTimestamp")
+                            if isinstance(ts, (int, float)):
+                                msg_time = datetime.utcfromtimestamp(ts)
+                            else:
+                                msg_time = datetime.utcnow()
+
+                            direction = "outgoing" if from_me else "incoming"
+
+                            await self.db.messages.insert_one({
+                                "_id": str(uuid.uuid4()),
+                                "customer_id": customer["_id"],
+                                "user_id": user_id,
+                                "direction": direction,
+                                "content": body,
+                                "message_type": "text",
+                                "from_number": phone if not from_me else user.get("phone_number", ""),
+                                "created_at": msg_time,
+                                "synced_from_history": True,
+                            })
+                            total_messages += 1
+                            last_body = body
+
+                        # Update customer's last message
+                        if last_body:
+                            await self.db.customers.update_one(
+                                {"_id": customer["_id"]},
+                                {"$set": {
+                                    "last_message": last_body[:200],
+                                    "last_contacted": datetime.utcnow(),
+                                }}
+                            )
+                        chats_synced += 1
+
+                    except Exception as chat_err:
+                        logger.error(f"Error fetching messages for {phone}: {chat_err}")
+                        continue
+
+            logger.info(f"Chat history sync for user {user_id}: {chats_synced} chats, {total_messages} messages")
+            return {"status": "success", "chats_synced": chats_synced, "messages_synced": total_messages}
+
+        except httpx.ConnectError:
+            return {"status": "error", "message": "Evolution API not reachable"}
+        except Exception as e:
+            logger.error(f"Error fetching chat history: {e}")
+            return {"status": "error", "message": str(e)}
 
 
 # Singleton instance

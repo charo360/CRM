@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +37,8 @@ export default function CustomerProfileScreen() {
   const [purchaseCount, setPurchaseCount] = useState(0);
   const [totalSpent, setTotalSpent] = useState(0);
   const [currency, setCurrency] = useState('USD');
+  const [profilePicture, setProfilePicture] = useState<string | null>(null);
+  const [imgError, setImgError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showTagInput, setShowTagInput] = useState(false);
@@ -59,6 +62,8 @@ export default function CustomerProfileScreen() {
       setTags(c.tags || []);
       setPurchaseCount(c.purchase_count || 0);
       setTotalSpent(c.total_spent || 0);
+      setProfilePicture(c.profile_picture || null);
+      setImgError(false);
       if (settingsRes.data?.currency) setCurrency(settingsRes.data.currency);
     } catch (error) {
       console.error('Error fetching customer:', error);
@@ -154,9 +159,17 @@ export default function CustomerProfileScreen() {
       <ScrollView ref={scrollRef} style={styles.content} keyboardShouldPersistTaps="handled">
         {/* Avatar + Name */}
         <View style={styles.profileSection}>
-          <View style={styles.avatarLarge}>
-            <Text style={styles.avatarLargeText}>{name.charAt(0).toUpperCase()}</Text>
-          </View>
+          {profilePicture && !imgError ? (
+            <Image
+              source={{ uri: profilePicture }}
+              style={styles.avatarLargeImage}
+              onError={() => setImgError(true)}
+            />
+          ) : (
+            <View style={styles.avatarLarge}>
+              <Text style={styles.avatarLargeText}>{name.charAt(0).toUpperCase()}</Text>
+            </View>
+          )}
           <Text style={styles.phoneText}>{customerPhone}</Text>
           {purchaseCount > 0 && (
             <Text style={styles.statsText}>
@@ -300,6 +313,13 @@ const styles = StyleSheet.create({
     fontSize: 34,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  avatarLargeImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    marginBottom: 12,
+    backgroundColor: '#1A2332',
   },
   phoneText: {
     fontSize: 16,

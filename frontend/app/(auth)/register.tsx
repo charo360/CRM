@@ -18,13 +18,13 @@ import { settingsAPI } from '../../context/api';
 import { COUNTRIES } from '../../components/CountryPicker';
 
 export default function RegisterScreen() {
-  const { phone, countryCode } = useLocalSearchParams<{ phone: string; countryCode: string }>();
+  const { countryCode } = useLocalSearchParams<{ countryCode: string }>();
   const country = COUNTRIES.find(c => c.code === (countryCode || 'US'));
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { register } = useAuth();
+  const { register, user } = useAuth();
 
   const handleRegister = async () => {
     if (!businessName.trim()) {
@@ -34,7 +34,7 @@ export default function RegisterScreen() {
 
     setLoading(true);
     try {
-      const result = await register(phone!, businessName, ownerName);
+      const result = await register(businessName, ownerName);
       if (result.success) {
         // Save country and currency settings
         if (country) {
@@ -63,11 +63,11 @@ export default function RegisterScreen() {
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.content}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
-
           <View style={styles.header}>
+            <View style={styles.connectedBadge}>
+              <Ionicons name="checkmark-circle" size={20} color="#25D366" />
+              <Text style={styles.connectedText}>WhatsApp Connected</Text>
+            </View>
             <Text style={styles.title}>Setup Business</Text>
             <Text style={styles.subtitle}>
               Tell us about your business to get started
@@ -85,6 +85,7 @@ export default function RegisterScreen() {
                   onChangeText={setBusinessName}
                   placeholder="e.g., Jane's Boutique"
                   placeholderTextColor="#666"
+                  autoFocus
                 />
               </View>
             </View>
@@ -103,10 +104,12 @@ export default function RegisterScreen() {
               </View>
             </View>
 
-            <View style={styles.phoneDisplay}>
-              <Text style={styles.phoneLabel}>Phone Number</Text>
-              <Text style={styles.phoneValue}>{phone}</Text>
-            </View>
+            {user?.phone_number ? (
+              <View style={styles.phoneDisplay}>
+                <Text style={styles.phoneLabel}>WhatsApp Number</Text>
+                <Text style={styles.phoneValue}>{user.phone_number}</Text>
+              </View>
+            ) : null}
 
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
@@ -152,13 +155,23 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 24,
+    paddingTop: 80,
   },
-  backButton: {
-    marginTop: 48,
-    marginBottom: 24,
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
+  connectedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(37,211,102,0.1)',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignSelf: 'flex-start',
+    marginBottom: 16,
+  },
+  connectedText: {
+    color: '#25D366',
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 6,
   },
   header: {
     marginBottom: 32,
