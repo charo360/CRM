@@ -537,7 +537,8 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                 to_number=customer["phone_number"],
                 message=personalized_message,
                 customer_name=customer.get("name"),
-                media_url=first_image
+                media_url=first_image,
+                send_context="broadcast",
             )
             
             # 2. Send remaining images
@@ -546,14 +547,20 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                     await whatsapp_service.send_message(
                         user_id=user_id,
                         to_number=customer["phone_number"],
-                        message="", # Empty caption/message for additional images
+                        message="",
                         customer_name=customer.get("name"),
-                        media_url=img_url
+                        media_url=img_url,
+                        send_context="broadcast",
                     )
 
             sent_count += 1
         except Exception as e:
             logging.error(f"Failed to send to {customer['phone_number']}: {e}")
+        
+        # Randomized delay between broadcast recipients
+        from whatsapp_service import BROADCAST_DELAY
+        import random as _rnd
+        await asyncio.sleep(_rnd.uniform(*BROADCAST_DELAY))
     
     # Update broadcast status
     await db.broadcasts.update_one(
@@ -1620,7 +1627,8 @@ Thank you for shopping with {business} 🙏"""
                 user_id=user_id,
                 to_number=phone,
                 message=message,
-                customer_name=name
+                customer_name=name,
+                send_context="auto_reply",
             )
         
         # Update receipt status
@@ -2116,7 +2124,8 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                 to_number=customer["phone_number"],
                 message=personalized_message,
                 customer_name=customer.get("name"),
-                media_url=image_url
+                media_url=image_url,
+                send_context="broadcast",
             )
             sent_count += 1
         except Exception as e:
@@ -3230,7 +3239,8 @@ async def evolution_webhook(request: Request):
                                 user_id=user["_id"],
                                 to_number=from_number,
                                 message=confirm_msg,
-                                customer_name=customer_name
+                                customer_name=customer_name,
+                                send_context="order_confirm",
                             )
                         except Exception as e:
                             logging.error(f"Failed to send order confirmation: {e}")
@@ -3296,7 +3306,8 @@ async def evolution_webhook(request: Request):
                                 user_id=user["_id"],
                                 to_number=from_number,
                                 message=reply_text,
-                                customer_name=c_name
+                                customer_name=c_name,
+                                send_context="auto_reply",
                             )
                             logging.info(f"Auto-replied to {c_name} ({from_number})")
                         
@@ -3790,7 +3801,8 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
             user_id=user["_id"],
             to_number=phone,
             message=request.message,
-            customer_name=customer.get("name")
+            customer_name=customer.get("name"),
+            send_context="auto_reply",
         )
     except Exception as e:
         logging.error(f"Auto-reply WhatsApp send failed: {e}")
@@ -3999,7 +4011,8 @@ async def send_daily_pulse(user = Depends(get_current_user)):
             user_id=user["_id"],
             to_number=phone,
             message=message,
-            customer_name=user.get("owner_name", "Business Owner")
+            customer_name=user.get("owner_name", "Business Owner"),
+            send_context="auto_reply",
         )
         return {"status": "success", "message": "Daily pulse sent!", "preview": message}
     except Exception as e:
@@ -4043,7 +4056,8 @@ async def run_daily_pulse_scheduler():
                         user_id=user["_id"],
                         to_number=phone,
                         message=message,
-                        customer_name=user.get("owner_name", "Business Owner")
+                        customer_name=user.get("owner_name", "Business Owner"),
+                        send_context="auto_reply",
                     )
                     
                     # Mark as sent today
@@ -4472,7 +4486,8 @@ async def send_product_to_customer(
         to_number=customer["phone_number"],
         message=message_text,
         customer_name=customer.get("name"),
-        media_url=full_image_url
+        media_url=full_image_url,
+        send_context="manual",
     )
     
     # Store as pending catalog so "Yes"/"Order" auto-creates the order
@@ -4555,7 +4570,8 @@ async def send_catalog_to_customer(
         to_number=customer["phone_number"],
         message=message_text,
         customer_name=customer.get("name"),
-        media_url=first_image
+        media_url=first_image,
+        send_context="manual",
     )
     
     # Store product IDs in a pending catalog for this customer (for order matching)
@@ -4645,7 +4661,8 @@ async def broadcast_catalog(
                 to_number=customer["phone_number"],
                 message=message_text,
                 customer_name=customer.get("name"),
-                media_url=first_image
+                media_url=first_image,
+                send_context="broadcast",
             )
             # Store pending catalog for order matching
             await db.pending_catalogs.update_one(
