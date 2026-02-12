@@ -3276,19 +3276,21 @@ async def evolution_webhook(request: Request):
                 user_settings = user.get('settings', {})
                 if user_settings.get('auto_reply_enabled', False):
                     import time as _time
-                    _dedup_key = parsed.get("evo_message_id", "")
+                    import hashlib as _hl
+                    _evo_id = parsed.get("evo_message_id", "")
+                    # Primary key: evo_message_id. Fallback: hash of (user + customer + body)
+                    _dedup_key = _evo_id if _evo_id else f"{user['_id']}:{customer_id}:{_hl.md5(body.encode()).hexdigest()[:16]}"
                     
-                    if _dedup_key:
-                        async with _auto_reply_lock:
-                            _now = _time.time()
-                            # Clean old entries
-                            _expired = [k for k, v in _auto_reply_dedup.items() if _now - v > _AUTO_REPLY_DEDUP_TTL]
-                            for k in _expired:
-                                del _auto_reply_dedup[k]
-                            if _dedup_key in _auto_reply_dedup:
-                                logging.info(f"Auto-reply dedup: skipping duplicate evo_id={_dedup_key} for {from_number}")
-                                return {"status": "ok"}
-                            _auto_reply_dedup[_dedup_key] = _now
+                    async with _auto_reply_lock:
+                        _now = _time.time()
+                        # Clean old entries
+                        _expired = [k for k, v in _auto_reply_dedup.items() if _now - v > _AUTO_REPLY_DEDUP_TTL]
+                        for k in _expired:
+                            del _auto_reply_dedup[k]
+                        if _dedup_key in _auto_reply_dedup:
+                            logging.info(f"Auto-reply dedup: skipping duplicate key={_dedup_key[:30]} for {from_number}")
+                            return {"status": "ok"}
+                        _auto_reply_dedup[_dedup_key] = _now
                     try:
                         recent_messages = await db.messages.find({
                             "customer_id": customer_id,
@@ -3328,7 +3330,7 @@ async def evolution_webhook(request: Request):
                             business_name=user.get("business_name", "Our Business"),
                             tone=user_settings.get("message_tone", "friendly"),
                             business_knowledge=business_knowledge,
-                            custom_instructions=f"IMPORTANT: The customer's LATEST message is: '{body}'. Read the FULL conversation history above carefully. Continue the conversation naturally — do NOT repeat information you already gave, do NOT re-introduce yourself, do NOT ask questions you already asked. If they are following up on something discussed earlier, reference it directly.",
+                            custom_instructions=f"Their latest message: '{body}'. Reply naturally to what they actually said right now. Don't repeat yourself.",
                             user_id=user["_id"],
                             db=db,
                             customer_id=customer_id,

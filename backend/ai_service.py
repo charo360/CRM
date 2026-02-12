@@ -215,12 +215,15 @@ class AIMessageDrafter:
         
         # Build full conversation history for AI context
         conversation_log = []
+        last_outgoing_message = None
         for msg in messages:
             direction = msg.get('direction', 'incoming')
             content = msg.get('content', '').strip()
             if content:
                 label = "Customer" if direction == "incoming" else "You"
                 conversation_log.append(f"{label}: {content}")
+                if direction == "outgoing":
+                    last_outgoing_message = content
         
         # Get customer tags
         tags = customer_data.get('tags', [])
@@ -234,6 +237,7 @@ class AIMessageDrafter:
             'last_message_direction': last_message_direction,
             'topics': topics,
             'conversation_log': conversation_log,
+            'last_outgoing_message': last_outgoing_message,
             'is_vip': is_vip,
             'is_new': is_new,
             'purchase_count': customer_data.get('purchase_count', 0),
@@ -272,7 +276,10 @@ class AIMessageDrafter:
         
         try:
             # Extract key words from the incoming message (skip very short/common words)
-            stop_words = {'hi', 'hello', 'hey', 'the', 'a', 'an', 'is', 'are', 'was', 'do', 'does', 'i', 'me', 'my', 'you', 'your', 'we', 'ok', 'yes', 'no', 'please', 'thanks', 'thank', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'how', 'what', 'when', 'where', 'who', 'which', 'can', 'will', 'have', 'has', 'had', 'this', 'that', 'it', 'be', 'been', 'am', 'not', 'so', 'if'}
+            # Skip past-answer search for very short messages (likely greetings/casual)
+            if len(incoming_message.split()) <= 3:
+                return ""
+            stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'do', 'does', 'i', 'me', 'my', 'you', 'your', 'we', 'ok', 'yes', 'no', 'please', 'thanks', 'thank', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'how', 'what', 'when', 'where', 'who', 'which', 'can', 'will', 'have', 'has', 'had', 'this', 'that', 'it', 'be', 'been', 'am', 'not', 'so', 'if'}
             words = [w.lower().strip('?!.,') for w in incoming_message.split() if len(w) > 2]
             keywords = [w for w in words if w not in stop_words]
             
@@ -326,15 +333,13 @@ class AIMessageDrafter:
             return ""
 
     def _create_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None) -> str:
-        """Create prompt for OpenAI with business knowledge and language detection"""
+        """Create prompt for OpenAI — clean, concise, AI-driven intent classification"""
         
         # Build context description
         context_parts = []
         
         if context['days_since_contact'] is not None:
             context_parts.append(f"Last contacted {context['days_since_contact']} days ago")
-        else:
-            context_parts.append("Never contacted before")
         
         if context['is_vip']:
             context_parts.append("VIP customer")
@@ -342,32 +347,18 @@ class AIMessageDrafter:
             context_parts.append("New customer")
         
         if context['purchase_count'] > 0:
-            context_parts.append(f"Made {context['purchase_count']} purchases ({context['total_spent']:.0f} total spent)")
-        
-        if context.get('conversation_log'):
-            # Full conversation history is added separately below
-            pass
-        elif context['last_message']:
-            context_parts.append(f"Last message from {'them' if context['last_message_direction'] == 'incoming' else 'us'}: \"{context['last_message'][:100]}\"")
-        
-        if context['topics']:
-            context_parts.append(f"Discussed: {', '.join(context['topics'])}")
+            context_parts.append(f"{context['purchase_count']} purchases ({context['total_spent']:.0f} total spent)")
         
         if context['notes']:
             context_parts.append(f"Notes: {context['notes'][:100]}")
         
-        context_str = "\n- ".join(context_parts)
-        
-        # Detect language from last message
-        language_hint = ""
-        if context['last_message']:
-            language_hint = "\n- Detect the language(s) the customer used and respond in the EXACT SAME way — if they mix languages, you mix too"
+        context_str = "\n- ".join(context_parts) if context_parts else "No prior context"
         
         # Tone instructions
         tone_instructions = {
-            'professional': 'professional but warm, like a trusted business advisor',
-            'friendly': 'warm and friendly, like talking to a regular customer you know well',
-            'casual': 'casual and conversational, like chatting with a friend'
+            'professional': 'professional but warm',
+            'friendly': 'warm and friendly',
+            'casual': 'casual and conversational'
         }
         tone_desc = tone_instructions.get(tone, 'friendly')
         
@@ -377,71 +368,55 @@ class AIMessageDrafter:
             business_context = f"""
 Business Information:
 {business_knowledge}
-
-Use this information to answer questions and provide relevant details about products/services.
 """
         
-        # Format conversation history
-        conversation_history = "No previous messages yet."
+        # Format conversation history — limit to last 10 to reduce noise
+        conversation_history = "(No previous messages)"
         if context.get('conversation_log'):
-            conversation_history = "\n".join(context['conversation_log'][-20:])
+            conversation_history = "\n".join(context['conversation_log'][-10:])
         
-        # Format conversation memory (long-term summary)
+        # Format conversation memory (long-term summary — stored in English)
         memory_section = ""
         if context.get('conversation_memory'):
             memory_section = f"""
-CONVERSATION MEMORY (summary of all past interactions with this customer):
-{context['conversation_memory']}
-
-Use this memory to maintain continuity. Do NOT repeat information you already provided.
+Past interaction summary: {context['conversation_memory']}
 """
         
-        prompt = f"""You are the owner of {business_name}. You're replying to your customer {context['name']} via WhatsApp.
+        # Add anti-repetition warning if we have a previous outgoing message
+        repetition_warning = ""
+        if context.get('last_outgoing_message'):
+            last_msg = context['last_outgoing_message']
+            # Extract first few words to identify the pattern
+            first_words = ' '.join(last_msg.split()[:3])
+            repetition_warning = f"\n⚠️ IMPORTANT: Your last reply started with '{first_words}' - DO NOT start with those same words again. Use completely different opening words."
+        
+        prompt = f"""You're {context['name']}'s business contact at {business_name}. You're texting them back on WhatsApp.
 
-Customer Context:
-- {context_str}{language_hint}
-
-{business_context}
-{memory_section}
-CONVERSATION HISTORY (most recent messages, oldest first):
-\"\"\"
+Context: {context_str}
+{business_context}{memory_section}
+Recent chat:
 {conversation_history}
-\"\"\"
+{repetition_warning}
 
-CRITICAL INSTRUCTIONS:
-1. This is a CONTINUING conversation — read the full history above and reply in context
-2. Write as if YOU are the business owner - use "I" and "we", be personal
-2. MIRROR THE CUSTOMER'S STYLE: Match their tone and formality level exactly:
-   - If they text casually ("hey bro whats the price"), reply casually ("Hey! It's 2,500. Want me to set one aside for you?")
-   - If they text formally ("Good morning, I would like to inquire about pricing"), reply formally ("Good morning! Thank you for reaching out. The price is 2,500. Would you like me to share more details?")
-   - If they mix casual and formal, match that balance
-3. Be BRIEF - 1-3 sentences maximum (WhatsApp style)
-4. Reference their last interaction if relevant
-5. If they asked a question, ANSWER it directly
-6. LANGUAGE IS KEY: Detect the language(s) the customer uses and reply the SAME way
-7. Many people naturally mix languages when chatting (code-switching) — this is normal. Match their style exactly. If they mix English and Swahili, you mix English and Swahili. If they use Pidgin, you use Pidgin.
-8. Default tone if no messages yet: {tone_desc}
-9. Include a clear next step or question
-10. NO emojis unless the customer uses them or it fits naturally (max 1-2)
-11. If you don't have enough information to answer their question, say you'll check and get back to them
+Reply to their message naturally. Real people don't greet every single message:
 
-Examples of GOOD messages — notice how they match the customer's style:
-CASUAL customer → casual reply:
-- "Hi John! Ulikuwa unauliza bei last week. It's 2,500. Bado uko interested?"
-- "Abeg that thing don come back o! You still wan am? Na 5,000 naira"
-- "Bhai wo product available hai, price 2,500 hai. Order kar doon?"
+ONLY greet if they ACTUALLY greeted you first (hi/hello/good morning/habari/sasa/hey/etc). If they greeted, vary your response (Morning/Hey/Sasa/Vipi/Yo/Sup).
 
-FORMAL customer → formal reply:
-- "Good morning John. The item you inquired about is priced at 2,500. Shall I arrange delivery for you?"
-- "Thank you for your patience. The product is now back in stock at 5,000. Would you like to place an order?"
+For everything else, just respond directly:
+- "Yes"/"OK" → Move forward (NO greeting, just continue)
+- "I have send" → Acknowledge it (NO greeting, just confirm)
+- Questions → Answer directly (NO greeting needed)
+- Statements → Respond to what they said (NO greeting)
 
-Examples of BAD messages:
-- Replying formally when the customer is casual and friendly
-- Replying with slang when the customer writes formally
-- Generic templates: "Dear valued customer, we hope this message finds you well..."
-- Using pure formal English when the customer texts in Swahili or Pidgin
+Rules:
+- Match their language exactly (English, Swahili, mix)
+- 1-3 sentences max
+- NEVER start two messages in a row with the same words
+- Don't add greetings where they don't belong
 
-Write ONLY the message text. No quotes, no explanations, no subject lines."""
+Tone: {tone_desc}
+
+Reply:"""
 
         return prompt
     
@@ -451,35 +426,18 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
         # Start with the base prompt
         base_prompt = self._create_prompt(context, business_name, tone, business_knowledge)
         
-        # Add language awareness context
+        # Add language awareness context (keep it minimal — the model handles language well)
         if language_context:
-            lang_section = f"""
-
-LANGUAGE & CULTURAL AWARENESS:{language_context}
-IMPORTANT LANGUAGE RULES:
-- Carefully read the customer's recent messages and detect what language(s) they actually use
-- ALWAYS reply in the SAME language(s) the customer used — match their style exactly
-- In many countries, people naturally MIX languages in everyday conversation (code-switching). This is NORMAL. Examples:
-  * Kenya: "Hey, uko na hiyo product? Nilitaka kujua bei" (English + Swahili mix)
-  * Nigeria: "Abeg how much be this thing? I wan order am" (Pidgin English)
-  * India: "Bhai ye product available hai kya? Price kya hai?" (Hindi + English mix)
-  * South Africa: "Sharp sharp, how much is this? Ngicela ungisize" (English + Zulu mix)
-  * Senegal: "Salam, combien ça coûte? Mangi bëgg" (French + Wolof mix)
-  * Morocco: "Salam, bchhal hada? I want to order" (Darija + English mix)
-- If the customer mixes languages, you MUST mix the same way — do NOT "correct" them into one pure language
-- If no messages exist yet, use the most natural everyday language for the customer's country (which is often a mix)
-- Use local greetings, slang, and expressions that real people use in that region
-- Sound like a real local business owner texting a customer, NOT like a formal translator
-- Do NOT default to pure English if the customer's country commonly uses another language or a mix"""
+            lang_section = f"\n\nCustomer context:{language_context}\nMirror the customer's language and style exactly. If they mix languages, you mix too. Do not correct or translate."
             base_prompt = base_prompt + lang_section
         
         # Add past similar answers context
         if past_answers_context:
             base_prompt = base_prompt + f"\n\n{past_answers_context}"
         
-        # If we have custom instructions, add them with high priority
+        # If we have custom instructions, add them (but never override conversation progression rules)
         if custom_instructions:
-            custom_section = f"\n\nCUSTOM USER INSTRUCTIONS (PRIORITY):\n- {custom_instructions}\nFollow these instructions strictly over any other style guidelines."
+            custom_section = f"\n\nADDITIONAL CONTEXT:\n{custom_instructions}\nIMPORTANT: Step 1 (classify intent) ALWAYS takes top priority. Only use the order flow if the customer is actively buying. For greetings and casual messages, just be natural."
             base_prompt = base_prompt + custom_section
         
         # If we have user style information, enhance the prompt
@@ -608,16 +566,32 @@ IMPORTANT LANGUAGE RULES:
             
         try:
             import asyncio
+            
+            # Split prompt into system instructions and conversation context
+            # Everything before "Recent chat:" is system-level, the rest is user context
+            separator = 'Recent chat:'
+            if separator in prompt:
+                parts = prompt.split(separator, 1)
+                system_msg = parts[0].strip()
+                # The conversation history goes as user message
+                user_msg = separator + parts[1]
+                messages = [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg}
+                ]
+            else:
+                messages = [
+                    {"role": "user", "content": prompt}
+                ]
+            
             # Run synchronous OpenAI call in thread pool
             response = await asyncio.to_thread(
                 self.client.chat.completions.create,
                 model=self.model_name,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
+                messages=messages,
                 temperature=0.7,
                 max_tokens=150,
-                top_p=0.8
+                top_p=0.9
             )
             
             return response.choices[0].message.content.strip()
@@ -674,24 +648,23 @@ Format: Just return the message text, nothing else."""
             existing = await db.conversation_memory.find_one({"customer_id": customer_id})
             old_summary = existing.get("summary", "") if existing else ""
             
-            # Generate updated summary using AI
+            # Generate updated summary using AI — always in English for system use
             summary_prompt = f"""You are a CRM memory system. Update the conversation summary for customer "{customer_name}".
 
-EXISTING MEMORY (what you knew before):
-{old_summary if old_summary else "(No previous memory)"}
+EXISTING MEMORY:
+{old_summary if old_summary else "(None)"}
 
 RECENT CONVERSATION:
 {convo_text}
 
-Write an updated summary that captures:
-- What products/services the customer asked about and prices quoted
-- Any decisions made or orders placed
+Write a concise updated summary (max 5 bullet points) covering:
+- Products/services discussed and prices quoted
+- Decisions made or orders placed
 - Customer preferences or requirements
-- Current status of the conversation (what are they waiting for? what was the last topic?)
-- Key facts about this customer
+- Current conversation status (what's pending?)
 
-Keep it concise (max 5-6 bullet points). This summary will be used to continue future conversations naturally.
-Write ONLY the summary bullets, nothing else."""
+IMPORTANT: Always write the summary in ENGLISH, even if the conversation was in another language. This is internal system data, not customer-facing.
+Write ONLY the bullet points."""
 
             import asyncio
             response = await asyncio.to_thread(
