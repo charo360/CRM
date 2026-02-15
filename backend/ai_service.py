@@ -75,38 +75,97 @@ class AIMessageDrafter:
     """Service for drafting personalized follow-up messages using AI"""
     
     def __init__(self, api_key: str = None):
+        # Default provider config (can be overridden per request)
         self.provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
+        self.api_key = api_key
         
-        if self.provider == 'deepseek':
-            raw_key = os.environ.get('DEEPSEEK_API_KEY', '')
-            self.api_key = (raw_key or '').strip().replace('\r', '').replace('\n', '').replace(' ', '')
-            base_url = 'https://api.deepseek.com'
-            self.model_name = 'deepseek-chat'
-            provider_label = 'DeepSeek'
-        else:
-            raw_key = api_key or os.environ.get('OPENAI_API_KEY')
-            self.api_key = (raw_key or '').strip().replace('\r', '').replace('\n', '').replace(' ', '')
-            base_url = None  # default OpenAI URL
-            self.model_name = 'gpt-4o-mini'
-            provider_label = 'OpenAI'
+        # Initialize clients map
+        self.clients = {}
+        self._init_clients()
+
+    def _init_clients(self):
+        """Initialize available AI clients based on env vars"""
+        import httpx
         
-        if not self.api_key or self.api_key in ('your_openai_api_key_here', 'your_deepseek_api_key_here'):
-            logger.warning(f"{provider_label} API key not set - using mock mode")
-            self.client = None
-            self.mock_mode = True
-        else:
+        # 1. OpenAI (Default)
+        openai_key = self.api_key or os.environ.get('OPENAI_API_KEY')
+        if openai_key and openai_key not in ('your_openai_api_key_here',):
             try:
-                client_kwargs = {"api_key": self.api_key}
-                if base_url:
-                    client_kwargs["base_url"] = base_url
-                self.client = OpenAI(**client_kwargs)
-                self.mock_mode = False
-                logger.info(f"✓ {provider_label} client initialized (model: {self.model_name}, key ends: ...{self.api_key[-10:]})")
+                self.clients['openai'] = OpenAI(api_key=openai_key)
+                logging.info("✓ OpenAI client initialized")
             except Exception as e:
-                logger.error(f"❌ Failed to configure {provider_label} client: {e}")
-                self.client = None
-                self.mock_mode = True
-    
+                logging.error(f"❌ OpenAI init failed: {e}")
+        
+        # 2. DeepSeek
+        ds_key = os.environ.get('DEEPSEEK_API_KEY')
+        if ds_key and ds_key not in ('your_deepseek_api_key_here',):
+            try:
+                self.clients['deepseek'] = OpenAI(
+                    api_key=ds_key, 
+                    base_url='https://api.deepseek.com'
+                )
+                logging.info("✓ DeepSeek client initialized")
+            except Exception as e:
+                logging.error(f"❌ DeepSeek init failed: {e}")
+
+        # 3. Grok (xAI) - Uses OpenAI client compatibility
+        grok_key = os.environ.get('XS_API_KEY') or os.environ.get('GROK_API_KEY')
+        if grok_key:
+            try:
+                self.clients['grok'] = OpenAI(
+                    api_key=grok_key,
+                    base_url='https://api.x.ai/v1'
+                )
+                logging.info("✓ Grok client initialized")
+            except Exception as e:
+                logging.error(f"❌ Grok init failed: {e}")
+        
+        # 4. Claude (Anthropic) - Uses raw HTTP to avoid new dependency
+        claude_key = os.environ.get('ANTHROPIC_API_KEY')
+        if claude_key:
+            self.clients['claude'] = {
+                'key': claude_key,
+                'endpoint': 'https://api.anthropic.com/v1/messages'
+            }
+            logging.info("✓ Claude client configured")
+
+    def _get_client_and_model(self, model_pref: str = None):
+        """Determine which client and model name to use based on preference"""
+        # Default fallback
+        client_type = 'openai'
+        model_name = 'gpt-4o-mini'
+        
+        if not model_pref:
+            model_pref = 'standard'
+            
+        model_pref = model_pref.lower()
+        
+        if model_pref in ('premium', 'gpt-4o'):
+            client_type = 'openai'
+            model_name = 'gpt-4o'
+        elif model_pref == 'gpt-5':
+            client_type = 'openai'
+            model_name = 'gpt-5'
+        elif 'claude' in model_pref or 'sonnet' in model_pref:
+            client_type = 'claude'
+            if '4.5' in model_pref or 'sonnet-4.5' == model_pref:
+                model_name = 'claude-sonnet-4-5-20250929'
+            else:
+                model_name = 'claude-3-5-sonnet-latest'
+        elif 'grok' in model_pref:
+            client_type = 'grok'
+            # Grok 4 is a reasoning model (no temperature/stop params)
+            model_name = 'grok-4' 
+        elif 'deepseek' in model_pref:
+            client_type = 'deepseek'
+            model_name = 'deepseek-chat'
+        else:
+            # Standard/Default
+            client_type = 'openai'
+            model_name = 'gpt-4o-mini'
+            
+        return client_type, model_name, self.clients.get(client_type)
+
     async def draft_followup_message(
         self,
         customer_name: str,
@@ -120,12 +179,13 @@ class AIMessageDrafter:
         db = None,
         customer_id: str = None,
         user_country: str = None,
-        customer_phone: str = None
+        customer_phone: str = None,
+        model_pref: str = 'standard'
     ) -> Dict[str, any]:
         """
         Draft a personalized follow-up message for a customer using learned user writing style
         """
-        if not self.api_key or not self.client:
+        if not self.clients:
             return {
                 "drafted_message": f"Hi {customer_name}, just checking in! How can we help you today?",
                 "confidence": 0.5,
@@ -175,10 +235,10 @@ class AIMessageDrafter:
         # Create AI prompt with personalized style
         prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions, past_answers_context, language_context)
         
-        # Call OpenAI API
+        # Call LLM Provider
         try:
-            print(f"DEBUG: Calling OpenAI/DeepSeek API now with prompt len={len(prompt)}")
-            drafted_message = await self._call_openai(prompt)
+            print(f"DEBUG: Calling LLM ({model_pref}) now with prompt len={len(prompt)}")
+            drafted_message = await self._call_llm(prompt, model_pref)
             print(f"DEBUG: API call successful. Response len={len(drafted_message)}")
             
             # Update conversation memory after successful reply
@@ -613,45 +673,129 @@ Reply:"""
         
         return "Due for follow-up"
     
-    async def _call_openai(self, prompt: str) -> str:
-        """Call OpenAI API to generate message"""
-        if not self.client:
-            raise Exception("OpenAI client not initialized")
+    async def _call_llm(self, prompt: str, model_pref: str = 'standard') -> str:
+        """Route the prompt to the correct LLM provider with fallback"""
+        client_type, model_name, client = self._get_client_and_model(model_pref)
+        
+        # If client not configured, fallback to standard (OpenAI)
+        if not client:
+            if client_type != 'openai':
+                logger.warning(f"Provider {client_type} not configured, falling back to OpenAI")
+                client_type, model_name, client = self._get_client_and_model('standard')
             
+            if not client:
+                error_msg = f"No AI Provider configured. Please add OPENAI_API_KEY."
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            
+        print(f"DEBUG: Routing to {client_type} (model: {model_name})...", flush=True)
+        logging.info(f"DEBUG: Routing to {client_type} (model: {model_name})...")
+        
+        try:
+            if client_type == 'claude':
+                return await self._call_claude(client, model_name, prompt)
+            else:
+                # works for OpenAI, DeepSeek, Grok (all use OpenAI client)
+                return await self._call_openai_compatible(client, model_name, prompt)
+        except Exception as e:
+            logger.error(f"Primary model {model_name} failed: {e}")
+            print(f"ERROR: {model_name} failed, falling back to GPT-4o Mini...", flush=True)
+            
+            # Fallback to standard OpenAI
+            client_type, model_name, client = self._get_client_and_model('standard')
+            return await self._call_openai_compatible(client, model_name, prompt)
+
+    async def _call_openai_compatible(self, client: OpenAI, model_name: str, prompt: str) -> str:
+        """Generic handler for OpenAI-compatible APIs (DeepSeek, Grok, OpenAI)"""
         try:
             import asyncio
-            
-            # Split prompt into system instructions and conversation context
-            # Everything before "Recent chat:" is system-level, the rest is user context
             separator = 'Recent chat:'
             if separator in prompt:
                 parts = prompt.split(separator, 1)
                 system_msg = parts[0].strip()
-                # The conversation history goes as user message
                 user_msg = separator + parts[1]
                 messages = [
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg}
                 ]
             else:
-                messages = [
-                    {"role": "user", "content": prompt}
-                ]
+                messages = [{"role": "user", "content": prompt}]
             
-            # Run synchronous OpenAI call in thread pool
+            # Grok 4 uses max_completion_tokens (reasoning model)
+            # GPT-5 appears to reject both max_tokens and max_completion_tokens (manages own output?)
+            is_grok_reasoning = model_name.startswith('grok-4')
+            
+            kwargs = {
+                "model": model_name,
+                "messages": messages,
+            }
+            
+            if is_grok_reasoning:
+                kwargs["max_completion_tokens"] = 400
+            elif model_name.startswith('gpt-5'):
+                # GPT-5: Do NOT send max_tokens or max_completion_tokens
+                pass
+            else:
+                kwargs["max_tokens"] = 400
+                kwargs["temperature"] = 0.7
+            
             response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model=self.model_name,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=250,
-                top_p=0.9
+                client.chat.completions.create,
+                **kwargs,
             )
-            
-            return response.choices[0].message.content.strip()
+            content = response.choices[0].message.content
+            if not content:
+                logger.warning(f"Empty content from {model_name}. Full response: {response}")
+                return ""
+            return content.strip()
         except Exception as e:
-            logger.error(f"OpenAI API call failed: {e}")
-            raise Exception(f"OpenAI API error: {str(e)}")
+            logger.error(f"LLM Call Failed ({model_name}): {e}")
+            raise e
+
+    async def _call_claude(self, client_config: Dict, model_name: str, prompt: str) -> str:
+        """Direct HTTP call to Anthropic API"""
+        import httpx
+        
+        api_key = client_config['key']
+        endpoint = client_config['endpoint']
+        
+        system_msg = "You are a helpful AI assistant for a business."
+        user_msg = prompt
+        
+        separator = 'Recent chat:'
+        if separator in prompt:
+            parts = prompt.split(separator, 1)
+            system_msg = parts[0].strip()
+            user_msg = separator + parts[1]
+
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        
+        payload = {
+            "model": model_name,
+            "max_tokens": 400,
+            "system": system_msg,
+            "messages": [
+                {"role": "user", "content": user_msg}
+            ]
+        }
+        
+        try:
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.post(endpoint, json=payload, headers=headers, timeout=30.0)
+                
+                if response.status_code != 200:
+                    raise Exception(f"Claude API Error {response.status_code}: {response.text}")
+                    
+                data = response.json()
+                # Claude response format: content[0].text
+                return data['content'][0]['text']
+        except Exception as e:
+            logger.error(f"Claude Call Failed: {e}")
+            raise e
 
 
     async def draft_broadcast_message(self, prompt: str, business_type: str = None) -> str:

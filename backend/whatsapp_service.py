@@ -1172,10 +1172,19 @@ class WhatsAppService:
                     })
                     if existing:
                         # Mark existing contact as synced so chat history gets pulled
+                        updates = {}
                         if not existing.get("synced_from_whatsapp"):
+                            updates["synced_from_whatsapp"] = True
+                        
+                        # Update name if we have a real name and existing is a fallback
+                        current_name = existing.get("name", "")
+                        if name and not name.startswith("Contact ") and (not current_name or current_name.startswith("Contact ")):
+                            updates["name"] = name
+                            
+                        if updates:
                             await self.db.customers.update_one(
                                 {"_id": existing["_id"]},
-                                {"$set": {"synced_from_whatsapp": True}}
+                                {"$set": updates}
                             )
                             updated += 1
                         else:
@@ -1357,14 +1366,20 @@ class WhatsAppService:
                             last_body = body
 
                         # Update customer's last message
-                        if last_body:
-                            await self.db.customers.update_one(
-                                {"_id": customer["_id"]},
-                                {"$set": {
-                                    "last_message": last_body[:200],
-                                    "last_contacted": datetime.utcnow(),
-                                }}
-                            )
+                        updates = {
+                            "last_message": last_body[:200],
+                            "last_contacted": datetime.utcnow(),
+                        }
+                        
+                        # Use pushName from chat if we only have a fallback "Contact ..." name
+                        push_name = chat.get("pushName") or chat.get("name")
+                        if push_name and customer.get("name", "").startswith("Contact "):
+                            updates["name"] = push_name
+                        
+                        await self.db.customers.update_one(
+                            {"_id": customer["_id"]},
+                            {"$set": updates}
+                        )
                         chats_synced += 1
 
                     except Exception as chat_err:

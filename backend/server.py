@@ -36,6 +36,17 @@ def validate_startup_env():
     else:
         print(f"[OK] {label} API Key loaded (ends with: ...{api_key[-10:]})")
 
+    # Check optional keys
+    if os.environ.get('ANTHROPIC_API_KEY'):
+        print("[OK] Anthropic API Key DETECTED")
+    else:
+        print("[INFO] Anthropic API Key NOT DETECTED (Claude will not work)")
+        
+    if os.environ.get('GROK_API_KEY') or os.environ.get('XS_API_KEY'):
+        print("[OK] Grok/xAI API Key DETECTED")
+    else:
+        print("[INFO] Grok/xAI API Key NOT DETECTED (Grok will not work)")
+
 validate_startup_env()
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request
@@ -341,6 +352,7 @@ class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
+    auto_reply: Optional[bool] = None
 
 class CustomerResponse(BaseModel):
     id: str
@@ -349,6 +361,7 @@ class CustomerResponse(BaseModel):
     phone_number: str
     notes: Optional[str] = None
     tags: List[str] = []
+    auto_reply: Optional[bool] = None
     purchase_count: int = 0
     total_spent: float = 0.0
     last_message: Optional[str] = None
@@ -705,6 +718,7 @@ class UserSettingsUpdate(BaseModel):
     push_token: Optional[str] = None
     daily_pulse_enabled: Optional[bool] = None
     daily_pulse_time: Optional[str] = None  # e.g. '20:00'
+    ai_model: Optional[str] = None  # standard, premium, claude-3.5, grok, etc.
 
 # Business Knowledge Model
 class BusinessKnowledge(BaseModel):
@@ -1327,6 +1341,9 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["notes"] = sanitize_string(update.notes, 2000)
     if update.tags is not None:
         update_data["tags"] = [sanitize_string(t, 50) for t in update.tags if t.strip()][:20]
+    if update.auto_reply is not None:
+        update_data["auto_reply"] = update.auto_reply
+        
     if update_data:
         await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
     
@@ -1339,6 +1356,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         phone_number=updated["phone_number"],
         notes=updated.get("notes"),
         tags=updated.get("tags", []),
+        auto_reply=updated.get("auto_reply", False),
         last_message=updated.get("last_message"),
         last_contacted=updated.get("last_contacted"),
         profile_picture=updated.get("profile_picture"),
@@ -3123,6 +3141,15 @@ async def evolution_webhook(request: Request):
                                     logging.info(f"AI classification done for {len(customers)} synced contacts")
                                 except Exception as cls_err:
                                     logging.error(f"Post-sync classification error: {cls_err}")
+                                
+                                # Fetch profile pictures
+                                try:
+                                    logging.info("Starting profile picture sync...")
+                                    pic_result = await whatsapp_service.fetch_profile_pictures_bulk(uid)
+                                    logging.info(f"Profile pic sync: {pic_result}")
+                                except Exception as pic_err:
+                                    logging.error(f"Profile pic sync error: {pic_err}")
+
                             except Exception as sync_err:
                                 logging.error(f"Initial sync failed for user {uid}: {sync_err}")
 
@@ -3145,6 +3172,34 @@ async def evolution_webhook(request: Request):
                 log_trace("Parsed is empty/None")
                 return {"status": "ok"}
             
+            # === DEDUPLICATION GUARD ===
+            # We must check this BEFORE any processing (including dynamic matching)
+            import time as _time
+            import hashlib as _hl
+            
+            _evo_id = parsed.get("evo_message_id", "")
+            _body_content = parsed.get("body", "") or ""
+            _u_id = parsed.get("user", {}).get("_id", "unknown")
+            _cust_id_dedup = parsed.get("from_number", "unknown")
+            
+            # Dedup guard: Evolution API fires messages.upsert multiple times per message
+            _dedup_key = _evo_id if _evo_id else f"{_u_id}:{_cust_id_dedup}:{_hl.md5(_body_content.encode()).hexdigest()[:16]}"
+            
+            async with _auto_reply_lock:
+                _now = _time.time()
+                # Clean old entries
+                _expired = [k for k, v in _auto_reply_dedup.items() if _now - v > _AUTO_REPLY_DEDUP_TTL]
+                for k in _expired:
+                    del _auto_reply_dedup[k]
+                
+                if _dedup_key in _auto_reply_dedup:
+                    logging.info(f"Webhook dedup: skipping duplicate key={_dedup_key[:30]}")
+                    return {"status": "ok"}
+                
+                # Mark as seen
+                _auto_reply_dedup[_dedup_key] = _now
+            # === END DEDUPLICATION GUARD ===
+
             log_trace(f"Parsed body: {parsed.get('body')}")
             
             user = parsed["user"]
@@ -3472,29 +3527,25 @@ async def evolution_webhook(request: Request):
                         await db.pending_catalogs.delete_one({"_id": pending["_id"]})
                         return {"status": "ok"}
                 
-                # Auto-reply if enabled (with dedup guard using evo_message_id + lock)
+                # Auto-reply logic (Per-Customer overrides Global)
                 user_settings = user.get('settings', {})
-                print(f"DEBUG: Auto-reply enabled? {user_settings.get('auto_reply_enabled', False)}")
                 
-                if user_settings.get('auto_reply_enabled', False):
-                    import time as _time
-                    import hashlib as _hl
-                    _evo_id = parsed.get("evo_message_id", "")
+                # Ensure we have the customer data
+                if not customer and customer_id:
+                    customer = await db.customers.find_one({"_id": customer_id})
+                
+                customer_auto_reply = customer.get('auto_reply') if customer else None
+                global_auto_reply = user_settings.get('auto_reply_enabled', False)
+                
+                should_auto_reply = customer_auto_reply if customer_auto_reply is not None else global_auto_reply
+                
+                print(f"DEBUG: Auto-reply check. Customer={customer_auto_reply}, Global={global_auto_reply} -> RESULT={should_auto_reply}")
+                
+                if should_auto_reply:
+                    # Dedup check already done at top of handler
+
                     
-                    # Dedup guard: Evolution API fires messages.upsert multiple times per message
-                    _dedup_key = _evo_id if _evo_id else f"{user['_id']}:{customer_id}:{_hl.md5(body.encode()).hexdigest()[:16]}"
-                    async with _auto_reply_lock:
-                        _now = _time.time()
-                        # Clean old entries
-                        _expired = [k for k, v in _auto_reply_dedup.items() if _now - v > _AUTO_REPLY_DEDUP_TTL]
-                        for k in _expired:
-                            del _auto_reply_dedup[k]
-                        if _dedup_key in _auto_reply_dedup:
-                            logging.info(f"Auto-reply dedup: skipping duplicate key={_dedup_key[:30]} for {from_number}")
-                            return {"status": "ok"}
-                        _auto_reply_dedup[_dedup_key] = _now
-                    
-                    print(f"DEBUG: Proceeding to AI generation...")
+                    print(f"DEBUG: Proceeding to AI generation... model_pref={user_settings.get('ai_model', 'standard')}", flush=True)
                     try:
                         recent_messages = await db.messages.find({
                             "customer_id": customer_id,
@@ -3558,7 +3609,7 @@ async def evolution_webhook(request: Request):
                                 catalog_lines.append(f"  • {p['name']} (ID: {product_id}): {price_str} [{stock}] ({p.get('category', 'Other')}){desc}{image_marker}")
                             
                             catalog_lines.append("\nWhen customers ask about products, use this catalog for accurate answers. Do NOT make up prices.")
-                            catalog_lines.append("When a customer asks to see a product or its image, just describe it naturally. The system will automatically send the photo.")
+                            catalog_lines.append("IMPORTANT: If the customer asks to see a product or you are suggesting one, you MUST include [SEND_IMAGE:product_id] in your response to actually send the photo. Example: 'Here is the watch [SEND_IMAGE:123]'.")
                             business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
                         
                         if not business_knowledge:
@@ -3566,6 +3617,7 @@ async def evolution_webhook(request: Request):
                         
                         from ai_service import get_drafter
                         ai_service = get_drafter()
+                        print(f"DEBUG: AI drafter obtained, clients={list(ai_service.clients.keys())}", flush=True)
                         user_country_code = user_settings.get("country_code", "")
                         customer_phone = customer_data.get("phone", from_number) if customer_data else from_number
                         result = await ai_service.draft_followup_message(
@@ -3580,10 +3632,12 @@ async def evolution_webhook(request: Request):
                             db=db,
                             customer_id=customer_id,
                             user_country=user_country_code,
-                            customer_phone=customer_phone
+                            customer_phone=customer_phone,
+                            model_pref=user_settings.get("ai_model", "standard")
                         )
                         
                         reply_text = result.get("drafted_message", "")
+                        print(f"DEBUG: AI reply received ({len(reply_text)} chars): {reply_text[:100]}", flush=True)
                         logging.info(f"AI raw reply for {from_number}: {reply_text[:300]}")
                         
                         # Check if AI flagged this as needing human attention
@@ -3622,6 +3676,7 @@ async def evolution_webhook(request: Request):
                                 pass
                         
                         if reply_text:
+                            logging.info(f"RAW AI RESPONSE: {reply_text}")
                             import re
                             # Strip any [SEND_IMAGE:...] tags the AI might have included
                             image_pattern = r'\[SEND_IMAGE:([^\]]+)\]'
@@ -3640,7 +3695,7 @@ async def evolution_webhook(request: Request):
                                     send_context="auto_reply",
                                 )
                             
-                            # === PRODUCT IMAGE SENDING (only via explicit AI tags) ===
+                            # === PRODUCT IMAGE & BUTTON SENDING (only via explicit AI tags) ===
                             # Note: Auto-detect product matching is handled earlier in the 
                             # "DYNAMIC PRODUCT KEYWORD MATCHING" section. The AI reply
                             # only sends additional images if the AI explicitly tags them.
@@ -3651,23 +3706,57 @@ async def evolution_webhook(request: Request):
                                 pid = pid.strip()
                                 if pid in product_catalog_map and pid not in images_sent:
                                     try:
-                                        await ws.send_message(
-                                            user_id=user["_id"],
-                                            to_number=from_number,
-                                            message="",
-                                            customer_name=c_name,
-                                            send_context="auto_reply",
-                                            media_url=product_catalog_map[pid]
-                                        )
-                                        images_sent.add(pid)
-                                        logging.info(f"Sent product image (AI tag) for {pid} to {c_name}")
+                                        # Get product details for button
+                                        product_info = product_name_map.get(pid) # this map is keyed by name, not ID. Let's find by ID from user_products list we fetched earlier
+                                        
+                                        # Fallback search since map above is by name
+                                        target_product = None
+                                        for p in user_products:
+                                            if str(p['_id']) == pid:
+                                                target_product = p
+                                                break
+                                        
+                                        if target_product:
+                                            # Send interactive button message
+                                            currency = user.get("settings", {}).get("currency", "USD")
+                                            price_display = f"{currency} {target_product.get('price', 0):,.0f}"
+                                            
+                                            await ws.send_buttons(
+                                                user_id=user["_id"],
+                                                to_number=from_number,
+                                                title=target_product.get('name', 'Product'),
+                                                description=f"💰 {price_display} — Tap below to order!",
+                                                buttons=[
+                                                    {"buttonId": f"order_{pid}", "buttonText": {"displayText": f"🛒 Order Now"}},
+                                                ],
+                                                footer_text="Powered by Smart CRM",
+                                                media_url=product_catalog_map[pid]
+                                            )
+                                            images_sent.add(pid)
+                                            logging.info(f"Sent product button (AI tag) for {pid} to {c_name}")
+                                        else:
+                                            # Fallback to just image if product not found (should be rare)
+                                            await ws.send_message(
+                                                user_id=user["_id"],
+                                                to_number=from_number,
+                                                message="",
+                                                customer_name=c_name,
+                                                send_context="auto_reply",
+                                                media_url=product_catalog_map[pid]
+                                            )
+                                            images_sent.add(pid)
+                                            logging.info(f"Sent product image (fallback) for {pid} to {c_name}")
+                                            
                                     except Exception as img_err:
-                                        logging.error(f"Failed to send product image {pid}: {img_err}")
+                                        logging.error(f"Failed to send product button/image {pid}: {img_err}")
                             
                             logging.info(f"Auto-replied to {c_name} ({from_number}), images_sent={len(images_sent)}")
                         
                     except Exception as e:
+                        print(f"ERROR: Auto-reply failed: {e}", flush=True)
                         logging.error(f"Auto-reply failed for {from_number}: {e}")
+                        import traceback
+                        traceback.print_exc()
             
             return {"status": "ok"}
         
@@ -4095,7 +4184,8 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
             db=db,
             customer_id=request.customer_id,
             user_country=user_country_code,
-            customer_phone=customer.get('phone', '')
+            customer_phone=customer.get('phone', ''),
+            model_pref=user_settings.get('ai_model', 'standard')
         )
         
         # Support both legacy and new AI service response keys
@@ -4501,6 +4591,7 @@ async def get_user_settings(user = Depends(get_current_user)):
         "push_token": user.get('push_token'),
         "daily_pulse_enabled": settings.get('daily_pulse_enabled', False),
         "daily_pulse_time": settings.get('daily_pulse_time', '20:00'),
+        "ai_model": settings.get('ai_model', 'standard'),
         "currency": currency,
         "country_code": country_code
     }
@@ -4543,6 +4634,9 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
     
     if settings.country_code is not None:
         update_data['settings.country_code'] = settings.country_code
+    
+    if settings.ai_model is not None:
+        update_data['settings.ai_model'] = settings.ai_model
     
     if update_data:
         await db.users.update_one(

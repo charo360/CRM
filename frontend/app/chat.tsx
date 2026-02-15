@@ -54,6 +54,51 @@ export default function ChatScreen() {
   const [currency, setCurrency] = useState('USD');
   const flatListRef = useRef<FlatList>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [showToast, setShowToast] = useState(false);
+
+  useEffect(() => {
+    if (showToast) {
+      const timer = setTimeout(() => setShowToast(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [showToast]);
+
+  // Fetch initial auto-reply state
+  useEffect(() => {
+    if (!customerId) return;
+    const loadAutoReplyState = async () => {
+      try {
+        const [cRes, sRes] = await Promise.all([
+          apiClient.get(`/customers/${customerId}`),
+          apiClient.get('/settings')
+        ]);
+        const custVal = cRes.data.auto_reply;
+        const globalVal = sRes.data.auto_reply_enabled || false;
+        // If customer has explicit setting, use it. Otherwise use global.
+        // Note: backend returns null if not set, or boolean if set.
+        setAutoReplyEnabled(custVal !== null && custVal !== undefined ? custVal : globalVal);
+      } catch (e) {
+        console.error('Failed to load auto-reply state', e);
+      }
+    };
+    loadAutoReplyState();
+  }, [customerId]);
+
+  const toggleAutoReply = async () => {
+    const newVal = !autoReplyEnabled;
+    setAutoReplyEnabled(newVal); // Optimistic update
+    setToastMessage(newVal ? 'Auto-Reply Enabled' : 'Auto-Reply Disabled');
+    setShowToast(true);
+    try {
+      await apiClient.put(`/customers/${customerId}`, { auto_reply: newVal });
+    } catch (e) {
+      setAutoReplyEnabled(!newVal); // Revert on failure
+      console.error('Failed to toggle auto-reply', e);
+      Alert.alert('Error', 'Failed to update auto-reply setting');
+    }
+  };
 
   // Pre-fill input text if navigated with a message
   useEffect(() => {
@@ -71,8 +116,8 @@ export default function ChatScreen() {
       if (isPolling) {
         // Only update if message count changed or latest message is different
         setMessages(prev => {
-          if (prev.length !== newMessages.length || 
-              (newMessages.length > 0 && prev.length > 0 && newMessages[0].id !== prev[0].id)) {
+          if (prev.length !== newMessages.length ||
+            (newMessages.length > 0 && prev.length > 0 && newMessages[0].id !== prev[0].id)) {
             return newMessages;
           }
           return prev;
@@ -265,6 +310,13 @@ export default function ChatScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Toast Notification */}
+      {showToast && (
+        <View style={styles.toastContainer}>
+          <Text style={styles.toastText}>{toastMessage}</Text>
+        </View>
+      )}
+
       {/* Messages */}
       <KeyboardAvoidingView
         style={styles.chatArea}
@@ -319,6 +371,23 @@ export default function ChatScreen() {
 
         {/* Input bar — WhatsApp style */}
         <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 6) }]}>
+          {/* Auto-Reply Toggle (Left of input) */}
+          <TouchableOpacity
+            onPress={toggleAutoReply}
+            style={{
+              marginRight: 8,
+              padding: 8,
+              justifyContent: 'center',
+              alignItems: 'center'
+            }}
+          >
+            <Ionicons
+              name={autoReplyEnabled ? "flash" : "flash-off"}
+              size={20}
+              color={autoReplyEnabled ? "#FFD700" : "#8B9DC3"}
+            />
+          </TouchableOpacity>
+
           <View style={styles.inputPill}>
             <TouchableOpacity style={styles.pillIcon} onPress={() => setShowAttachMenu(!showAttachMenu)}>
               <Ionicons name="attach" size={24} color="#8B9DC3" />
@@ -639,5 +708,29 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: 10,
     backgroundColor: '#0B141A',
+  },
+  // ── Toast ──
+  toastContainer: {
+    position: 'absolute',
+    top: 70,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(31, 44, 52, 0.95)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 24,
+    zIndex: 1000,
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  toastText: {
+    color: '#E9EDEF',
+    fontSize: 14,
+    fontWeight: '500',
   },
 });

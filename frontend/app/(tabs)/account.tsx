@@ -81,6 +81,10 @@ export default function AccountScreen() {
 
   const [sendingPulse, setSendingPulse] = useState(false);
 
+  // AI Model State
+  const [aiModel, setAiModel] = useState('standard');
+  const [showModelPicker, setShowModelPicker] = useState(false);
+
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
 
@@ -102,6 +106,7 @@ export default function AccountScreen() {
       setPulseEnabled(settingsRes.data.daily_pulse_enabled || false);
       setPulseTime(settingsRes.data.daily_pulse_time || '20:00');
       if (settingsRes.data.currency) setCurrency(settingsRes.data.currency);
+      setAiModel(settingsRes.data.ai_model || 'standard');
 
       // Fetch WhatsApp status
       try {
@@ -334,6 +339,29 @@ export default function AccountScreen() {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to send pulse');
     } finally {
       setSendingPulse(false);
+    }
+  };
+
+  const handleModelChange = async (model: string) => {
+    setAiModel(model);
+    setShowModelPicker(false);
+    try {
+      await apiClient.put('/settings', { ai_model: model });
+      Alert.alert('Success', `AI Model updated to ${getModelName(model)}`);
+    } catch (error) {
+      setAiModel('standard'); // revert
+      Alert.alert('Error', 'Failed to update AI model');
+    }
+  };
+
+  const getModelName = (modelId: string) => {
+    switch (modelId) {
+      case 'standard': return 'Standard (GPT-4o Mini)';
+      case 'premium': return 'Premium (GPT-4o)';
+      case 'claude-3.5': return 'Claude 3.5 Sonnet';
+      case 'grok': return 'Grok Beta';
+      case 'deepseek': return 'DeepSeek Chat';
+      default: return 'Standard';
     }
   };
 
@@ -639,6 +667,19 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Business Knowledge</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => setShowModelPicker(true)}
+            >
+              <Ionicons name="hardware-chip-outline" size={24} color="#666" />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.settingText}>AI Model</Text>
+                <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
+                  {getModelName(aiModel)}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="chatbubble-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Auto Reply</Text>
@@ -735,6 +776,64 @@ export default function AccountScreen() {
             )}
           </View>
         </View>
+
+
+
+        {/* AI Model Picker Modal */}
+        <Modal
+          visible={showModelPicker}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowModelPicker(false)}
+        >
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' }}>
+            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>Select AI Model</Text>
+                <TouchableOpacity onPress={() => setShowModelPicker(false)}>
+                  <Text style={{ color: '#8B9DC3', fontSize: 16 }}>Close</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={{ color: '#8B9DC3', marginBottom: 15, fontSize: 13 }}>
+                Choose the AI model used for drafting replies and detailed responses. Premium models may require a higher subscription.
+              </Text>
+
+              {[
+                { id: 'standard', name: 'Standard (GPT-4o Mini)', desc: 'Fast, reliable, best for general use' },
+                { id: 'premium', name: 'Premium (GPT-4o)', desc: 'Smarter, better reasoning, slightly slower' },
+                { id: 'claude-3.5', name: 'Claude 3.5 Sonnet', desc: 'More natural, human-like tone' },
+                { id: 'grok', name: 'Grok Beta', desc: 'Witty, relaxed style' },
+                { id: 'deepseek', name: 'DeepSeek Chat', desc: 'Open model, good analytical skills' },
+              ].map((model) => (
+                <TouchableOpacity
+                  key={model.id}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    backgroundColor: aiModel === model.id ? 'rgba(37,211,102,0.1)' : 'rgba(255,255,255,0.05)',
+                    padding: 16,
+                    borderRadius: 12,
+                    marginBottom: 10,
+                    borderWidth: 1,
+                    borderColor: aiModel === model.id ? '#25D366' : 'transparent'
+                  }}
+                  onPress={() => handleModelChange(model.id)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 4 }}>{model.name}</Text>
+                    <Text style={{ color: '#8B9DC3', fontSize: 12 }}>{model.desc}</Text>
+                  </View>
+                  {aiModel === model.id && (
+                    <Ionicons name="checkmark-circle" size={24} color="#25D366" />
+                  )}
+                </TouchableOpacity>
+              ))}
+
+              <View style={{ height: 20 }} />
+            </View>
+          </View>
+        </Modal>
 
         {showTimePicker && (
           <DateTimePicker

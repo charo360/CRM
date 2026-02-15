@@ -13,12 +13,13 @@ import {
   Platform,
   ScrollView,
   Image,
+  Switch,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI } from '../../context/api';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
@@ -33,6 +34,7 @@ interface Customer {
   last_message: string | null;
   last_contacted: string | null;
   profile_picture: string | null;
+  auto_reply: boolean;
   created_at: string;
 }
 
@@ -122,6 +124,7 @@ export default function CustomersScreen() {
   const [saving, setSaving] = useState(false);
   const [showTagInput, setShowTagInput] = useState(false);
   const [newTagText, setNewTagText] = useState('');
+  const [newAutoReply, setNewAutoReply] = useState(false);
 
   // Contact import
   const [contactsModalVisible, setContactsModalVisible] = useState(false);
@@ -150,9 +153,74 @@ export default function CustomersScreen() {
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [sendingCatalog, setSendingCatalog] = useState(false);
   const [currency, setCurrency] = useState('USD');
+  const [aiModel, setAiModel] = useState('standard');
+  const [showModelSelector, setShowModelSelector] = useState(false);
 
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
+
+  const loadSettings = async () => {
+    try {
+      const settings = await settingsAPI.getSettings();
+      if (settings.currency) setCurrency(settings.currency);
+      if (settings.ai_model) setAiModel(settings.ai_model);
+    } catch (e) { }
+  };
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const getModelShortName = (modelId: string) => {
+    switch (modelId) {
+      case 'standard': return 'GPT-4o Mini';
+      case 'premium': return 'GPT-4o';
+      case 'gpt-5': return 'GPT-5';
+      case 'claude-3.5': return 'Claude 3.5';
+      case 'sonnet-4.5': return 'Sonnet 4.5';
+      case 'grok': return 'Grok 4.1';
+      case 'deepseek': return 'DeepSeek';
+      default: return 'AI';
+    }
+  };
+
+  React.useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTitle: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: 'bold' }}>Customers</Text>
+          <TouchableOpacity
+            onPress={() => setShowModelSelector(true)}
+            style={{
+              marginLeft: 16,
+              backgroundColor: aiModel === 'standard' ? 'rgba(255,255,255,0.1)' : '#25D366',
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 12,
+              flexDirection: 'row',
+              alignItems: 'center'
+            }}
+          >
+            <Ionicons name="hardware-chip" size={12} color={aiModel === 'standard' ? '#8B9DC3' : '#FFFFFF'} style={{ marginRight: 4 }} />
+            <Text style={{ color: aiModel === 'standard' ? '#8B9DC3' : '#FFFFFF', fontSize: 12, fontWeight: '600' }}>
+              {getModelShortName(aiModel)}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ),
+    });
+  }, [navigation, aiModel]);
+
+  const handleModelSelect = async (model: string) => {
+    setAiModel(model);
+    setShowModelSelector(false);
+    try {
+      await settingsAPI.updateSettings({ ai_model: model });
+    } catch (error) {
+      console.error('Failed to update AI model');
+    }
+  };
 
   const fetchCustomers = useCallback(async () => {
     try {
@@ -186,15 +254,7 @@ export default function CustomersScreen() {
     }
   }, [selectedTag, searchQuery, sortBy]);
 
-  useEffect(() => {
-    const loadCurrency = async () => {
-      try {
-        const settings = await settingsAPI.getSettings();
-        if (settings.currency) setCurrency(settings.currency);
-      } catch (e) { }
-    };
-    loadCurrency();
-  }, []);
+
 
   useEffect(() => {
     // Debounce search to prevent too many API calls
@@ -204,10 +264,7 @@ export default function CustomersScreen() {
     return () => clearTimeout(timeoutId);
   }, [fetchCustomers]);
 
-  // Load pending classifications on mount
-  useEffect(() => {
-    fetchPendingClassifications();
-  }, [fetchPendingClassifications]);
+
 
   // Handle route param from account tab
   useEffect(() => {
@@ -306,6 +363,10 @@ export default function CustomersScreen() {
     }
   };
 
+  useEffect(() => {
+    fetchPendingClassifications();
+  }, [fetchPendingClassifications]);
+
   const confirmClassification = async (customerId: string, type: 'customer' | 'supplier') => {
     try {
       await classificationAPI.confirm(customerId, 'approve', type);
@@ -392,6 +453,7 @@ export default function CustomersScreen() {
         name: newName,
         notes: newNotes || null,
         tags: newTags,
+        auto_reply: newAutoReply,
       });
 
       setCustomers(customers.map(c => c.id === selectedCustomer.id ? response.data : c));
@@ -431,6 +493,7 @@ export default function CustomersScreen() {
     setNewPhone('');
     setNewNotes('');
     setNewTags(viewMode === 'suppliers' ? ['Supplier', 'New'] : ['New']);
+    setNewAutoReply(false);
     setSelectedCustomer(null);
   };
 
@@ -529,7 +592,7 @@ export default function CustomersScreen() {
               classification_confirmed: true,
               classification_type: 'supplier',
             });
-          } catch (_) {}
+          } catch (_) { }
         }
         imported++;
       } catch (error) {
@@ -563,6 +626,7 @@ export default function CustomersScreen() {
     setNewPhone(customer.phone_number);
     setNewNotes(customer.notes || '');
     setNewTags(customer.tags);
+    setNewAutoReply(customer.auto_reply || false);
     setEditModalVisible(true);
   };
 
@@ -902,6 +966,25 @@ export default function CustomersScreen() {
               </View>
             </View>
           </View>
+
+          {isEdit && (
+            <View style={styles.formGroup}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={styles.formLabel}>AI Auto-Reply</Text>
+                <Switch
+                  value={newAutoReply}
+                  onValueChange={setNewAutoReply}
+                  trackColor={{ false: "#767577", true: "#25D366" }}
+                  thumbColor={newAutoReply ? "#ffffff" : "#f4f3f4"}
+                />
+              </View>
+              <Text style={{ color: '#8899AA', fontSize: 12, marginTop: 4 }}>
+                {newAutoReply
+                  ? 'Auto-reply is ENABLED for this customer.'
+                  : 'Auto-reply is DISABLED for this customer.'}
+              </Text>
+            </View>
+          )}
 
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Notes</Text>
@@ -1815,6 +1898,50 @@ export default function CustomersScreen() {
             />
           )}
         </SafeAreaView>
+      </Modal>
+      {/* AI Model Selector Modal */}
+      <Modal
+        visible={showModelSelector}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowModelSelector(false)}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', paddingTop: 100, alignItems: 'center' }}
+          activeOpacity={1}
+          onPress={() => setShowModelSelector(false)}
+        >
+          <View style={{ backgroundColor: '#1E1E1E', borderRadius: 12, padding: 8, width: 200, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }}>
+            {[
+              { id: 'standard', name: 'GPT-4o Mini' },
+              { id: 'premium', name: 'GPT-4o' },
+              { id: 'gpt-5', name: 'GPT-5' },
+              { id: 'sonnet-4.5', name: 'Sonnet 4.5' },
+              { id: 'grok', name: 'Grok 4.1' },
+              { id: 'deepseek', name: 'DeepSeek' },
+            ].map((model) => (
+              <TouchableOpacity
+                key={model.id}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  paddingVertical: 12,
+                  paddingHorizontal: 16,
+                  backgroundColor: aiModel === model.id ? 'rgba(37,211,102,0.1)' : 'transparent',
+                  borderRadius: 8,
+                }}
+                onPress={() => handleModelSelect(model.id)}
+              >
+                <Text style={{ color: aiModel === model.id ? '#25D366' : '#FFFFFF', fontSize: 14, fontWeight: aiModel === model.id ? '600' : '400', flex: 1 }}>
+                  {model.name}
+                </Text>
+                {aiModel === model.id && (
+                  <Ionicons name="checkmark" size={16} color="#25D366" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );

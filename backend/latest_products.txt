@@ -1,0 +1,20 @@
+Product: Test Red Pixel
+URL: https://i.ibb.co/d0Jqphgy/test-pixel.png
+ID: test_prod_123
+---
+Product: AWS S3 Test Product
+URL: https://crm-images-2025.s3.us-east-2.amazonaws.com/products/283178f3-adaf-4761-b69c-45b8c85273e2-s3_test_pixel.png
+ID: s3_test_prod
+---
+Product: Wireless Bluetooth Earbuds
+URL: https://images.unsplash.com/photo-1590658268037-6bf12f032f55?w=400
+ID: bacf8b7c-26be-44e7-a445-b03bb6f4627e
+---
+Product: Yoga Mat
+URL: https://images.unsplash.com/photo-1601925260368-ae2f83cf8b7f?w=400
+ID: 9e133fbc-1c39-476a-a828-365dfd4c08d0
+---
+Product: Leather Handbag
+URL: https://images.unsplash.com/photo-1548036328-c9fa89d128fa?w=400
+ID: 7000b1de-e9aa-4800-bdd7-d73397fadb2c
+---
