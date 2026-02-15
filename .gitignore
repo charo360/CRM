@@ -45,6 +45,17 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 dump.rdb
+*.log
+check_*.py
+debug_*.py
+read_*.py
+verify_*.py
+reproduce_*.py
+run_*.py
+!run_app.ps1
+test_*.py
+
+
 
 # System files
 .DS_Store

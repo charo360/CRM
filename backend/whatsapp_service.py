@@ -34,20 +34,20 @@ BROADCAST_COOLDOWN_HOURS = 24  # Min hours between broadcasts
 # These make automated messages look human to WhatsApp's detection systems.
 # All delays are in seconds. Ranges are (min, max) for random selection.
 
-# Typing speed: average human types 30-50 WPM on phone, ~5-8 chars/sec
-TYPING_CHARS_PER_SECOND = (4, 7)
+# Typing speed: fast typer on phone, ~8-15 chars/sec
+TYPING_CHARS_PER_SECOND = (8, 15)
 
 # Read delay: time between receiving a message and starting to type
-AUTO_REPLY_READ_DELAY = (8, 45)     # For auto-replies (AI responses)
-ORDER_CONFIRM_READ_DELAY = (3, 10)  # For order confirmations
-MANUAL_SEND_READ_DELAY = (1, 3)     # For manual sends from app (user is waiting)
+AUTO_REPLY_READ_DELAY = (2, 8)      # For auto-replies (AI responses)
+ORDER_CONFIRM_READ_DELAY = (1, 4)   # For order confirmations
+MANUAL_SEND_READ_DELAY = (0.5, 1.5) # For manual sends from app (user is waiting)
 
 # Typing pause: humans pause mid-typing (thinking, correcting)
-TYPING_PAUSE_CHANCE = 0.7           # 70% chance of a pause per slot
-TYPING_PAUSE_DURATION = (1.5, 4.0)  # How long each pause lasts
+TYPING_PAUSE_CHANCE = 0.3           # 30% chance of a pause per slot
+TYPING_PAUSE_DURATION = (0.5, 1.5)  # How long each pause lasts
 
 # Broadcast delays: time between each broadcast message
-BROADCAST_DELAY = (15, 45)          # Random delay between broadcast sends
+BROADCAST_DELAY = (8, 20)           # Random delay between broadcast sends
 
 # Max typing indicator duration (WhatsApp resets typing after ~25s)
 MAX_TYPING_DURATION = 22
@@ -526,16 +526,15 @@ class WhatsAppService:
             # Step 4: Send via Evolution API
             evo_msg_id = None
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with httpx.AsyncClient(timeout=60) as client:
                     if media_url:
-                        # Send media message
+                        # Send media message (FLAT structure fix)
                         payload = {
                             "number": clean_to,
-                            "mediaMessage": {
-                                "mediatype": "image",
-                                "caption": message,
-                                "media": media_url,
-                            }
+                            "mediatype": "image",
+                            "media": media_url,
+                            "caption": message,
+                            "fileName": "image.jpg"
                         }
                         resp = await client.post(
                             f"{self.base_url}/message/sendMedia/{instance_name}",
@@ -588,6 +587,105 @@ class WhatsAppService:
         except Exception as e:
             logger.error(f"Error sending message: {e}")
             raise
+
+    async def send_list(
+        self,
+        user_id: str,
+        to_number: str,
+        title: str,
+        description: str,
+        button_text: str,
+        sections: List[Dict],
+        footer_text: Optional[str] = None
+    ) -> Dict:
+        """
+        Send an interactive list message (Catalog-like experience).
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        if not user or not user.get("whatsapp", {}).get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = user["whatsapp"]["instance_name"]
+        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+
+        payload = {
+            "number": clean_to,
+            "title": title,
+            "description": description,
+            "buttonText": button_text,
+            "footerText": footer_text or "Powered by CRM",
+            "sections": sections
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{self.base_url}/message/sendList/{instance_name}",
+                    json=payload,
+                    headers=self._headers(),
+                )
+
+                if resp.status_code in (200, 201):
+                    return {"status": "success", "data": resp.json()}
+                else:
+                    return {"status": "error", "message": resp.text}
+        except Exception as e:
+            logger.error(f"Error sending list message: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def send_buttons(
+        self,
+        user_id: str,
+        to_number: str,
+        title: str,
+        description: str,
+        buttons: List[Dict],
+        footer_text: Optional[str] = None,
+        media_url: Optional[str] = None,
+    ) -> Dict:
+        """
+        Send an interactive button message via Evolution API.
+        buttons: list of {"buttonId": "...", "buttonText": {"displayText": "..."}}
+        Max 3 buttons per WhatsApp rules.
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        if not user or not user.get("whatsapp", {}).get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = user["whatsapp"]["instance_name"]
+        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+
+        payload = {
+            "number": clean_to,
+            "title": title,
+            "description": description,
+            "buttons": buttons[:3],  # WhatsApp max 3 buttons
+            "footerText": footer_text or "",
+        }
+
+        if media_url:
+            payload["mediaMessage"] = {
+                "mediatype": "image",
+                "media": media_url,
+            }
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{self.base_url}/message/sendButtons/{instance_name}",
+                    json=payload,
+                    headers=self._headers(),
+                )
+
+                if resp.status_code in (200, 201):
+                    logger.info(f"Sent button message to {clean_to}")
+                    return {"status": "success", "data": resp.json()}
+                else:
+                    logger.error(f"Button message error: {resp.text}")
+                    return {"status": "error", "message": resp.text}
+        except Exception as e:
+            logger.error(f"Error sending button message: {e}")
+            return {"status": "error", "message": str(e)}
 
     # ============ BROADCAST (asyncio queue) ============
 
@@ -760,6 +858,8 @@ class WhatsAppService:
             message_data.get("conversation")
             or message_data.get("extendedTextMessage", {}).get("text")
             or message_data.get("imageMessage", {}).get("caption")
+            or message_data.get("buttonsResponseMessage", {}).get("selectedButtonId")
+            or message_data.get("listResponseMessage", {}).get("singleSelectReply", {}).get("selectedRowId")
             or ""
         )
 

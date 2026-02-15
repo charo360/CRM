@@ -7,22 +7,34 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env', override=True)
 
+import os
+# Check AWS immediately
+if os.environ.get("AWS_ACCESS_KEY_ID"):
+    print("STARTUP_CHECK: AWS Credentials DETECTED")
+else:
+    print("STARTUP_CHECK: AWS Credentials NOT DETECTED")
+
 # Validate environment on startup
 def validate_startup_env():
     """Quick validation to catch common issues"""
-    api_key = os.environ.get('OPENAI_API_KEY', '')
-    if not api_key or api_key == 'your_openai_api_key_here':
+    print("DEBUG: MODIFIED STARTUP CHECK RUNNING")
+    ai_provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
+    if ai_provider == 'deepseek':
+        api_key = os.environ.get('DEEPSEEK_API_KEY', '')
+        key_name = 'DEEPSEEK_API_KEY'
+        label = 'DeepSeek'
+    else:
+        api_key = os.environ.get('OPENAI_API_KEY', '')
+        key_name = 'OPENAI_API_KEY'
+        label = 'OpenAI'
+    
+    if not api_key or api_key in ('your_openai_api_key_here', 'your_deepseek_api_key_here'):
         print("\n" + "="*60)
-        print("❌ ERROR: OPENAI_API_KEY not configured in .env file")
+        print(f"❌ ERROR: {key_name} not configured in .env file")
         print("="*60 + "\n")
         sys.exit(1)
-    elif not api_key.startswith('sk-'):
-        print("\n" + "="*60)
-        print(f"⚠️  WARNING: OPENAI_API_KEY has unexpected format")
-        print(f"   Key starts with: {api_key[:10]}")
-        print("="*60 + "\n")
     else:
-        print(f"✓ OpenAI API Key loaded (ends with: ...{api_key[-10:]})")
+        print(f"[OK] {label} API Key loaded (ends with: ...{api_key[-10:]})")
 
 validate_startup_env()
 
@@ -30,7 +42,24 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks,
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import sys
+import io
+# Force UTF-8 for Windows console output
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 import logging
+import asyncio
+
+# Configure logging to file and stdout
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("server.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -48,7 +77,7 @@ import re as _re
 from ai_service import get_drafter, AIMessageDrafter
 from daily_analyzer import DailyCustomerAnalyzer
 from notification_service import get_notification_service
-from image_handler import ImageUploadHandler
+from image_handler import ImageUploadHandler, S3Handler
 from product_organizer import get_organizer
 from wow_enhancements import get_wow_generator
 from whatsapp_service import get_whatsapp_service
@@ -143,7 +172,12 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "crm-backend"}
+    try:
+        with open("trace.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.utcnow().isoformat()} - Health check called\n")
+    except:
+        pass
+    return {"status": "ok", "service": "crm-backend", "trace": "active"}
 
 # ============ HELPER FUNCTIONS ============
 
@@ -1179,7 +1213,7 @@ async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None
             last_message=c.get("last_message"),
             last_contacted=c.get("last_contacted"),
             profile_picture=c.get("profile_picture"),
-            created_at=c["created_at"]
+            created_at=c.get("created_at", datetime.utcnow())
         )
         for c in customers
     ]
@@ -2519,10 +2553,21 @@ class ImageUploadRequest(BaseModel):
 async def upload_broadcast_image(request: ImageUploadRequest, user = Depends(get_current_user)):
     """Upload an image for broadcast messages - returns public URL"""
     try:
+        # Try S3 first if configured
+        if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+            try:
+                url = await S3Handler.upload_file(request.base64_data, request.filename)
+                result = {"image_url": url, "filename": request.filename}
+                logging.info(f"Image uploaded to S3: {url}")
+                return result
+            except Exception as e:
+                logging.error(f"S3 Upload Failed, falling back: {e}")
+
         result = await ImageUploadHandler.upload_base64_to_cloudinary(
             request.base64_data,
             request.filename
         )
+        logging.info(f"Image uploaded successfully (ImgBB): {result}")
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -3010,6 +3055,15 @@ async def evolution_webhook(request: Request):
     Handles: connection.update, messages.upsert
     Configure in Evolution API: webhook URL = https://your-domain/api/webhooks/evolution
     """
+    def log_trace(msg):
+        try:
+            with open("trace.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.utcnow().isoformat()} - {msg}\n")
+        except:
+            pass
+
+    log_trace("Webhook received")
+
     # Verify webhook authenticity via API key header or query param
     incoming_key = (
         request.headers.get("apikey")
@@ -3088,7 +3142,10 @@ async def evolution_webhook(request: Request):
             parsed = await whatsapp_service.handle_incoming_message(instance_name, data)
             
             if not parsed:
+                log_trace("Parsed is empty/None")
                 return {"status": "ok"}
+            
+            log_trace(f"Parsed body: {parsed.get('body')}")
             
             user = parsed["user"]
             from_number = parsed["from_number"]
@@ -3097,6 +3154,7 @@ async def evolution_webhook(request: Request):
             from_me = parsed.get("from_me", False)
             evo_msg_id_log = parsed.get("evo_message_id", "?")
             direction = "outgoing" if from_me else "incoming"
+            print(f"DEBUG: Webhook received. Direction={direction}, Body='{body}'")
             logging.info(f"messages.upsert: direction={direction}, from={from_number}, evo_id={evo_msg_id_log}, body={body[:60]}")
             
             # Find or create customer (the contact on the other end)
@@ -3109,6 +3167,7 @@ async def evolution_webhook(request: Request):
             customer_name = push_name or f"Contact {from_number[-4:]}"
             
             if customer:
+                print(f"DEBUG: Customer found: {customer['name']}")
                 customer_id = customer["_id"]
                 customer_name = customer.get("name", customer_name)
                 await db.customers.update_one(
@@ -3119,6 +3178,7 @@ async def evolution_webhook(request: Request):
                     }}
                 )
             else:
+                print(f"DEBUG: New customer auto-created")
                 customer_id = str(uuid.uuid4())
                 await db.customers.insert_one({
                     "_id": customer_id,
@@ -3162,6 +3222,7 @@ async def evolution_webhook(request: Request):
                         "user_id": user["_id"],
                     })
                     if existing:
+                        print(f"DEBUG: Outgoing message already exists, skipping AI")
                         return {"status": "ok"}
                 
                 message_id = str(uuid.uuid4())
@@ -3181,6 +3242,7 @@ async def evolution_webhook(request: Request):
                 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
+                    print(f"DEBUG: Ignoring outgoing message from me")
                     return {"status": "ok"}
                 
                 # Auto-classify contact in background (customer vs supplier)
@@ -3192,8 +3254,146 @@ async def evolution_webhook(request: Request):
                 except Exception as classify_err:
                     logging.error(f"Classification error: {classify_err}")
                 
+                # ============ DYNAMIC PRODUCT & CATALOG HANDLING ============
+                log_trace("Entering dynamic product logic")
+                body_lower = body.strip().lower()
+                
+                # Fetch user's products (limit 20 for performance)
+                try:
+                    user_products = await db.products.find({"user_id": user["_id"]}).to_list(20)
+                    log_trace(f"Fetched {len(user_products)} products")
+                except Exception as e:
+                    log_trace(f"Error fetching products: {e}")
+                    user_products = []
+                
+                # 1. CATALOG / MENU TRIGGER
+                if any(k in body_lower for k in ["catalog", "catalogue", "menu", "shop", "products", "list"]):
+                    if user_products:
+                        logging.info(f"Generating dynamic catalog for {from_number}")
+                        
+                        # Group by category (optional optimization, putting all in one for now)
+                        rows = []
+                        for p in user_products[:10]: # Limit to 10 items for list message
+                            price_display = f"{user.get('settings', {}).get('currency', 'USD')} {p.get('price', 0)}"
+                            rows.append({
+                                "title": p.get("name", "Product")[:24], # WhatsApp limit
+                                "description": f"{price_display} - {p.get('description', '')[:30]}...",
+                                "rowId": f"prod_{p['_id']}"
+                            })
+                            
+                        sections = [{
+                            "title": "Our Products",
+                            "rows": rows
+                        }]
+                        
+                        ws = get_whatsapp_service(db)
+                        await ws.send_list(
+                            user_id=user["_id"],
+                            to_number=from_number,
+                            title=f"👋 {user.get('business_name', 'Our')} Catalog",
+                            description="Here are our available products. Tap to view details or order.",
+                            button_text="View Products",
+                            sections=sections,
+                            footer_text="Powered by Smart CRM"
+                        )
+                        return {"status": "ok", "handled_by": "dynamic_catalog"}
+                    else:
+                        # No products found - fall through to AI to say "We don't have products yet"
+                        pass
+
+                # 2. DYNAMIC PRODUCT KEYWORD MATCHING
+                # Check if message contains a product name
+                matched_product = None
+                for p in user_products:
+                    if p.get("name", "").lower() in body_lower:
+                        matched_product = p
+                        break
+                
+                if matched_product:
+                    logging.info(f"Matched product keyword '{matched_product['name']}' in message")
+                    currency = user.get('settings', {}).get('currency', 'USD')
+                    price_display = f"{currency} {matched_product.get('price', 0):,.0f}"
+                    
+                    caption = (
+                        f"*{matched_product.get('name')}*\n\n"
+                        f"💰 Price: {price_display}\n"
+                        f"{'✅ In Stock' if matched_product.get('in_stock', True) else '❌ Out of Stock'}\n\n"
+                        f"{matched_product.get('description', '')}"
+                    )
+                    
+                    ws = get_whatsapp_service(db)
+                    await ws.send_message(
+                        user_id=user["_id"],
+                        to_number=from_number,
+                        message=caption, 
+                        customer_name=customer_name,
+                        media_url=matched_product.get("image_url"),
+                        send_context="auto_reply"
+                    )
+                    
+                    # Send Order button
+                    try:
+                        product_id = str(matched_product['_id'])
+                        await ws.send_buttons(
+                            user_id=user["_id"],
+                            to_number=from_number,
+                            title=matched_product.get('name', 'Product'),
+                            description=f"💰 {price_display} — Tap below to order!",
+                            buttons=[
+                                {"buttonId": f"order_{product_id}", "buttonText": {"displayText": f"🛒 {price_display}"[:20]}},
+                            ],
+                            footer_text="Powered by Smart CRM",
+                        )
+                    except Exception as btn_err:
+                        logging.error(f"Failed to send order button: {btn_err}")
+                    
+                    return {"status": "ok", "handled_by": "dynamic_product_match"}
+
+                # ============ END DYNAMIC HANDLING ============
+
+                # Handle order button taps: "order_<product_id>"
+                import re as _re
+                _order_btn_match = _re.match(r'^order_([a-f0-9-]+)$', body_lower)
+                if _order_btn_match:
+                    _ordered_pid = _order_btn_match.group(1)
+                    _ordered_product = await db.products.find_one({"_id": _ordered_pid, "user_id": user["_id"]})
+                    if _ordered_product:
+                        currency = user.get("settings", {}).get("currency", "USD")
+                        order_id = str(uuid.uuid4())
+                        await db.orders.insert_one({
+                            "_id": order_id,
+                            "user_id": user["_id"],
+                            "customer_id": customer_id,
+                            "product": _ordered_product["name"],
+                            "quantity": 1,
+                            "price": _ordered_product.get("price", 0),
+                            "total_amount": _ordered_product.get("price", 0),
+                            "status": "pending",
+                            "created_at": datetime.utcnow()
+                        })
+                        try:
+                            ws = get_whatsapp_service(db)
+                            price_display = f"{currency} {_ordered_product.get('price', 0):,.0f}"
+                            confirm_msg = (
+                                f"✅ *Order Confirmed!*\n\n"
+                                f"*{_ordered_product['name']}*\n"
+                                f"Qty: 1\n"
+                                f"💰 Total: {price_display}\n\n"
+                                f"Thank you! We'll process your order right away. 🚀"
+                            )
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message=confirm_msg,
+                                customer_name=customer_name,
+                                send_context="order_confirm",
+                            )
+                        except Exception as e:
+                            logging.error(f"Failed to send button order confirmation: {e}")
+                        return {"status": "ok", "handled_by": "button_order"}
+
                 # Check if customer is ordering from a catalog
-                body_lower = body.strip().lower().strip("*").strip()
+                # body_lower is already defined above
                 pending = await db.pending_catalogs.find_one({
                     "customer_id": customer_id,
                     "user_id": user["_id"]
@@ -3274,13 +3474,15 @@ async def evolution_webhook(request: Request):
                 
                 # Auto-reply if enabled (with dedup guard using evo_message_id + lock)
                 user_settings = user.get('settings', {})
+                print(f"DEBUG: Auto-reply enabled? {user_settings.get('auto_reply_enabled', False)}")
+                
                 if user_settings.get('auto_reply_enabled', False):
                     import time as _time
                     import hashlib as _hl
                     _evo_id = parsed.get("evo_message_id", "")
-                    # Primary key: evo_message_id. Fallback: hash of (user + customer + body)
-                    _dedup_key = _evo_id if _evo_id else f"{user['_id']}:{customer_id}:{_hl.md5(body.encode()).hexdigest()[:16]}"
                     
+                    # Dedup guard: Evolution API fires messages.upsert multiple times per message
+                    _dedup_key = _evo_id if _evo_id else f"{user['_id']}:{customer_id}:{_hl.md5(body.encode()).hexdigest()[:16]}"
                     async with _auto_reply_lock:
                         _now = _time.time()
                         # Clean old entries
@@ -3291,6 +3493,8 @@ async def evolution_webhook(request: Request):
                             logging.info(f"Auto-reply dedup: skipping duplicate key={_dedup_key[:30]} for {from_number}")
                             return {"status": "ok"}
                         _auto_reply_dedup[_dedup_key] = _now
+                    
+                    print(f"DEBUG: Proceeding to AI generation...")
                     try:
                         recent_messages = await db.messages.find({
                             "customer_id": customer_id,
@@ -3304,7 +3508,11 @@ async def evolution_webhook(request: Request):
                         bk = user.get("business_knowledge", {})
                         business_knowledge = "\n".join([f"{k}: {v}" for k, v in bk.items() if v]) if bk else ""
                         
+                        log_trace(f"Starting AI generation for {from_number}")
+                        
                         user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
+                        product_catalog_map = {}  # product_id -> image_url
+                        product_name_map = {}     # lowercase product name -> {id, image_url, name}
                         if user_products:
                             currency = user_settings.get("currency", "USD")
                             catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
@@ -3312,8 +3520,45 @@ async def evolution_webhook(request: Request):
                                 stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
                                 desc = f' - {p["description"]}' if p.get("description") else ""
                                 price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "Price not set"
-                                catalog_lines.append(f"  • {p['name']}: {price_str} [{stock}] ({p.get('category', 'Other')}){desc}")
-                            catalog_lines.append("When customers ask about products, prices, or availability, use this catalog for accurate answers. Do NOT make up prices.")
+                                
+                                # Get product image (first from images array, fallback to image_url)
+                                product_id = str(p['_id'])
+                                all_images = []
+                                if p.get("image_url"):
+                                    all_images.append(p["image_url"])
+                                for img in p.get("images", []):
+                                    if img and img not in all_images:
+                                        all_images.append(img)
+                                
+                                image_url = all_images[0] if all_images else None
+                                if image_url:
+                                    product_catalog_map[product_id] = image_url
+                                    image_marker = " [HAS IMAGE]"
+                                else:
+                                    image_marker = ""
+                                
+                                # Build name lookup for auto-matching
+                                product_name_map[p['name'].lower()] = {
+                                    "id": product_id,
+                                    "image_url": image_url,
+                                    "name": p['name'],
+                                    "all_images": all_images,
+                                }
+                                # Also index individual words for partial matching (skip short words)
+                                for word in p['name'].lower().split():
+                                    if len(word) >= 4 and word not in ("with", "from", "that", "this", "have", "each", "pack", "size"):
+                                        if word not in product_name_map:
+                                            product_name_map[word] = {
+                                                "id": product_id,
+                                                "image_url": image_url,
+                                                "name": p['name'],
+                                                "all_images": all_images,
+                                            }
+                                
+                                catalog_lines.append(f"  • {p['name']} (ID: {product_id}): {price_str} [{stock}] ({p.get('category', 'Other')}){desc}{image_marker}")
+                            
+                            catalog_lines.append("\nWhen customers ask about products, use this catalog for accurate answers. Do NOT make up prices.")
+                            catalog_lines.append("When a customer asks to see a product or its image, just describe it naturally. The system will automatically send the photo.")
                             business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
                         
                         if not business_knowledge:
@@ -3339,17 +3584,87 @@ async def evolution_webhook(request: Request):
                         )
                         
                         reply_text = result.get("drafted_message", "")
+                        logging.info(f"AI raw reply for {from_number}: {reply_text[:300]}")
+                        
+                        # Check if AI flagged this as needing human attention
+                        needs_human = False
+                        if reply_text and "[NEEDS_HUMAN]" in reply_text:
+                            needs_human = True
+                            reply_text = reply_text.replace("[NEEDS_HUMAN]", "").strip()
+                            logging.info(f"⚠️ NEEDS_HUMAN flagged for {from_number} — alerting business owner")
+                            # Send push notification to business owner
+                            try:
+                                push_token = user.get("push_token")
+                                if push_token:
+                                    from notification_service import get_notification_service
+                                    notif_service = get_notification_service()
+                                    await notif_service.send_notification(
+                                        push_token=push_token,
+                                        title="🔔 Customer Needs Your Help",
+                                        body=f"{c_name}: {body[:100]}",
+                                        data={
+                                            "type": "needs_human",
+                                            "customer_id": customer_id,
+                                            "customer_name": c_name,
+                                            "message": body[:200],
+                                        },
+                                        sound="default",
+                                    )
+                            except Exception as notif_err:
+                                logging.error(f"Failed to send NEEDS_HUMAN notification: {notif_err}")
+                            # Flag customer as needing human attention
+                            try:
+                                await db.customers.update_one(
+                                    {"_id": customer_id},
+                                    {"$set": {"needs_human": True, "needs_human_reason": body[:200], "needs_human_at": datetime.utcnow()}}
+                                )
+                            except Exception:
+                                pass
                         
                         if reply_text:
+                            import re
+                            # Strip any [SEND_IMAGE:...] tags the AI might have included
+                            image_pattern = r'\[SEND_IMAGE:([^\]]+)\]'
+                            ai_tag_matches = re.findall(image_pattern, reply_text)
+                            clean_reply_text = re.sub(image_pattern, '', reply_text).strip()
+                            
                             ws = get_whatsapp_service(db)
-                            await ws.send_message(
-                                user_id=user["_id"],
-                                to_number=from_number,
-                                message=reply_text,
-                                customer_name=c_name,
-                                send_context="auto_reply",
-                            )
-                            logging.info(f"Auto-replied to {c_name} ({from_number})")
+                            
+                            # Send the text message first
+                            if clean_reply_text:
+                                await ws.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message=clean_reply_text,
+                                    customer_name=c_name,
+                                    send_context="auto_reply",
+                                )
+                            
+                            # === PRODUCT IMAGE SENDING (only via explicit AI tags) ===
+                            # Note: Auto-detect product matching is handled earlier in the 
+                            # "DYNAMIC PRODUCT KEYWORD MATCHING" section. The AI reply
+                            # only sends additional images if the AI explicitly tags them.
+                            images_sent = set()
+                            
+                            # Honor any AI [SEND_IMAGE:id] tags
+                            for pid in ai_tag_matches:
+                                pid = pid.strip()
+                                if pid in product_catalog_map and pid not in images_sent:
+                                    try:
+                                        await ws.send_message(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            message="",
+                                            customer_name=c_name,
+                                            send_context="auto_reply",
+                                            media_url=product_catalog_map[pid]
+                                        )
+                                        images_sent.add(pid)
+                                        logging.info(f"Sent product image (AI tag) for {pid} to {c_name}")
+                                    except Exception as img_err:
+                                        logging.error(f"Failed to send product image {pid}: {img_err}")
+                            
+                            logging.info(f"Auto-replied to {c_name} ({from_number}), images_sent={len(images_sent)}")
                         
                     except Exception as e:
                         logging.error(f"Auto-reply failed for {from_number}: {e}")
@@ -3510,7 +3825,7 @@ async def get_customer_ai_analysis(customer_id: str, user = Depends(get_current_
         raise HTTPException(status_code=404, detail="Customer not found")
     
     # Get customer's messages
-    messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", 1).to_list(50)
+    messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", 1).to_list(50)
     
     analysis = await analyze_customer_with_ai(customer, messages, user)
     
@@ -3526,7 +3841,7 @@ async def generate_customer_notes(customer_id: str, user = Depends(get_current_u
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", 1).to_list(50)
+    messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", 1).to_list(50)
     
     notes = await generate_notes_from_messages(customer, messages)
     
@@ -3548,7 +3863,7 @@ async def draft_message(customer_id: str, custom_instructions: Optional[str] = N
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
             
-        messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", 1).to_list(50)
+        messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", 1).to_list(50)
         
         # Get business settings from user
         settings = user.get("settings", {})
@@ -3593,7 +3908,7 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    messages = await db.messages.find({"customer_id": customer_id}).sort("created_at", -1).to_list(limit)
+    messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", -1).to_list(limit)
     
     return serialize_doc([
         {
@@ -3699,7 +4014,8 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         
         # Get message history
         messages = await db.messages.find({
-            "customer_id": request.customer_id
+            "customer_id": request.customer_id,
+            "user_id": user["_id"]
         }).sort("timestamp", 1).limit(10).to_list(10)
         
         # Get business name
@@ -3750,8 +4066,16 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
                 stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
                 desc = f' - {p["description"]}' if p.get("description") else ""
                 price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "Price not set"
-                catalog_lines.append(f"  • {p['name']}: {price_str} [{stock}] ({p.get('category', 'Other')}){desc}")
-            catalog_lines.append("When customers ask about products, prices, or availability, use this catalog for accurate answers. Do NOT make up prices.")
+                
+                # Get product image
+                product_id = str(p['_id'])
+                image_url = p.get("image_url") or (p.get("images", [])[0] if p.get("images") else None)
+                image_marker = " [HAS IMAGE]" if image_url else ""
+                
+                catalog_lines.append(f"  • {p['name']} (ID: {product_id}): {price_str} [{stock}] ({p.get('category', 'Other')}){desc}{image_marker}")
+            
+            catalog_lines.append("\nWhen customers ask about products, use this catalog for accurate answers. Do NOT make up prices.")
+            catalog_lines.append("If a product has [HAS IMAGE] and the customer asks to see it, include [SEND_IMAGE:{product_id}] in your response.")
             business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
         
         # Get user country for language awareness
@@ -4285,6 +4609,53 @@ async def send_daily_notifications_now(user = Depends(get_current_user)):
 
 # ============ PRODUCT CATALOG ENDPOINTS ============
 
+@api_router.post("/products/reanalyze")
+async def reanalyze_products(user = Depends(get_current_user)):
+    """Re-analyze all product images with AI Vision to fix names/descriptions/categories"""
+    from product_organizer import get_organizer
+    organizer = get_organizer()
+    
+    if not organizer.vision_available:
+        raise HTTPException(status_code=400, detail="OpenAI Vision not available. Add OPENAI_API_KEY to .env file.")
+    
+    products = await db.products.find({"user_id": user["_id"]}).to_list(100)
+    if not products:
+        return {"status": "success", "updated": 0, "message": "No products to analyze"}
+    
+    updated = 0
+    results = []
+    for p in products:
+        image_url = p.get("image_url", "")
+        if not image_url:
+            continue
+        
+        # Use the full URL for remote images
+        if not image_url.startswith("http"):
+            server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+            if server_url:
+                image_url = f"{server_url}{image_url}"
+            else:
+                continue
+        
+        try:
+            analysis = await organizer.analyze_product_image(image_url)
+            if "error" not in analysis and analysis.get("name", "Product") != "Product":
+                update_data = {"name": analysis["name"], "category": analysis.get("category", "Other")}
+                if analysis.get("description"):
+                    update_data["description"] = analysis["description"]
+                if analysis.get("suggested_price") and p.get("price", 0) == 0:
+                    update_data["price"] = analysis["suggested_price"]
+                
+                await db.products.update_one({"_id": p["_id"]}, {"$set": update_data})
+                updated += 1
+                results.append({"id": p["_id"], "old_name": p["name"], "new_name": analysis["name"], "category": analysis.get("category")})
+                logging.info(f"Re-analyzed product {p['_id']}: {p['name']} -> {analysis['name']}")
+        except Exception as e:
+            logging.error(f"Failed to re-analyze product {p['_id']}: {e}")
+            results.append({"id": p["_id"], "old_name": p["name"], "error": str(e)})
+    
+    return {"status": "success", "updated": updated, "total": len(products), "results": results}
+
 @api_router.post("/products/upload")
 async def upload_products(
     files: List[UploadFile] = File(...),
@@ -4684,6 +5055,7 @@ async def broadcast_catalog(
                 server_url = os.environ.get("SERVER_URL", "").rstrip("/")
                 if server_url:
                     first_image = f"{server_url}{img}"
+            logging.info(f"Using image URL for catalog: {first_image}")
             break
     
     # Send to all target customers
@@ -4808,12 +5180,22 @@ async def startup_tasks():
         # Pending catalogs
         await db.pending_catalogs.create_index([("customer_id", 1), ("user_id", 1)])
 
+        # Conversation memory (AI context per customer per user)
+        await db.conversation_memory.create_index([("customer_id", 1), ("user_id", 1)])
+
         logging.info("Database indexes ensured successfully")
     except Exception as e:
         logging.error(f"Failed to create indexes: {e}")
 
-    # Recalculate customer totals from sales (Self-Healing)
+    # Purge contaminated conversation memory (one-time cleanup)
     try:
+        purged = await db.conversation_memory.delete_many({})
+        if purged.deleted_count > 0:
+            logging.info(f"Purged {purged.deleted_count} old conversation memory entries")
+    except Exception as e:
+        logging.error(f"Failed to purge conversation memory: {e}")
+
+    # Recalculate customer totals from sales (Self-Healing)
         logging.info("Starting customer totals recalculation...")
         
         # 1. Reset all totals to 0 first (safety)

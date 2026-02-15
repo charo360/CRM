@@ -16,37 +16,60 @@ def validate_environment():
     errors = []
     warnings = []
     
-    # Check OpenAI API Key
-    api_key = os.environ.get('OPENAI_API_KEY', '')
+    # Check AI Provider and API Key
+    ai_provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
+    
+    if ai_provider == 'deepseek':
+        api_key = os.environ.get('DEEPSEEK_API_KEY', '')
+        key_name = 'DEEPSEEK_API_KEY'
+        provider_label = 'DeepSeek'
+        base_url = 'https://api.deepseek.com'
+    else:
+        api_key = os.environ.get('OPENAI_API_KEY', '')
+        key_name = 'OPENAI_API_KEY'
+        provider_label = 'OpenAI'
+        base_url = None
     
     if not api_key:
-        errors.append("OPENAI_API_KEY is not set in .env file")
-    elif api_key == 'your_openai_api_key_here':
-        errors.append("OPENAI_API_KEY is still set to placeholder value")
-    elif not api_key.startswith('sk-'):
-        errors.append(f"OPENAI_API_KEY has invalid format (should start with 'sk-')")
-    elif len(api_key) < 40:
-        errors.append(f"OPENAI_API_KEY seems too short (length: {len(api_key)})")
+        errors.append(f"{key_name} is not set in .env file")
+    elif api_key in ('your_openai_api_key_here', 'your_deepseek_api_key_here'):
+        errors.append(f"{key_name} is still set to placeholder value")
+    elif ai_provider != 'deepseek' and not api_key.startswith('sk-'):
+        errors.append(f"{key_name} has invalid format (should start with 'sk-')")
+    elif len(api_key) < 20:
+        errors.append(f"{key_name} seems too short (length: {len(api_key)})")
     else:
-        # Validate with OpenAI
+        # Validate with a quick API call
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=api_key)
-            # Quick test call
-            client.models.list()
-            print(f"✓ OpenAI API Key valid (ends with: ...{api_key[-10:]})")
+            client_kwargs = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = OpenAI(**client_kwargs)
+            client.chat.completions.create(
+                model='deepseek-chat' if ai_provider == 'deepseek' else 'gpt-4o-mini',
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=5
+            )
+            print(f"✓ {provider_label} API Key valid (ends with: ...{api_key[-10:]})")
         except Exception as e:
             error_msg = str(e)
-            if '401' in error_msg or 'invalid' in error_msg.lower():
-                errors.append(f"OPENAI_API_KEY is invalid or expired: {error_msg[:100]}")
+            if '401' in error_msg or 'invalid' in error_msg.lower() or 'auth' in error_msg.lower():
+                errors.append(f"{key_name} is invalid or expired: {error_msg[:100]}")
             else:
-                warnings.append(f"Could not verify OpenAI API Key: {error_msg[:100]}")
+                warnings.append(f"Could not verify {provider_label} API Key: {error_msg[:100]}")
     
     # Check other required env vars
     required_vars = ['MONGO_URL', 'JWT_SECRET', 'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN']
     for var in required_vars:
         if not os.environ.get(var):
             warnings.append(f"{var} is not set")
+
+    # Check AWS Credentials
+    if not os.environ.get('AWS_ACCESS_KEY_ID') or not os.environ.get('AWS_SECRET_ACCESS_KEY'):
+        warnings.append("AWS Credentials not set - Image uploads will fallback to ImgBB (unreliable)")
+    elif not os.environ.get('AWS_BUCKET_NAME'):
+        warnings.append("AWS_BUCKET_NAME not set - S3 uploads will fail")
     
     # Print results
     print("\n=== Environment Validation ===")

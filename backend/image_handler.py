@@ -229,6 +229,7 @@ class ImageUploadHandler:
             logger.error(f"Error uploading to Cloudinary: {e}")
             raise
     
+
     @staticmethod
     async def upload_base64_to_cloudinary(base64_data: str, filename: str = "image.jpg") -> Dict[str, str]:
         """
@@ -289,4 +290,78 @@ class ImageUploadHandler:
                     
         except Exception as e:
             logger.error(f"Error uploading to ImgBB: {e}")
+            raise
+
+
+class S3Handler:
+    """Handle AWS S3 Image Uploads"""
+    
+    @staticmethod
+    def get_s3_client():
+        import boto3
+        try:
+            return boto3.client(
+                's3',
+                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                region_name=os.environ.get('AWS_REGION', 'us-east-1')
+            )
+        except Exception as e:
+            logger.error(f"Failed to create S3 client: {e}")
+            raise
+
+    @staticmethod
+    async def upload_file(base64_data: str, filename: str, content_type: str = "image/jpeg") -> str:
+        """
+        Upload base64 image to S3 bucket
+        Returns: Public URL
+        """
+        try:
+            bucket_name = os.environ.get('AWS_BUCKET_NAME')
+            if not bucket_name:
+                raise ValueError("AWS_BUCKET_NAME not set in .env")
+
+            # Decode base64
+            if "," in base64_data:
+                header, encoded = base64_data.split(",", 1)
+                # Try to guess extension/content-type from header data:image/png;base64
+                if "image/png" in header:
+                    content_type = "image/png"
+                    if not filename.endswith(".png"): filename += ".png"
+                elif "image/jpeg" in header:
+                    content_type = "image/jpeg"
+                    if not filename.endswith(".jpg") and not filename.endswith(".jpeg"): filename += ".jpg"
+                base64_data = encoded
+            
+            import base64
+            file_content = base64.b64decode(base64_data)
+            
+            # Use threading to run blocking boto3 call
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            # Unique filename
+            key = f"products/{uuid.uuid4()}-{filename}"
+            
+            def _upload():
+                s3 = S3Handler.get_s3_client()
+                s3.put_object(
+                    Bucket=bucket_name,
+                    Key=key,
+                    Body=file_content,
+                    ContentType=content_type,
+                    # ACL='public-read' # Using public bucket policy is better, or presigned. 
+                    # For now assuming bucket policy allows public read or we use standard URL structure.
+                )
+                # Construct URL
+                # Standard format: https://BUCKET.s3.REGION.amazonaws.com/KEY
+                region = os.environ.get('AWS_REGION', 'us-east-1')
+                return f"https://{bucket_name}.s3.{region}.amazonaws.com/{key}"
+
+            url = await loop.run_in_executor(None, _upload)
+            logger.info(f"Uploaded to S3: {url}")
+            return url
+            
+        except Exception as e:
+            logger.error(f"S3 Upload Error: {e}")
             raise

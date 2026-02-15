@@ -3,6 +3,7 @@ AI Message Drafter Service
 Generates personalized follow-up messages using OpenAI API
 """
 import os
+import re
 import logging
 from typing import List, Dict
 from datetime import datetime
@@ -74,24 +75,35 @@ class AIMessageDrafter:
     """Service for drafting personalized follow-up messages using AI"""
     
     def __init__(self, api_key: str = None):
-        raw_key = api_key or os.environ.get('OPENAI_API_KEY')
-        # Sanitize API key to avoid issues with accidental newlines/spaces from copy-paste
-        self.api_key = (raw_key or '').strip().replace('\r', '').replace('\n', '').replace(' ', '')
-        if not self.api_key or self.api_key == 'your_openai_api_key_here':
-            logger.warning("OPENAI_API_KEY not set - using mock mode")
-            logger.warning("To fix: Set OPENAI_API_KEY in backend/.env file")
+        self.provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
+        
+        if self.provider == 'deepseek':
+            raw_key = os.environ.get('DEEPSEEK_API_KEY', '')
+            self.api_key = (raw_key or '').strip().replace('\r', '').replace('\n', '').replace(' ', '')
+            base_url = 'https://api.deepseek.com'
+            self.model_name = 'deepseek-chat'
+            provider_label = 'DeepSeek'
+        else:
+            raw_key = api_key or os.environ.get('OPENAI_API_KEY')
+            self.api_key = (raw_key or '').strip().replace('\r', '').replace('\n', '').replace(' ', '')
+            base_url = None  # default OpenAI URL
+            self.model_name = 'gpt-4o-mini'
+            provider_label = 'OpenAI'
+        
+        if not self.api_key or self.api_key in ('your_openai_api_key_here', 'your_deepseek_api_key_here'):
+            logger.warning(f"{provider_label} API key not set - using mock mode")
             self.client = None
             self.mock_mode = True
         else:
             try:
-                self.client = OpenAI(api_key=self.api_key)
-                self.model_name = 'gpt-4o-mini'
+                client_kwargs = {"api_key": self.api_key}
+                if base_url:
+                    client_kwargs["base_url"] = base_url
+                self.client = OpenAI(**client_kwargs)
                 self.mock_mode = False
-                logger.info(f"✓ OpenAI client initialized successfully (key ends: ...{self.api_key[-10:]})")
+                logger.info(f"✓ {provider_label} client initialized (model: {self.model_name}, key ends: ...{self.api_key[-10:]})")
             except Exception as e:
-                logger.error(f"❌ Failed to configure OpenAI client: {e}")
-                logger.error(f"   API key ends with: ...{self.api_key[-10:]}")
-                logger.error(f"   Check if key is valid at: https://platform.openai.com/account/api-keys")
+                logger.error(f"❌ Failed to configure {provider_label} client: {e}")
                 self.client = None
                 self.mock_mode = True
     
@@ -127,7 +139,10 @@ class AIMessageDrafter:
         conversation_memory = ""
         cid = customer_id or customer_data.get("_id", "")
         if db is not None and cid:
-            mem_doc = await db.conversation_memory.find_one({"customer_id": cid})
+            mem_query = {"customer_id": cid}
+            if user_id:
+                mem_query["user_id"] = user_id
+            mem_doc = await db.conversation_memory.find_one(mem_query)
             if mem_doc and mem_doc.get("summary"):
                 conversation_memory = mem_doc["summary"]
                 context['conversation_memory'] = conversation_memory
@@ -162,13 +177,15 @@ class AIMessageDrafter:
         
         # Call OpenAI API
         try:
+            print(f"DEBUG: Calling OpenAI/DeepSeek API now with prompt len={len(prompt)}")
             drafted_message = await self._call_openai(prompt)
+            print(f"DEBUG: API call successful. Response len={len(drafted_message)}")
             
             # Update conversation memory after successful reply
             if db is not None and cid and drafted_message:
                 try:
                     await self._update_conversation_memory(
-                        db, cid, customer_name, messages, drafted_message, incoming_msg
+                        db, cid, customer_name, messages, drafted_message, incoming_msg, user_id=user_id
                     )
                 except Exception as mem_err:
                     logger.debug(f"Conversation memory update failed (non-critical): {mem_err}")
@@ -179,6 +196,9 @@ class AIMessageDrafter:
                 "ai_reason": self._extract_reason(context)
             }
         except Exception as e:
+            print(f"CRITICAL AI ERROR: {e}") # Direct print to bypass logging error
+            import traceback
+            traceback.print_exc()
             logger.error(f"AI drafting failed: {e}")
             return {
                 "drafted_message": f"Hi {customer_name}, hope you're doing well! Just wanted to check in and see if there's anything we can help you with.",
@@ -270,66 +290,86 @@ class AIMessageDrafter:
         return topics
     
     async def _find_similar_past_answers(self, user_id: str, incoming_message: str, current_customer_id: str, db) -> str:
-        """Find how the business owner previously answered similar questions from other customers"""
+        """Learn business patterns from past answers (pricing, product info, tone).
+        Extracts anonymized guidelines — never injects raw conversations or customer details.
+        The output trains the model on HOW the business owner responds, not WHAT other customers said."""
         if db is None or not incoming_message:
             return ""
         
         try:
-            # Extract key words from the incoming message (skip very short/common words)
-            # Skip past-answer search for very short messages (likely greetings/casual)
+            # Only activate for substantive messages (skip greetings/casual)
             if len(incoming_message.split()) <= 3:
                 return ""
-            stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'do', 'does', 'i', 'me', 'my', 'you', 'your', 'we', 'ok', 'yes', 'no', 'please', 'thanks', 'thank', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'how', 'what', 'when', 'where', 'who', 'which', 'can', 'will', 'have', 'has', 'had', 'this', 'that', 'it', 'be', 'been', 'am', 'not', 'so', 'if'}
+            
+            stop_words = {
+                'the', 'a', 'an', 'is', 'are', 'was', 'do', 'does', 'i', 'me',
+                'my', 'you', 'your', 'we', 'ok', 'yes', 'no', 'please', 'thanks',
+                'thank', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of',
+                'with', 'how', 'what', 'when', 'where', 'who', 'which', 'can',
+                'will', 'have', 'has', 'had', 'this', 'that', 'it', 'be', 'been',
+                'am', 'not', 'so', 'if', 'hi', 'hello', 'hey', 'habari', 'mambo',
+                'sawa', 'poa', 'ndiyo', 'hapana',
+            }
             words = [w.lower().strip('?!.,') for w in incoming_message.split() if len(w) > 2]
             keywords = [w for w in words if w not in stop_words]
             
             if not keywords:
                 return ""
             
-            # Search for incoming messages from OTHER customers that contain similar keywords
-            search_regex = "|".join(keywords[:5])  # Limit to 5 keywords
-            similar_incoming = await db.messages.find({
+            # Search for the business owner's past OUTGOING replies that contain
+            # similar keywords — we only look at what the OWNER said, not customers
+            search_regex = "|".join(keywords[:5])
+            past_replies = await db.messages.find({
                 "user_id": user_id,
-                "direction": "incoming",
+                "direction": "outgoing",
                 "customer_id": {"$ne": current_customer_id},
                 "content": {"$regex": search_regex, "$options": "i"}
-            }).sort("created_at", -1).limit(5).to_list(5)
+            }).sort("created_at", -1).limit(10).to_list(10)
             
-            if not similar_incoming:
+            if not past_replies:
                 return ""
             
-            # For each similar incoming message, find the business owner's reply
-            past_exchanges = []
-            for msg in similar_incoming:
-                # Find the next outgoing message to this customer after this incoming message
-                reply = await db.messages.find_one({
-                    "user_id": user_id,
-                    "customer_id": msg["customer_id"],
-                    "direction": "outgoing",
-                    "created_at": {"$gt": msg["created_at"]}
-                }, sort=[("created_at", 1)])
+            # Extract ONLY business patterns — no customer names or personal info
+            prices_quoted = []
+            product_mentions = []
+            reply_lengths = []
+            
+            price_pattern = re.compile(r'(\d[\d,]*\.?\d*)\s*(ksh|kes|usd|\$|shillings?)?', re.IGNORECASE)
+            
+            for reply in past_replies:
+                content = reply.get("content", "")
+                if not content:
+                    continue
                 
-                if reply and reply.get("content"):
-                    past_exchanges.append({
-                        "question": msg.get("content", "")[:150],
-                        "answer": reply.get("content", "")[:200]
-                    })
+                reply_lengths.append(len(content.split()))
+                
+                # Extract prices mentioned
+                for match in price_pattern.finditer(content):
+                    price_str = match.group(0).strip()
+                    if len(price_str) > 2:  # Skip single digits
+                        prices_quoted.append(price_str)
             
-            if not past_exchanges:
+            # Build anonymized business guidelines
+            guidelines = []
+            
+            if prices_quoted:
+                unique_prices = list(set(prices_quoted))[:5]
+                guidelines.append(f"Prices you've quoted before: {', '.join(unique_prices)}")
+            
+            if reply_lengths:
+                avg_len = sum(reply_lengths) / len(reply_lengths)
+                if avg_len < 15:
+                    guidelines.append("You typically give short, direct answers to these types of questions.")
+                elif avg_len > 40:
+                    guidelines.append("You typically give detailed explanations for these types of questions.")
+            
+            if not guidelines:
                 return ""
             
-            # Format as context for the AI
-            lines = ["PAST SIMILAR CONVERSATIONS (how you answered similar questions from other customers):"]
-            for i, ex in enumerate(past_exchanges[:3], 1):
-                lines.append(f"  Customer asked: \"{ex['question']}\"")
-                lines.append(f"  You replied: \"{ex['answer']}\"")
-                lines.append("")
-            
-            lines.append("Use these past answers as reference for tone, pricing, and information accuracy. Stay consistent with how you've answered before.")
-            return "\n".join(lines)
+            return "YOUR PAST BUSINESS PATTERNS (stay consistent):\n- " + "\n- ".join(guidelines)
             
         except Exception as e:
-            logger.error(f"Error finding similar past answers: {e}")
+            logger.error(f"Error extracting business patterns: {e}")
             return ""
 
     def _create_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None) -> str:
@@ -386,11 +426,14 @@ Past interaction summary: {context['conversation_memory']}
         repetition_warning = ""
         if context.get('last_outgoing_message'):
             last_msg = context['last_outgoing_message']
-            # Extract first few words to identify the pattern
             first_words = ' '.join(last_msg.split()[:3])
             repetition_warning = f"\n⚠️ IMPORTANT: Your last reply started with '{first_words}' - DO NOT start with those same words again. Use completely different opening words."
         
-        prompt = f"""You're {context['name']}'s business contact at {business_name}. You're texting them back on WhatsApp.
+        # If there are multiple messages, this is mid-conversation — no greetings
+        if context.get('conversation_log') and len(context['conversation_log']) > 2:
+            repetition_warning += "\n⚠️ This is a mid-conversation reply. Do NOT open with any greeting (Hey, Hi, Hello, etc). Get straight to the point."
+        
+        prompt = f"""You are the person behind {business_name}, chatting with {context['name']} on WhatsApp. Write like a real human — not a bot, not a customer service agent. Think of how you'd actually text a customer you know.
 
 Context: {context_str}
 {business_context}{memory_section}
@@ -398,21 +441,25 @@ Recent chat:
 {conversation_history}
 {repetition_warning}
 
-Reply to their message naturally. Real people don't greet every single message:
+STEP 1 — What is the customer talking about RIGHT NOW?
+Read their LAST message carefully. That is what you are replying to. The chat history above is just background — if the customer changed topic, you change with them. Do NOT continue an old topic if they moved on.
+- If they were asking about shoes and now ask about laptops → answer about laptops. Forget the shoes.
+- If they were negotiating a price and now say "hi" → treat it as a fresh greeting.
+- If their message IS a direct follow-up to the previous topic (e.g. "ok send it", "how much?", "yes") → continue that topic naturally.
+- When in doubt, answer exactly what their last message says. Nothing more.
 
-ONLY greet if they ACTUALLY greeted you first (hi/hello/good morning/habari/sasa/hey/etc). If they greeted, vary your response (Morning/Hey/Sasa/Vipi/Yo/Sup).
-
-For everything else, just respond directly:
-- "Yes"/"OK" → Move forward (NO greeting, just continue)
-- "I have send" → Acknowledge it (NO greeting, just confirm)
-- Questions → Answer directly (NO greeting needed)
-- Statements → Respond to what they said (NO greeting)
-
-Rules:
-- Match their language exactly (English, Swahili, mix)
-- 1-3 sentences max
-- NEVER start two messages in a row with the same words
-- Don't add greetings where they don't belong
+STEP 2 — How to reply:
+- Text like a real person. Short, natural, no filler. No "I'd be happy to help" or "Feel free to ask" type phrases.
+- NEVER start with "Hey", "Hi", "Hello", or any greeting if the conversation already has messages above. Only greet if this is the very first message OR they just greeted you. Mid-conversation, jump straight into your answer.
+- Reply in whatever language the customer used. If they wrote in English, reply in English. If Swahili, reply in Swahili. If they mix (e.g. "niaje, do you have laptops?"), you mix too within the SAME sentence — that's how real people text. NEVER translate: don't say something in English then repeat it in another language below. One message, one natural flow.
+- Only use an emoji when it genuinely adds something (e.g. confirming an order ✅, or something exciting 🔥). Most normal replies do NOT need emojis. If the message is just answering a simple question, skip the emoji entirely. Never force emojis.
+- Keep it 1-3 sentences. Don't over-explain.
+- NEVER repeat the same opening as your last message.
+- Don't use phrases like "Sure thing!", "Absolutely!", "Of course!", "Great choice!" — those sound robotic.
+- Be direct. If they ask a question, answer it. If they say yes, move forward. If they want to see something, show it.
+- If a product catalog or business information is provided above, you ALREADY KNOW your products. Answer product questions directly from that catalog — give the name, price, availability. NEVER say "let me check", "I'll look into it", or "let me get back to you" when the answer is right there in your catalog. If the product isn't in your catalog, just say you don't have it.
+- CRITICAL: ONLY use information from the chat history and business information shown above. NEVER invent facts, names, events, or personal details that are not provided. If you don't know something, say so honestly.
+- If the customer asks something you genuinely CANNOT answer from the business information or chat history (e.g. specific pricing not in catalog, custom requests, complaints, technical questions you have no info on), start your reply with [NEEDS_HUMAN] then give a natural holding reply like "Let me confirm that for you" or "Give me a moment, I'll get back to you on that". Do NOT use [NEEDS_HUMAN] for general greetings, simple questions you CAN answer, or casual chat.
 
 Tone: {tone_desc}
 
@@ -426,9 +473,16 @@ Reply:"""
         # Start with the base prompt
         base_prompt = self._create_prompt(context, business_name, tone, business_knowledge)
         
-        # Add language awareness context (keep it minimal — the model handles language well)
+        # Add language awareness context
         if language_context:
-            lang_section = f"\n\nCustomer context:{language_context}\nMirror the customer's language and style exactly. If they mix languages, you mix too. Do not correct or translate."
+            lang_section = f"\n\nCustomer context:{language_context}"
+            lang_section += "\nLANGUAGE RULES:"
+            lang_section += "\n- Reply in the SAME language the customer used. Do NOT translate or repeat in a second language."
+            lang_section += "\n- If they mix languages, you can mix too — but within the SAME sentence, not as separate lines."
+            lang_section += "\n- WRONG: 'It's in Nairobi, we deliver countrywide' then 'Iko Nairobi, tunadeliver countrywide' — this is translating, never do this."
+            lang_section += "\n- RIGHT: 'Iko Nairobi but tunadeliver countrywide' — one natural sentence mixing both."
+            lang_section += "\n- RIGHT: 'It's in Nairobi, we deliver countrywide' — pure English if they asked in English."
+            lang_section += "\n- Match the customer's actual language choice, don't force a language they didn't use."
             base_prompt = base_prompt + lang_section
         
         # Add past similar answers context
@@ -448,7 +502,7 @@ Reply:"""
             style_instructions = []
             
             if patterns.get("uses_emojis"):
-                style_instructions.append("- Use 1-2 emojis naturally (like the business owner usually does)")
+                style_instructions.append("- The business owner sometimes uses emojis — only add one when it genuinely fits (e.g. ✅ for confirmations, 🔥 for something exciting). Skip emojis on plain answers.")
             
             if patterns.get("uses_local_language"):
                 style_instructions.append("- Mix languages naturally as the business owner usually does")
@@ -458,9 +512,9 @@ Reply:"""
             elif patterns.get("avg_length", 0) > 20:
                 style_instructions.append("- You can be a bit more detailed than usual")
             
-            if patterns.get("common_greetings"):
-                greeting_examples = list(set(patterns["common_greetings"]))[:2]
-                style_instructions.append(f"- Start with greetings like: {', '.join(greeting_examples)}")
+            # NOTE: common_greetings intentionally NOT injected here.
+            # It was causing the AI to always open with "Hey!" even mid-conversation.
+            # Greetings are handled by the base prompt rule: "Only greet if THEY greeted first."
             
             if patterns.get("common_closings"):
                 closing_examples = list(set(patterns["common_closings"]))[:2]
@@ -496,7 +550,7 @@ Reply:"""
             
             patterns = {
                 "avg_length": sum(len(msg.split()) for msg in message_texts) / len(message_texts),
-                "uses_emojis": "😊" in combined_text or "😄" in combined_text or "👍" in combined_text,
+                "uses_emojis": bool(re.search(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F900-\U0001F9FF\U00002702-\U000027B0\U0000FE00-\U0000FE0F\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF\U0000200D\U00002764]', combined_text)),
                 "uses_local_language": len(set(combined_text.lower().split()) - set('the a an is are was do does i me my you your we ok yes no please thanks thank and or but in on at to for of with how what when where who which can will have has had this that it be been am not so if'.split())) > len(combined_text.lower().split()) * 0.3,
                 "formal_tone": any(phrase in combined_text.lower() for phrase in ["dear", "thank you", "please", "kindly"]),
                 "casual_tone": any(phrase in combined_text.lower() for phrase in ["hey", "hi", "what's up", "how are you"]),
@@ -590,7 +644,7 @@ Reply:"""
                 model=self.model_name,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=150,
+                max_tokens=250,
                 top_p=0.9
             )
             
@@ -632,7 +686,7 @@ Format: Just return the message text, nothing else."""
             return f"Error drafting message: {str(e)}"
 
 
-    async def _update_conversation_memory(self, db, customer_id: str, customer_name: str, messages: List[Dict], last_reply: str, last_incoming: str):
+    async def _update_conversation_memory(self, db, customer_id: str, customer_name: str, messages: List[Dict], last_reply: str, last_incoming: str, user_id: str = None):
         """Update conversation memory/summary for a customer after each auto-reply.
         Stores a running summary so the AI always knows what was discussed."""
         try:
@@ -645,7 +699,10 @@ Format: Just return the message text, nothing else."""
             convo_text += f"Business: {last_reply}\n"
             
             # Load existing memory
-            existing = await db.conversation_memory.find_one({"customer_id": customer_id})
+            mem_query = {"customer_id": customer_id}
+            if user_id:
+                mem_query["user_id"] = user_id
+            existing = await db.conversation_memory.find_one(mem_query)
             old_summary = existing.get("summary", "") if existing else ""
             
             # Generate updated summary using AI — always in English for system use
@@ -677,10 +734,14 @@ Write ONLY the bullet points."""
             new_summary = response.choices[0].message.content.strip()
             
             # Upsert the memory
+            mem_filter = {"customer_id": customer_id}
+            if user_id:
+                mem_filter["user_id"] = user_id
             await db.conversation_memory.update_one(
-                {"customer_id": customer_id},
+                mem_filter,
                 {"$set": {
                     "customer_id": customer_id,
+                    "user_id": user_id,
                     "customer_name": customer_name,
                     "summary": new_summary,
                     "updated_at": datetime.utcnow(),
@@ -748,12 +809,17 @@ _cached_api_key = None
 def get_drafter() -> AIMessageDrafter:
     """Get singleton instance of AIMessageDrafter"""
     global _drafter_instance, _cached_api_key
-    current_key = os.environ.get('OPENAI_API_KEY', '')
+    provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
+    if provider == 'deepseek':
+        current_key = os.environ.get('DEEPSEEK_API_KEY', '')
+    else:
+        current_key = os.environ.get('OPENAI_API_KEY', '')
+    cache_key = f"{provider}:{current_key}"
     
-    # Recreate instance if key changed or instance doesn't exist
-    if _drafter_instance is None or _cached_api_key != current_key:
-        logger.info(f"Creating new AIMessageDrafter instance (key changed: {_cached_api_key != current_key})")
+    # Recreate instance if key/provider changed or instance doesn't exist
+    if _drafter_instance is None or _cached_api_key != cache_key:
+        logger.info(f"Creating new AIMessageDrafter instance (provider: {provider})")
         _drafter_instance = AIMessageDrafter()
-        _cached_api_key = current_key
+        _cached_api_key = cache_key
     
     return _drafter_instance

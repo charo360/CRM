@@ -60,7 +60,8 @@ class SupplierAnalyzer:
         """
         try:
             messages = await self.db.messages.find({
-                "customer_id": contact["_id"]
+                "customer_id": contact["_id"],
+                "user_id": contact.get("user_id")
             }).sort("timestamp", -1).limit(10).to_list(10)
             
             if not messages:

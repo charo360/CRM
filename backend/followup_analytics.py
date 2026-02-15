@@ -29,6 +29,7 @@ class FollowUpAnalytics:
             return {"outcome": "unknown"}
         
         customer_id = followup["customer_id"]
+        user_id = followup.get("user_id")
         reminder_date = followup["reminder_date"]
         
         # Check if completed
@@ -39,10 +40,13 @@ class FollowUpAnalytics:
         seven_days_after = reminder_date + timedelta(days=7)
         
         # 1. Check for sale (CONVERTED)
-        sale = await self.db.sales.find_one({
+        sale_query = {
             "customer_id": customer_id,
             "created_at": {"$gte": reminder_date, "$lte": seven_days_after}
-        })
+        }
+        if user_id:
+            sale_query["user_id"] = user_id
+        sale = await self.db.sales.find_one(sale_query)
         
         if sale:
             return {
@@ -53,8 +57,11 @@ class FollowUpAnalytics:
             }
         
         # 2. Check for customer response (RESPONDED)
+        msg_query_base = {"customer_id": customer_id}
+        if user_id:
+            msg_query_base["user_id"] = user_id
         incoming_message = await self.db.messages.find_one({
-            "customer_id": customer_id,
+            **msg_query_base,
             "direction": "incoming",
             "created_at": {"$gte": reminder_date, "$lte": seven_days_after}
         })
@@ -68,7 +75,7 @@ class FollowUpAnalytics:
         
         # 3. Check if we sent message (CONTACTED)
         outgoing_message = await self.db.messages.find_one({
-            "customer_id": customer_id,
+            **msg_query_base,
             "direction": "outgoing",
             "created_at": {"$gte": reminder_date, "$lte": seven_days_after}
         })

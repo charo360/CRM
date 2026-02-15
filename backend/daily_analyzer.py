@@ -108,7 +108,8 @@ class DailyCustomerAnalyzer:
         
         # Get message history for this customer
         messages = await self.db.messages.find({
-            "customer_id": customer_id
+            "customer_id": customer_id,
+            "user_id": customer.get("user_id")
         }).sort("timestamp", -1).limit(10).to_list(10)
         
         # Reverse to get chronological order
