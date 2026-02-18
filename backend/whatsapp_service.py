@@ -341,9 +341,8 @@ class WhatsAppService:
                     headers=self._headers(),
                     json={
                         "number": clean_to,
-                        "options": {
-                            "presence": presence,
-                        }
+                        "presence": presence,
+                        "delay": 1000,
                     },
                 )
         except Exception as e:
@@ -410,6 +409,8 @@ class WhatsAppService:
         message: str,
         customer_name: Optional[str] = None,
         media_url: Optional[str] = None,
+        media_type: str = "image",
+        media_filename: Optional[str] = None,
         send_context: str = "manual",
     ) -> Dict:
         """
@@ -441,7 +442,9 @@ class WhatsAppService:
 
             # --- Human behavior: "read" delay then typing simulation ---
             try:
-                if send_context == "auto_reply":
+                if send_context == "product_send":
+                    pass  # Skip all delays for product sends (user is waiting)
+                elif send_context == "auto_reply":
                     await self._human_delay(AUTO_REPLY_READ_DELAY)
                 elif send_context == "order_confirm":
                     await self._human_delay(ORDER_CONFIRM_READ_DELAY)
@@ -450,7 +453,8 @@ class WhatsAppService:
                 else:
                     await self._human_delay(MANUAL_SEND_READ_DELAY)
 
-                await self._simulate_typing(instance_name, to_number, message)
+                if send_context != "product_send":
+                    await self._simulate_typing(instance_name, to_number, message)
             except Exception as e:
                 logger.debug(f"Human behavior simulation error (non-critical): {e}")
 
@@ -504,7 +508,7 @@ class WhatsAppService:
                 "user_id": user_id,
                 "direction": "outgoing",
                 "content": message,
-                "message_type": "image" if media_url else "text",
+                "message_type": (media_type or "image") if media_url else "text",
                 "from_number": from_number,
                 "to_number": to_number,
                 "status": "pending",
@@ -531,11 +535,12 @@ class WhatsAppService:
                         # Send media message (FLAT structure fix)
                         payload = {
                             "number": clean_to,
-                            "mediatype": "image",
+                            "mediatype": media_type or "image",
                             "media": media_url,
                             "caption": message,
-                            "fileName": "image.jpg"
+                            "fileName": media_filename or ("image.jpg" if (media_type or "image") == "image" else "document")
                         }
+                        logger.info(f"Sending media payload: {payload}")  # DEBUG LOG
                         resp = await client.post(
                             f"{self.base_url}/message/sendMedia/{instance_name}",
                             json=payload,
@@ -553,6 +558,9 @@ class WhatsAppService:
                             headers=self._headers(),
                         )
 
+                    logger.info(f"Evolution API response status: {resp.status_code}")
+                    logger.info(f"Evolution API response body: {resp.text[:500]}")
+                    
                     if resp.status_code in (200, 201):
                         resp_data = resp.json()
                         evo_msg_id = resp_data.get("key", {}).get("id")
@@ -560,9 +568,9 @@ class WhatsAppService:
                             {"_id": message_id},
                             {"$set": {"status": "sent", "evo_message_id": evo_msg_id}}
                         )
-                        logger.info(f"Sent message via Evolution API: {evo_msg_id}")
+                        logger.info(f"✓ Sent message via Evolution API: {evo_msg_id}")
                     else:
-                        logger.error(f"Evolution API send error: {resp.text}")
+                        logger.error(f"✗ Evolution API send error [{resp.status_code}]: {resp.text}")
                         await self.db.messages.update_one(
                             {"_id": message_id},
                             {"$set": {"status": "failed", "error": resp.text}}
@@ -655,11 +663,19 @@ class WhatsAppService:
         instance_name = user["whatsapp"]["instance_name"]
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
+        formatted_buttons = []
+        for btn in buttons[:3]:
+            formatted_buttons.append({
+                "type": "replyButton",
+                "buttonId": btn.get("buttonId", "btn"),
+                "buttonText": btn.get("buttonText", {"displayText": "Button"}),
+            })
+
         payload = {
             "number": clean_to,
             "title": title,
             "description": description,
-            "buttons": buttons[:3],  # WhatsApp max 3 buttons
+            "buttons": formatted_buttons,
             "footerText": footer_text or "",
         }
 
@@ -863,6 +879,11 @@ class WhatsAppService:
             or ""
         )
 
+        # Extract image URL if present
+        image_message = message_data.get("imageMessage", {})
+        image_url = image_message.get("url") or image_message.get("directPath")
+        message_type = "image" if image_url else "text"
+
         push_name = msg.get("pushName", "")
 
         if not contact_number or not body:
@@ -870,7 +891,7 @@ class WhatsAppService:
 
         evo_msg_id = key.get("id", "")
 
-        return {
+        result = {
             "user": user,
             "from_number": contact_number,
             "body": body,
@@ -878,7 +899,13 @@ class WhatsAppService:
             "remote_jid": remote_jid,
             "from_me": from_me,
             "evo_message_id": evo_msg_id,
+            "message_type": message_type,
         }
+        
+        if image_url:
+            result["image_url"] = image_url
+        
+        return result
 
     async def handle_message_update(self, instance_name: str, data: Dict):
         """Handle messages.update webhook — updates message status (sent/delivered/read).
@@ -1406,3 +1433,4 @@ def get_whatsapp_service(db):
     if _whatsapp_service is None:
         _whatsapp_service = WhatsAppService(db)
     return _whatsapp_service
+

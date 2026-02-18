@@ -197,7 +197,19 @@ export default function AccountScreen() {
   };
 
   const handleOpenWhatsApp = () => {
-    Linking.openURL('whatsapp://settings');
+    if (waPairingCode) {
+      const link = `https://wa.me/login?code=${waPairingCode}`;
+      Linking.openURL(link)
+        .catch(() => Linking.openURL('whatsapp://'))
+        .catch(() => {
+          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually and go to Linked Devices.');
+        });
+    } else {
+      Linking.openURL('whatsapp://')
+        .catch(() => {
+          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually.');
+        });
+    }
   };
 
   const handleWhatsAppConnect = async () => {
@@ -485,21 +497,23 @@ export default function AccountScreen() {
                     </Text>
                   </View>
                 </TouchableOpacity>
+                <View style={{ backgroundColor: 'rgba(37,211,102,0.05)', borderRadius: 10, padding: 12, marginBottom: 12 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                    <Ionicons name="notifications" size={18} color="#25D366" />
+                    <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600', marginLeft: 8 }}>Check your phone for push notification</Text>
+                  </View>
+                  <Text style={{ color: '#8B9DC3', fontSize: 12, lineHeight: 18 }}>
+                    WhatsApp will send a notification to link this device. Tap it to open the pairing screen, then enter the code above.
+                  </Text>
+                </View>
                 <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
                   <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: waCountdown > 10 ? '#25D366' : '#FF4444', marginRight: 8 }} />
                   <Text style={{ color: waCountdown > 10 ? '#8B9DC3' : '#FF4444', fontSize: 12 }}>
                     {waCountdown > 0 ? `Code refreshes in ${waCountdown}s` : 'Refreshing code...'}
                   </Text>
                 </View>
-                <TouchableOpacity
-                  onPress={handleOpenWhatsApp}
-                  style={{ backgroundColor: '#25D366', borderRadius: 10, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}
-                >
-                  <Ionicons name="logo-whatsapp" size={20} color="#FFFFFF" />
-                  <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600', marginLeft: 8 }}>Open WhatsApp & Paste Code</Text>
-                </TouchableOpacity>
                 <ActivityIndicator size="small" color="#25D366" />
-                <Text style={{ color: '#8B9DC3', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection... Code auto-refreshes.</Text>
+                <Text style={{ color: '#8B9DC3', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection...</Text>
                 <TouchableOpacity
                   style={{ marginTop: 14, alignItems: 'center' }}
                   onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaPhoneInput(''); }}

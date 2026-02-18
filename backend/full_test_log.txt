@@ -1,0 +1,95 @@
+﻿
+--- Test 1: Support Agent (Mixed: 'Nichekie hiyo order yangu') ---
+DEBUG: Routing to openai (model: gpt-4o-mini)...
+python : Traceback 
+(most recent call 
+last):
+At line:1 char:1
++ python test_full_mu
+ltilingual.py 2>&1 | 
+Out-File -FilePath 
+full_test_ ...
++ ~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~
+    + CategoryInfo   
+           : NotSpe  
+  cified: (Traceba   
+ ck (most recent     
+call last)::Stri    
+ng) [], RemoteEx    
+ception
+    + FullyQualified 
+   ErrorId : Native  
+  CommandError
+ 
+  File "C:\Users\sarc
+h\Desktop\crm\CRM\bac
+kend\test_full_multil
+ingual.py", line 70, 
+in <module>
+    asyncio.run(run_t
+est())
+    ~~~~~~~~~~~^^^^^^
+^^^^^^
+  File "C:\Users\sarc
+h\AppData\Local\Progr
+ams\Python\Python313\
+Lib\asyncio\runners.p
+y", line 194, in run
+    return 
+runner.run(main)
+           
+~~~~~~~~~~^^^^^^
+  File "C:\Users\sarc
+h\AppData\Local\Progr
+ams\Python\Python313\
+Lib\asyncio\runners.p
+y", line 118, in run
+    return self._loop
+.run_until_complete(t
+ask)
+           ~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~^^
+^^^^
+  File "C:\Users\sarc
+h\AppData\Local\Progr
+ams\Python\Python313\
+Lib\asyncio\base_even
+ts.py", line 721, in 
+run_until_complete
+    return 
+future.result()
+           
+~~~~~~~~~~~~~^^
+  File "C:\Users\sarc
+h\Desktop\crm\CRM\bac
+kend\test_full_multil
+ingual.py", line 49, 
+in run_test
+    print("Result 
+1:", res1)
+    ~~~~~^^^^^^^^^^^^
+^^^^^^^
+  File "C:\Users\sarc
+h\AppData\Local\Progr
+ams\Python\Python313\
+Lib\encodings\cp1252.
+py", line 19, in 
+encode
+    return codecs.cha
+rmap_encode(input,sel
+f.errors,encoding_tab
+le)[0]
+           ~~~~~~~~~~
+~~~~~~~~~~~^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^
+^^^
+UnicodeEncodeError: 
+'charmap' codec 
+can't encode 
+character 
+'\U0001f4e6' in 
+position 66: 
+character maps to 
+<undefined>
+Result 1: 

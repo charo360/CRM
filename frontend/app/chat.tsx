@@ -12,11 +12,17 @@ import {
   Alert,
   Modal,
   Image,
+  Dimensions,
+  Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { apiClient, whatsappAPI, messagesAPI, productsAPI } from '../context/api';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 
 interface Message {
   id: string;
@@ -24,6 +30,8 @@ interface Message {
   direction: 'incoming' | 'outgoing';
   created_at: string;
   status?: string;
+  message_type?: string;
+  image_url?: string;
 }
 
 export default function ChatScreen() {
@@ -49,14 +57,16 @@ export default function ChatScreen() {
   const [showProducts, setShowProducts] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [products, setProducts] = useState<any[]>([]);
-  const [loadingProducts, setLoadingProducts] = useState(false);
-  const [sendingProduct, setSendingProduct] = useState<string | null>(null);
+  const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
+  const [sendingBatch, setSendingBatch] = useState(false);
   const [currency, setCurrency] = useState('USD');
   const flatListRef = useRef<FlatList>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+  const [isPersonal, setIsPersonal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [showToast, setShowToast] = useState(false);
+  const [viewerImage, setViewerImage] = useState<string | null>(null);
 
   useEffect(() => {
     if (showToast) {
@@ -65,25 +75,27 @@ export default function ChatScreen() {
     }
   }, [showToast]);
 
-  // Fetch initial auto-reply state
+  // Fetch initial auto-reply state + preload products
   useEffect(() => {
     if (!customerId) return;
-    const loadAutoReplyState = async () => {
+    const loadInitialData = async () => {
       try {
-        const [cRes, sRes] = await Promise.all([
+        const [cRes, sRes, prodsRes] = await Promise.all([
           apiClient.get(`/customers/${customerId}`),
-          apiClient.get('/settings')
+          apiClient.get('/settings'),
+          apiClient.get('/products'),
         ]);
         const custVal = cRes.data.auto_reply;
         const globalVal = sRes.data.auto_reply_enabled || false;
-        // If customer has explicit setting, use it. Otherwise use global.
-        // Note: backend returns null if not set, or boolean if set.
         setAutoReplyEnabled(custVal !== null && custVal !== undefined ? custVal : globalVal);
+        setIsPersonal(cRes.data.is_personal || false);
+        if (sRes.data?.currency) setCurrency(sRes.data.currency);
+        setProducts(prodsRes.data || []);
       } catch (e) {
-        console.error('Failed to load auto-reply state', e);
+        console.error('Failed to load initial data', e);
       }
     };
-    loadAutoReplyState();
+    loadInitialData();
   }, [customerId]);
 
   const toggleAutoReply = async () => {
@@ -97,6 +109,20 @@ export default function ChatScreen() {
       setAutoReplyEnabled(!newVal); // Revert on failure
       console.error('Failed to toggle auto-reply', e);
       Alert.alert('Error', 'Failed to update auto-reply setting');
+    }
+  };
+
+  const togglePersonal = async () => {
+    const newVal = !isPersonal;
+    setIsPersonal(newVal); // Optimistic update
+    setToastMessage(newVal ? 'Marked as Personal' : 'Marked as Business');
+    setShowToast(true);
+    try {
+      await apiClient.put(`/customers/${customerId}`, { is_personal: newVal });
+    } catch (e) {
+      setIsPersonal(!newVal); // Revert on failure
+      console.error('Failed to toggle personal status', e);
+      Alert.alert('Error', 'Failed to update contact status');
     }
   };
 
@@ -159,36 +185,158 @@ export default function ChatScreen() {
     }
   };
 
-  const handleOpenProducts = async () => {
+  const handleOpenProducts = () => {
+    setSelectedProducts([]);
     setShowProducts(true);
-    setLoadingProducts(true);
+  };
+
+  const toggleProductSelection = (productId: string) => {
+    setSelectedProducts(prev =>
+      prev.includes(productId)
+        ? prev.filter(id => id !== productId)
+        : [...prev, productId]
+    );
+  };
+
+  const handleSendSelectedProducts = async () => {
+    const ids = [...selectedProducts];
+    if (ids.length === 0) return;
+    setSendingBatch(true);
     try {
-      const [prodsRes, settingsRes] = await Promise.all([
-        apiClient.get('/products'),
-        apiClient.get('/settings'),
-      ]);
-      setProducts(prodsRes.data || []);
-      if (settingsRes.data?.currency) setCurrency(settingsRes.data.currency);
+      if (ids.length === 1) {
+        await productsAPI.sendProductToCustomer(ids[0], customerId);
+      } else {
+        await productsAPI.sendCatalog(customerId, ids);
+      }
+      const count = ids.length;
+      setToastMessage(`${count} product${count > 1 ? 's' : ''} sent!`);
+      setShowToast(true);
+      setShowProducts(false);
+      setSelectedProducts([]);
+      // Refresh messages to show sent products
+      setTimeout(() => fetchMessages(true), 1500);
     } catch (error) {
-      console.error('Error loading products:', error);
+      // Fallback: paste as text
+      const selected = products.filter(p => ids.includes(p.id));
+      const text = selected.map(p => {
+        const desc = p.description ? `\n${p.description}` : '';
+        return `*${p.name}*\n${currency} ${p.price?.toLocaleString()}${desc}`;
+      }).join('\n\n');
+      setShowProducts(false);
+      setInputText(text + '\n\nInterested? Let me know!');
     } finally {
-      setLoadingProducts(false);
+      setSendingBatch(false);
     }
   };
 
-  const handleSendProduct = async (product: any) => {
-    setSendingProduct(product.id);
+  const sendMediaFile = async (uri: string, fileName: string, mimeType: string) => {
+    setSending(true);
+    const tempId = `temp_${Date.now()}`;
+    const isImage = mimeType.startsWith('image/');
+    const optimisticMsg: Message = {
+      id: tempId,
+      content: isImage ? '' : `📎 ${fileName}`,
+      direction: 'outgoing',
+      created_at: new Date().toISOString(),
+      status: 'sending',
+      message_type: isImage ? 'image' : 'document',
+      image_url: isImage ? uri : undefined,
+    };
+    setMessages(prev => [optimisticMsg, ...prev]);
     try {
-      await productsAPI.sendProductToCustomer(product.id, customerId);
-      Alert.alert('Sent!', `${product.name} sent to ${customerName}`);
-      setShowProducts(false);
-    } catch (error) {
-      const desc = product.description ? `\n${product.description}` : '';
-      const text = `*${product.name}*\n${currency} ${product.price.toLocaleString()}${desc}\n\nInterested? Let me know!`;
-      setShowProducts(false);
-      setInputText(text);
+      const caption = inputText.trim();
+      const result = await whatsappAPI.sendMedia(customerPhone, uri, fileName, mimeType, caption, customerName);
+      if (caption) setInputText('');
+      setMessages(prev =>
+        prev.map(m =>
+          m.id === tempId ? { ...m, id: result.message_id || tempId, status: 'sent' } : m
+        )
+      );
+      setToastMessage(isImage ? 'Photo sent!' : 'Document sent!');
+      setShowToast(true);
+    } catch (error: any) {
+      console.error('Send media error:', error);
+      if (error?.response?.status === 429) {
+        Alert.alert('Message Limit', error.response?.data?.detail || 'Message limit reached.');
+      } else {
+        Alert.alert('Send Failed', 'Could not send file. Please try again.');
+      }
+      setMessages(prev =>
+        prev.map(m => (m.id === tempId ? { ...m, status: 'failed' } : m))
+      );
     } finally {
-      setSendingProduct(null);
+      setSending(false);
+    }
+  };
+
+  const handleCamera = async () => {
+    setShowAttachMenu(false);
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Required', 'Camera access is needed to take photos.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const fileName = asset.fileName || `photo_${Date.now()}.jpg`;
+    const mimeType = asset.mimeType || 'image/jpeg';
+    await sendMediaFile(asset.uri, fileName, mimeType);
+  };
+
+  const handleGallery = async () => {
+    setShowAttachMenu(false);
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Required', 'Gallery access is needed to select photos.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const fileName = asset.fileName || `image_${Date.now()}.jpg`;
+    const mimeType = asset.mimeType || 'image/jpeg';
+    await sendMediaFile(asset.uri, fileName, mimeType);
+  };
+
+  const handleDocument = async () => {
+    setShowAttachMenu(false);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      const fileName = asset.name || `document_${Date.now()}`;
+      const mimeType = asset.mimeType || 'application/octet-stream';
+      await sendMediaFile(asset.uri, fileName, mimeType);
+    } catch (error) {
+      console.error('Document picker error:', error);
+    }
+  };
+
+  const handleOpenDocument = async (url: string) => {
+    try {
+      const fileName = url.split('/').pop() || 'document';
+      const localUri = `${FileSystem.cacheDirectory}${fileName}`;
+      const { uri } = await FileSystem.downloadAsync(url, localUri);
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri);
+      } else {
+        await Linking.openURL(url);
+      }
+    } catch (error) {
+      console.error('Open document error:', error);
+      // Fallback: open URL in browser
+      try { await Linking.openURL(url); } catch {}
     }
   };
 
@@ -243,6 +391,17 @@ export default function ChatScreen() {
 
   const renderMessage = ({ item }: { item: Message }) => {
     const isOutgoing = item.direction === 'outgoing';
+    const isDocument = item.message_type === 'document';
+    const hasImage = !isDocument && (item.message_type === 'image' || item.image_url);
+    const imageUri = item.image_url
+      ? (item.image_url.startsWith('http') || item.image_url.startsWith('file://') ? item.image_url : `${process.env.EXPO_PUBLIC_BACKEND_URL}${item.image_url}`)
+      : null;
+
+    // Extract filename from URL for documents
+    const docFileName = isDocument && imageUri
+      ? decodeURIComponent(imageUri.split('/').pop() || 'Document')
+      : null;
+
     return (
       <View
         style={[
@@ -250,9 +409,45 @@ export default function ChatScreen() {
           isOutgoing ? styles.outgoing : styles.incoming,
         ]}
       >
-        <Text style={[styles.messageText, isOutgoing ? styles.outgoingText : styles.incomingText]}>
-          {item.content}
-        </Text>
+        {hasImage && imageUri && (
+          <TouchableOpacity activeOpacity={0.8} onPress={() => setViewerImage(imageUri)}>
+            <Image
+              source={{ uri: imageUri }}
+              style={styles.messageImage}
+              resizeMode="cover"
+              onError={(error) => {
+                console.error('Image load error:', error.nativeEvent.error);
+              }}
+            />
+          </TouchableOpacity>
+        )}
+        {isDocument && imageUri && (
+          <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenDocument(imageUri)}>
+            <View style={styles.documentBubble}>
+              <Ionicons name="document-text" size={32} color={isOutgoing ? '#DCF8C6' : '#8B9DC3'} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.documentName, isOutgoing ? styles.outgoingText : styles.incomingText]} numberOfLines={2}>
+                  {item.content || docFileName || 'Document'}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#8B9DC3', marginTop: 2 }}>Tap to open</Text>
+              </View>
+              <Ionicons name="download-outline" size={20} color="#8B9DC3" />
+            </View>
+          </TouchableOpacity>
+        )}
+        {isDocument && !imageUri && (
+          <View style={styles.documentBubble}>
+            <Ionicons name="document-text" size={32} color={isOutgoing ? '#DCF8C6' : '#8B9DC3'} />
+            <Text style={[styles.documentName, isOutgoing ? styles.outgoingText : styles.incomingText]} numberOfLines={2}>
+              {item.content || 'Document'}
+            </Text>
+          </View>
+        )}
+        {!isDocument && item.content && (
+          <Text style={[styles.messageText, isOutgoing ? styles.outgoingText : styles.incomingText]}>
+            {item.content}
+          </Text>
+        )}
         <View style={styles.messageFooter}>
           <Text style={styles.messageTime}>
             {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -308,6 +503,27 @@ export default function ChatScreen() {
             <Text style={styles.headerPhone}>{customerPhone}</Text>
           </View>
         </TouchableOpacity>
+
+        {/* Toggle Personal Mode */}
+        <TouchableOpacity
+          onPress={togglePersonal}
+          style={[
+            styles.personalBadge,
+            isPersonal && styles.personalBadgeActive
+          ]}
+        >
+          <Ionicons
+            name={isPersonal ? "heart" : "heart-outline"}
+            size={16}
+            color={isPersonal ? "#FFFFFF" : "#8696A0"}
+          />
+          <Text style={[
+            styles.personalBadgeText,
+            isPersonal && styles.personalBadgeTextActive
+          ]}>
+            {isPersonal ? "Personal" : "Business"}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Toast Notification */}
@@ -348,19 +564,19 @@ export default function ChatScreen() {
         {/* Attach menu (above input) */}
         {showAttachMenu && (
           <View style={styles.attachMenu}>
-            <TouchableOpacity style={styles.attachOption} onPress={() => { setShowAttachMenu(false); /* TODO: camera */ }}>
+            <TouchableOpacity style={styles.attachOption} onPress={handleCamera}>
               <View style={[styles.attachIconCircle, { backgroundColor: '#25D366' }]}>
                 <Ionicons name="camera" size={22} color="#FFFFFF" />
               </View>
               <Text style={styles.attachLabel}>Camera</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.attachOption} onPress={() => { setShowAttachMenu(false); /* TODO: gallery */ }}>
+            <TouchableOpacity style={styles.attachOption} onPress={handleGallery}>
               <View style={[styles.attachIconCircle, { backgroundColor: '#7C4DFF' }]}>
                 <Ionicons name="image" size={22} color="#FFFFFF" />
               </View>
               <Text style={styles.attachLabel}>Gallery</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.attachOption} onPress={() => { setShowAttachMenu(false); /* TODO: file picker */ }}>
+            <TouchableOpacity style={styles.attachOption} onPress={handleDocument}>
               <View style={[styles.attachIconCircle, { backgroundColor: '#4A90D9' }]}>
                 <Ionicons name="document" size={22} color="#FFFFFF" />
               </View>
@@ -440,29 +656,42 @@ export default function ChatScreen() {
             <TouchableOpacity onPress={() => setShowProducts(false)}>
               <Ionicons name="close" size={24} color="#FFFFFF" />
             </TouchableOpacity>
-            <Text style={styles.productModalTitle}>Send Product</Text>
-            <View style={{ width: 24 }} />
+            <Text style={styles.productModalTitle}>
+              {selectedProducts.length > 0 ? `${selectedProducts.length} selected` : 'Select Products'}
+            </Text>
+            {selectedProducts.length > 0 ? (
+              <TouchableOpacity onPress={() => setSelectedProducts([])}>
+                <Text style={{ color: '#8696A0', fontSize: 14 }}>Clear</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={{ width: 40 }} />
+            )}
           </View>
-          {loadingProducts ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#25D366" />
-            </View>
-          ) : products.length > 0 ? (
+          {products.length > 0 ? (
             <FlatList
               data={products}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={{ padding: 16 }}
+              contentContainerStyle={{ padding: 16, paddingBottom: selectedProducts.length > 0 ? 90 : 16 }}
               renderItem={({ item: product }) => {
                 const imageUri = product.image_url
                   ? (product.image_url.startsWith('http') ? product.image_url : `${process.env.EXPO_PUBLIC_BACKEND_URL}${product.image_url}`)
                   : null;
-                const isSending = sendingProduct === product.id;
+                const isSelected = selectedProducts.includes(product.id);
                 return (
                   <TouchableOpacity
-                    style={styles.productRow}
-                    onPress={() => handleSendProduct(product)}
-                    disabled={isSending}
+                    style={[styles.productRow, isSelected && { borderColor: '#25D366', borderWidth: 1.5 }]}
+                    onPress={() => toggleProductSelection(product.id)}
+                    activeOpacity={0.7}
                   >
+                    {/* Checkbox */}
+                    <View style={{
+                      width: 24, height: 24, borderRadius: 12,
+                      borderWidth: 2, borderColor: isSelected ? '#25D366' : '#3A4A5C',
+                      backgroundColor: isSelected ? '#25D366' : 'transparent',
+                      justifyContent: 'center', alignItems: 'center', marginRight: 10,
+                    }}>
+                      {isSelected && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
+                    </View>
                     {imageUri ? (
                       <Image source={{ uri: imageUri }} style={styles.productImage} resizeMode="cover" />
                     ) : (
@@ -474,11 +703,6 @@ export default function ChatScreen() {
                       <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }} numberOfLines={1}>{product.name}</Text>
                       <Text style={{ color: '#25D366', fontSize: 14, marginTop: 2 }}>{currency} {product.price?.toLocaleString()}</Text>
                     </View>
-                    {isSending ? (
-                      <ActivityIndicator size="small" color="#25D366" />
-                    ) : (
-                      <Ionicons name="send" size={18} color="#25D366" />
-                    )}
                   </TouchableOpacity>
                 );
               }}
@@ -489,7 +713,44 @@ export default function ChatScreen() {
               <Text style={{ color: '#8B9DC3', fontSize: 16, marginTop: 12 }}>No products yet</Text>
             </View>
           )}
+          {/* Floating Send Button */}
+          {selectedProducts.length > 0 && (
+            <View style={styles.sendSelectedBar}>
+              <TouchableOpacity
+                style={[styles.sendSelectedButton, sendingBatch && { opacity: 0.6 }]}
+                onPress={handleSendSelectedProducts}
+                disabled={sendingBatch}
+              >
+                {sendingBatch ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Ionicons name="send" size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>
+                      Send {selectedProducts.length} Product{selectedProducts.length > 1 ? 's' : ''}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
         </SafeAreaView>
+      </Modal>
+
+      {/* Full-screen Image Viewer */}
+      <Modal visible={!!viewerImage} transparent animationType="fade" onRequestClose={() => setViewerImage(null)}>
+        <View style={styles.imageViewerOverlay}>
+          <TouchableOpacity style={styles.imageViewerClose} onPress={() => setViewerImage(null)}>
+            <Ionicons name="close" size={28} color="#FFFFFF" />
+          </TouchableOpacity>
+          {viewerImage && (
+            <Image
+              source={{ uri: viewerImage }}
+              style={styles.imageViewerImage}
+              resizeMode="contain"
+            />
+          )}
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -702,6 +963,25 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
     marginBottom: 10,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  sendSelectedBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: 16,
+    paddingBottom: 32,
+    backgroundColor: 'rgba(11, 20, 26, 0.95)',
+  },
+  sendSelectedButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    borderRadius: 24,
+    paddingVertical: 14,
   },
   productImage: {
     width: 48,
@@ -732,5 +1012,67 @@ const styles = StyleSheet.create({
     color: '#E9EDEF',
     fontSize: 14,
     fontWeight: '500',
+  },
+  personalBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#3A4A5C',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginRight: 8,
+  },
+  personalBadgeActive: {
+    backgroundColor: '#E91E63',
+    borderColor: '#E91E63',
+  },
+  personalBadgeText: {
+    fontSize: 11,
+    color: '#8696A0',
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  personalBadgeTextActive: {
+    color: '#FFFFFF',
+  },
+  messageImage: {
+    width: 200,
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 6,
+    backgroundColor: '#1A2A4A',
+  },
+  documentBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.15)',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 6,
+    gap: 10,
+  },
+  documentName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  imageViewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageViewerClose: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    zIndex: 10,
+    padding: 8,
+  },
+  imageViewerImage: {
+    width: Dimensions.get('window').width,
+    height: Dimensions.get('window').height * 0.75,
   },
 });

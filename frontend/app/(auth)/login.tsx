@@ -152,7 +152,19 @@ export default function LoginScreen() {
   };
 
   const handleOpenWhatsApp = () => {
-    Linking.openURL('whatsapp://settings');
+    if (pairingCode) {
+      const link = `https://wa.me/login?code=${pairingCode}`;
+      Linking.openURL(link)
+        .catch(() => Linking.openURL('whatsapp://'))
+        .catch(() => {
+          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually and go to Linked Devices.');
+        });
+    } else {
+      Linking.openURL('whatsapp://')
+        .catch(() => {
+          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually.');
+        });
+    }
   };
 
   const handleCancel = () => {
@@ -239,6 +251,16 @@ export default function LoginScreen() {
                 </View>
               </TouchableOpacity>
 
+              <View style={styles.notificationBox}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                  <Ionicons name="notifications" size={18} color="#25D366" />
+                  <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600', marginLeft: 8 }}>Check your phone for push notification</Text>
+                </View>
+                <Text style={{ color: '#8B9DC3', fontSize: 12, lineHeight: 18 }}>
+                  WhatsApp will send a notification to link this device. Tap it to open the pairing screen, then enter the code above.
+                </Text>
+              </View>
+
               <View style={styles.countdownRow}>
                 <View style={[styles.countdownDot, { backgroundColor: countdown > 10 ? '#25D366' : '#FF4444' }]} />
                 <Text style={[styles.countdownText, countdown <= 10 && { color: '#FF4444' }]}>
@@ -246,14 +268,9 @@ export default function LoginScreen() {
                 </Text>
               </View>
 
-              <TouchableOpacity onPress={handleOpenWhatsApp} style={styles.openWaButton}>
-                <Ionicons name="logo-whatsapp" size={20} color="#FFFFFF" />
-                <Text style={styles.openWaText}>Open WhatsApp</Text>
-              </TouchableOpacity>
-
               <View style={styles.waitingRow}>
                 <ActivityIndicator size="small" color="#25D366" />
-                <Text style={styles.waitingText}>Waiting for connection... Code auto-refreshes.</Text>
+                <Text style={styles.waitingText}>Waiting for connection...</Text>
               </View>
 
               <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
@@ -408,6 +425,12 @@ const styles = StyleSheet.create({
   countdownText: {
     color: '#8B9DC3',
     fontSize: 12,
+  },
+  notificationBox: {
+    backgroundColor: 'rgba(37,211,102,0.05)',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
   },
   openWaButton: {
     backgroundColor: '#25D366',

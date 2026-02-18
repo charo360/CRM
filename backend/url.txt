@@ -1,0 +1,2 @@
+URL: https://crm-images-2025.s3.us-east-2.amazonaws.com/products/d27cb1ef-e479-4b00-82d1-9eee2a047813-test_pixel.png
+S3_URL: https://crm-images-2025.s3.us-east-2.amazonaws.com/products/d27cb1ef-e479-4b00-82d1-9eee2a047813-test_pixel.png

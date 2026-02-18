@@ -7,6 +7,7 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
     'Bypass-Tunnel-Reminder': 'true',
+    'ngrok-skip-browser-warning': 'true',
   },
   timeout: 60000,
 });
@@ -18,6 +19,7 @@ const uploadFetch = async (path: string, formData: FormData) => {
     method: 'POST',
     headers: {
       'Bypass-Tunnel-Reminder': 'true',
+      'ngrok-skip-browser-warning': 'true',
       ...(token ? { 'Authorization': token as string } : {}),
     },
     body: formData,
@@ -32,6 +34,10 @@ const uploadFetch = async (path: string, formData: FormData) => {
 // Request interceptor for logging
 apiClient.interceptors.request.use(
   (config) => {
+    // Force ngrok bypass headers on every request to avoid 503 interstitial page
+    config.headers['ngrok-skip-browser-warning'] = 'true';
+    config.headers['Bypass-Tunnel-Reminder'] = 'true';
+    
     console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
     return config;
   },
@@ -220,6 +226,22 @@ export const whatsappAPI = {
       params: { to_number: toNumber, message, customer_name: customerName },
     });
     return response.data;
+  },
+
+  /**
+   * Send a media file (image/document) to a customer via WhatsApp
+   */
+  sendMedia: async (toNumber: string, fileUri: string, fileName: string, mimeType: string, caption?: string, customerName?: string) => {
+    const formData = new FormData();
+    formData.append('file', {
+      uri: fileUri,
+      name: fileName,
+      type: mimeType,
+    } as any);
+    formData.append('to_number', toNumber);
+    formData.append('caption', caption || '');
+    if (customerName) formData.append('customer_name', customerName);
+    return await uploadFetch('/messages/send-media', formData);
   },
 
   /**

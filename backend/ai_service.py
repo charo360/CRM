@@ -82,6 +82,7 @@ class AIMessageDrafter:
         # Initialize clients map
         self.clients = {}
         self._init_clients()
+        self._validate_provider()
 
     def _init_clients(self):
         """Initialize available AI clients based on env vars"""
@@ -92,9 +93,11 @@ class AIMessageDrafter:
         if openai_key and openai_key not in ('your_openai_api_key_here',):
             try:
                 self.clients['openai'] = OpenAI(api_key=openai_key)
-                logging.info("✓ OpenAI client initialized")
+                logging.info("[OK] OpenAI client initialized")
             except Exception as e:
-                logging.error(f"❌ OpenAI init failed: {e}")
+                logging.error(f"[FAIL] OpenAI init failed: {e}")
+        else:
+            logging.warning("[WARN] OpenAI key not found or placeholder")
         
         # 2. DeepSeek
         ds_key = os.environ.get('DEEPSEEK_API_KEY')
@@ -104,9 +107,9 @@ class AIMessageDrafter:
                     api_key=ds_key, 
                     base_url='https://api.deepseek.com'
                 )
-                logging.info("✓ DeepSeek client initialized")
+                logging.info("[OK] DeepSeek client initialized")
             except Exception as e:
-                logging.error(f"❌ DeepSeek init failed: {e}")
+                logging.error(f"[FAIL] DeepSeek init failed: {e}")
 
         # 3. Grok (xAI) - Uses OpenAI client compatibility
         grok_key = os.environ.get('XS_API_KEY') or os.environ.get('GROK_API_KEY')
@@ -116,9 +119,9 @@ class AIMessageDrafter:
                     api_key=grok_key,
                     base_url='https://api.x.ai/v1'
                 )
-                logging.info("✓ Grok client initialized")
+                logging.info("[OK] Grok client initialized")
             except Exception as e:
-                logging.error(f"❌ Grok init failed: {e}")
+                logging.error(f"[FAIL] Grok init failed: {e}")
         
         # 4. Claude (Anthropic) - Uses raw HTTP to avoid new dependency
         claude_key = os.environ.get('ANTHROPIC_API_KEY')
@@ -127,14 +130,69 @@ class AIMessageDrafter:
                 'key': claude_key,
                 'endpoint': 'https://api.anthropic.com/v1/messages'
             }
-            logging.info("✓ Claude client configured")
+            logging.info("[OK] Claude client configured")
+
+    def _validate_provider(self):
+        """Warn loudly if the configured AI provider isn't available"""
+        if not self.clients:
+            logging.error("=" * 60)
+            logging.error("[CRITICAL] NO AI PROVIDERS INITIALIZED - AI replies will NOT work!")
+            logging.error("Check your .env file for API keys (OPENAI_API_KEY, DEEPSEEK_API_KEY, etc)")
+            logging.error("=" * 60)
+            return
+        
+        if self.provider not in self.clients:
+            available = list(self.clients.keys())
+            logging.warning(f"[WARN] AI_PROVIDER={self.provider} but that client failed to init. Falling back to: {available[0]}")
+            logging.warning(f"[WARN] Check your .env - is the API key for '{self.provider}' correct?")
+        else:
+            logging.info(f"[OK] AI ready: provider={self.provider}, all clients={list(self.clients.keys())}")
+
+    def get_status(self) -> dict:
+        """Return AI provider status for health checks"""
+        default_type, default_model, default_client = self._get_default_client_and_model()
+        return {
+            "configured_provider": self.provider,
+            "active_provider": default_type,
+            "active_model": default_model,
+            "available_clients": list(self.clients.keys()),
+            "ready": bool(self.clients),
+        }
+
+    async def self_test(self) -> dict:
+        """Make a real AI call to verify the service works end-to-end"""
+        try:
+            result = await self._call_llm("Reply with exactly: OK", "standard")
+            return {"status": "ok", "response": result.strip()[:50]}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def _get_default_client_and_model(self):
+        """Get the default client based on configured provider, with fallback to any available client"""
+        # Provider-specific defaults
+        provider_defaults = {
+            'deepseek': ('deepseek', 'deepseek-chat'),
+            'openai': ('openai', 'gpt-4o-mini'),
+            'grok': ('grok', 'grok-4'),
+            'claude': ('claude', 'claude-3-5-sonnet-latest'),
+        }
+        
+        # Try configured provider first
+        if self.provider in provider_defaults and self.provider in self.clients:
+            ct, mn = provider_defaults[self.provider]
+            return ct, mn, self.clients[ct]
+        
+        # Fallback: pick the first available client (cheapest first)
+        fallback_order = ['openai', 'deepseek', 'grok', 'claude']
+        for fb in fallback_order:
+            if fb in self.clients:
+                ct, mn = provider_defaults.get(fb, (fb, 'unknown'))
+                return ct, mn, self.clients[fb]
+        
+        return 'openai', 'gpt-4o-mini', None
 
     def _get_client_and_model(self, model_pref: str = None):
         """Determine which client and model name to use based on preference"""
-        # Default fallback
-        client_type = 'openai'
-        model_name = 'gpt-4o-mini'
-        
         if not model_pref:
             model_pref = 'standard'
             
@@ -154,17 +212,21 @@ class AIMessageDrafter:
                 model_name = 'claude-3-5-sonnet-latest'
         elif 'grok' in model_pref:
             client_type = 'grok'
-            # Grok 4 is a reasoning model (no temperature/stop params)
             model_name = 'grok-4' 
         elif 'deepseek' in model_pref:
             client_type = 'deepseek'
             model_name = 'deepseek-chat'
         else:
-            # Standard/Default
-            client_type = 'openai'
-            model_name = 'gpt-4o-mini'
+            # Standard/Default — use configured provider
+            return self._get_default_client_and_model()
+        
+        # If the requested client isn't available, fall back to default
+        client = self.clients.get(client_type)
+        if not client:
+            logging.warning(f"Provider {client_type} not configured, falling back to default")
+            return self._get_default_client_and_model()
             
-        return client_type, model_name, self.clients.get(client_type)
+        return client_type, model_name, client
 
     async def draft_followup_message(
         self,
@@ -260,10 +322,11 @@ class AIMessageDrafter:
             import traceback
             traceback.print_exc()
             logger.error(f"AI drafting failed: {e}")
+            # Return None to indicate failure - webhook should NOT send auto-reply
             return {
-                "drafted_message": f"Hi {customer_name}, hope you're doing well! Just wanted to check in and see if there's anything we can help you with.",
-                "confidence": 0.5,
-                "ai_reason": f"Fallback message (AI error: {str(e)[:50]})"
+                "drafted_message": None,
+                "confidence": 0.0,
+                "ai_reason": f"AI service failed: {str(e)[:100]}"
             }
     
     def _build_customer_context(
@@ -677,14 +740,13 @@ Reply:"""
         """Route the prompt to the correct LLM provider with fallback"""
         client_type, model_name, client = self._get_client_and_model(model_pref)
         
-        # If client not configured, fallback to standard (OpenAI)
+        # If client not configured, fallback to default provider
         if not client:
-            if client_type != 'openai':
-                logger.warning(f"Provider {client_type} not configured, falling back to OpenAI")
-                client_type, model_name, client = self._get_client_and_model('standard')
+            logger.warning(f"Provider {client_type} not configured, falling back to default")
+            client_type, model_name, client = self._get_default_client_and_model()
             
             if not client:
-                error_msg = f"No AI Provider configured. Please add OPENAI_API_KEY."
+                error_msg = f"No AI Provider configured. Please add an API key (OPENAI_API_KEY, DEEPSEEK_API_KEY, etc)."
                 logger.error(error_msg)
                 raise Exception(error_msg)
             
@@ -699,11 +761,17 @@ Reply:"""
                 return await self._call_openai_compatible(client, model_name, prompt)
         except Exception as e:
             logger.error(f"Primary model {model_name} failed: {e}")
-            print(f"ERROR: {model_name} failed, falling back to GPT-4o Mini...", flush=True)
+            print(f"ERROR: {model_name} failed, trying fallback...", flush=True)
             
-            # Fallback to standard OpenAI
-            client_type, model_name, client = self._get_client_and_model('standard')
-            return await self._call_openai_compatible(client, model_name, prompt)
+            # Fallback to default provider (skip if already using it)
+            fb_type, fb_model, fb_client = self._get_default_client_and_model()
+            if fb_client and (fb_type != client_type or fb_model != model_name):
+                logger.info(f"Falling back to {fb_type} ({fb_model})")
+                if fb_type == 'claude':
+                    return await self._call_claude(fb_client, fb_model, prompt)
+                else:
+                    return await self._call_openai_compatible(fb_client, fb_model, prompt)
+            raise
 
     async def _call_openai_compatible(self, client: OpenAI, model_name: str, prompt: str) -> str:
         """Generic handler for OpenAI-compatible APIs (DeepSeek, Grok, OpenAI)"""
@@ -800,7 +868,7 @@ Reply:"""
 
     async def draft_broadcast_message(self, prompt: str, business_type: str = None) -> str:
         """Draft a broadcast message based on a prompt"""
-        if not self.api_key or not self.client:
+        if not self.clients:
             return "AI Unavailable: Please set OPENAI_API_KEY in environment"
 
         # Build system prompt for WhatsApp-compliant messages
@@ -824,7 +892,7 @@ Format: Just return the message text, nothing else."""
         full_prompt = f"{system_prompt}\n\nUser request: {prompt}"
         
         try:
-            return await self._call_openai(full_prompt)
+            return await self._call_llm(full_prompt, model_pref='standard')
         except Exception as e:
             logger.error(f"Broadcast drafting failed: {e}")
             return f"Error drafting message: {str(e)}"
@@ -867,15 +935,7 @@ Write a concise updated summary (max 5 bullet points) covering:
 IMPORTANT: Always write the summary in ENGLISH, even if the conversation was in another language. This is internal system data, not customer-facing.
 Write ONLY the bullet points."""
 
-            import asyncio
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model=self.model_name,
-                messages=[{"role": "user", "content": summary_prompt}],
-                temperature=0.3,
-                max_tokens=300,
-            )
-            new_summary = response.choices[0].message.content.strip()
+            new_summary = await self._call_llm(summary_prompt, model_pref='standard')
             
             # Upsert the memory
             mem_filter = {"customer_id": customer_id}
@@ -904,7 +964,7 @@ Write ONLY the bullet points."""
         """
         Analyze conversation to generate CRM notes
         """
-        if not self.api_key or not self.client:
+        if not self.clients:
             return "Unable to generate notes (AI unavailable)"
             
         try:
@@ -928,19 +988,7 @@ Create brief, useful CRM notes that include:
 
 Keep it concise (max 3-4 bullet points). Use simple language."""
 
-            import asyncio
-            # Run synchronous OpenAI call in thread pool
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model=self.model_name,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=200,
-                top_p=0.8
-            )
-            return response.choices[0].message.content.strip()
+            return await self._call_llm(prompt, model_pref='standard')
             
         except Exception as e:
             logger.error(f"Notes generation failed: {e}")

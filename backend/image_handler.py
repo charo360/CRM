@@ -179,10 +179,42 @@ class ImageUploadHandler:
             if len(content) > MAX_FILE_SIZE:
                 raise ValueError(f"File too large. Max size: {MAX_FILE_SIZE / 1024 / 1024}MB")
             
+            # Check if AWS S3 is configured (Priority)
+            aws_key = os.environ.get('AWS_ACCESS_KEY_ID')
+            aws_secret = os.environ.get('AWS_SECRET_ACCESS_KEY')
+            aws_bucket = os.environ.get('AWS_BUCKET_NAME')
+            
+            if aws_key and aws_secret and aws_bucket:
+                logger.info("AWS S3 Configured, using S3 for upload")
+                # Convert upload file to base64 for S3Handler compatible input
+                await file.seek(0)
+                content = await file.read()
+                base64_data = base64.b64encode(content).decode('utf-8')
+                
+                # Upload to S3
+                s3_url = await S3Handler.upload_file(base64_data, file.filename)
+                
+                return {
+                    "image_url": s3_url,
+                    "public_id": str(uuid.uuid4()), # Mock public_id for S3
+                    "filename": file.filename
+                }
+
             # Check if Cloudinary is configured
-            if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
+            if not cloud_name or not api_key or not api_secret:
+                # Check for ImgBB Fallback
+                imgbb_key = os.environ.get('IMGBB_API_KEY')
+                if imgbb_key:
+                    logger.info("Cloudinary not configured, falling back to ImgBB")
+                    # Convert upload file to base64
+                    await file.seek(0)
+                    content = await file.read()
+                    base64_data = base64.b64encode(content).decode('utf-8')
+                    # Call ImgBB uploader
+                    return await ImageUploadHandler.upload_base64_to_cloudinary(base64_data, file.filename)
+                
                 # Fallback: save locally and return local path
-                logger.warning("Cloudinary not configured, saving locally")
+                logger.warning("Cloudinary/ImgBB/AWS not configured, saving locally")
                 await file.seek(0)  # Reset file position
                 return await ImageUploadHandler.save_image(file)
             
@@ -226,7 +258,7 @@ class ImageUploadHandler:
                     raise ValueError(f"Upload failed: {response.status_code}")
                     
         except Exception as e:
-            logger.error(f"Error uploading to Cloudinary: {e}")
+            logger.error(f"Error uploading image: {e}")
             raise
     
 
@@ -345,18 +377,22 @@ class S3Handler:
             
             def _upload():
                 s3 = S3Handler.get_s3_client()
+                # Upload without ACL (bucket might block public ACLs)
                 s3.put_object(
                     Bucket=bucket_name,
                     Key=key,
                     Body=file_content,
-                    ContentType=content_type,
-                    # ACL='public-read' # Using public bucket policy is better, or presigned. 
-                    # For now assuming bucket policy allows public read or we use standard URL structure.
+                    ContentType=content_type
                 )
-                # Construct URL
-                # Standard format: https://BUCKET.s3.REGION.amazonaws.com/KEY
-                region = os.environ.get('AWS_REGION', 'us-east-1')
-                return f"https://{bucket_name}.s3.{region}.amazonaws.com/{key}"
+                
+                # Generate presigned URL (valid for 7 days)
+                # This ensures the image is accessible even if bucket is private
+                url = s3.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': bucket_name, 'Key': key},
+                    ExpiresIn=604800  # 7 days
+                )
+                return url
 
             url = await loop.run_in_executor(None, _upload)
             logger.info(f"Uploaded to S3: {url}")

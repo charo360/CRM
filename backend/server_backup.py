@@ -30,7 +30,7 @@ def validate_startup_env():
     
     if not api_key or api_key in ('your_openai_api_key_here', 'your_deepseek_api_key_here'):
         print("\n" + "="*60)
-        print(f"[CRITICAL] ERROR: {key_name} not configured in .env file")
+        print(f"❌ ERROR: {key_name} not configured in .env file")
         print("="*60 + "\n")
         sys.exit(1)
     else:
@@ -49,7 +49,7 @@ def validate_startup_env():
 
 validate_startup_env()
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -63,14 +63,12 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 import logging
 import asyncio
 
-# Configure logging to file (outside watched directory) and stdout
-# Using parent directory to avoid uvicorn reload loops
-log_file = ROOT_DIR.parent / "server.log"
+# Configure logging to file and stdout
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(str(log_file)),
+        logging.FileHandler("server.log"),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -99,7 +97,7 @@ from followup_analytics import get_analytics
 from smart_notifications import get_smart_notifications
 from supplier_analyzer import SupplierAnalyzer
 from contact_classifier import get_classifier
-from fastapi import UploadFile, File, Body, Form
+from fastapi import UploadFile, File, Body
 from fastapi.staticfiles import StaticFiles
 from daily_scheduler import start_daily_scheduler
 
@@ -144,10 +142,6 @@ def sanitize_phone(phone: str) -> str:
         return '+' + _re.sub(r'[^\d]', '', phone[1:])
     return _re.sub(r'[^\d]', '', phone)
 
-# === AGENT SYSTEM ===
-from agents.router import Router
-# ====================
-
 def normalize_url(u):
     """Normalize media URLs for Docker/local access."""
     if not u:
@@ -168,7 +162,6 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ.get('DB_NAME', 'whatsapp_crm')]
-router = Router(db) # specific router for agents
 
 # WhatsApp via Evolution API (config in .env: EVOLUTION_API_URL, EVOLUTION_API_KEY)
 
@@ -209,13 +202,7 @@ async def health_check():
             f.write(f"{datetime.utcnow().isoformat()} - Health check called\n")
     except:
         pass
-    # Include AI status so you can always verify AI is working
-    try:
-        drafter = get_drafter()
-        ai_status = drafter.get_status()
-    except:
-        ai_status = {"ready": False, "error": "drafter not initialized"}
-    return {"status": "ok", "service": "crm-backend", "trace": "active", "ai": ai_status}
+    return {"status": "ok", "service": "crm-backend", "trace": "active"}
 
 # ============ HELPER FUNCTIONS ============
 
@@ -374,14 +361,12 @@ class CustomerCreate(BaseModel):
     phone_number: str
     notes: Optional[str] = None
     tags: List[str] = []
-    is_personal: bool = False
 
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
     auto_reply: Optional[bool] = None
-    is_personal: Optional[bool] = None
 
 class CustomerResponse(BaseModel):
     id: str
@@ -391,7 +376,6 @@ class CustomerResponse(BaseModel):
     notes: Optional[str] = None
     tags: List[str] = []
     auto_reply: Optional[bool] = None
-    is_personal: bool = False
     purchase_count: int = 0
     total_spent: float = 0.0
     last_message: Optional[str] = None
@@ -1356,8 +1340,6 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         last_message=customer.get("last_message"),
         last_contacted=customer.get("last_contacted"),
         profile_picture=customer.get("profile_picture"),
-        auto_reply=customer.get("auto_reply", True),
-        is_personal=customer.get("is_personal", False),
         created_at=customer["created_at"]
     )
 
@@ -1377,8 +1359,6 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["tags"] = [sanitize_string(t, 50) for t in update.tags if t.strip()][:20]
     if update.auto_reply is not None:
         update_data["auto_reply"] = update.auto_reply
-    if update.is_personal is not None:
-        update_data["is_personal"] = update.is_personal
         
     if update_data:
         await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
@@ -1392,8 +1372,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         phone_number=updated["phone_number"],
         notes=updated.get("notes"),
         tags=updated.get("tags", []),
-        auto_reply=updated.get("auto_reply", True),
-        is_personal=updated.get("is_personal", False),
+        auto_reply=updated.get("auto_reply", False),
         last_message=updated.get("last_message"),
         last_contacted=updated.get("last_contacted"),
         profile_picture=updated.get("profile_picture"),
@@ -3075,66 +3054,6 @@ async def whatsapp_disconnect(user = Depends(get_current_user)):
     result = await whatsapp_service.disconnect_instance(user["_id"])
     return result
 
-@api_router.post("/messages/send-media")
-async def send_whatsapp_media(
-    file: UploadFile = File(...),
-    to_number: str = Form(...),
-    caption: str = Form(""),
-    customer_name: Optional[str] = Form(None),
-    user = Depends(get_current_user)
-):
-    """
-    Upload and send a media file (image or document) to a customer via WhatsApp.
-    """
-    try:
-        from image_handler import ImageUploadHandler
-        
-        # Determine media type from file extension/content type
-        filename = file.filename or "file"
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        image_exts = {"jpg", "jpeg", "png", "webp", "gif"}
-        is_image = ext in image_exts
-        media_type = "image" if is_image else "document"
-        
-        # Upload to get a public URL
-        try:
-            result = await ImageUploadHandler.upload_to_cloudinary(file)
-            media_url = result["image_url"]
-        except Exception:
-            # Fallback: save locally
-            await file.seek(0)
-            content = await file.read()
-            import aiofiles
-            from pathlib import Path
-            upload_dir = Path(__file__).parent / "uploads" / "media"
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            unique_name = f"{uuid.uuid4()}.{ext}" if ext else f"{uuid.uuid4()}"
-            file_path = upload_dir / unique_name
-            async with aiofiles.open(file_path, 'wb') as f:
-                await f.write(content)
-            server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-            media_url = f"{server_url}/uploads/media/{unique_name}" if server_url else f"/uploads/media/{unique_name}"
-        
-        whatsapp_service = get_whatsapp_service(db)
-        send_result = await whatsapp_service.send_message(
-            user_id=user["_id"],
-            to_number=to_number,
-            message=caption,
-            customer_name=customer_name,
-            media_url=media_url,
-            media_type=media_type,
-            media_filename=filename,
-            send_context="product_send",
-        )
-        if send_result.get("status") == "limit_reached":
-            raise HTTPException(status_code=429, detail=send_result.get("message"))
-        return send_result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.error(f"Error sending media: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @api_router.post("/messages/send")
 async def send_whatsapp_message(to_number: str, message: str, customer_name: Optional[str] = None, user = Depends(get_current_user)):
     """
@@ -3384,14 +3303,10 @@ async def evolution_webhook(request: Request):
                     "user_id": user["_id"],
                     "direction": direction,
                     "content": body,
-                    "message_type": parsed.get("message_type", "text"),
+                    "message_type": "text",
                     "from_number": from_number,
                     "created_at": datetime.utcnow(),
                 }
-                
-                # Add image URL if present
-                if parsed.get("image_url"):
-                    msg_doc["image_url"] = parsed["image_url"]
                 if evo_msg_id:
                     msg_doc["evo_message_id"] = evo_msg_id
                 await db.messages.insert_one(msg_doc)
@@ -3410,74 +3325,288 @@ async def evolution_webhook(request: Request):
                 except Exception as classify_err:
                     logging.error(f"Classification error: {classify_err}")
                 
-                # ============================================================
-                # AGENT-BASED PRODUCT MATCHING & HANDLING (REPLACES OLD MONOLITH)
-                # ============================================================
+                # ============ DYNAMIC PRODUCT & CATALOG HANDLING ============
+                log_trace("Entering dynamic product logic")
+                body_lower = body.strip().lower()
                 
-                # Placeholder for last_context, if needed by agents
-                last_context = {} # You might fetch this from customer.get("agent_context", {})
+                # Fetch user's products (limit 20 for performance)
+                try:
+                    user_products = await db.products.find({"user_id": user["_id"]}).to_list(20)
+                    log_trace(f"Fetched {len(user_products)} products")
+                except Exception as e:
+                    log_trace(f"Error fetching products: {e}")
+                    user_products = []
                 
-                # Check if this is a personal contact
-                is_personal = customer.get("is_personal", False) if customer else False
-                
-                # 2. Fetch recent message history (last 5) for context
-                history = []
-                if customer_id:
-                    recent_msgs = await db.messages.find({
-                        "user_id": user["_id"],
-                        "customer_id": customer_id
-                    }).sort("created_at", -1).limit(5).to_list(5)
-                    
-                    # Store as [{"direction": "incoming/outgoing", "content": "..."}]
-                    # Reverse because we fetched -1 but usually need chronological for LLM
-                    history = [{"direction": m["direction"], "content": m["content"]} for m in reversed(recent_msgs)]
+                # 1. CATALOG / MENU TRIGGER
+                if any(k in body_lower for k in ["catalog", "catalogue", "menu", "shop", "products", "list"]):
+                    if user_products:
+                        logging.info(f"Generating dynamic catalog for {from_number}")
+                        
+                        # Group by category (optional optimization, putting all in one for now)
+                        rows = []
+                        for p in user_products[:10]: # Limit to 10 items for list message
+                            price_display = f"{user.get('settings', {}).get('currency', 'USD')} {p.get('price', 0)}"
+                            rows.append({
+                                "title": p.get("name", "Product")[:24], # WhatsApp limit
+                                "description": f"{price_display} - {p.get('description', '')[:30]}...",
+                                "rowId": f"prod_{p['_id']}"
+                            })
+                            
+                        sections = [{
+                            "title": "Our Products",
+                            "rows": rows
+                        }]
+                        
+                        ws = get_whatsapp_service(db)
+                        await ws.send_list(
+                            user_id=user["_id"],
+                            to_number=from_number,
+                            title=f"👋 {user.get('business_name', 'Our')} Catalog",
+                            description="Here are our available products. Tap to view details or order.",
+                            button_text="View Products",
+                            sections=sections,
+                            footer_text="Powered by Smart CRM"
+                        )
+                        return {"status": "ok", "handled_by": "dynamic_catalog"}
+                    else:
+                        # No products found - fall through to AI to say "We don't have products yet"
+                        pass
 
-                currency = user.get('settings', {}).get('currency', 'USD')
-                agent_context = {
-                    "currency": currency,
-                    "previous_context": last_context,
-                    "customer_id": customer_id,
-                    "is_personal": is_personal,
-                    "history": history
-                }
+                # 2. DYNAMIC PRODUCT KEYWORD MATCHING
+                matched_products = [] 
                 
-                agent_result = await router.route_and_process(
-                    user_id=user["_id"],
-                    message=body,
-                    context=agent_context
-                )
+                # A. Check for Contextual Selection (e.g. User replies "1" to a list)
+                try:
+                    customer_data = customer if customer else await db.customers.find_one({"_id": customer_id})
+                    search_ctx = customer_data.get("last_search_context")
+                    if search_ctx and (datetime.utcnow() - search_ctx.get("timestamp", datetime.min)).total_seconds() < 600: # 10 min
+                        if search_ctx["type"] == "product_disambiguation":
+                            selection_idx = int(body.strip()) - 1
+                            if 0 <= selection_idx < len(search_ctx["candidates"]):
+                                selected_id = search_ctx["candidates"][selection_idx]
+                                p = await db.products.find_one({"_id": ObjectId(selected_id)})
+                                if p:
+                                    matched_products.append(p)
+                                    # Clear context
+                                    await db.customers.update_one({"_id": customer_id}, {"$unset": {"last_search_context": ""}})
+                except (ValueError, TypeError, Exception) as e:
+                    pass # Not a number or other error, continue to normal matching
+
+                # B. Strict Match (Message contains exact Product Name) -> ONLY if no context selection
+                if not matched_products:
+                    # User says "I want Red Dress" -> matches "Red Dress"
+                    for p in user_products:
+                        if p.get("name", "").lower() in body_lower:
+                            matched_products.append(p)
                 
-                if agent_result and agent_result.get("handled"):
+                # B. Keyword/Fuzzy Match (If no strict match)
+                # User says "dress" -> matches "Red Dress", "Blue Dress"
+                if not matched_products and len(body_lower) > 3:
+                     keywords = body_lower.split()
+                     # Filter out stop words - expanded list
+                     stop_words = {"want", "need", "price", "how", "much", "is", "the", "a", "an", "send", "pic", "picture", "image", "photo", "show", "me", "all", "to", "in", "of", "for", "with", "at", "on", "and", "or"}
+                     keywords = [k for k in keywords if k not in stop_words and len(k) > 2]
+                     
+                     if keywords:
+                         # For each product, count how many keywords match
+                         candidates = []
+                         for p in user_products:
+                             p_name_lower = p.get("name", "").lower()
+                             
+                             # Check matches with robust plural support
+                             match_count = 0
+                             for k in keywords:
+                                 # 1. Exact match
+                                 if k in p_name_lower:
+                                     match_count += 1
+                                     continue # Don't double count base forms
+
+                                 # 2. Base form checks (plural -> singular)
+                                 base_forms = []
+                                 if k.endswith('ies'): 
+                                     base_forms.append(k[:-3] + 'y') # cherries -> cherry
+                                 if k.endswith('es'): 
+                                     base_forms.append(k[:-2]) # dresses -> dress, watches -> watch
+                                 if k.endswith('s'): 
+                                     base_forms.append(k[:-1]) # skirts -> skirt
+                                 
+                                 # specific hack for 'dresses' just in case
+                                 if k == 'dresses': base_forms.append('dress')
+
+                                 found = False
+                                 for base in base_forms:
+                                     if len(base) > 2 and base in p_name_lower:
+                                         match_count += 1
+                                         found = True
+                                         break 
+                             
+                             if match_count > 0:
+                                 candidates.append((match_count, p))
+                         
+                         # Sort by match count (descending)
+                         candidates.sort(key=lambda x: x[0], reverse=True)
+                         
+                         # Take top matches
+                         if candidates:
+                             best_score = candidates[0][0]
+                             # Only take candidates that share the best score (avoid long tail of weak matches)
+                             matched_products = [c[1] for c in candidates if c[0] == best_score]
+
+                # C. Context Match (Only if NO matches found)
+                if not matched_products:
+                    image_keywords = ["picture", "photo", "image", "pic", "see", "show", "look"]
+                    is_image_request = any(k in body_lower for k in image_keywords)
+                    
+                    if is_image_request:
+                        # Check last discussed product from Customer record
+                        customer_data = customer if customer else await db.customers.find_one({"_id": customer_id})
+                        last_prod_id = customer_data.get("last_discussed_product_id") if customer_data else None
+                        
+                        if last_prod_id:
+                            # Verify product still exists
+                            p = next((p for p in user_products if str(p["_id"]) == last_prod_id), None)
+                            if p:
+                                matched_products.append(p)
+                                logging.info(f"Context match: User asked for image, found last discussed product {p['name']}")
+
+                # 3. Handle Results
+                if len(matched_products) == 1:
+                    matched_product = matched_products[0]
+                    logging.info(f"Matched product keyword '{matched_product['name']}' in message")
+                    
+                    # Update customer's last discussed product
+                    await db.customers.update_one(
+                        {"_id": customer_id},
+                        {"$set": {"last_discussed_product_id": str(matched_product["_id"])}}
+                    )
+
+                    currency = user.get('settings', {}).get('currency', 'USD')
+                    price_display = f"{currency} {matched_product.get('price', 0):,.0f}"
+                    
+                    caption = (
+                        f"*{matched_product.get('name')}*\n\n"
+                        f"💰 Price: {price_display}\n"
+                        f"{'✅ In Stock' if matched_product.get('in_stock', True) else '❌ Out of Stock'}\n\n"
+                        f"{matched_product.get('description', '')}"
+                    )
+                    
+                    # Collect ALL product images (image_url + images array, deduplicated)
+                    all_imgs = []
+                    if matched_product.get("image_url"):
+                        all_imgs.append(matched_product["image_url"])
+                    for img in matched_product.get("images", []):
+                        if img and img not in all_imgs:
+                            all_imgs.append(img)
+                    
+                    
+                    all_imgs = [normalize_url(u) for u in all_imgs]
+                    logging.info(f"Product keyword match: {len(all_imgs)} images for '{matched_product['name']}': {all_imgs}")
+                    
                     ws = get_whatsapp_service(db)
                     
-                    # 1. Send messages returned by agent
-                    for msg in agent_result.get("messages", []):
+                    # Send extra images first (no caption)
+                    for extra_img in all_imgs[1:]:
                         await ws.send_message(
                             user_id=user["_id"],
                             to_number=from_number,
-                            message=msg.get("text", ""),
+                            message="",
                             customer_name=customer_name,
-                            media_url=msg.get("media_url"),
+                            media_url=extra_img,
                             send_context="auto_reply"
                         )
                     
-                    # 2. Update Context
-                    updates = agent_result.get("context_update", {})
-                    if updates:
-                        db_updates = {}
-                        if "last_discussed_product_id" in updates:
-                            db_updates["last_discussed_product_id"] = updates["last_discussed_product_id"]
+                    # Send main image LAST with full caption (name, price, stock)
+                    first_img = all_imgs[0] if all_imgs else None
+                    await ws.send_message(
+                        user_id=user["_id"],
+                        to_number=from_number,
+                        message=caption, 
+                        customer_name=customer_name,
+                        media_url=first_img,
+                        send_context="auto_reply"
+                    )
+                    
+                    return {"status": "ok", "handled_by": "dynamic_product_match"}
+                
+                elif len(matched_products) > 1:
+                    # AMBIGUOUS MATCH - Ask user to clarify
+                    logging.info(f"Ambiguous product match: found {len(matched_products)} candidates")
+                    
+                    # Store candidates in customer record for "1", "2" selection
+                    candidate_ids = [str(p["_id"]) for p in matched_products[:5]]
+                    try:
+                         await db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$set": {"last_search_context": {
+                                "type": "product_disambiguation", 
+                                "candidates": candidate_ids,
+                                "timestamp": datetime.utcnow()
+                            }}}
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to save search context: {e}")
+
+                    options_text = "Here are the ones we have:" if len(matched_products) <= 5 else "Here are a few options:"
+                    ws = get_whatsapp_service(db)
+                    await ws.send_message(
+                        user_id=user["_id"],
+                        to_number=from_number,
+                        message=options_text,
+                        customer_name=customer_name,
+                        send_context="auto_reply"
+                    )
+
+
+                    # Send top 5 products as IMAGES
+                    for p in matched_products[:5]:
+                        currency = user.get('settings', {}).get('currency', 'USD')
+                        price_display = f"{currency} {p.get('price', 0):,.0f}"
+                        caption = f"*{p['name']}*\n💰 {price_display}"
                         
-                        if db_updates:
-                            await db.customers.update_one(
-                                {"_id": customer_id},
-                                {"$set": db_updates}
+                        # Get first image
+                        img_url = p.get("image_url")
+                        if not img_url and p.get("images"):
+                            img_url = p["images"][0]
+                        
+                        if img_url:
+                            img_url = normalize_url(img_url)
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message=caption,
+                                customer_name=customer_name,
+                                media_url=img_url,
+                                send_context="auto_reply"
+                            )
+                        else:
+                            # Fallback if no image: just text
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message=caption + "\n(No image available)",
+                                customer_name=customer_name,
+                                send_context="auto_reply"
                             )
                         
-                    return {"status": "ok", "handled_by": "agent"}
+                        # Small delay to ensure order
+                        await asyncio.sleep(0.5)
+
+                    # If more products exist
+                    if len(matched_products) > 5:
+                        remaining = len(matched_products) - 5
+                        await ws.send_message(
+                            user_id=user["_id"],
+                            to_number=from_number,
+                            message=f"Plus {remaining} more! Let me know if you want to see them.",
+                            customer_name=customer_name,
+                            send_context="auto_reply"
+                        )
+                    
+                    return {"status": "ok", "handled_by": "ambiguous_product_match_human"}
+
+                # ============ END DYNAMIC HANDLING ============
 
                 # Handle order button taps: "order_<product_id>"
-                body_lower = body.lower().strip()
                 import re as _re
                 _order_btn_match = _re.match(r'^order_([a-f0-9-]+)$', body_lower)
                 if _order_btn_match:
@@ -3600,7 +3729,6 @@ async def evolution_webhook(request: Request):
                 
                 # Auto-reply logic (Per-Customer overrides Global)
                 user_settings = user.get('settings', {})
-                print(f"DEBUG: User settings: {user_settings}", flush=True)
                 
                 # Ensure we have the customer data
                 if not customer and customer_id:
@@ -3611,8 +3739,7 @@ async def evolution_webhook(request: Request):
                 
                 should_auto_reply = customer_auto_reply if customer_auto_reply is not None else global_auto_reply
                 
-                print(f"DEBUG: Auto-reply check. Customer={customer_auto_reply}, Global={global_auto_reply} -> RESULT={should_auto_reply}", flush=True)
-                logging.info(f"Auto-reply check: Customer={customer_auto_reply}, Global={global_auto_reply}, Result={should_auto_reply}")
+                print(f"DEBUG: Auto-reply check. Customer={customer_auto_reply}, Global={global_auto_reply} -> RESULT={should_auto_reply}")
                 
                 if should_auto_reply:
                     # Dedup check already done at top of handler
@@ -3719,13 +3846,6 @@ async def evolution_webhook(request: Request):
                         )
                         
                         reply_text = result.get("drafted_message", "")
-                        
-                        # If AI service failed (returns None), skip auto-reply
-                        if reply_text is None:
-                            logging.warning(f"AI service failed for {from_number} - skipping auto-reply. Reason: {result.get('ai_reason', 'Unknown')}")
-                            print(f"WARNING: AI failed, no auto-reply sent to {from_number}", flush=True)
-                            return {"status": "ok", "message": "AI service unavailable, auto-reply skipped"}
-                        
                         print(f"DEBUG: AI reply received ({len(reply_text)} chars): {reply_text[:100]}", flush=True)
                         logging.info(f"AI raw reply for {from_number}: {reply_text[:300]}")
                         
@@ -4063,14 +4183,39 @@ async def draft_message(customer_id: str, custom_instructions: Optional[str] = N
     Draft a personalized message for a customer using AI with optional custom instructions
     """
     try:
-        # Re-use the POST implementation logic by constructing a request object
-        # or just calling the shared logic. To keep it simple, I'll redirect it.
-        from fastapi.responses import RedirectResponse
-        # But we want to return the same data. Let's just call a shared helper.
-        return await draft_ai_message(DraftMessageRequest(
+        customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+            
+        messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", 1).to_list(50)
+        
+        # Get business settings from user
+        settings = user.get("settings", {})
+        business_name = settings.get("business_name", "Your Business")
+        business_knowledge = settings.get("business_knowledge", "")
+        tone = settings.get("tone", "friendly")
+        
+        user_country_code = settings.get("country_code", "")
+        
+        drafter = get_drafter()
+        result = await drafter.draft_followup_message(
+            customer_name=customer.get("name", "Customer"),
+            customer_data=customer,
+            messages=messages,
+            business_name=business_name,
+            tone=tone,
+            business_knowledge=business_knowledge,
+            custom_instructions=custom_instructions,
+            user_id=user["_id"],
+            db=db,
             customer_id=customer_id,
-            custom_instructions=custom_instructions
-        ), user)
+            user_country=user_country_code,
+            customer_phone=customer.get('phone', '')
+        )
+        
+        from bson import json_util
+        import json
+        return json.loads(json_util.dumps(result))
     except Exception as e:
         import traceback
         logging.error(f"Error in draft_message: {e}\n{traceback.format_exc()}")
@@ -4096,7 +4241,6 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
             "direction": m["direction"],
             "content": m["content"],
             "message_type": m.get("message_type", "text"),
-            "image_url": m.get("image_url"),
             "status": m.get("status"),
             "created_at": m.get("created_at", m.get("timestamp"))
         }
@@ -4183,10 +4327,9 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     
     return {"status": "success", "message": "Business knowledge updated"}
 
-@api_router.post("/ai/draft-message")
+@api_router.post("/ai/draft-message", response_model=DraftMessageResponse)
 async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
     """Generate AI-drafted follow-up message for a customer"""
-    logging.info(f"DEBUG: draft_ai_message called for customer_id={request.customer_id}")
     try:
         # Get customer
         customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
@@ -4197,7 +4340,7 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         messages = await db.messages.find({
             "customer_id": request.customer_id,
             "user_id": user["_id"]
-        }).sort("created_at", 1).limit(10).to_list(10)
+        }).sort("timestamp", 1).limit(10).to_list(10)
         
         # Get business name
         business_name = user.get('business_name', 'Your Business')
@@ -4256,61 +4399,29 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
                 catalog_lines.append(f"  • {p['name']} (ID: {product_id}): {price_str} [{stock}] ({p.get('category', 'Other')}){desc}{image_marker}")
             
             catalog_lines.append("\nWhen customers ask about products, use this catalog for accurate answers. Do NOT make up prices.")
-            catalog_lines.append("When customers ask to see products, suggest them by name. The user will manually select and send product images from their catalog.")
+            catalog_lines.append("If a product has [HAS IMAGE] and the customer asks to see it, include [SEND_IMAGE:{product_id}] in your response.")
             business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
         
         # Get user country for language awareness
         user_country_code = user_settings.get("country_code", "")
         
-        # Prepare history for agent context
-        history = [{"direction": m["direction"], "content": m["content"]} for m in messages]
-        
-        # Determine current message (trigger) for routing
-        # If last message is incoming, we are replying to it. 
-        # Otherwise, we are just drafting a general follow-up.
-        trigger_message = ""
-        if history:
-            last_msg = history[-1]
-            if last_msg["direction"] == "incoming":
-                trigger_message = last_msg["content"]
-            else:
-                trigger_message = "draft follow-up" # Generic intent
-
-        # Check if is personal
-        is_personal = customer.get("is_personal", False)
-        
-        # Build agent context
-        currency = user_settings.get('currency', 'USD')
-        agent_context = {
-            "currency": currency,
-            "customer_id": request.customer_id,
-            "customer_name": customer['name'],
-            "is_personal": is_personal,
-            "history": history,
-            "business_name": business_name,
-            "tone": tone,
-            "business_knowledge": business_knowledge,
-            "custom_instructions": request.custom_instructions,
-            "ai_model": user_settings.get('ai_model', 'standard')
-        }
-        
-        # Process via Router
-        agent_result = await router.route_and_process(
+        # Draft message using AI
+        drafter = get_drafter()
+        result = await drafter.draft_followup_message(
+            customer_name=customer['name'],
+            customer_data=customer,
+            messages=messages,
+            business_name=business_name,
+            tone=tone,
+            business_knowledge=business_knowledge,
+            custom_instructions=request.custom_instructions,
             user_id=user["_id"],
-            message=trigger_message,
-            context=agent_context
+            db=db,
+            customer_id=request.customer_id,
+            user_country=user_country_code,
+            customer_phone=customer.get('phone', ''),
+            model_pref=user_settings.get('ai_model', 'standard')
         )
-        
-        # Extract response from agent result
-        msg_text = ""
-        if agent_result and agent_result.get("handled"):
-            # Combine all messages from agent into one draft
-            msg_text = "\n\n".join([m.get("text", "") for m in agent_result.get("messages", [])])
-            
-        if not msg_text:
-            msg_text = "Hi! Just checking in—can I help with anything?"
-            
-        result = {"message": msg_text, "reason": "Drafted by agent", "confidence": 0.9}
         
         # Support both legacy and new AI service response keys
         msg_text = result.get('message') or result.get('drafted_message') or "Hi! Just checking in—can I help with anything?"
@@ -4326,8 +4437,7 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         raise
     except Exception as e:
         import traceback
-        err_msg = f"Error in draft_ai_message: {e}\n{traceback.format_exc()}"
-        logging.error(err_msg)
+        logging.error(f"Error in draft_ai_message: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/ai/send-auto-message")
@@ -4353,7 +4463,7 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
         "direction": "outgoing",
         "content": request.message,
         "message_type": "text",
-        "created_at": datetime.utcnow(),
+        "timestamp": datetime.utcnow(),
         "auto_sent": True
     }
     await db.messages.insert_one(message_doc)
@@ -5074,7 +5184,7 @@ async def delete_product(product_id: str, user = Depends(get_current_user)):
 @api_router.post("/products/{product_id}/send")
 async def send_product_to_customer(
     product_id: str,
-    customer_id: str = Query(...),
+    customer_id: str,
     user = Depends(get_current_user)
 ):
     """Send a single product with image to customer via WhatsApp"""
@@ -5090,57 +5200,34 @@ async def send_product_to_customer(
     currency = user.get("settings", {}).get("currency", "USD")
     stock_label = "✅ In Stock" if product.get("in_stock", True) else "❌ Out of Stock"
     desc = f"\n_{product.get('description', '')}_" if product.get("description") else ""
-    price = product.get('price') or 0
     message_text = (
         f"*{product['name']}*\n"
-        f"💰 {currency} {price:,.0f}\n"
+        f"💰 {currency} {product.get('price', 0):,.0f}\n"
         f"{stock_label}{desc}\n\n"
         f"👉 Reply *Yes* or *Order* to buy!"
     )
     
-    # Collect all product images (deduplicated, preserving order)
-    server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-    all_images = []
-    seen = set()
-    for img in list(product.get("images", [])):
-        if img and img not in seen:
-            seen.add(img)
-            full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-            if full:
-                all_images.append(full)
-    # Fallback: if images array was empty, try image_url
-    if not all_images:
-        img = product.get("image_url")
-        if img:
-            full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-            if full:
-                all_images.append(full)
+    # Build full image URL for WhatsApp
+    image_url = product.get("image_url")
+    full_image_url = None
+    if image_url:
+        if image_url.startswith("http"):
+            full_image_url = image_url
+        else:
+            server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+            if server_url:
+                full_image_url = f"{server_url}{image_url}"
     
     # Send via WhatsApp API
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
-    
-    # Send extra images first (no caption), then last image with product details
-    result = None
-    if len(all_images) > 1:
-        for extra_img in all_images[:-1]:
-            await whatsapp_service.send_message(
-                user_id=user["_id"],
-                to_number=customer["phone_number"],
-                message="",
-                customer_name=customer.get("name"),
-                media_url=extra_img,
-                send_context="product_send",
-            )
-    
-    # Send last image (or only image) with the product details caption
     result = await whatsapp_service.send_message(
         user_id=user["_id"],
         to_number=customer["phone_number"],
         message=message_text,
         customer_name=customer.get("name"),
-        media_url=all_images[-1] if all_images else None,
-        send_context="product_send",
+        media_url=full_image_url,
+        send_context="manual",
     )
     
     # Store as pending catalog so "Yes"/"Order" auto-creates the order
@@ -5190,61 +5277,42 @@ async def send_catalog_to_customer(
         raise HTTPException(status_code=400, detail="No valid products found")
     
     currency = user.get("settings", {}).get("currency", "USD")
+    business_name = user.get("business_name", "Our Store")
+    
+    # Build catalog message
+    lines = [f"🛍️ *{business_name}*\n"]
+    for i, p in enumerate(products, 1):
+        stock = "✅" if p.get("in_stock", True) else "❌ Sold out"
+        desc = f"  _{p['description']}_\n" if p.get("description") else ""
+        lines.append(f"*{i}.* {p['name']}\n  💰 {currency} {p.get('price', 0):,.0f} {stock}\n{desc}")
+    
+    lines.append(f"\n👉 *Reply with a number to order!*\nE.g. just send *1* or *2*")
+    
+    message_text = "\n".join(lines)
+    
+    # Send first product image if available
+    first_image = None
+    for p in products:
+        img = p.get("image_url")
+        if img:
+            if img.startswith("http"):
+                first_image = img
+            else:
+                server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+                if server_url:
+                    first_image = f"{server_url}{img}"
+            break
     
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
-    
-    # Send each product: extra images first, then last image with details
-    server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-    result = None
-    for i, p in enumerate(products):
-        stock_label = "✅ In Stock" if p.get("in_stock", True) else "❌ Out of Stock"
-        desc = f"\n_{p.get('description', '')}_" if p.get("description") else ""
-        price = p.get('price') or 0
-        message_text = (
-            f"*{p['name']}*\n"
-            f"💰 {currency} {price:,.0f}\n"
-            f"{stock_label}{desc}\n\n"
-            f"👉 Reply *{i+1}* to order!"
-        )
-        
-        # Collect all product images (deduplicated, preserving order)
-        all_images = []
-        seen = set()
-        for img in list(p.get("images", [])):
-            if img and img not in seen:
-                seen.add(img)
-                full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-                if full:
-                    all_images.append(full)
-        if not all_images:
-            img = p.get("image_url")
-            if img:
-                full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-                if full:
-                    all_images.append(full)
-        
-        # Send extra images first (no caption)
-        if len(all_images) > 1:
-            for extra_img in all_images[:-1]:
-                await whatsapp_service.send_message(
-                    user_id=user["_id"],
-                    to_number=customer["phone_number"],
-                    message="",
-                    customer_name=customer.get("name"),
-                    media_url=extra_img,
-                    send_context="product_send",
-                )
-        
-        # Send last image with product details caption
-        result = await whatsapp_service.send_message(
-            user_id=user["_id"],
-            to_number=customer["phone_number"],
-            message=message_text,
-            customer_name=customer.get("name"),
-            media_url=all_images[-1] if all_images else None,
-            send_context="product_send",
-        )
+    result = await whatsapp_service.send_message(
+        user_id=user["_id"],
+        to_number=customer["phone_number"],
+        message=message_text,
+        customer_name=customer.get("name"),
+        media_url=first_image,
+        send_context="manual",
+    )
     
     # Store product IDs in a pending catalog for this customer (for order matching)
     await db.pending_catalogs.update_one(
@@ -5380,7 +5448,6 @@ app.include_router(api_router)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
 
 # Startup event
-@app.on_event("startup")
 async def startup_tasks():
     """Run startup tasks"""
 
@@ -5401,8 +5468,8 @@ async def startup_tasks():
         # Messages
         await db.messages.create_index("user_id")
         await db.messages.create_index("customer_id")
-        await db.messages.create_index([("customer_id", 1), ("created_at", -1)])
-        await db.messages.create_index([("user_id", 1), ("created_at", -1)])
+        await db.messages.create_index([("customer_id", 1), ("timestamp", -1)])
+        await db.messages.create_index([("user_id", 1), ("timestamp", -1)])
 
         # Sales
         await db.sales.create_index("user_id")
@@ -5519,6 +5586,10 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"Failed to start daily pulse scheduler: {e}")
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")

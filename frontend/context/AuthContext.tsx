@@ -16,6 +16,7 @@ interface WhatsAppStartResult {
   message?: string;
   sessionToken?: string;
   pairingCode?: string;
+  pairingData?: any;
   isNewUser?: boolean;
   alreadyConnected?: boolean;
   token?: string;
@@ -35,7 +36,7 @@ interface AuthContextType {
   isLoading: boolean;
   startWhatsAppAuth: (phone: string, countryCode?: string) => Promise<WhatsAppStartResult>;
   checkWhatsAppAuth: (sessionToken: string) => Promise<WhatsAppCheckResult>;
-  refreshPairingCode: (sessionToken: string) => Promise<{ success: boolean; pairingCode?: string; message?: string }>;
+  refreshPairingCode: (sessionToken: string) => Promise<{ success: boolean; pairingCode?: string; pairingData?: any; message?: string }>;
   register: (businessName: string, ownerName?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -106,6 +107,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         success: true,
         sessionToken: response.data.session_token,
         pairingCode: response.data.pairing_code,
+        pairingData: response.data.pairing_data,
         isNewUser: response.data.is_new_user,
       };
     } catch (error: any) {
@@ -157,11 +159,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return {
         success: true,
         pairingCode: response.data.pairing_code,
+        pairingData: response.data.pairing_data,
       };
     } catch (error: any) {
       return {
         success: false,
         message: error.response?.data?.detail || 'Failed to refresh code',
+        pairingData: null,
       };
     }
   };
