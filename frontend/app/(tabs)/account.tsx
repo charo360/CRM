@@ -22,6 +22,7 @@ import { useAuth } from '../../context/AuthContext';
 import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/api';
 
 import { NotificationHandler } from '../../utils/notification-handler';
+import TeamManagementModal from '../../components/TeamManagementModal';
 
 interface SubscriptionPlan {
   id: string;
@@ -84,6 +85,9 @@ export default function AccountScreen() {
   // AI Model State
   const [aiModel, setAiModel] = useState('standard');
   const [showModelPicker, setShowModelPicker] = useState(false);
+
+  // Team Management State
+  const [showTeamModal, setShowTeamModal] = useState(false);
 
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
@@ -665,6 +669,14 @@ export default function AccountScreen() {
           <View style={styles.settingsCard}>
             <TouchableOpacity
               style={styles.settingItem}
+              onPress={() => setShowTeamModal(true)}
+            >
+              <Ionicons name="people-outline" size={24} color="#4A90D9" />
+              <Text style={styles.settingText}>Team Management</Text>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingItem}
               onPress={() => router.push('../analytics' as any)}
             >
               <Ionicons name="analytics-outline" size={24} color="#25D366" />
@@ -974,6 +986,14 @@ export default function AccountScreen() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      {/* Team Management Modal */}
+      <TeamManagementModal
+        visible={showTeamModal}
+        onClose={() => setShowTeamModal(false)}
+        userRole={user?.role || 'owner'}
+        userId={user?.id || ''}
+      />
 
     </SafeAreaView >
   );

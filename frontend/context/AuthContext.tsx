@@ -9,6 +9,8 @@ interface User {
   owner_name?: string;
   subscription_active: boolean;
   subscription_plan?: string;
+  role?: string;
+  business_id?: string;
 }
 
 interface WhatsAppStartResult {

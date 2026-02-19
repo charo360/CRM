@@ -504,6 +504,73 @@ export const messageHelpers = {
   },
 };
 
+// ============ TEAM MANAGEMENT ============
+export const teamAPI = {
+  /**
+   * Invite a new team member
+   */
+  inviteMember: async (data: { email: string; name: string; role: string }) => {
+    const response = await apiClient.post('/team/invite', data);
+    return response.data;
+  },
+
+  /**
+   * Get all team members
+   */
+  getMembers: async () => {
+    const response = await apiClient.get('/team/members');
+    return response.data;
+  },
+
+  /**
+   * Update team member
+   */
+  updateMember: async (memberId: string, updates: { name?: string; role?: string; status?: string }) => {
+    const response = await apiClient.put(`/team/members/${memberId}`, updates);
+    return response.data;
+  },
+
+  /**
+   * Remove team member
+   */
+  removeMember: async (memberId: string) => {
+    const response = await apiClient.delete(`/team/members/${memberId}`);
+    return response.data;
+  },
+
+  /**
+   * Assign conversation to team member
+   */
+  assignConversation: async (data: { customer_id: string; assigned_to: string | null; assigned_by: string; notes?: string }) => {
+    const response = await apiClient.post('/conversations/assign', data);
+    return response.data;
+  },
+
+  /**
+   * Get all conversation assignments
+   */
+  getAssignments: async () => {
+    const response = await apiClient.get('/conversations/assignments');
+    return response.data;
+  },
+
+  /**
+   * Get my assigned conversations
+   */
+  getMyAssignments: async () => {
+    const response = await apiClient.get('/conversations/my-assignments');
+    return response.data;
+  },
+
+  /**
+   * Get activity logs
+   */
+  getActivityLogs: async (params?: { limit?: number; user_id?: string; entity_type?: string }) => {
+    const response = await apiClient.get('/activity/logs', { params });
+    return response.data;
+  },
+};
+
 // ============ ACCOUNT MANAGEMENT ============
 export const accountAPI = {
   /**

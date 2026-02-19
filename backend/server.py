@@ -368,6 +368,49 @@ class UserResponse(BaseModel):
     payment_methods: List[str] = []
     created_at: datetime
 
+# Team/Business Models
+class TeamMemberRole:
+    OWNER = "owner"
+    MANAGER = "manager"
+    EMPLOYEE = "employee"
+
+class TeamMemberInvite(BaseModel):
+    email: str
+    name: str
+    role: str = "employee"  # owner, manager, employee
+
+class TeamMemberResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    phone_number: Optional[str] = None
+    role: str
+    business_id: str
+    status: str  # active, invited, suspended
+    invited_by: str
+    created_at: datetime
+    last_active: Optional[datetime] = None
+
+class TeamMemberUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    status: Optional[str] = None
+
+class ConversationAssignment(BaseModel):
+    customer_id: str
+    assigned_to: Optional[str] = None  # team member user_id
+    assigned_by: str
+    notes: Optional[str] = None
+
+class ActivityLog(BaseModel):
+    user_id: str
+    user_name: str
+    action: str  # "message_sent", "customer_created", "order_created", "conversation_assigned"
+    entity_type: str  # "customer", "message", "order", "conversation"
+    entity_id: str
+    details: Optional[dict] = None
+    timestamp: datetime
+
 # Customer Models
 class CustomerCreate(BaseModel):
     name: str
@@ -401,6 +444,8 @@ class CustomerResponse(BaseModel):
     profile_picture: Optional[str] = None
     unread_count: int = 0
     created_at: datetime
+    assigned_to: Optional[str] = None
+    assigned_to_name: Optional[str] = None
 
 # Follow-up Models
 class FollowUpCreate(BaseModel):
@@ -962,6 +1007,7 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
     """
     Complete registration after WhatsApp auth.
     Sets business name and owner name for a newly created user.
+    Creates the user as the business owner in the team_members collection.
     Requires JWT (issued after WhatsApp connects).
     """
     # Update the user's business info
@@ -971,8 +1017,26 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
             "business_name": user_data.business_name,
             "owner_name": user_data.owner_name or "",
             "setup_complete": True,
+            "role": TeamMemberRole.OWNER,
+            "business_id": user["_id"],  # Owner's user_id is the business_id
         }}
     )
+
+    # Create team member entry for the owner
+    team_member = {
+        "_id": str(uuid.uuid4()),
+        "user_id": user["_id"],
+        "name": user_data.owner_name or user_data.business_name,
+        "email": "",  # Optional for owner
+        "phone_number": user["phone_number"],
+        "role": TeamMemberRole.OWNER,
+        "business_id": user["_id"],
+        "status": "active",
+        "invited_by": user["_id"],
+        "created_at": datetime.utcnow(),
+        "last_active": datetime.utcnow()
+    }
+    await db.team_members.insert_one(team_member)
 
     return serialize_doc({
         "status": "success",
@@ -981,6 +1045,8 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
             "phone_number": user["phone_number"],
             "business_name": user_data.business_name,
             "owner_name": user_data.owner_name or "",
+            "role": TeamMemberRole.OWNER,
+            "business_id": user["_id"],
             "subscription_active": user.get("subscription_active", False),
             "country_code": user.get("country_code"),
             "currency": user.get("currency", "USD"),
@@ -996,12 +1062,284 @@ async def get_me(user = Depends(get_current_user)):
         "phone_number": user["phone_number"],
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
+        "role": user.get("role", TeamMemberRole.OWNER),
+        "business_id": user.get("business_id", user["_id"]),
         "subscription_plan": user.get("subscription_plan"),
         "subscription_active": user.get("subscription_active", False),
         "country_code": user.get("country_code"),
         "currency": user.get("currency", "USD"),
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
     })
+
+# ============ TEAM MANAGEMENT ENDPOINTS ============
+
+def check_permission(user: dict, required_role: str) -> bool:
+    """Check if user has required permission level"""
+    role_hierarchy = {TeamMemberRole.OWNER: 3, TeamMemberRole.MANAGER: 2, TeamMemberRole.EMPLOYEE: 1}
+    user_level = role_hierarchy.get(user.get("role", TeamMemberRole.EMPLOYEE), 1)
+    required_level = role_hierarchy.get(required_role, 1)
+    return user_level >= required_level
+
+@api_router.post("/team/invite", response_model=TeamMemberResponse)
+async def invite_team_member(invite: TeamMemberInvite, user = Depends(get_current_user)):
+    """Invite a new team member (Owner/Manager only)"""
+    if not check_permission(user, TeamMemberRole.MANAGER):
+        raise HTTPException(status_code=403, detail="Only owners and managers can invite team members")
+    
+    business_id = user.get("business_id", user["_id"])
+    
+    # Check if email already invited
+    existing = await db.team_members.find_one({"business_id": business_id, "email": invite.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="This email is already invited to your team")
+    
+    # Validate role
+    if invite.role not in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
+        raise HTTPException(status_code=400, detail="Can only invite employees or managers")
+    
+    # Create team member
+    member_id = str(uuid.uuid4())
+    team_member = {
+        "_id": member_id,
+        "user_id": None,  # Will be set when they accept invite
+        "name": invite.name,
+        "email": invite.email,
+        "phone_number": None,
+        "role": invite.role,
+        "business_id": business_id,
+        "status": "invited",
+        "invited_by": user["_id"],
+        "created_at": datetime.utcnow(),
+        "last_active": None
+    }
+    await db.team_members.insert_one(team_member)
+    
+    # TODO: Send email invitation
+    
+    return TeamMemberResponse(**{**team_member, "id": member_id})
+
+@api_router.get("/team/members")
+async def get_team_members(user = Depends(get_current_user)):
+    """Get all team members for the business"""
+    business_id = user.get("business_id", user["_id"])
+    
+    members = []
+    async for member in db.team_members.find({"business_id": business_id}).sort("created_at", -1):
+        members.append({
+            "id": member["_id"],
+            "name": member["name"],
+            "email": member.get("email", ""),
+            "phone_number": member.get("phone_number"),
+            "role": member["role"],
+            "business_id": member["business_id"],
+            "status": member["status"],
+            "invited_by": member["invited_by"],
+            "created_at": member["created_at"],
+            "last_active": member.get("last_active")
+        })
+    
+    return members
+
+@api_router.put("/team/members/{member_id}")
+async def update_team_member(member_id: str, updates: TeamMemberUpdate, user = Depends(get_current_user)):
+    """Update team member (Owner/Manager only)"""
+    if not check_permission(user, TeamMemberRole.MANAGER):
+        raise HTTPException(status_code=403, detail="Only owners and managers can update team members")
+    
+    business_id = user.get("business_id", user["_id"])
+    
+    # Get member
+    member = await db.team_members.find_one({"_id": member_id, "business_id": business_id})
+    if not member:
+        raise HTTPException(status_code=404, detail="Team member not found")
+    
+    # Can't change owner role
+    if member["role"] == TeamMemberRole.OWNER:
+        raise HTTPException(status_code=403, detail="Cannot modify the business owner")
+    
+    # Build update
+    update_data = {}
+    if updates.name:
+        update_data["name"] = updates.name
+    if updates.role and updates.role in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
+        update_data["role"] = updates.role
+    if updates.status and updates.status in ["active", "suspended"]:
+        update_data["status"] = updates.status
+    
+    if update_data:
+        await db.team_members.update_one({"_id": member_id}, {"$set": update_data})
+    
+    return {"status": "success", "message": "Team member updated"}
+
+@api_router.delete("/team/members/{member_id}")
+async def remove_team_member(member_id: str, user = Depends(get_current_user)):
+    """Remove team member (Owner only)"""
+    if not check_permission(user, TeamMemberRole.OWNER):
+        raise HTTPException(status_code=403, detail="Only the business owner can remove team members")
+    
+    business_id = user.get("business_id", user["_id"])
+    
+    # Get member
+    member = await db.team_members.find_one({"_id": member_id, "business_id": business_id})
+    if not member:
+        raise HTTPException(status_code=404, detail="Team member not found")
+    
+    # Can't remove owner
+    if member["role"] == TeamMemberRole.OWNER:
+        raise HTTPException(status_code=403, detail="Cannot remove the business owner")
+    
+    # Remove member
+    await db.team_members.delete_one({"_id": member_id})
+    
+    # Unassign all conversations
+    await db.conversation_assignments.update_many(
+        {"business_id": business_id, "assigned_to": member.get("user_id")},
+        {"$set": {"assigned_to": None}}
+    )
+    
+    return {"status": "success", "message": "Team member removed"}
+
+# ============ CONVERSATION ASSIGNMENT ENDPOINTS ============
+
+@api_router.post("/conversations/assign")
+async def assign_conversation(assignment: ConversationAssignment, user = Depends(get_current_user)):
+    """Assign a conversation to a team member"""
+    business_id = user.get("business_id", user["_id"])
+    
+    # Verify customer exists
+    customer = await db.customers.find_one({"_id": assignment.customer_id, "user_id": business_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Verify assignee is a team member (if assigned)
+    if assignment.assigned_to:
+        assignee = await db.team_members.find_one({
+            "business_id": business_id,
+            "user_id": assignment.assigned_to,
+            "status": "active"
+        })
+        if not assignee:
+            raise HTTPException(status_code=404, detail="Team member not found")
+    
+    # Create or update assignment
+    assignment_doc = {
+        "customer_id": assignment.customer_id,
+        "business_id": business_id,
+        "assigned_to": assignment.assigned_to,
+        "assigned_by": assignment.assigned_by,
+        "assigned_at": datetime.utcnow(),
+        "notes": assignment.notes
+    }
+    
+    await db.conversation_assignments.update_one(
+        {"business_id": business_id, "customer_id": assignment.customer_id},
+        {"$set": assignment_doc},
+        upsert=True
+    )
+    
+    # Log activity
+    await log_activity(
+        business_id=business_id,
+        user_id=user["_id"],
+        user_name=user.get("owner_name", user.get("business_name", "User")),
+        action="conversation_assigned",
+        entity_type="conversation",
+        entity_id=assignment.customer_id,
+        details={"assigned_to": assignment.assigned_to, "notes": assignment.notes}
+    )
+    
+    return {"status": "success", "message": "Conversation assigned"}
+
+@api_router.get("/conversations/assignments")
+async def get_conversation_assignments(user = Depends(get_current_user)):
+    """Get all conversation assignments for the business"""
+    business_id = user.get("business_id", user["_id"])
+    
+    assignments = []
+    async for assignment in db.conversation_assignments.find({"business_id": business_id}):
+        assignments.append({
+            "customer_id": assignment["customer_id"],
+            "assigned_to": assignment.get("assigned_to"),
+            "assigned_by": assignment["assigned_by"],
+            "assigned_at": assignment["assigned_at"],
+            "notes": assignment.get("notes")
+        })
+    
+    return assignments
+
+@api_router.get("/conversations/my-assignments")
+async def get_my_assignments(user = Depends(get_current_user)):
+    """Get conversations assigned to current user"""
+    business_id = user.get("business_id", user["_id"])
+    
+    assignments = []
+    async for assignment in db.conversation_assignments.find({
+        "business_id": business_id,
+        "assigned_to": user["_id"]
+    }):
+        # Get customer details
+        customer = await db.customers.find_one({"_id": assignment["customer_id"]})
+        if customer:
+            assignments.append({
+                "customer_id": assignment["customer_id"],
+                "customer_name": customer.get("name", "Unknown"),
+                "customer_phone": customer.get("phone_number", ""),
+                "assigned_at": assignment["assigned_at"],
+                "notes": assignment.get("notes")
+            })
+    
+    return assignments
+
+# ============ ACTIVITY LOG ENDPOINTS ============
+
+async def log_activity(business_id: str, user_id: str, user_name: str, action: str, entity_type: str, entity_id: str, details: dict = None):
+    """Helper function to log user activity"""
+    activity = {
+        "_id": str(uuid.uuid4()),
+        "business_id": business_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "details": details or {},
+        "timestamp": datetime.utcnow()
+    }
+    await db.activity_logs.insert_one(activity)
+
+@api_router.get("/activity/logs")
+async def get_activity_logs(
+    limit: int = Query(50, le=200),
+    user_id: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    user = Depends(get_current_user)
+):
+    """Get activity logs for the business"""
+    if not check_permission(user, TeamMemberRole.MANAGER):
+        raise HTTPException(status_code=403, detail="Only owners and managers can view activity logs")
+    
+    business_id = user.get("business_id", user["_id"])
+    
+    query = {"business_id": business_id}
+    if user_id:
+        query["user_id"] = user_id
+    if entity_type:
+        query["entity_type"] = entity_type
+    
+    logs = []
+    async for log in db.activity_logs.find(query).sort("timestamp", -1).limit(limit):
+        logs.append({
+            "id": log["_id"],
+            "user_id": log["user_id"],
+            "user_name": log["user_name"],
+            "action": log["action"],
+            "entity_type": log["entity_type"],
+            "entity_id": log["entity_id"],
+            "details": log.get("details", {}),
+            "timestamp": log["timestamp"]
+        })
+    
+    return logs
 
 # ============ SUPPLIER ENDPOINTS ============
 
@@ -1226,37 +1564,74 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
     )
 
 @api_router.get("/customers", response_model=List[CustomerResponse])
-async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None, user = Depends(get_current_user)):
-    """Get all customers for current user"""
-    query = {"user_id": user["_id"]}
+async def get_customers(
+    tag: Optional[str] = None, 
+    sort_by: Optional[str] = None, 
+    filter_by: Optional[str] = None,  # "all", "assigned_to_me", "unassigned"
+    user = Depends(get_current_user)
+):
+    """
+    Get customers for current user with role-based filtering.
+    - Owner/Manager: Can see all customers
+    - Employee: Can see assigned + unassigned customers
+    - filter_by: "all" (owner/manager only), "assigned_to_me", "unassigned"
+    """
+    business_id = user.get("business_id", user["_id"])
+    user_role = user.get("role", "owner")
+    
+    # Base query uses business_id for multi-user support
+    query = {"user_id": business_id}
     if tag:
         query["tags"] = tag
     
-    # Sorting logic
+    # Fetch customers
     if sort_by == "purchases":
         sort_field = "purchase_count"
-        sort_order = -1  # Highest purchases first
+        sort_order = -1
     elif sort_by == "recently_contacted":
         sort_field = "last_contacted"
-        sort_order = -1  # Most recently contacted first
+        sort_order = -1
     elif sort_by == "oldest":
         sort_field = "created_at"
-        sort_order = 1  # Oldest first
+        sort_order = 1
     else:
-        # Default: Recently added (newest first)
         sort_field = "created_at"
-        sort_order = -1  # Newest first
+        sort_order = -1
     
     customers = await db.customers.find(query).sort(sort_field, sort_order).to_list(1000)
+    customer_ids = [c["_id"] for c in customers]
     
-    # Batch fetch unread counts for all customers
+    # Fetch assignments for filtering
+    assignments = await db.conversation_assignments.find({
+        "business_id": business_id,
+        "customer_id": {"$in": customer_ids}
+    }).to_list(1000)
+    assignment_map = {a["customer_id"]: a.get("assigned_to") for a in assignments}
+    
+    # Apply role-based filtering
+    if filter_by == "assigned_to_me":
+        # Show only customers assigned to current user
+        customers = [c for c in customers if assignment_map.get(c["_id"]) == user["_id"]]
+    elif filter_by == "unassigned":
+        # Show only unassigned customers
+        customers = [c for c in customers if c["_id"] not in assignment_map or assignment_map.get(c["_id"]) is None]
+    elif user_role == "employee":
+        # Employees see their assigned + unassigned (not other employees' assignments)
+        customers = [c for c in customers if c["_id"] not in assignment_map or assignment_map.get(c["_id"]) in [None, user["_id"]]]
+    # Owner/Manager with filter_by="all" or no filter sees everything
+    
+    # Batch fetch unread counts
     customer_ids = [c["_id"] for c in customers]
     unread_pipeline = [
-        {"$match": {"customer_id": {"$in": customer_ids}, "user_id": user["_id"], "direction": "incoming", "read": {"$ne": True}}},
+        {"$match": {"customer_id": {"$in": customer_ids}, "user_id": business_id, "direction": "incoming", "read": {"$ne": True}}},
         {"$group": {"_id": "$customer_id", "count": {"$sum": 1}}}
     ]
     unread_results = await db.messages.aggregate(unread_pipeline).to_list(1000)
     unread_map = {r["_id"]: r["count"] for r in unread_results}
+
+    # Fetch team member names for assigned_to display
+    team_members = await db.team_members.find({"business_id": business_id}).to_list(100)
+    member_map = {m.get("user_id"): m["name"] for m in team_members if m.get("user_id")}
 
     return [
         CustomerResponse(
@@ -1273,7 +1648,9 @@ async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None
             last_contacted=c.get("last_contacted"),
             profile_picture=c.get("profile_picture"),
             unread_count=unread_map.get(c["_id"], 0),
-            created_at=c.get("created_at", datetime.utcnow())
+            created_at=c.get("created_at", datetime.utcnow()),
+            assigned_to=assignment_map.get(c["_id"]),
+            assigned_to_name=member_map.get(assignment_map.get(c["_id"])) if assignment_map.get(c["_id"]) else None
         )
         for c in customers
     ]
@@ -3296,11 +3673,51 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
     """
     Send WhatsApp message to a customer via Evolution API.
     Auto-creates contact if number doesn't exist. Enforces rate limits.
+    Auto-assigns conversation to employee on first reply if unassigned.
     """
     try:
+        business_id = user.get("business_id", user["_id"])
+        
+        # Find customer to check assignment
+        customer = await db.customers.find_one({
+            "user_id": business_id,
+            "phone_number": to_number
+        })
+        
+        # Auto-assign on first reply if unassigned
+        if customer:
+            assignment = await db.conversation_assignments.find_one({
+                "business_id": business_id,
+                "customer_id": customer["_id"]
+            })
+            
+            # If no assignment exists and user is employee/manager, auto-assign
+            if not assignment and user.get("role") in ["employee", "manager"]:
+                await db.conversation_assignments.insert_one({
+                    "customer_id": customer["_id"],
+                    "business_id": business_id,
+                    "assigned_to": user["_id"],
+                    "assigned_by": user["_id"],
+                    "assigned_at": datetime.utcnow(),
+                    "notes": "Auto-assigned on first reply"
+                })
+                
+                # Log activity
+                await log_activity(
+                    business_id=business_id,
+                    user_id=user["_id"],
+                    user_name=user.get("owner_name", user.get("business_name", "User")),
+                    action="conversation_auto_assigned",
+                    entity_type="conversation",
+                    entity_id=customer["_id"],
+                    details={"customer_name": customer.get("name", "Unknown")}
+                )
+                
+                logging.info(f"Auto-assigned customer {customer['_id']} to user {user['_id']}")
+        
         whatsapp_service = get_whatsapp_service(db)
         result = await whatsapp_service.send_message(
-            user_id=user["_id"],
+            user_id=business_id,  # Use business_id for WhatsApp instance
             to_number=to_number,
             message=message,
             customer_name=customer_name
@@ -5600,6 +6017,20 @@ async def startup_tasks():
 
         # Conversation memory (AI context per customer per user)
         await db.conversation_memory.create_index([("customer_id", 1), ("user_id", 1)])
+
+        # Team members
+        await db.team_members.create_index("business_id")
+        await db.team_members.create_index([("business_id", 1), ("email", 1)], unique=True)
+        await db.team_members.create_index([("business_id", 1), ("status", 1)])
+
+        # Conversation assignments
+        await db.conversation_assignments.create_index([("business_id", 1), ("customer_id", 1)], unique=True)
+        await db.conversation_assignments.create_index([("business_id", 1), ("assigned_to", 1)])
+
+        # Activity logs
+        await db.activity_logs.create_index([("business_id", 1), ("timestamp", -1)])
+        await db.activity_logs.create_index([("business_id", 1), ("user_id", 1), ("timestamp", -1)])
+        await db.activity_logs.create_index([("business_id", 1), ("entity_type", 1), ("entity_id", 1)])
 
         logging.info("Database indexes ensured successfully")
     except Exception as e:
