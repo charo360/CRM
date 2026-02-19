@@ -1151,9 +1151,16 @@ async def get_me(user = Depends(get_current_user)):
 # ============ TEAM MANAGEMENT ENDPOINTS ============
 
 def check_permission(user: dict, required_role: str) -> bool:
-    """Check if user has required permission level"""
+    """Check if user has required permission level.
+    Users with no role field and no business_id are business owners (created before team feature).
+    """
     role_hierarchy = {TeamMemberRole.OWNER: 3, TeamMemberRole.MANAGER: 2, TeamMemberRole.EMPLOYEE: 1}
-    user_level = role_hierarchy.get(user.get("role", TeamMemberRole.EMPLOYEE), 1)
+    # If no role set and no business_id, this is a standalone owner account
+    if not user.get("role") and not user.get("business_id"):
+        effective_role = TeamMemberRole.OWNER
+    else:
+        effective_role = user.get("role", TeamMemberRole.EMPLOYEE)
+    user_level = role_hierarchy.get(effective_role, 1)
     required_level = role_hierarchy.get(required_role, 1)
     return user_level >= required_level
 
