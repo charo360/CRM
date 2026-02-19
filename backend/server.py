@@ -1127,11 +1127,14 @@ async def get_me(user = Depends(get_current_user)):
     """Get current user info"""
     business_id = user.get("business_id", user["_id"])
     
-    # Count active team members for adaptive UI
-    team_members_count = await db.team_members.count_documents({
-        "business_id": business_id,
-        "status": "active"
-    })
+    # Count active team members for adaptive UI (with timeout to prevent hanging)
+    try:
+        team_members_count = await asyncio.wait_for(
+            db.team_members.count_documents({"business_id": business_id, "status": "active"}),
+            timeout=2.0
+        )
+    except (asyncio.TimeoutError, Exception):
+        team_members_count = 0
     
     return serialize_doc({
         "id": user["_id"],
@@ -6191,13 +6194,14 @@ async def startup_tasks():
         # Pending catalogs
         await db.pending_catalogs.create_index([("customer_id", 1), ("user_id", 1)])
 
+        # Team members
+        await db.team_members.create_index([("business_id", 1), ("status", 1)])
+        await db.team_members.create_index("phone_number")
+        await db.team_members.create_index([("business_id", 1), ("phone_number", 1)])
+
         # Conversation memory (AI context per customer per user)
         await db.conversation_memory.create_index([("customer_id", 1), ("user_id", 1)])
 
-        # Team members
-        await db.team_members.create_index("business_id")
-        await db.team_members.create_index([("business_id", 1), ("email", 1)], unique=True)
-        await db.team_members.create_index([("business_id", 1), ("status", 1)])
 
         # Conversation assignments
         await db.conversation_assignments.create_index([("business_id", 1), ("customer_id", 1)], unique=True)
