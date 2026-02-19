@@ -154,6 +154,7 @@ export default function CustomersScreen() {
   const [showTagInput, setShowTagInput] = useState(false);
   const [newTagText, setNewTagText] = useState('');
   const [newAutoReply, setNewAutoReply] = useState(false);
+  const [newStage, setNewStage] = useState<string>('lead');
 
   // Contact import
   const [contactsModalVisible, setContactsModalVisible] = useState(false);
@@ -500,6 +501,7 @@ export default function CustomersScreen() {
         notes: newNotes || null,
         tags: newTags,
         auto_reply: newAutoReply,
+        stage: newStage,
       });
 
       setCustomers(customers.map(c => c.id === selectedCustomer.id ? response.data : c));
@@ -540,6 +542,7 @@ export default function CustomersScreen() {
     setNewNotes('');
     setNewTags(viewMode === 'suppliers' ? ['Supplier', 'New'] : ['New']);
     setNewAutoReply(false);
+    setNewStage('lead');
     setSelectedCustomer(null);
   };
 
@@ -673,6 +676,7 @@ export default function CustomersScreen() {
     setNewNotes(customer.notes || '');
     setNewTags(customer.tags);
     setNewAutoReply(customer.auto_reply || false);
+    setNewStage(customer.stage || 'lead');
     setEditModalVisible(true);
   };
 
@@ -945,7 +949,15 @@ export default function CustomersScreen() {
       </View>
       <View style={styles.chatRowContent}>
         <View style={styles.chatRowTop}>
-          <Text style={styles.chatRowName} numberOfLines={1}>{item.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8, gap: 6 }}>
+            {item.stage && item.stage !== 'lead' && (
+              <View style={{
+                width: 8, height: 8, borderRadius: 4,
+                backgroundColor: STAGE_COLORS[item.stage] || '#8696A0',
+              }} />
+            )}
+            <Text style={[styles.chatRowName, { flex: 1 }]} numberOfLines={1}>{item.name}</Text>
+          </View>
           <Text style={styles.chatRowTime}>{formatLastContact(item.last_contacted)}</Text>
         </View>
         <View style={styles.chatRowBottom}>
@@ -1058,6 +1070,36 @@ export default function CustomersScreen() {
                   ? 'Auto-reply is ENABLED for this customer.'
                   : 'Auto-reply is DISABLED for this customer.'}
               </Text>
+            </View>
+          )}
+
+          {isEdit && (
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Pipeline Stage</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                {(['lead', 'contacted', 'negotiating', 'won', 'lost'] as const).map((stage) => (
+                  <TouchableOpacity
+                    key={stage}
+                    onPress={() => setNewStage(stage)}
+                    style={{
+                      paddingHorizontal: 14,
+                      paddingVertical: 8,
+                      borderRadius: 20,
+                      borderWidth: 2,
+                      borderColor: newStage === stage ? STAGE_COLORS[stage] : '#2A3A5C',
+                      backgroundColor: newStage === stage ? STAGE_COLORS[stage] + '30' : 'transparent',
+                    }}
+                  >
+                    <Text style={{
+                      fontSize: 13,
+                      fontWeight: '600',
+                      color: newStage === stage ? STAGE_COLORS[stage] : '#8B9DC3',
+                    }}>
+                      {STAGE_LABELS[stage]}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
           )}
 
