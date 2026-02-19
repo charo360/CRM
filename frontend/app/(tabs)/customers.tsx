@@ -1019,7 +1019,7 @@ export default function CustomersScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.modalContent}>
+        <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Name *</Text>
             <TextInput
@@ -1171,7 +1171,7 @@ export default function CustomersScreen() {
               )}
             </View>
           </View>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     </Modal>
   );
