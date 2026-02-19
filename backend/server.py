@@ -2142,9 +2142,13 @@ Thank you for shopping with {business} 🙏"""
 
 @api_router.get("/sales", response_model=List[SaleResponse])
 async def get_sales(user = Depends(get_current_user)):
-    """Get all sales for current user"""
+    """Get all sales for current user. Employees see only their own; owner/manager see all."""
     business_id = user.get("business_id", user["_id"])
-    sales = await db.sales.find({"user_id": business_id}).sort("created_at", -1).to_list(1000)
+    user_role = user.get("role", "owner")
+    query = {"user_id": business_id}
+    if user_role == "employee":
+        query["recorded_by"] = user["_id"]
+    sales = await db.sales.find(query).sort("created_at", -1).to_list(1000)
     
     result = []
     for s in sales:
@@ -2247,9 +2251,13 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
 
 @api_router.get("/orders", response_model=List[OrderResponse])
 async def get_orders(user = Depends(get_current_user)):
-    """Get all orders for the current user"""
+    """Get all orders for the current user. Employees see only their own; owner/manager see all."""
     business_id = user.get("business_id", user["_id"])
-    orders = await db.orders.find({"user_id": business_id}).sort("created_at", -1).to_list(None)
+    user_role = user.get("role", "owner")
+    query = {"user_id": business_id}
+    if user_role == "employee":
+        query["recorded_by"] = user["_id"]
+    orders = await db.orders.find(query).sort("created_at", -1).to_list(None)
     
     result = []
     for order in orders:
@@ -2539,9 +2547,13 @@ async def create_expense(expense: ExpenseCreate, user = Depends(get_current_user
 
 @api_router.get("/expenses", response_model=List[ExpenseResponse])
 async def get_expenses(user = Depends(get_current_user)):
-    """Get all expenses for current user"""
+    """Get all expenses for current user. Employees see only their own; owner/manager see all."""
     business_id = user.get("business_id", user["_id"])
-    expenses = await db.expenses.find({"user_id": business_id}).sort("created_at", -1).to_list(1000)
+    user_role = user.get("role", "owner")
+    query = {"user_id": business_id}
+    if user_role == "employee":
+        query["recorded_by"] = user["_id"]
+    expenses = await db.expenses.find(query).sort("created_at", -1).to_list(1000)
     
     return [
         ExpenseResponse(
