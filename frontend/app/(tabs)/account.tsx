@@ -676,16 +676,9 @@ export default function AccountScreen() {
                 size={24} 
                 color={user?.team_members_count && user.team_members_count > 1 ? "#4A90D9" : "#25D366"} 
               />
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.settingText}>
-                  {user?.team_members_count && user.team_members_count > 1 ? "Team Management" : "Add Team Members"}
-                </Text>
-                {user?.team_members_count && user.team_members_count > 1 && (
-                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
-                    {user.team_members_count} {user.team_members_count === 1 ? 'member' : 'members'}
-                  </Text>
-                )}
-              </View>
+              <Text style={styles.settingText}>
+                {user?.team_members_count && user.team_members_count > 1 ? "Team Management" : "Add Team Members"}
+              </Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
             <TouchableOpacity
