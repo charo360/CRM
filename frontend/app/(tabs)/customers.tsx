@@ -38,6 +38,8 @@ interface Customer {
   auto_reply: boolean;
   unread_count: number;
   created_at: string;
+  assigned_to?: string | null;
+  assigned_to_name?: string | null;
 }
 
 interface DashboardSummary {
@@ -183,6 +185,7 @@ export default function CustomersScreen() {
   const [aiModel, setAiModel] = useState('standard');
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [selectedStage, setSelectedStage] = useState<string>('all');
+  const [assignmentFilter, setAssignmentFilter] = useState<string>('all'); // 'all', 'assigned_to_me', 'unassigned'
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
   const { user } = useAuth();
@@ -281,6 +284,11 @@ export default function CustomersScreen() {
         params = sortBy === 'recently_contacted' ? '?sort_by=recently_contacted' : '';
       }
 
+      // Add assignment filter
+      if (assignmentFilter !== 'all') {
+        params += (params ? '&' : '?') + `filter_by=${assignmentFilter}`;
+      }
+
       const response = await apiClient.get(`/customers${params}`);
       setCustomers(response.data);
     } catch (error) {
@@ -289,7 +297,7 @@ export default function CustomersScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedTag, searchQuery, sortBy]);
+  }, [selectedTag, searchQuery, sortBy, assignmentFilter]);
 
 
 
@@ -944,7 +952,21 @@ export default function CustomersScreen() {
           <Text style={styles.chatRowMessage} numberOfLines={1}>
             {item.last_message || item.notes || item.phone_number}
           </Text>
-          <RotatingBadge tags={item.tags} purchaseCount={item.purchase_count} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {item.assigned_to_name && (
+              <View style={styles.assignedBadge}>
+                <Ionicons name="person" size={10} color="#4A90D9" />
+                <Text style={styles.assignedBadgeText}>{item.assigned_to_name}</Text>
+              </View>
+            )}
+            {!item.assigned_to && user?.role && (
+              <View style={styles.unassignedBadge}>
+                <Ionicons name="help-circle-outline" size={10} color="#25D366" />
+                <Text style={styles.unassignedBadgeText}>Available</Text>
+              </View>
+            )}
+            <RotatingBadge tags={item.tags} purchaseCount={item.purchase_count} />
+          </View>
         </View>
       </View>
     </TouchableOpacity>
@@ -1532,6 +1554,41 @@ export default function CustomersScreen() {
               ))}
             </ScrollView>
           </View>
+
+          {/* Assignment Filter Pills */}
+          {user?.role && (
+            <View style={{ height: 38, marginBottom: 8 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
+                <TouchableOpacity
+                  style={[styles.assignmentChip, assignmentFilter === 'all' && styles.assignmentChipActive]}
+                  onPress={() => setAssignmentFilter('all')}
+                >
+                  <Ionicons name="people" size={14} color={assignmentFilter === 'all' ? '#FFF' : '#8899AA'} />
+                  <Text style={[styles.assignmentChipText, assignmentFilter === 'all' && styles.assignmentChipTextActive]}>
+                    All
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.assignmentChip, assignmentFilter === 'assigned_to_me' && styles.assignmentChipActive]}
+                  onPress={() => setAssignmentFilter('assigned_to_me')}
+                >
+                  <Ionicons name="person" size={14} color={assignmentFilter === 'assigned_to_me' ? '#FFF' : '#8899AA'} />
+                  <Text style={[styles.assignmentChipText, assignmentFilter === 'assigned_to_me' && styles.assignmentChipTextActive]}>
+                    My Conversations
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.assignmentChip, assignmentFilter === 'unassigned' && styles.assignmentChipActive]}
+                  onPress={() => setAssignmentFilter('unassigned')}
+                >
+                  <Ionicons name="help-circle-outline" size={14} color={assignmentFilter === 'unassigned' ? '#FFF' : '#8899AA'} />
+                  <Text style={[styles.assignmentChipText, assignmentFilter === 'unassigned' && styles.assignmentChipTextActive]}>
+                    Unassigned
+                  </Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          )}
 
           <View style={styles.searchContainer}>
             <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
@@ -3162,6 +3219,27 @@ const styles = StyleSheet.create({
   stageChipTextActive: {
     color: '#FFFFFF',
   },
+  // Assignment Filter Chips
+  assignmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+  },
+  assignmentChipActive: {
+    backgroundColor: '#4A90D9',
+  },
+  assignmentChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8899AA',
+  },
+  assignmentChipTextActive: {
+    color: '#FFFFFF',
+  },
   // Unread Badge
   unreadBadge: {
     position: 'absolute',
@@ -3181,5 +3259,34 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  // Assignment Badges
+  assignedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#4A90D920',
+    borderRadius: 10,
+  },
+  assignedBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#4A90D9',
+  },
+  unassignedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#25D36620',
+    borderRadius: 10,
+  },
+  unassignedBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#25D366',
   },
 });
