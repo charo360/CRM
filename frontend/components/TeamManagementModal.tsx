@@ -81,13 +81,26 @@ export default function TeamManagementModal({
         }
 
         setSaving(true);
+        const wasFirstMember = members.length === 0;
+        
         try {
             await teamAPI.inviteMember({
                 name: inviteName.trim(),
                 email: inviteEmail.trim().toLowerCase(),
                 role: inviteRole,
             });
-            Alert.alert('Success', 'Team member invited successfully');
+            
+            // Show special message for first team member
+            if (wasFirstMember) {
+                Alert.alert(
+                    '🎉 Team Features Unlocked!',
+                    'You can now assign conversations, track activity, and collaborate with your team. Your app just got more powerful!',
+                    [{ text: 'Awesome!', style: 'default' }]
+                );
+            } else {
+                Alert.alert('Success', 'Team member invited successfully');
+            }
+            
             setInviteMode(false);
             setInviteName('');
             setInviteEmail('');

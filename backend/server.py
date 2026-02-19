@@ -1057,13 +1057,22 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
 @api_router.get("/auth/me")
 async def get_me(user = Depends(get_current_user)):
     """Get current user info"""
+    business_id = user.get("business_id", user["_id"])
+    
+    # Count active team members for adaptive UI
+    team_members_count = await db.team_members.count_documents({
+        "business_id": business_id,
+        "status": "active"
+    })
+    
     return serialize_doc({
         "id": user["_id"],
         "phone_number": user["phone_number"],
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
         "role": user.get("role", TeamMemberRole.OWNER),
-        "business_id": user.get("business_id", user["_id"]),
+        "business_id": business_id,
+        "team_members_count": team_members_count,
         "subscription_plan": user.get("subscription_plan"),
         "subscription_active": user.get("subscription_active", False),
         "country_code": user.get("country_code"),

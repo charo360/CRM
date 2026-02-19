@@ -11,6 +11,7 @@ interface User {
   subscription_plan?: string;
   role?: string;
   business_id?: string;
+  team_members_count?: number;
 }
 
 interface WhatsAppStartResult {

@@ -953,17 +953,22 @@ export default function CustomersScreen() {
             {item.last_message || item.notes || item.phone_number}
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            {item.assigned_to_name && (
-              <View style={styles.assignedBadge}>
-                <Ionicons name="person" size={10} color="#4A90D9" />
-                <Text style={styles.assignedBadgeText}>{item.assigned_to_name}</Text>
-              </View>
-            )}
-            {!item.assigned_to && user?.role && (
-              <View style={styles.unassignedBadge}>
-                <Ionicons name="help-circle-outline" size={10} color="#25D366" />
-                <Text style={styles.unassignedBadgeText}>Available</Text>
-              </View>
+            {/* Only show assignment badges for teams (2+ members) */}
+            {user?.team_members_count && user.team_members_count > 1 && (
+              <>
+                {item.assigned_to_name && (
+                  <View style={styles.assignedBadge}>
+                    <Ionicons name="person" size={10} color="#4A90D9" />
+                    <Text style={styles.assignedBadgeText}>{item.assigned_to_name}</Text>
+                  </View>
+                )}
+                {!item.assigned_to && (
+                  <View style={styles.unassignedBadge}>
+                    <Ionicons name="help-circle-outline" size={10} color="#25D366" />
+                    <Text style={styles.unassignedBadgeText}>Available</Text>
+                  </View>
+                )}
+              </>
             )}
             <RotatingBadge tags={item.tags} purchaseCount={item.purchase_count} />
           </View>
@@ -1555,8 +1560,8 @@ export default function CustomersScreen() {
             </ScrollView>
           </View>
 
-          {/* Assignment Filter Pills */}
-          {user?.role && (
+          {/* Assignment Filter Pills - Only show for teams (2+ members) */}
+          {user?.team_members_count && user.team_members_count > 1 && (
             <View style={{ height: 38, marginBottom: 8 }}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
                 <TouchableOpacity

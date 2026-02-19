@@ -671,8 +671,21 @@ export default function AccountScreen() {
               style={styles.settingItem}
               onPress={() => setShowTeamModal(true)}
             >
-              <Ionicons name="people-outline" size={24} color="#4A90D9" />
-              <Text style={styles.settingText}>Team Management</Text>
+              <Ionicons 
+                name={user?.team_members_count && user.team_members_count > 1 ? "people" : "person-add-outline"} 
+                size={24} 
+                color={user?.team_members_count && user.team_members_count > 1 ? "#4A90D9" : "#25D366"} 
+              />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.settingText}>
+                  {user?.team_members_count && user.team_members_count > 1 ? "Team Management" : "Add Team Members"}
+                </Text>
+                {user?.team_members_count && user.team_members_count > 1 && (
+                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
+                    {user.team_members_count} {user.team_members_count === 1 ? 'member' : 'members'}
+                  </Text>
+                )}
+              </View>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
             <TouchableOpacity
