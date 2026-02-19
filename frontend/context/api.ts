@@ -509,7 +509,7 @@ export const teamAPI = {
   /**
    * Invite a new team member
    */
-  inviteMember: async (data: { email: string; name: string; role: string }) => {
+  inviteMember: async (data: { phone_number: string; name: string; role: string; email?: string }) => {
     const response = await apiClient.post('/team/invite', data);
     return response.data;
   },

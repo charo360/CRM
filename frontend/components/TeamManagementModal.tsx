@@ -43,7 +43,7 @@ export default function TeamManagementModal({
     const [loading, setLoading] = useState(false);
     const [inviteMode, setInviteMode] = useState(false);
     const [inviteName, setInviteName] = useState('');
-    const [inviteEmail, setInviteEmail] = useState('');
+    const [invitePhone, setInvitePhone] = useState('');
     const [inviteRole, setInviteRole] = useState('employee');
     const [saving, setSaving] = useState(false);
 
@@ -70,13 +70,13 @@ export default function TeamManagementModal({
     };
 
     const handleInvite = async () => {
-        if (!inviteName.trim() || !inviteEmail.trim()) {
-            Alert.alert('Error', 'Please enter name and email');
+        if (!inviteName.trim() || !invitePhone.trim()) {
+            Alert.alert('Error', 'Please enter name and phone number');
             return;
         }
 
-        if (!inviteEmail.includes('@')) {
-            Alert.alert('Error', 'Please enter a valid email address');
+        if (invitePhone.trim().length < 8) {
+            Alert.alert('Error', 'Please enter a valid phone number with country code (e.g. +254712345678)');
             return;
         }
 
@@ -86,7 +86,7 @@ export default function TeamManagementModal({
         try {
             await teamAPI.inviteMember({
                 name: inviteName.trim(),
-                email: inviteEmail.trim().toLowerCase(),
+                phone_number: invitePhone.trim(),
                 role: inviteRole,
             });
             
@@ -98,12 +98,16 @@ export default function TeamManagementModal({
                     [{ text: 'Awesome!', style: 'default' }]
                 );
             } else {
-                Alert.alert('Success', 'Team member invited successfully');
+                Alert.alert(
+                    'Team Member Added!',
+                    `${inviteName.trim()} has been added. They can now log in to the CRM app using their phone number (${invitePhone.trim()}) — no extra steps needed!`,
+                    [{ text: 'Got it', style: 'default' }]
+                );
             }
             
             setInviteMode(false);
             setInviteName('');
-            setInviteEmail('');
+            setInvitePhone('');
             setInviteRole('employee');
             fetchMembers();
         } catch (error: any) {
@@ -214,16 +218,19 @@ export default function TeamManagementModal({
                             </View>
 
                             <View style={styles.formGroup}>
-                                <Text style={styles.label}>Email *</Text>
+                                <Text style={styles.label}>Phone Number *</Text>
                                 <TextInput
                                     style={styles.input}
-                                    value={inviteEmail}
-                                    onChangeText={setInviteEmail}
-                                    placeholder="john@example.com"
+                                    value={invitePhone}
+                                    onChangeText={setInvitePhone}
+                                    placeholder="+254712345678"
                                     placeholderTextColor="#556"
-                                    keyboardType="email-address"
+                                    keyboardType="phone-pad"
                                     autoCapitalize="none"
                                 />
+                                <Text style={{ fontSize: 12, color: '#8899AA', marginTop: 4 }}>
+                                    They'll log in with this number — no password needed
+                                </Text>
                             </View>
 
                             <View style={styles.formGroup}>
@@ -274,7 +281,7 @@ export default function TeamManagementModal({
                                     onPress={() => {
                                         setInviteMode(false);
                                         setInviteName('');
-                                        setInviteEmail('');
+                                        setInvitePhone('');
                                         setInviteRole('employee');
                                     }}
                                 >
@@ -288,7 +295,7 @@ export default function TeamManagementModal({
                                     {saving ? (
                                         <ActivityIndicator color="#FFF" size="small" />
                                     ) : (
-                                        <Text style={styles.buttonPrimaryText}>Send Invite</Text>
+                                        <Text style={styles.buttonPrimaryText}>Add Member</Text>
                                     )}
                                 </TouchableOpacity>
                             </View>
@@ -315,7 +322,14 @@ export default function TeamManagementModal({
                                         <View style={styles.memberHeader}>
                                             <View style={styles.memberInfo}>
                                                 <Text style={styles.memberName}>{member.name}</Text>
-                                                <Text style={styles.memberEmail}>{member.email}</Text>
+                                                <Text style={styles.memberEmail}>
+                                                    {member.phone_number || member.email || '—'}
+                                                </Text>
+                                                {member.status === 'invited' && (
+                                                    <Text style={{ fontSize: 11, color: '#FF9800', marginTop: 2 }}>
+                                                        Pending first login
+                                                    </Text>
+                                                )}
                                             </View>
                                             <View style={styles.memberBadges}>
                                                 <View style={[styles.badge, { backgroundColor: getRoleColor(member.role) + '20' }]}>

@@ -375,14 +375,15 @@ class TeamMemberRole:
     EMPLOYEE = "employee"
 
 class TeamMemberInvite(BaseModel):
-    email: str
+    phone_number: str  # Primary identifier — employee logs in with this
     name: str
     role: str = "employee"  # owner, manager, employee
+    email: Optional[str] = None  # Optional, for reference only
 
 class TeamMemberResponse(BaseModel):
     id: str
     name: str
-    email: str
+    email: Optional[str] = None
     phone_number: Optional[str] = None
     role: str
     business_id: str
@@ -842,6 +843,73 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     if not phone or len(phone) < 8:
         raise HTTPException(status_code=400, detail="Valid phone number is required")
 
+    # ── TEAM MEMBER FAST LOGIN ──────────────────────────────────────────────
+    # If this phone number was pre-added as a team member, log them in directly.
+    # No WhatsApp pairing needed — they use the business owner's WhatsApp instance.
+    team_member = await db.team_members.find_one({
+        "phone_number": phone,
+        "status": {"$in": ["invited", "active"]}
+    })
+    if team_member:
+        business_id = team_member["business_id"]
+        # Find or create a user account for this employee
+        emp_user = await db.users.find_one({"phone_number": phone})
+        if not emp_user:
+            emp_user_id = str(uuid.uuid4())
+            emp_user = {
+                "_id": emp_user_id,
+                "phone_number": phone,
+                "business_name": "",
+                "owner_name": team_member["name"],
+                "role": team_member["role"],
+                "business_id": business_id,
+                "subscription_active": True,  # Inherits from business
+                "setup_complete": True,
+                "created_at": datetime.utcnow(),
+            }
+            await db.users.insert_one(emp_user)
+        else:
+            emp_user_id = emp_user["_id"]
+            # Ensure role and business_id are set
+            await db.users.update_one(
+                {"_id": emp_user_id},
+                {"$set": {
+                    "role": team_member["role"],
+                    "business_id": business_id,
+                    "setup_complete": True,
+                }}
+            )
+
+        # Activate team member and link user_id
+        await db.team_members.update_one(
+            {"_id": team_member["_id"]},
+            {"$set": {
+                "status": "active",
+                "user_id": emp_user_id,
+                "last_active": datetime.utcnow(),
+            }}
+        )
+
+        token = create_token(emp_user_id, phone)
+        logging.info(f"Team member {phone} logged in directly (no pairing needed)")
+        return {
+            "status": "success",
+            "connected": True,
+            "token": token,
+            "is_new_user": False,
+            "is_team_member": True,
+            "user": {
+                "id": emp_user_id,
+                "phone_number": phone,
+                "business_name": "",
+                "owner_name": team_member["name"],
+                "role": team_member["role"],
+                "business_id": business_id,
+            },
+            "message": "Logged in as team member.",
+        }
+    # ── END TEAM MEMBER FAST LOGIN ───────────────────────────────────────────
+
     # Check if user already exists
     user = await db.users.find_one({"phone_number": phone})
     is_new_user = user is None
@@ -1096,24 +1164,29 @@ async def invite_team_member(invite: TeamMemberInvite, user = Depends(get_curren
         raise HTTPException(status_code=403, detail="Only owners and managers can invite team members")
     
     business_id = user.get("business_id", user["_id"])
-    
-    # Check if email already invited
-    existing = await db.team_members.find_one({"business_id": business_id, "email": invite.email})
+
+    # Normalize phone number
+    phone = invite.phone_number.strip()
+    if not phone or len(phone) < 8:
+        raise HTTPException(status_code=400, detail="Valid phone number is required")
+
+    # Check if phone already added to this business
+    existing = await db.team_members.find_one({"business_id": business_id, "phone_number": phone})
     if existing:
-        raise HTTPException(status_code=400, detail="This email is already invited to your team")
-    
+        raise HTTPException(status_code=400, detail="This phone number is already on your team")
+
     # Validate role
     if invite.role not in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
         raise HTTPException(status_code=400, detail="Can only invite employees or managers")
-    
-    # Create team member
+
+    # Create team member — status is "invited" until they log in for the first time
     member_id = str(uuid.uuid4())
     team_member = {
         "_id": member_id,
-        "user_id": None,  # Will be set when they accept invite
+        "user_id": None,  # Linked automatically when they log in with this phone
         "name": invite.name,
-        "email": invite.email,
-        "phone_number": None,
+        "email": invite.email,  # Optional reference
+        "phone_number": phone,
         "role": invite.role,
         "business_id": business_id,
         "status": "invited",
@@ -1122,9 +1195,24 @@ async def invite_team_member(invite: TeamMemberInvite, user = Depends(get_curren
         "last_active": None
     }
     await db.team_members.insert_one(team_member)
-    
-    # TODO: Send email invitation
-    
+
+    # Notify the employee via WhatsApp on the business instance
+    try:
+        business_owner = await db.users.find_one({"_id": business_id})
+        business_name = business_owner.get("business_name", "Your employer") if business_owner else "Your employer"
+        ws = get_whatsapp_service(db)
+        await ws.send_message(
+            user_id=business_id,
+            to_number=phone,
+            message=(
+                f"👋 Hi {invite.name}! You've been added to *{business_name}*'s team as {invite.role}.\n\n"
+                f"Download the CRM app and enter your phone number (*{phone}*) to log in — no extra steps needed!"
+            ),
+            send_context="auto_reply"
+        )
+    except Exception as e:
+        logging.warning(f"Could not send WhatsApp invite notification: {e}")
+
     return TeamMemberResponse(**{**team_member, "id": member_id})
 
 @api_router.get("/team/members")
