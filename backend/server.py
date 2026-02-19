@@ -1840,7 +1840,8 @@ async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse)
 async def get_customer(customer_id: str, user = Depends(get_current_user)):
     """Get a specific customer"""
-    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
@@ -1862,7 +1863,8 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
 @api_router.put("/customers/{customer_id}", response_model=CustomerResponse)
 async def update_customer(customer_id: str, update: CustomerUpdate, user = Depends(get_current_user)):
     """Update a customer"""
-    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
@@ -1906,7 +1908,8 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, user = Depends(get_current_user)):
     """Delete a customer"""
-    result = await db.customers.delete_one({"_id": customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.delete_one({"_id": customer_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Customer not found")
     return {"status": "success", "message": "Customer deleted"}
@@ -1916,15 +1919,16 @@ async def delete_customer(customer_id: str, user = Depends(get_current_user)):
 @api_router.post("/followups", response_model=FollowUpResponse)
 async def create_followup(followup: FollowUpCreate, user = Depends(get_current_user)):
     """Create a follow-up reminder"""
+    business_id = user.get("business_id", user["_id"])
     # Verify customer exists
-    customer = await db.customers.find_one({"_id": followup.customer_id, "user_id": user["_id"]})
+    customer = await db.customers.find_one({"_id": followup.customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
     followup_id = str(uuid.uuid4())
     followup_doc = {
         "_id": followup_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "customer_id": followup.customer_id,
         "reminder_date": followup.reminder_date,
         "message": followup.message,
@@ -4776,12 +4780,13 @@ async def generate_notes_from_messages(customer: dict, messages: list) -> str:
 @api_router.get("/customers/{customer_id}/ai-analysis")
 async def get_customer_ai_analysis(customer_id: str, user = Depends(get_current_user)):
     """Get AI-powered analysis for a customer"""
-    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
     # Get customer's messages
-    messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", 1).to_list(50)
+    messages = await db.messages.find({"customer_id": customer_id, "user_id": business_id}).sort("created_at", 1).to_list(50)
     
     analysis = await analyze_customer_with_ai(customer, messages, user)
     
@@ -4793,11 +4798,12 @@ async def get_customer_ai_analysis(customer_id: str, user = Depends(get_current_
 @api_router.post("/customers/{customer_id}/generate-notes")
 async def generate_customer_notes(customer_id: str, user = Depends(get_current_user)):
     """Generate AI notes from customer conversations"""
-    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", 1).to_list(50)
+    messages = await db.messages.find({"customer_id": customer_id, "user_id": business_id}).sort("created_at", 1).to_list(50)
     
     notes = await generate_notes_from_messages(customer, messages)
     
@@ -4835,11 +4841,12 @@ async def draft_message(customer_id: str, custom_instructions: Optional[str] = N
 @api_router.get("/customers/{customer_id}/messages")
 async def get_customer_messages(customer_id: str, limit: int = 50, user = Depends(get_current_user)):
     """Get messages for a customer"""
-    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    messages = await db.messages.find({"customer_id": customer_id, "user_id": user["_id"]}).sort("created_at", -1).to_list(limit)
+    messages = await db.messages.find({"customer_id": customer_id, "user_id": business_id}).sort("created_at", -1).to_list(limit)
     
     return serialize_doc([
         {
@@ -4858,7 +4865,8 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
 @api_router.post("/customers/{customer_id}/messages")
 async def add_customer_message(customer_id: str, message: MessageCreate, user = Depends(get_current_user)):
     """Manually add a message to customer history"""
-    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
@@ -4866,7 +4874,7 @@ async def add_customer_message(customer_id: str, message: MessageCreate, user = 
     message_doc = {
         "_id": message_id,
         "customer_id": customer_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "direction": message.direction,
         "content": message.content,
         "message_type": message.message_type,
@@ -5091,8 +5099,9 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
     if not user_settings.get('auto_reply_enabled', False):
         raise HTTPException(status_code=403, detail="Auto-reply is not enabled")
     
+    business_id = user.get("business_id", user["_id"])
     # Get customer
-    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
@@ -5101,7 +5110,7 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
     message_doc = {
         "_id": message_id,
         "customer_id": request.customer_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "direction": "outgoing",
         "content": request.message,
         "message_type": "text",
@@ -5129,7 +5138,7 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
         from whatsapp_service import get_whatsapp_service
         whatsapp_service = get_whatsapp_service(db)
         await whatsapp_service.send_message(
-            user_id=user["_id"],
+            user_id=business_id,
             to_number=phone,
             message=request.message,
             customer_name=customer.get("name"),
@@ -5831,11 +5840,12 @@ async def send_product_to_customer(
 ):
     """Send a single product with image to customer via WhatsApp"""
     
-    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    product = await db.products.find_one({"_id": product_id, "user_id": business_id})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    customer = await db.customers.find_one({"_id": customer_id, "user_id": user["_id"]})
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
@@ -5928,13 +5938,14 @@ async def send_catalog_to_customer(
 ):
     """Send multiple products as a catalog message to customer via WhatsApp"""
     
-    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": request.customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
     products = []
     for pid in request.product_ids[:10]:  # Max 10 products per catalog
-        p = await db.products.find_one({"_id": pid, "user_id": user["_id"]})
+        p = await db.products.find_one({"_id": pid, "user_id": business_id})
         if p:
             products.append(p)
     
