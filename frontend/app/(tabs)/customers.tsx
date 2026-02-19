@@ -954,7 +954,7 @@ export default function CustomersScreen() {
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             {/* Only show assignment badges for teams (2+ members) */}
-            {user?.team_members_count && user.team_members_count > 1 && (
+            {(user?.team_members_count ?? 0) > 1 ? (
               <>
                 {item.assigned_to_name && (
                   <View style={styles.assignedBadge}>
@@ -969,7 +969,7 @@ export default function CustomersScreen() {
                   </View>
                 )}
               </>
-            )}
+            ) : null}
             <RotatingBadge tags={item.tags} purchaseCount={item.purchase_count} />
           </View>
         </View>
@@ -1561,7 +1561,7 @@ export default function CustomersScreen() {
           </View>
 
           {/* Assignment Filter Pills - Only show for teams (2+ members) */}
-          {user?.team_members_count && user.team_members_count > 1 && (
+          {(user?.team_members_count ?? 0) > 1 ? (
             <View style={{ height: 38, marginBottom: 8 }}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
                 <TouchableOpacity
@@ -1593,7 +1593,7 @@ export default function CustomersScreen() {
                 </TouchableOpacity>
               </ScrollView>
             </View>
-          )}
+          ) : null}
 
           <View style={styles.searchContainer}>
             <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
