@@ -18,7 +18,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI } from '../../context/api';
+import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, dashboardAPI, messageHelpers } from '../../context/api';
 import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
@@ -29,14 +29,41 @@ interface Customer {
   phone_number: string;
   notes: string | null;
   tags: string[];
+  stage: string;
   purchase_count: number;
   total_spent: number;
   last_message: string | null;
   last_contacted: string | null;
   profile_picture: string | null;
   auto_reply: boolean;
+  unread_count: number;
   created_at: string;
 }
+
+interface DashboardSummary {
+  unread_messages: number;
+  followups_today: number;
+  sales_today: number;
+  sales_count_today: number;
+  total_customers: number;
+}
+
+const STAGES = ['all', 'lead', 'contacted', 'negotiating', 'won', 'lost'] as const;
+const STAGE_COLORS: Record<string, string> = {
+  lead: '#8696A0',
+  contacted: '#4A90D9',
+  negotiating: '#FF9800',
+  won: '#25D366',
+  lost: '#FF4444',
+};
+const STAGE_LABELS: Record<string, string> = {
+  all: 'All',
+  lead: 'Lead',
+  contacted: 'Contacted',
+  negotiating: 'Negotiating',
+  won: 'Won',
+  lost: 'Lost',
+};
 
 interface PhoneContact {
   id: string;
@@ -155,6 +182,8 @@ export default function CustomersScreen() {
   const [currency, setCurrency] = useState('USD');
   const [aiModel, setAiModel] = useState('standard');
   const [showModelSelector, setShowModelSelector] = useState(false);
+  const [selectedStage, setSelectedStage] = useState<string>('all');
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
@@ -168,8 +197,16 @@ export default function CustomersScreen() {
     } catch (e) { }
   };
 
+  const fetchDashboard = async () => {
+    try {
+      const data = await dashboardAPI.getSummary();
+      setDashboardSummary(data);
+    } catch (e) { }
+  };
+
   useEffect(() => {
     loadSettings();
+    fetchDashboard();
   }, []);
 
   const getModelShortName = (modelId: string) => {
@@ -277,6 +314,7 @@ export default function CustomersScreen() {
     setRefreshing(true);
     fetchCustomers();
     fetchPendingClassifications();
+    fetchDashboard();
     if (viewMode === 'suppliers') {
       fetchSupplierData();
     }
@@ -631,6 +669,9 @@ export default function CustomersScreen() {
   };
 
   const filteredCustomers = customers.filter(c => {
+    // Stage filter
+    if (selectedStage !== 'all' && (c.stage || 'lead') !== selectedStage) return false;
+
     const queryLower = searchQuery.toLowerCase();
     if (queryLower.includes('top') || queryLower.includes('best') ||
       queryLower.includes('highest') || queryLower.includes('vip') ||
@@ -886,7 +927,14 @@ export default function CustomersScreen() {
       onLongPress={() => openEditModal(item)}
       delayLongPress={400}
     >
-      <CustomerAvatar customer={item} />
+      <View>
+        <CustomerAvatar customer={item} />
+        {item.unread_count > 0 && (
+          <View style={styles.unreadBadge}>
+            <Text style={styles.unreadBadgeText}>{item.unread_count > 9 ? '9+' : item.unread_count}</Text>
+          </View>
+        )}
+      </View>
       <View style={styles.chatRowContent}>
         <View style={styles.chatRowTop}>
           <Text style={styles.chatRowName} numberOfLines={1}>{item.name}</Text>
@@ -1164,23 +1212,23 @@ export default function CustomersScreen() {
         </View>
       )}
 
-      {/* Scan button when no pending classifications */}
-      {pendingClassifications.length === 0 && (
-        <TouchableOpacity style={styles.scanButton} onPress={scanAllContacts} disabled={scanningContacts}>
-          {scanningContacts ? (
-            <ActivityIndicator size="small" color="#FFD700" />
-          ) : (
-            <>
-              <Ionicons name="sparkles" size={14} color="#FFD700" />
-              <Text style={styles.scanButtonText}>Scan Chats to Classify Contacts</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      )}
-
       {/* ===== SUPPLIER MODE ===== */}
       {viewMode === 'suppliers' ? (
         <>
+          {/* Scan button when no pending classifications */}
+          {pendingClassifications.length === 0 && (
+            <TouchableOpacity style={styles.scanButton} onPress={scanAllContacts} disabled={scanningContacts}>
+              {scanningContacts ? (
+                <ActivityIndicator size="small" color="#FFD700" />
+              ) : (
+                <>
+                  <Ionicons name="sparkles" size={14} color="#FFD700" />
+                  <Text style={styles.scanButtonText}>Scan Chats to Classify Contacts</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
           {/* Supplier Stats Bar */}
           <View style={styles.supplierStatsBar}>
             <View style={styles.supplierStatItem}>
@@ -1429,6 +1477,62 @@ export default function CustomersScreen() {
       ) : (
         <>
           {/* ===== CUSTOMER MODE ===== */}
+          {/* Dashboard Summary Card */}
+          {dashboardSummary && (
+            <View style={styles.dashboardCard}>
+              <TouchableOpacity style={styles.dashboardItem} onPress={() => {}}>
+                <View style={[styles.dashboardIcon, { backgroundColor: '#25D36620' }]}>
+                  <Ionicons name="chatbubble-ellipses" size={14} color="#25D366" />
+                </View>
+                <View style={styles.dashboardInfo}>
+                  <Text style={styles.dashboardValue} numberOfLines={1}>{dashboardSummary.unread_messages}</Text>
+                  <Text style={styles.dashboardLabel}>Unread</Text>
+                </View>
+              </TouchableOpacity>
+              <View style={styles.dashboardDivider} />
+              <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/followups')}>
+                <View style={[styles.dashboardIcon, { backgroundColor: '#FF980020' }]}>
+                  <Ionicons name="alarm" size={14} color="#FF9800" />
+                </View>
+                <View style={styles.dashboardInfo}>
+                  <Text style={styles.dashboardValue} numberOfLines={1}>{dashboardSummary.followups_today}</Text>
+                  <Text style={styles.dashboardLabel}>Follow-ups</Text>
+                </View>
+              </TouchableOpacity>
+              <View style={styles.dashboardDivider} />
+              <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/sales')}>
+                <View style={[styles.dashboardIcon, { backgroundColor: '#4A90D920' }]}>
+                  <Ionicons name="cash" size={14} color="#4A90D9" />
+                </View>
+                <View style={styles.dashboardInfo}>
+                  <Text style={styles.dashboardValue} numberOfLines={1} adjustsFontSizeToFit>{currency} {dashboardSummary.sales_today.toLocaleString()}</Text>
+                  <Text style={styles.dashboardLabel}>Sales</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Pipeline Stage Pills */}
+          <View style={{ height: 38, marginBottom: 8 }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
+              {STAGES.map((stage) => (
+                <TouchableOpacity
+                  key={stage}
+                  style={[
+                    styles.stageChip,
+                    selectedStage === stage && styles.stageChipActive,
+                    selectedStage === stage && stage !== 'all' && { backgroundColor: STAGE_COLORS[stage] }
+                  ]}
+                  onPress={() => setSelectedStage(stage)}
+                >
+                  <Text style={[styles.stageChipText, selectedStage === stage && styles.stageChipTextActive]}>
+                    {STAGE_LABELS[stage]}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+
           <View style={styles.searchContainer}>
             <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
             <TextInput
@@ -2995,5 +3099,87 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#FFD700',
+  },
+  // Dashboard Summary Card
+  dashboardCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginTop: 6,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    padding: 8,
+  },
+  dashboardItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dashboardIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dashboardInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  dashboardValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  dashboardLabel: {
+    fontSize: 10,
+    color: '#8B9DC3',
+    marginTop: 1,
+  },
+  dashboardDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    marginHorizontal: 6,
+  },
+  // Pipeline Stage Chips
+  stageChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+  },
+  stageChipActive: {
+    backgroundColor: '#25D366',
+  },
+  stageChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8B9DC3',
+  },
+  stageChipTextActive: {
+    color: '#FFFFFF',
+  },
+  // Unread Badge
+  unreadBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: '#25D366',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 5,
+    borderWidth: 2,
+    borderColor: '#0A1628',
+  },
+  unreadBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });

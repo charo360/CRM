@@ -382,6 +382,7 @@ class CustomerUpdate(BaseModel):
     tags: Optional[List[str]] = None
     auto_reply: Optional[bool] = None
     is_personal: Optional[bool] = None
+    stage: Optional[str] = None
 
 class CustomerResponse(BaseModel):
     id: str
@@ -392,11 +393,13 @@ class CustomerResponse(BaseModel):
     tags: List[str] = []
     auto_reply: Optional[bool] = None
     is_personal: bool = False
+    stage: str = "lead"
     purchase_count: int = 0
     total_spent: float = 0.0
     last_message: Optional[str] = None
     last_contacted: Optional[datetime] = None
     profile_picture: Optional[str] = None
+    unread_count: int = 0
     created_at: datetime
 
 # Follow-up Models
@@ -1246,6 +1249,15 @@ async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None
     
     customers = await db.customers.find(query).sort(sort_field, sort_order).to_list(1000)
     
+    # Batch fetch unread counts for all customers
+    customer_ids = [c["_id"] for c in customers]
+    unread_pipeline = [
+        {"$match": {"customer_id": {"$in": customer_ids}, "user_id": user["_id"], "direction": "incoming", "read": {"$ne": True}}},
+        {"$group": {"_id": "$customer_id", "count": {"$sum": 1}}}
+    ]
+    unread_results = await db.messages.aggregate(unread_pipeline).to_list(1000)
+    unread_map = {r["_id"]: r["count"] for r in unread_results}
+
     return [
         CustomerResponse(
             id=c["_id"],
@@ -1254,11 +1266,13 @@ async def get_customers(tag: Optional[str] = None, sort_by: Optional[str] = None
             phone_number=c["phone_number"],
             notes=c.get("notes"),
             tags=c.get("tags", []),
+            stage=c.get("stage", "lead"),
             purchase_count=c.get("purchase_count", 0),
             total_spent=c.get("total_spent", 0.0),
             last_message=c.get("last_message"),
             last_contacted=c.get("last_contacted"),
             profile_picture=c.get("profile_picture"),
+            unread_count=unread_map.get(c["_id"], 0),
             created_at=c.get("created_at", datetime.utcnow())
         )
         for c in customers
@@ -1379,6 +1393,10 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["auto_reply"] = update.auto_reply
     if update.is_personal is not None:
         update_data["is_personal"] = update.is_personal
+    if update.stage is not None:
+        valid_stages = ["lead", "contacted", "negotiating", "won", "lost"]
+        if update.stage in valid_stages:
+            update_data["stage"] = update.stage
         
     if update_data:
         await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
@@ -1394,6 +1412,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         tags=updated.get("tags", []),
         auto_reply=updated.get("auto_reply", True),
         is_personal=updated.get("is_personal", False),
+        stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
         last_contacted=updated.get("last_contacted"),
         profile_picture=updated.get("profile_picture"),
@@ -2378,6 +2397,7 @@ class ProductResponse(BaseModel):
     id: str
     name: str
     price: float = 0.0
+    discount_price: Optional[float] = None
     category: str = "Other"
     image_url: Optional[str] = None
     images: List[str] = []
@@ -2400,6 +2420,7 @@ async def get_products(user = Depends(get_current_user)):
             id=p["_id"],
             name=p.get("name", "Unnamed Product"),
             price=p.get("price") or 0.0,
+            discount_price=p.get("discount_price"),
             category=p.get("category") or "Other",
             image_url=orig,
             images=imgs,
@@ -2412,6 +2433,7 @@ async def get_products(user = Depends(get_current_user)):
 class ProductCreate(BaseModel):
     name: str = "New Product"
     price: float = 0.0
+    discount_price: Optional[float] = None
     category: str = "Other"
     image_url: Optional[str] = None
     images: List[str] = []
@@ -2421,6 +2443,7 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     price: Optional[float] = None
+    discount_price: Optional[float] = None
     category: Optional[str] = None
     image_url: Optional[str] = None
     images: Optional[List[str]] = None
@@ -2446,6 +2469,10 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         raise HTTPException(status_code=400, detail="Product name is required")
     if product.price is not None and product.price < 0:
         raise HTTPException(status_code=400, detail="Price cannot be negative")
+    if product.discount_price is not None and product.discount_price < 0:
+        raise HTTPException(status_code=400, detail="Discount price cannot be negative")
+    if product.discount_price is not None and product.discount_price >= product.price:
+        raise HTTPException(status_code=400, detail="Discount price must be less than regular price")
 
     # Ensure images list is populated if image_url is provided
     images = product.images
@@ -2457,6 +2484,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "user_id": user["_id"],
         "name": clean_name,
         "price": product.price,
+        "discount_price": product.discount_price,
         "category": clean_category,
         "image_url": product.image_url,
         "images": images,
@@ -2471,6 +2499,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         id=product_doc["_id"],
         name=product_doc["name"],
         price=product_doc["price"],
+        discount_price=product_doc["discount_price"],
         category=product_doc["category"],
         image_url=product_doc["image_url"],
         images=product_doc["images"],
@@ -2487,6 +2516,19 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
     
     if not update_data:
         raise HTTPException(status_code=400, detail="No updates provided")
+    
+    # Validate discount price if provided
+    if "discount_price" in update_data and update_data["discount_price"] is not None:
+        if update_data["discount_price"] < 0:
+            raise HTTPException(status_code=400, detail="Discount price cannot be negative")
+        # Get current product to validate discount vs regular price
+        current = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+        if not current:
+            raise HTTPException(status_code=404, detail="Product not found")
+        # Use the new price if being updated, otherwise use current price
+        comparison_price = update_data.get("price", current.get("price", 0))
+        if update_data["discount_price"] >= comparison_price:
+            raise HTTPException(status_code=400, detail="Discount price must be less than regular price")
         
     # If updating images, ensure image_url is consistent (take first image)
     if "images" in update_data and update_data["images"]:
@@ -2512,6 +2554,7 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         id=result["_id"],
         name=result["name"],
         price=result.get("price") or 0.0,
+        discount_price=result.get("discount_price"),
         category=result.get("category") or "Other",
         image_url=orig,
         images=imgs,
@@ -3074,6 +3117,119 @@ async def whatsapp_disconnect(user = Depends(get_current_user)):
     whatsapp_service = get_whatsapp_service(db)
     result = await whatsapp_service.disconnect_instance(user["_id"])
     return result
+
+# ============ MARK MESSAGES AS READ ============
+
+@api_router.post("/customers/{customer_id}/messages/read")
+async def mark_messages_read(customer_id: str, user = Depends(get_current_user)):
+    """Mark all incoming messages for a customer as read"""
+    result = await db.messages.update_many(
+        {"customer_id": customer_id, "user_id": user["_id"], "direction": "incoming", "read": {"$ne": True}},
+        {"$set": {"read": True}}
+    )
+    return {"marked_read": result.modified_count}
+
+# ============ DASHBOARD SUMMARY ============
+
+@api_router.get("/dashboard/summary")
+async def get_dashboard_summary(user = Depends(get_current_user)):
+    """Get a quick dashboard summary: unread messages, today's follow-ups, today's sales"""
+    uid = user["_id"]
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
+
+    # Total unread messages
+    unread_count = await db.messages.count_documents({
+        "user_id": uid, "direction": "incoming", "read": {"$ne": True}
+    })
+
+    # Today's follow-ups
+    followups_today = await db.followups.count_documents({
+        "user_id": uid, "status": "pending",
+        "reminder_date": {"$gte": today_start, "$lt": today_end}
+    })
+
+    # Today's sales total
+    sales_pipeline = [
+        {"$match": {"user_id": uid, "created_at": {"$gte": today_start, "$lt": today_end}}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}, "count": {"$sum": 1}}}
+    ]
+    sales_result = await db.sales.aggregate(sales_pipeline).to_list(1)
+    sales_today = sales_result[0]["total"] if sales_result else 0
+    sales_count = sales_result[0]["count"] if sales_result else 0
+
+    # Total customers
+    total_customers = await db.customers.count_documents({"user_id": uid})
+
+    return {
+        "unread_messages": unread_count,
+        "followups_today": followups_today,
+        "sales_today": sales_today,
+        "sales_count_today": sales_count,
+        "total_customers": total_customers,
+    }
+
+# ============ MESSAGE SEARCH ============
+
+@api_router.get("/customers/{customer_id}/messages/search")
+async def search_messages(customer_id: str, q: str = "", user = Depends(get_current_user)):
+    """Search messages within a customer conversation"""
+    if not q.strip():
+        return []
+    messages = await db.messages.find({
+        "customer_id": customer_id,
+        "user_id": user["_id"],
+        "content": {"$regex": q, "$options": "i"}
+    }).sort("created_at", -1).limit(50).to_list(50)
+    return serialize_doc(messages)
+
+# ============ CUSTOMER ACTIVITY TIMELINE ============
+
+@api_router.get("/customers/{customer_id}/timeline")
+async def get_customer_timeline(customer_id: str, user = Depends(get_current_user)):
+    """Get a unified timeline of all activities for a customer"""
+    uid = user["_id"]
+
+    # Fetch messages (last 20)
+    messages = await db.messages.find({
+        "customer_id": customer_id, "user_id": uid
+    }).sort("created_at", -1).limit(20).to_list(20)
+
+    # Fetch sales
+    sales = await db.sales.find({
+        "customer_id": customer_id, "user_id": uid
+    }).sort("created_at", -1).limit(10).to_list(10)
+
+    # Fetch follow-ups
+    followups = await db.followups.find({
+        "customer_id": customer_id, "user_id": uid
+    }).sort("created_at", -1).limit(10).to_list(10)
+
+    timeline = []
+    for m in messages:
+        timeline.append({
+            "type": "message",
+            "direction": m.get("direction"),
+            "content": m.get("content", "")[:200],
+            "created_at": m.get("created_at"),
+        })
+    for s in sales:
+        timeline.append({
+            "type": "sale",
+            "content": f"{s.get('item', 'Sale')} - {s.get('amount', 0)}",
+            "created_at": s.get("created_at"),
+        })
+    for f in followups:
+        timeline.append({
+            "type": "followup",
+            "content": f.get("message", "Follow-up"),
+            "status": f.get("status", "pending"),
+            "created_at": f.get("reminder_date") or f.get("created_at"),
+        })
+
+    # Sort by date descending
+    timeline.sort(key=lambda x: x.get("created_at") or datetime.min, reverse=True)
+    return serialize_doc(timeline[:50])
 
 @api_router.post("/messages/send-media")
 async def send_whatsapp_media(

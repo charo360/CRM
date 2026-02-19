@@ -898,6 +898,92 @@ Format: Just return the message text, nothing else."""
             return f"Error drafting message: {str(e)}"
 
 
+    async def recommend_product_with_discount(
+        self,
+        customer_name: str,
+        products: List[Dict],
+        customer_message: str,
+        business_name: str = "Your Business",
+        user_id: str = None,
+        db = None,
+        customer_phone: str = None,
+        model_pref: str = 'standard'
+    ) -> Dict[str, any]:
+        """
+        Recommend products with smart discount negotiation
+        Only mentions discounts when customer asks about them or tries to negotiate
+        """
+        if not self.clients:
+            return {
+                "message": f"Hi {customer_name}, I have several options available. Which would you like to know more about?",
+                "mentions_discount": False,
+                "confidence": 0.5
+            }
+        
+        # Check if customer is asking about discounts or negotiating
+        discount_keywords = ['discount', 'cheaper', 'lower price', 'deal', 'offer', 'reduce', 'negotiate', 'better price', 'can you do', 'any discount']
+        is_asking_discount = any(keyword.lower() in customer_message.lower() for keyword in discount_keywords)
+        
+        # Format products with pricing info
+        product_list = ""
+        for i, product in enumerate(products[:5], 1):  # Limit to 5 products
+            price_text = f"${product['price']}"
+            if product.get('discount_price') and is_asking_discount:
+                savings = product['price'] - product['discount_price']
+                price_text = f"${product['discount_price']} (was ${product['price']}, save ${savings})"
+            elif product.get('discount_price'):
+                price_text = f"${product['price']}"
+            product_list += f"{i}. {product['name']} - {price_text}\n"
+        
+        # Build prompt
+        if is_asking_discount:
+            prompt = f"""You are a helpful sales assistant for {business_name}. The customer {customer_name} is asking about discounts or negotiating price.
+
+Available products:
+{product_list}
+
+Customer message: "{customer_message}"
+
+Guidelines:
+- You CAN offer discounts since the customer is asking
+- Focus on the best value (highest savings)
+- Be friendly but professional
+- Don't give unrealistic discounts
+- End with a clear call to action
+
+Respond with a natural message that mentions the discount and encourages purchase."""
+        else:
+            prompt = f"""You are a helpful sales assistant for {business_name}. The customer {customer_name} is interested in products.
+
+Available products:
+{product_list}
+
+Customer message: "{customer_message}"
+
+Guidelines:
+- DO NOT mention discounts unless asked
+- Focus on product features and benefits
+- Be helpful and professional
+- Ask which product they'd like more details about
+
+Respond with a natural message recommending products without mentioning discounts."""
+        
+        try:
+            response = await self._call_llm(prompt, model_pref)
+            return {
+                "message": response,
+                "mentions_discount": is_asking_discount,
+                "confidence": 0.8
+            }
+        except Exception as e:
+            logger.error(f"Product recommendation failed: {e}")
+            return {
+                "message": f"Hi {customer_name}, I have several options available. Which would you like to know more about?",
+                "mentions_discount": False,
+                "confidence": 0.5
+            }
+
+
     async def _update_conversation_memory(self, db, customer_id: str, customer_name: str, messages: List[Dict], last_reply: str, last_incoming: str, user_id: str = None):
         """Update conversation memory/summary for a customer after each auto-reply.
         Stores a running summary so the AI always knows what was discussed."""

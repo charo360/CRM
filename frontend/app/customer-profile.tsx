@@ -15,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { apiClient } from '../context/api';
+import { apiClient, messageHelpers } from '../context/api';
 
 const TAGS = ['New', 'VIP', 'Returning', 'Wholesale'];
 
@@ -44,6 +44,9 @@ export default function CustomerProfileScreen() {
   const [showTagInput, setShowTagInput] = useState(false);
   const [newTagText, setNewTagText] = useState('');
   const scrollRef = useRef<ScrollView>(null);
+  const [activeTab, setActiveTab] = useState<'info' | 'timeline'>('info');
+  const [timeline, setTimeline] = useState<any[]>([]);
+  const [loadingTimeline, setLoadingTimeline] = useState(false);
 
   useEffect(() => {
     fetchCustomer();
@@ -71,6 +74,25 @@ export default function CustomerProfileScreen() {
       setLoading(false);
     }
   };
+
+  const fetchTimeline = async () => {
+    if (!customerId) return;
+    setLoadingTimeline(true);
+    try {
+      const data = await messageHelpers.getTimeline(customerId);
+      setTimeline(data || []);
+    } catch (error) {
+      console.error('Error fetching timeline:', error);
+    } finally {
+      setLoadingTimeline(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'timeline' && timeline.length === 0) {
+      fetchTimeline();
+    }
+  }, [activeTab]);
 
   const toggleTag = (tag: string) => {
     setTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
@@ -178,7 +200,27 @@ export default function CustomerProfileScreen() {
           )}
         </View>
 
-        {/* Name */}
+        {/* Tab Switcher */}
+        <View style={styles.tabBar}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'info' && styles.tabActive]}
+            onPress={() => setActiveTab('info')}
+          >
+            <Ionicons name="information-circle" size={18} color={activeTab === 'info' ? '#00A884' : '#8696A0'} />
+            <Text style={[styles.tabText, activeTab === 'info' && styles.tabTextActive]}>Info</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'timeline' && styles.tabActive]}
+            onPress={() => setActiveTab('timeline')}
+          >
+            <Ionicons name="time" size={18} color={activeTab === 'timeline' ? '#00A884' : '#8696A0'} />
+            <Text style={[styles.tabText, activeTab === 'timeline' && styles.tabTextActive]}>Timeline</Text>
+          </TouchableOpacity>
+        </View>
+
+        {activeTab === 'info' ? (
+          <>
+            {/* Name */}
         <View style={styles.fieldGroup}>
           <Text style={styles.fieldLabel}>Name</Text>
           <TextInput
@@ -252,6 +294,48 @@ export default function CustomerProfileScreen() {
           <Ionicons name="trash-outline" size={20} color="#FF4444" />
           <Text style={styles.deleteText}>Delete Customer</Text>
         </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            {/* Timeline Tab */}
+            {loadingTimeline ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#00A884" />
+              </View>
+            ) : timeline.length > 0 ? (
+              <View style={{ paddingHorizontal: 20, paddingTop: 16 }}>
+                {timeline.map((item, index) => (
+                  <View key={index} style={styles.timelineItem}>
+                    <View style={[styles.timelineIcon, { backgroundColor: 
+                      item.type === 'message' ? '#4A90D9' : 
+                      item.type === 'sale' ? '#25D366' : '#FF9800' 
+                    }]}>
+                      <Ionicons 
+                        name={
+                          item.type === 'message' ? 'chatbubble' : 
+                          item.type === 'sale' ? 'cash' : 'alarm'
+                        } 
+                        size={14} 
+                        color="#FFFFFF" 
+                      />
+                    </View>
+                    <View style={styles.timelineContent}>
+                      <Text style={styles.timelineText}>{item.content}</Text>
+                      <Text style={styles.timelineDate}>
+                        {new Date(item.created_at).toLocaleDateString()} {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.loadingContainer}>
+                <Ionicons name="time-outline" size={48} color="#8696A0" />
+                <Text style={{ color: '#8696A0', fontSize: 16, marginTop: 12 }}>No activity yet</Text>
+              </View>
+            )}
+          </>
+        )}
       </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -433,5 +517,62 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FF4444',
+  },
+  // Tab Bar
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(134,150,160,0.15)',
+    marginBottom: 16,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: '#00A884',
+  },
+  tabText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#8696A0',
+  },
+  tabTextActive: {
+    color: '#00A884',
+    fontWeight: '600',
+  },
+  // Timeline
+  timelineItem: {
+    flexDirection: 'row',
+    marginBottom: 20,
+  },
+  timelineIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  timelineContent: {
+    flex: 1,
+    backgroundColor: '#1F2C34',
+    borderRadius: 10,
+    padding: 12,
+  },
+  timelineText: {
+    fontSize: 14,
+    color: '#E9EDEF',
+    marginBottom: 6,
+  },
+  timelineDate: {
+    fontSize: 11,
+    color: '#8696A0',
   },
 });

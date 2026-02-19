@@ -27,6 +27,7 @@ interface Product {
     id: string;
     name: string;
     price: number;
+    discount_price?: number;
     image_url: string;
     images: string[];
     category: string;
@@ -58,6 +59,7 @@ export default function ProductCatalogModal({
     // Edit form state
     const [editName, setEditName] = useState('');
     const [editPrice, setEditPrice] = useState('');
+    const [editDiscountPrice, setEditDiscountPrice] = useState('');
     const [editCategory, setEditCategory] = useState('');
     const [editDescription, setEditDescription] = useState('');
     const [editInStock, setEditInStock] = useState(true);
@@ -207,12 +209,17 @@ export default function ProductCatalogModal({
     };
 
     const startEdit = (product: Product) => {
+        console.log('Starting edit for product:', product);
         setEditName(product.name);
         setEditPrice(product.price.toString());
+        setEditDiscountPrice(product.discount_price?.toString() || '');
         setEditCategory(product.category || 'Other');
         setEditDescription(product.description || '');
-        setEditInStock(product.in_stock !== false);
+        setEditInStock(product.in_stock);
+        setSelectedProduct(product);
         setEditMode(true);
+        setDetailVisible(true);
+        console.log('Edit mode set to true, detailVisible set to true');
     };
 
     const startAddProduct = () => {
@@ -222,6 +229,7 @@ export default function ProductCatalogModal({
         }
         setEditName('');
         setEditPrice('');
+        setEditDiscountPrice('');
         setEditCategory('Other');
         setEditDescription('');
         setEditInStock(true);
@@ -240,25 +248,43 @@ export default function ProductCatalogModal({
             Alert.alert('Error', 'Please enter a valid price');
             return;
         }
+        const discountPriceValue = editDiscountPrice.trim() ? parseFloat(editDiscountPrice) : null;
+        if (discountPriceValue !== null && discountPriceValue < 0) {
+            Alert.alert('Error', 'Discount price cannot be negative');
+            return;
+        }
+        if (discountPriceValue !== null && discountPriceValue >= parseFloat(editPrice)) {
+            Alert.alert('Error', 'Discount price must be less than regular price');
+            return;
+        }
 
         setSaving(true);
         try {
+            const discountPrice = discountPriceValue;
             if (addMode) {
-                await productsAPI.createProduct({
+                const productData: any = {
                     name: editName.trim(),
                     price: parseFloat(editPrice),
                     category: editCategory.trim() || 'Other',
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
-                });
+                };
+                if (discountPrice !== null) {
+                    productData.discount_price = discountPrice;
+                }
+                await productsAPI.createProduct(productData);
             } else if (selectedProduct) {
-                await productsAPI.updateProduct(selectedProduct.id, {
+                const updateData: any = {
                     name: editName.trim(),
                     price: parseFloat(editPrice),
                     category: editCategory.trim() || 'Other',
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
-                });
+                };
+                if (discountPrice !== null) {
+                    updateData.discount_price = discountPrice;
+                }
+                await productsAPI.updateProduct(selectedProduct.id, updateData);
             }
             setEditMode(false);
             setAddMode(false);
@@ -371,7 +397,16 @@ export default function ProductCatalogModal({
 
                 <View style={styles.productInfo}>
                     <Text style={styles.productName} numberOfLines={2}>{product.name}</Text>
-                    <Text style={styles.productPrice}>{currency} {product.price.toLocaleString()}</Text>
+                    <View style={styles.priceContainer}>
+                        {product.discount_price ? (
+                            <>
+                                <Text style={styles.discountPrice}>{currency} {product.discount_price.toLocaleString()}</Text>
+                                <Text style={styles.originalPrice}>{currency} {product.price.toLocaleString()}</Text>
+                            </>
+                        ) : (
+                            <Text style={styles.productPrice}>{currency} {product.price.toLocaleString()}</Text>
+                        )}
+                    </View>
                     <View style={styles.productMeta}>
                         <View style={[styles.categoryBadge]}>
                             <Text style={styles.categoryBadgeText} numberOfLines={1}>{product.category || 'Other'}</Text>
@@ -424,6 +459,18 @@ export default function ProductCatalogModal({
                                     value={editPrice}
                                     onChangeText={setEditPrice}
                                     placeholder="0"
+                                    placeholderTextColor="#555"
+                                    keyboardType="numeric"
+                                />
+                            </View>
+
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Discount Price ({currency}) (Optional)</Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editDiscountPrice}
+                                    onChangeText={setEditDiscountPrice}
+                                    placeholder="Leave empty for no discount"
                                     placeholderTextColor="#555"
                                     keyboardType="numeric"
                                 />
@@ -945,6 +992,20 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         color: '#25D366',
         marginBottom: 8,
+    },
+    priceContainer: {
+        marginBottom: 8,
+    },
+    discountPrice: {
+        fontSize: 16,
+        fontWeight: '700',
+        color: '#25D366',
+    },
+    originalPrice: {
+        fontSize: 13,
+        color: '#8899AA',
+        textDecorationLine: 'line-through',
+        marginLeft: 8,
     },
     productMeta: {
         flexDirection: 'row',

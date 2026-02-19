@@ -386,6 +386,7 @@ export const productsAPI = {
   createProduct: async (product: {
     name: string;
     price: number;
+    discount_price?: number;
     category?: string;
     description?: string;
     in_stock?: boolean;
@@ -400,6 +401,7 @@ export const productsAPI = {
   updateProduct: async (productId: string, updates: {
     name?: string;
     price?: number;
+    discount_price?: number;
     category?: string;
     description?: string;
     in_stock?: boolean;
@@ -476,6 +478,30 @@ export const productsAPI = {
     });
     return response.data;
   }
+};
+
+// ============ DASHBOARD API ============
+export const dashboardAPI = {
+  getSummary: async () => {
+    const response = await apiClient.get('/dashboard/summary');
+    return response.data;
+  },
+};
+
+// ============ MESSAGE HELPERS ============
+export const messageHelpers = {
+  markRead: async (customerId: string) => {
+    const response = await apiClient.post(`/customers/${customerId}/messages/read`);
+    return response.data;
+  },
+  search: async (customerId: string, query: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/messages/search`, { params: { q: query } });
+    return response.data;
+  },
+  getTimeline: async (customerId: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/timeline`);
+    return response.data;
+  },
 };
 
 // ============ ACCOUNT MANAGEMENT ============

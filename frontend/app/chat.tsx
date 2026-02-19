@@ -18,7 +18,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { apiClient, whatsappAPI, messagesAPI, productsAPI } from '../context/api';
+import { apiClient, whatsappAPI, messagesAPI, productsAPI, messageHelpers } from '../context/api';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -67,6 +67,10 @@ export default function ChatScreen() {
   const [toastMessage, setToastMessage] = useState('');
   const [showToast, setShowToast] = useState(false);
   const [viewerImage, setViewerImage] = useState<string | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Message[]>([]);
+  const [searching, setSearching] = useState(false);
 
   useEffect(() => {
     if (showToast) {
@@ -139,6 +143,11 @@ export default function ChatScreen() {
     try {
       const data = await messagesAPI.getMessages(customerId);
       const newMessages = data || [];
+      
+      // Mark messages as read when opening chat (only on initial load, not polling)
+      if (!isPolling && newMessages.length > 0) {
+        messageHelpers.markRead(customerId).catch(e => console.error('Failed to mark read:', e));
+      }
       if (isPolling) {
         // Only update if message count changed or latest message is different
         setMessages(prev => {
@@ -340,6 +349,24 @@ export default function ChatScreen() {
     }
   };
 
+  const handleSearch = async (query: string) => {
+    setSearchQuery(query);
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    setSearching(true);
+    try {
+      const results = await messageHelpers.search(customerId, query);
+      setSearchResults(results || []);
+    } catch (error) {
+      console.error('Search error:', error);
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || sending) return;
@@ -393,9 +420,15 @@ export default function ChatScreen() {
     const isOutgoing = item.direction === 'outgoing';
     const isDocument = item.message_type === 'document';
     const hasImage = !isDocument && (item.message_type === 'image' || item.image_url);
-    const imageUri = item.image_url
-      ? (item.image_url.startsWith('http') || item.image_url.startsWith('file://') ? item.image_url : `${process.env.EXPO_PUBLIC_BACKEND_URL}${item.image_url}`)
+    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    let imageUri = item.image_url
+      ? (item.image_url.startsWith('http') || item.image_url.startsWith('file://') ? item.image_url : `${backendUrl}${item.image_url}`)
       : null;
+    // Fix Docker-internal URLs that the phone can't resolve
+    if (imageUri && imageUri.includes('host.docker.internal')) {
+      const backendHost = backendUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+      imageUri = imageUri.replace('host.docker.internal', backendHost);
+    }
 
     // Extract filename from URL for documents
     const docFileName = isDocument && imageUri
@@ -504,6 +537,11 @@ export default function ChatScreen() {
           </View>
         </TouchableOpacity>
 
+        {/* Search Icon */}
+        <TouchableOpacity onPress={() => setShowSearch(!showSearch)} style={styles.headerIcon}>
+          <Ionicons name="search" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+
         {/* Toggle Personal Mode */}
         <TouchableOpacity
           onPress={togglePersonal}
@@ -525,6 +563,54 @@ export default function ChatScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Search Bar */}
+      {showSearch && (
+        <View style={styles.searchBar}>
+          <Ionicons name="search" size={18} color="#8B9DC3" style={{ marginRight: 8 }} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search messages..."
+            placeholderTextColor="#8B9DC3"
+            value={searchQuery}
+            onChangeText={handleSearch}
+            autoFocus
+          />
+          {searching && <ActivityIndicator size="small" color="#25D366" />}
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => { setSearchQuery(''); setSearchResults([]); }}>
+              <Ionicons name="close-circle" size={20} color="#8B9DC3" />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      {/* Search Results */}
+      {showSearch && searchResults.length > 0 && (
+        <View style={styles.searchResults}>
+          <Text style={styles.searchResultsTitle}>{searchResults.length} result{searchResults.length !== 1 ? 's' : ''}</Text>
+          <FlatList
+            data={searchResults}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.searchResultItem}
+                onPress={() => {
+                  setShowSearch(false);
+                  setSearchQuery('');
+                  setSearchResults([]);
+                }}
+              >
+                <Text style={styles.searchResultText} numberOfLines={2}>{item.content}</Text>
+                <Text style={styles.searchResultDate}>
+                  {new Date(item.created_at).toLocaleDateString()}
+                </Text>
+              </TouchableOpacity>
+            )}
+            style={{ maxHeight: 200 }}
+          />
+        </View>
+      )}
 
       {/* Toast Notification */}
       {showToast && (
@@ -1074,5 +1160,54 @@ const styles = StyleSheet.create({
   imageViewerImage: {
     width: Dimensions.get('window').width,
     height: Dimensions.get('window').height * 0.75,
+  },
+  // Search
+  headerIcon: {
+    padding: 8,
+    marginLeft: 4,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1F2C34',
+    marginHorizontal: 12,
+    marginVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: '#E9EDEF',
+    paddingVertical: 0,
+  },
+  searchResults: {
+    backgroundColor: '#1F2C34',
+    marginHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 8,
+    padding: 8,
+  },
+  searchResultsTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8B9DC3',
+    marginBottom: 8,
+    paddingHorizontal: 8,
+  },
+  searchResultItem: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  searchResultText: {
+    fontSize: 14,
+    color: '#E9EDEF',
+    marginBottom: 4,
+  },
+  searchResultDate: {
+    fontSize: 11,
+    color: '#8B9DC3',
   },
 });
