@@ -2001,12 +2001,13 @@ async def test_smart_notification(user = Depends(get_current_user)):
 @api_router.post("/sales", response_model=SaleResponse)
 async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
     """Record a sale and optionally send receipt"""
+    business_id = user.get("business_id", user["_id"])
     # Handle walk-in customers
     is_walk_in = sale.customer_id == 'walk-in'
     
     if not is_walk_in:
         # Verify customer exists for regular sales
-        customer = await db.customers.find_one({"_id": sale.customer_id, "user_id": user["_id"]})
+        customer = await db.customers.find_one({"_id": sale.customer_id, "user_id": business_id})
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
     else:
@@ -2025,7 +2026,8 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
     
     sale_doc = {
         "_id": sale_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
+        "recorded_by": user["_id"],
         "customer_id": sale.customer_id,
         "item": sale.item,
         "amount": sale.amount,
@@ -2070,7 +2072,7 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
     
     return SaleResponse(
         id=sale_id,
-        user_id=user["_id"],
+        user_id=business_id,
         customer_id=sale.customer_id,
         customer_name=customer["name"],
         customer_phone=customer["phone_number"],
@@ -2087,8 +2089,9 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
 @api_router.put("/sales/{sale_id}/mark-paid")
 async def mark_sale_as_paid(sale_id: str, payment_method: str, user = Depends(get_current_user)):
     """Mark a credit sale as paid"""
+    business_id = user.get("business_id", user["_id"])
     # Verify sale exists and belongs to user
-    sale = await db.sales.find_one({"_id": sale_id, "user_id": user["_id"]})
+    sale = await db.sales.find_one({"_id": sale_id, "user_id": business_id})
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
     
@@ -2140,7 +2143,8 @@ Thank you for shopping with {business} 🙏"""
 @api_router.get("/sales", response_model=List[SaleResponse])
 async def get_sales(user = Depends(get_current_user)):
     """Get all sales for current user"""
-    sales = await db.sales.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(1000)
+    business_id = user.get("business_id", user["_id"])
+    sales = await db.sales.find({"user_id": business_id}).sort("created_at", -1).to_list(1000)
     
     result = []
     for s in sales:
@@ -2189,12 +2193,13 @@ async def resend_receipt(sale_id: str, background_tasks: BackgroundTasks, user =
 @api_router.post("/orders", response_model=OrderResponse)
 async def create_order(order: OrderCreate, user = Depends(get_current_user)):
     """Create a new order"""
+    business_id = user.get("business_id", user["_id"])
     # Handle walk-in customers
     is_walk_in = order.customer_id == 'walk-in'
     
     if not is_walk_in:
         # Verify customer exists
-        customer = await db.customers.find_one({"_id": order.customer_id, "user_id": user["_id"]})
+        customer = await db.customers.find_one({"_id": order.customer_id, "user_id": business_id})
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
     else:
@@ -2208,7 +2213,8 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
     
     order_doc = {
         "_id": order_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
+        "recorded_by": user["_id"],
         "customer_id": order.customer_id,
         "product": order.product,
         "quantity": order.quantity,
@@ -2242,7 +2248,8 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
 @api_router.get("/orders", response_model=List[OrderResponse])
 async def get_orders(user = Depends(get_current_user)):
     """Get all orders for the current user"""
-    orders = await db.orders.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(None)
+    business_id = user.get("business_id", user["_id"])
+    orders = await db.orders.find({"user_id": business_id}).sort("created_at", -1).to_list(None)
     
     result = []
     for order in orders:
@@ -2276,8 +2283,9 @@ async def get_orders(user = Depends(get_current_user)):
 @api_router.put("/orders/{order_id}", response_model=OrderResponse)
 async def update_order(order_id: str, payment_status: Optional[str] = None, delivery_status: Optional[str] = None, notes: Optional[str] = None, user = Depends(get_current_user)):
     """Update order payment status, delivery status, or notes"""
+    business_id = user.get("business_id", user["_id"])
     # Verify order exists
-    order = await db.orders.find_one({"_id": order_id, "user_id": user["_id"]})
+    order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -2326,7 +2334,8 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, user = Depends(get_current_user)):
     """Delete an order"""
-    result = await db.orders.delete_one({"_id": order_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    result = await db.orders.delete_one({"_id": order_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
     return {"message": "Order deleted successfully"}
@@ -2334,8 +2343,9 @@ async def delete_order(order_id: str, user = Depends(get_current_user)):
 @api_router.post("/orders/{order_id}/convert-to-sale", response_model=SaleResponse)
 async def convert_order_to_sale(order_id: str, payment_method: str, user = Depends(get_current_user)):
     """Convert a paid order to a sale"""
+    business_id = user.get("business_id", user["_id"])
     # Verify order exists
-    order = await db.orders.find_one({"_id": order_id, "user_id": user["_id"]})
+    order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -2357,7 +2367,8 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
     sale_id = str(uuid.uuid4())
     sale_doc = {
         "_id": sale_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
+        "recorded_by": user["_id"],
         "customer_id": order["customer_id"],
         "item": order["product"],
         "amount": order["total_amount"],
@@ -2391,7 +2402,7 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
     
     return SaleResponse(
         id=sale_id,
-        user_id=user["_id"],
+        user_id=business_id,
         customer_id=order["customer_id"],
         customer_name=customer_name,
         customer_phone=customer_phone,
@@ -2503,10 +2514,12 @@ This is a friendly reminder about your order:
 @api_router.post("/expenses", response_model=ExpenseResponse)
 async def create_expense(expense: ExpenseCreate, user = Depends(get_current_user)):
     """Record an expense"""
+    business_id = user.get("business_id", user["_id"])
     expense_id = str(uuid.uuid4())
     expense_doc = {
         "_id": expense_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
+        "recorded_by": user["_id"],
         "category": expense.category,
         "amount": expense.amount,
         "description": expense.description,
@@ -2517,7 +2530,7 @@ async def create_expense(expense: ExpenseCreate, user = Depends(get_current_user
     
     return ExpenseResponse(
         id=expense_id,
-        user_id=user["_id"],
+        user_id=business_id,
         category=expense.category,
         amount=expense.amount,
         description=expense.description,
@@ -2527,7 +2540,8 @@ async def create_expense(expense: ExpenseCreate, user = Depends(get_current_user
 @api_router.get("/expenses", response_model=List[ExpenseResponse])
 async def get_expenses(user = Depends(get_current_user)):
     """Get all expenses for current user"""
-    expenses = await db.expenses.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(1000)
+    business_id = user.get("business_id", user["_id"])
+    expenses = await db.expenses.find({"user_id": business_id}).sort("created_at", -1).to_list(1000)
     
     return [
         ExpenseResponse(
@@ -2544,7 +2558,8 @@ async def get_expenses(user = Depends(get_current_user)):
 @api_router.delete("/expenses/{expense_id}")
 async def delete_expense(expense_id: str, user = Depends(get_current_user)):
     """Delete an expense"""
-    result = await db.expenses.delete_one({"_id": expense_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    result = await db.expenses.delete_one({"_id": expense_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Expense not found")
     return {"status": "success", "message": "Expense deleted"}
