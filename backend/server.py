@@ -4018,6 +4018,51 @@ async def evolution_webhook(request: Request):
                     )
                 except Exception as classify_err:
                     logging.error(f"Classification error: {classify_err}")
+
+                # Notify assigned employee of incoming message (background)
+                async def _notify_assigned_employee(business_id, cust_id, cust_name, msg_body):
+                    try:
+                        assignment = await db.conversation_assignments.find_one({
+                            "business_id": business_id,
+                            "customer_id": cust_id
+                        })
+                        if not assignment:
+                            return  # Unassigned — no specific notification needed
+
+                        assigned_user_id = assignment.get("assigned_to")
+                        if not assigned_user_id:
+                            return
+
+                        # Find the team member record to get their phone number
+                        member = await db.team_members.find_one({
+                            "business_id": business_id,
+                            "user_id": assigned_user_id,
+                            "status": "active"
+                        })
+                        if not member or not member.get("phone_number"):
+                            return
+
+                        # Send WhatsApp notification to the assigned employee
+                        ws = get_whatsapp_service(db)
+                        preview = msg_body[:80] + ("..." if len(msg_body) > 80 else "")
+                        notification = (
+                            f"💬 *New message from {cust_name}*\n\n"
+                            f"_{preview}_\n\n"
+                            f"Open your CRM app to reply."
+                        )
+                        await ws.send_message(
+                            user_id=business_id,
+                            to_number=member["phone_number"],
+                            message=notification,
+                            send_context="auto_reply"
+                        )
+                        logging.info(f"Notified employee {assigned_user_id} of message from {cust_name}")
+                    except Exception as e:
+                        logging.error(f"Failed to notify assigned employee: {e}")
+
+                asyncio.create_task(
+                    _notify_assigned_employee(user["_id"], customer_id, customer_name, body)
+                )
                 
                 # ============================================================
                 # AGENT-BASED PRODUCT MATCHING & HANDLING (REPLACES OLD MONOLITH)
