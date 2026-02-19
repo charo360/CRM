@@ -448,9 +448,7 @@ export default function ChatScreen() {
               source={{ uri: imageUri }}
               style={styles.messageImage}
               resizeMode="cover"
-              onError={(error) => {
-                console.error('Image load error:', error.nativeEvent.error);
-              }}
+              onError={() => {}}
             />
           </TouchableOpacity>
         )}
@@ -779,7 +777,12 @@ export default function ChatScreen() {
                       {isSelected && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
                     </View>
                     {imageUri ? (
-                      <Image source={{ uri: imageUri }} style={styles.productImage} resizeMode="cover" />
+                      <Image 
+                        source={{ uri: imageUri }} 
+                        style={styles.productImage} 
+                        resizeMode="cover"
+                        onError={() => {}}
+                      />
                     ) : (
                       <View style={[styles.productImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A2A4A' }]}>
                         <Ionicons name="image-outline" size={20} color="#3A4A5C" />
