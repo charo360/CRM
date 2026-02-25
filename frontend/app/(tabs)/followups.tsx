@@ -376,7 +376,7 @@ export default function FollowupsScreen() {
           body: message || `Time to ${followupType} ${customerName}`,
           sound: true,
         },
-        trigger,
+        trigger: { date: trigger },
       });
     } catch (e) {
       console.log('Notification scheduling error:', e);
@@ -833,7 +833,7 @@ export default function FollowupsScreen() {
               </View>
 
               {/* Manual outcome breakdown (from Done button) */}
-              {analytics.outcome_counts && Object.keys(analytics.outcome_counts).length > 0 && (
+              {analytics.outcome_counts && Object.values(analytics.outcome_counts).some(v => v > 0) && (
                 <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
                   <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 14 }}>What happened?</Text>
                   {[
@@ -867,24 +867,26 @@ export default function FollowupsScreen() {
               )}
 
               {/* Auto-detected outcomes (from message analysis) */}
-              <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
-                <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 4 }}>Auto-detected Activity</Text>
-                <Text style={{ color: '#555', fontSize: 11, marginBottom: 14 }}>Based on messages sent/received after each follow-up</Text>
-                {[
-                  { key: 'converted',      label: 'Led to a sale',         color: '#FFD700', val: analytics.stats.converted },
-                  { key: 'responded',      label: 'Customer replied',       color: '#25D366', val: analytics.stats.responded },
-                  { key: 'no_response',    label: 'No reply',               color: '#FF6B6B', val: analytics.stats.no_response },
-                  { key: 'not_contacted',  label: 'Never messaged',         color: '#444',    val: analytics.stats.not_contacted },
-                ].map(row => (
-                  <View key={row.key} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#0A1628' }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: row.color }} />
-                      <Text style={{ color: '#CCD6E0', fontSize: 13 }}>{row.label}</Text>
+              {(analytics.stats.converted + analytics.stats.responded + analytics.stats.no_response + analytics.stats.not_contacted) > 0 && (
+                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+                  <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 4 }}>Auto-detected Activity</Text>
+                  <Text style={{ color: '#555', fontSize: 11, marginBottom: 14 }}>Based on messages sent/received after each follow-up</Text>
+                  {[
+                    { key: 'converted',     label: 'Led to a sale',     color: '#FFD700', val: analytics.stats.converted },
+                    { key: 'responded',     label: 'Customer replied',   color: '#25D366', val: analytics.stats.responded },
+                    { key: 'no_response',   label: 'No reply',           color: '#FF6B6B', val: analytics.stats.no_response },
+                    { key: 'not_contacted', label: 'Never messaged',     color: '#444',    val: analytics.stats.not_contacted },
+                  ].map(row => (
+                    <View key={row.key} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#0A1628' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: row.color }} />
+                        <Text style={{ color: '#CCD6E0', fontSize: 13 }}>{row.label}</Text>
+                      </View>
+                      <Text style={{ color: row.color, fontSize: 15, fontWeight: '700' }}>{row.val}</Text>
                     </View>
-                    <Text style={{ color: row.color, fontSize: 15, fontWeight: '700' }}>{row.val}</Text>
-                  </View>
-                ))}
-              </View>
+                  ))}
+                </View>
+              )}
 
               {/* Revenue */}
               {analytics.stats.total_revenue > 0 && (
