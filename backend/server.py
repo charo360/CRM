@@ -2552,6 +2552,49 @@ async def get_followup_analytics(days: int = 30, user = Depends(get_current_user
         "best_times": best_times
     }
 
+@api_router.get("/stats/followup-suggestions")
+async def get_followup_suggestions(user = Depends(get_current_user)):
+    """Get follow-up suggestion counts for the follow-ups tab header stats"""
+    business_id = user.get("business_id", user["_id"])
+    now = datetime.utcnow()
+    cutoff_week = now - timedelta(days=7)
+    cutoff_month = now - timedelta(days=30)
+
+    # Customers not contacted in 7+ days
+    neglected_week = await db.customers.count_documents({
+        "user_id": business_id,
+        "$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]
+    })
+    # Customers not contacted in 30+ days
+    neglected_month = await db.customers.count_documents({
+        "user_id": business_id,
+        "$or": [{"last_contacted": {"$lt": cutoff_month}}, {"last_contacted": None}]
+    })
+    # New customers (created in last 7 days) with no follow-up
+    new_cutoff = now - timedelta(days=7)
+    new_customers = await db.customers.find({
+        "user_id": business_id,
+        "created_at": {"$gte": new_cutoff}
+    }).to_list(None)
+    new_no_followup = 0
+    for c in new_customers:
+        has_fu = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
+        if not has_fu:
+            new_no_followup += 1
+    # VIP customers not contacted in 7+ days
+    vip_neglected = await db.customers.count_documents({
+        "user_id": business_id,
+        "tags": "VIP",
+        "$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]
+    })
+    return {
+        "neglected_week": neglected_week,
+        "neglected_month": neglected_month,
+        "new_no_followup": new_no_followup,
+        "vip_neglected": vip_neglected,
+        "total_needing_attention": neglected_week
+    }
+
 @api_router.get("/analytics/summary")
 async def get_analytics_summary(user = Depends(get_current_user)):
     """
@@ -4237,10 +4280,12 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
         "user_id": uid, "direction": "incoming", "read": {"$ne": True}
     })
 
-    # Today's follow-ups
+    # Today's follow-ups — widen window by ±1 day to cover all timezones (UTC-12 to UTC+14)
+    tz_window_start = today_start - timedelta(hours=14)
+    tz_window_end = today_end + timedelta(hours=14)
     followups_today = await db.followups.count_documents({
         "user_id": uid, "status": "pending",
-        "reminder_date": {"$gte": today_start, "$lt": today_end}
+        "reminder_date": {"$gte": tz_window_start, "$lt": tz_window_end}
     })
 
     # Today's sales total

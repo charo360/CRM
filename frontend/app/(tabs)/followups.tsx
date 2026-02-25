@@ -567,12 +567,18 @@ export default function FollowupsScreen() {
         <View style={styles.statsRow}>
           <View style={[styles.statCard, styles.statCardWarning]}>
             <Text style={styles.statNumber}>{suggestions.neglected_week}</Text>
-            <Text style={styles.statLabel}>14+ days no contact</Text>
+            <Text style={styles.statLabel}>7+ days no contact</Text>
           </View>
           <View style={[styles.statCard, styles.statCardDanger]}>
             <Text style={styles.statNumber}>{suggestions.neglected_month}</Text>
-            <Text style={styles.statLabel}>30+ days cold</Text>
+            <Text style={styles.statLabel}>30+ days no contact</Text>
           </View>
+          {suggestions.vip_neglected > 0 && (
+            <View style={[styles.statCard, { borderLeftColor: '#FFD700', borderLeftWidth: 3 }]}>
+              <Text style={[styles.statNumber, { color: '#FFD700' }]}>{suggestions.vip_neglected}</Text>
+              <Text style={styles.statLabel}>VIP neglected</Text>
+            </View>
+          )}
         </View>
       )}
 
