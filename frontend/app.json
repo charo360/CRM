@@ -44,6 +44,14 @@
         {
           "contactsPermission": "Allow WhatsApp CRM to access your contacts to import customers."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#25D366",
+          "sounds": []
+        }
       ]
     ],
     "experiments": {

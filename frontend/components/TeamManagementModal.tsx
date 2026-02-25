@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { teamAPI } from '../context/api';
+import { useAuth } from '../context/AuthContext';
 
 interface TeamMember {
     id: string;
@@ -31,6 +32,7 @@ interface TeamManagementModalProps {
     onClose: () => void;
     userRole: string;
     userId: string;
+    onMemberAdded?: () => void;
 }
 
 export default function TeamManagementModal({
@@ -38,7 +40,9 @@ export default function TeamManagementModal({
     onClose,
     userRole,
     userId,
+    onMemberAdded,
 }: TeamManagementModalProps) {
+    const { refreshUser } = useAuth();
     const [members, setMembers] = useState<TeamMember[]>([]);
     const [loading, setLoading] = useState(false);
     const [inviteMode, setInviteMode] = useState(false);
@@ -110,6 +114,8 @@ export default function TeamManagementModal({
             setInvitePhone('');
             setInviteRole('employee');
             fetchMembers();
+            await refreshUser();
+            if (onMemberAdded) onMemberAdded();
         } catch (error: any) {
             Alert.alert('Error', error.response?.data?.detail || 'Failed to invite team member');
         } finally {

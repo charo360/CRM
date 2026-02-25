@@ -686,7 +686,7 @@ export default function AccountScreen() {
               onPress={() => router.push('../analytics' as any)}
             >
               <Ionicons name="analytics-outline" size={24} color="#25D366" />
-              <Text style={styles.settingText}>Follow-up Analytics</Text>
+              <Text style={styles.settingText}>Analytics</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
             <TouchableOpacity style={styles.settingItem}>

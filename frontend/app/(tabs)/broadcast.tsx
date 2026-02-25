@@ -102,6 +102,8 @@ export default function BroadcastScreen() {
   const [products, setProducts] = useState<Product[]>([]);
   const [viewingBroadcast, setViewingBroadcast] = useState<Broadcast | null>(null);
   const [currency, setCurrency] = useState('USD');
+  const [broadcastSearch, setBroadcastSearch] = useState('');
+  const [deletingBroadcast, setDeletingBroadcast] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -133,6 +135,7 @@ export default function BroadcastScreen() {
   // Create Group State
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+  const [groupCustomerSearch, setGroupCustomerSearch] = useState('');
 
   // AI generation state
   const [aiPrompt, setAiPrompt] = useState('');
@@ -225,6 +228,7 @@ export default function BroadcastScreen() {
       setCreateGroupModalVisible(false);
       setNewGroupName('');
       setSelectedCustomerIds(new Set());
+      setGroupCustomerSearch('');
       Alert.alert('Success', 'Group created!');
     } catch (error: any) {
       Alert.alert('Error', 'Failed to create group');
@@ -327,15 +331,23 @@ export default function BroadcastScreen() {
     );
   };
 
+  const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+
+  const toFullUrl = (url: string) => {
+    if (!url) return url;
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    return `${BACKEND_URL}${url}`;
+  };
+
   // Adds selected products' images to the broadcast
   const handleConfirmProductSelection = () => {
     const imagesToAdd: string[] = [];
     products.forEach(p => {
       if (selectedProductIds.has(p.id)) {
         if (p.images && p.images.length > 0) {
-          imagesToAdd.push(...p.images);
+          imagesToAdd.push(...p.images.map(toFullUrl));
         } else if (p.image_url) {
-          imagesToAdd.push(p.image_url);
+          imagesToAdd.push(toFullUrl(p.image_url));
         }
       }
     });
@@ -695,9 +707,26 @@ export default function BroadcastScreen() {
         </View>
       </View>
 
+      {/* Search Bar */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A2942', borderRadius: 10, marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 12 }}>
+        <Ionicons name="search" size={16} color="#666" style={{ marginRight: 8 }} />
+        <TextInput
+          style={{ flex: 1, color: '#FFF', fontSize: 14, height: 40 }}
+          value={broadcastSearch}
+          onChangeText={setBroadcastSearch}
+          placeholder="Search broadcasts..."
+          placeholderTextColor="#666"
+        />
+        {broadcastSearch.length > 0 && (
+          <TouchableOpacity onPress={() => setBroadcastSearch('')}>
+            <Ionicons name="close-circle" size={16} color="#666" />
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* Broadcast List */}
       <FlatList
-        data={broadcasts}
+        data={broadcasts.filter(b => !broadcastSearch || b.message.toLowerCase().includes(broadcastSearch.toLowerCase()))}
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.broadcastCard}
@@ -1077,7 +1106,39 @@ export default function BroadcastScreen() {
               <Text style={styles.modalCancel}>Close</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle}>Broadcast Details</Text>
-            <View style={{ width: 50 }} />
+            <TouchableOpacity
+              onPress={() => {
+                if (!viewingBroadcast) return;
+                Alert.alert(
+                  'Delete Broadcast',
+                  'Are you sure you want to delete this broadcast?',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Delete',
+                      style: 'destructive',
+                      onPress: async () => {
+                        setDeletingBroadcast(true);
+                        try {
+                          await apiClient.delete(`/broadcasts/${viewingBroadcast.id}`);
+                          setBroadcasts(prev => prev.filter(b => b.id !== viewingBroadcast.id));
+                          setViewingBroadcast(null);
+                        } catch (e: any) {
+                          Alert.alert('Error', e.response?.data?.detail || 'Failed to delete');
+                        } finally {
+                          setDeletingBroadcast(false);
+                        }
+                      },
+                    },
+                  ]
+                );
+              }}
+              disabled={deletingBroadcast}
+            >
+              {deletingBroadcast
+                ? <ActivityIndicator size="small" color="#FF4444" />
+                : <Ionicons name="trash-outline" size={22} color="#FF4444" />}
+            </TouchableOpacity>
           </View>
 
           <ScrollView style={styles.modalContent}>
@@ -1202,8 +1263,27 @@ export default function BroadcastScreen() {
             />
             <Text style={[styles.formLabel, { marginTop: 16, marginBottom: 8 }]}>Select Customers ({selectedCustomerIds.size})</Text>
 
+            <View style={[styles.formInput, { flexDirection: 'row', alignItems: 'center', marginBottom: 8, paddingVertical: 0 }]}>
+              <Ionicons name="search" size={16} color="#666" style={{ marginRight: 8 }} />
+              <TextInput
+                style={{ flex: 1, color: '#FFF', fontSize: 14, height: 40 }}
+                value={groupCustomerSearch}
+                onChangeText={setGroupCustomerSearch}
+                placeholder="Search customers..."
+                placeholderTextColor="#666"
+              />
+              {groupCustomerSearch.length > 0 && (
+                <TouchableOpacity onPress={() => setGroupCustomerSearch('')}>
+                  <Ionicons name="close-circle" size={16} color="#666" />
+                </TouchableOpacity>
+              )}
+            </View>
+
             <FlatList
-              data={customers}
+              data={customers.filter(c =>
+                c.name.toLowerCase().includes(groupCustomerSearch.toLowerCase()) ||
+                c.phone_number.includes(groupCustomerSearch)
+              )}
               keyExtractor={item => item.id}
               renderItem={({ item }) => (
                 <TouchableOpacity

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, View, Platform, Modal } from 'react-native';
@@ -6,9 +6,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
+import * as Notifications from 'expo-notifications';
+import * as Device from 'expo-device';
 
 import { useAuth } from '../../context/AuthContext';
-import { settingsAPI } from '../../context/api';
+import { settingsAPI, apiClient } from '../../context/api';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
@@ -22,13 +32,73 @@ export default function TabsLayout() {
   const [dailyPulseEnabled, setDailyPulseEnabled] = useState(false);
 
   const { user } = useAuth();
+  const notificationListener = useRef<any>();
+  const responseListener = useRef<any>();
 
   // Fetch initial settings only after auth is ready
   React.useEffect(() => {
     if (user) {
       loadSettings();
+      registerForPushNotifications();
     }
+    return () => {
+      if (notificationListener.current) notificationListener.current.remove();
+      if (responseListener.current) responseListener.current.remove();
+    };
   }, [user]);
+
+  const registerForPushNotifications = async () => {
+    try {
+      if (!Device.isDevice) return;
+
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'default',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#25D366',
+        });
+      }
+
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') return;
+
+      // Remote push requires a dev build (not Expo Go) and a projectId
+      // Skip silently if not available — local notifications still work
+      let token: string | null = null;
+      try {
+        const Constants = (await import('expo-constants')).default;
+        const projectId =
+          Constants.expoConfig?.extra?.eas?.projectId ??
+          Constants.easConfig?.projectId;
+        if (projectId) {
+          const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
+          token = tokenData.data;
+        }
+      } catch {
+        // Running in Expo Go or no projectId — skip remote push silently
+      }
+
+      if (token) {
+        await apiClient.post('/auth/push-token', { token });
+      }
+
+      notificationListener.current = Notifications.addNotificationReceivedListener(() => {});
+      responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
+        const data = response.notification.request.content.data as any;
+        if (data?.type === 'new_contact' || data?.type === 'new_message') {
+          router.push('/(tabs)/customers');
+        }
+      });
+    } catch (e) {
+      console.log('Push notification setup failed:', e);
+    }
+  };
 
   const loadSettings = async () => {
     try {
@@ -97,10 +167,16 @@ export default function TabsLayout() {
                 items={[
                   {
                     icon: 'analytics-outline',
-                    label: 'Follow-up Analytics',
+                    label: 'Analytics',
                     onPress: () => router.push('../analytics' as any),
                     color: '#25D366'
                   },
+                  ...(user?.role === 'owner' || user?.role === 'manager' || !user?.role ? [{
+                    icon: 'people-outline' as const,
+                    label: 'Team Analytics',
+                    onPress: () => router.push('../team-analytics' as any),
+                    color: '#4A90E2'
+                  }] : []),
                   {
                     icon: 'cube-outline',
                     label: 'Product Catalog',

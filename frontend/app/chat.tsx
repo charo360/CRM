@@ -32,6 +32,7 @@ interface Message {
   status?: string;
   message_type?: string;
   image_url?: string;
+  file_name?: string;
 }
 
 export default function ChatScreen() {
@@ -135,6 +136,8 @@ export default function ChatScreen() {
     if (prefill) setInputText(prefill);
   }, [prefill]);
 
+  const sendingRef = useRef(false);
+
   const fetchMessages = useCallback(async (isPolling = false) => {
     if (!customerId) {
       setLoading(false);
@@ -143,12 +146,14 @@ export default function ChatScreen() {
     try {
       const data = await messagesAPI.getMessages(customerId);
       const newMessages = data || [];
-      
+
       // Mark messages as read when opening chat (only on initial load, not polling)
       if (!isPolling && newMessages.length > 0) {
         messageHelpers.markRead(customerId).catch(e => console.error('Failed to mark read:', e));
       }
       if (isPolling) {
+        // Skip poll update while a send is in flight — prevents optimistic msg from disappearing
+        if (sendingRef.current) return;
         // Only update if message count changed or latest message is different
         setMessages(prev => {
           if (prev.length !== newMessages.length ||
@@ -250,6 +255,7 @@ export default function ChatScreen() {
       status: 'sending',
       message_type: isImage ? 'image' : 'document',
       image_url: isImage ? uri : undefined,
+      file_name: !isImage ? fileName : undefined,
     };
     setMessages(prev => [optimisticMsg, ...prev]);
     try {
@@ -306,12 +312,14 @@ export default function ChatScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       quality: 0.7,
+      allowsMultipleSelection: true,
     });
     if (result.canceled || !result.assets?.length) return;
-    const asset = result.assets[0];
-    const fileName = asset.fileName || `image_${Date.now()}.jpg`;
-    const mimeType = asset.mimeType || 'image/jpeg';
-    await sendMediaFile(asset.uri, fileName, mimeType);
+    for (const asset of result.assets) {
+      const fileName = asset.fileName || `image_${Date.now()}.jpg`;
+      const mimeType = asset.mimeType || 'image/jpeg';
+      await sendMediaFile(asset.uri, fileName, mimeType);
+    }
   };
 
   const handleDocument = async () => {
@@ -320,12 +328,15 @@ export default function ChatScreen() {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
         copyToCacheDirectory: true,
+        multiple: true,
       });
       if (result.canceled || !result.assets?.length) return;
-      const asset = result.assets[0];
-      const fileName = asset.name || `document_${Date.now()}`;
-      const mimeType = asset.mimeType || 'application/octet-stream';
-      await sendMediaFile(asset.uri, fileName, mimeType);
+      // Send each file one by one (sequential to avoid shared-state race conditions)
+      for (const asset of result.assets) {
+        const fileName = asset.name || `document_${Date.now()}`;
+        const mimeType = asset.mimeType || 'application/octet-stream';
+        await sendMediaFile(asset.uri, fileName, mimeType);
+      }
     } catch (error) {
       console.error('Document picker error:', error);
     }
@@ -345,7 +356,7 @@ export default function ChatScreen() {
     } catch (error) {
       console.error('Open document error:', error);
       // Fallback: open URL in browser
-      try { await Linking.openURL(url); } catch {}
+      try { await Linking.openURL(url); } catch { }
     }
   };
 
@@ -372,6 +383,7 @@ export default function ChatScreen() {
     if (!text || sending) return;
 
     setSending(true);
+    sendingRef.current = true;
     setInputText('');
 
     // Optimistic UI: add message immediately
@@ -413,6 +425,7 @@ export default function ChatScreen() {
       );
     } finally {
       setSending(false);
+      sendingRef.current = false;
     }
   };
 
@@ -430,10 +443,19 @@ export default function ChatScreen() {
       imageUri = imageUri.replace('host.docker.internal', backendHost);
     }
 
-    // Extract filename from URL for documents
-    const docFileName = isDocument && imageUri
-      ? decodeURIComponent(imageUri.split('/').pop() || 'Document')
+    // Extract filename and extension from URL for documents
+    // Only use URL-derived name if it looks like a real filename (not a UUID)
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    const rawFromUrl = isDocument && imageUri
+      ? decodeURIComponent(imageUri.split('/').pop() || '')
       : null;
+    const rawDocName = rawFromUrl && !uuidPattern.test(rawFromUrl) ? rawFromUrl : null;
+    // Priority: stored file_name > stripped content (if not a fallback string) > real URL name > fallback
+    const cleanContent = item.content?.replace(/^📎\s*/, '').trim() || '';
+    const isFallbackContent = !cleanContent || cleanContent === 'Received document' || cleanContent === 'Document';
+    const docDisplayName = item.file_name || (!isFallbackContent ? cleanContent : null) || rawDocName || 'Document';
+    const docExt = docDisplayName.includes('.') ? docDisplayName.split('.').pop()?.toUpperCase() : null;
+    const docFileName = docDisplayName;
 
     return (
       <View
@@ -448,30 +470,35 @@ export default function ChatScreen() {
               source={{ uri: imageUri }}
               style={styles.messageImage}
               resizeMode="cover"
-              onError={() => {}}
+              onError={() => { }}
             />
           </TouchableOpacity>
         )}
         {isDocument && imageUri && (
           <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenDocument(imageUri)}>
             <View style={styles.documentBubble}>
-              <Ionicons name="document-text" size={32} color={isOutgoing ? '#DCF8C6' : '#8B9DC3'} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.documentName, isOutgoing ? styles.outgoingText : styles.incomingText]} numberOfLines={2}>
-                  {item.content || docFileName || 'Document'}
-                </Text>
-                <Text style={{ fontSize: 11, color: '#8B9DC3', marginTop: 2 }}>Tap to open</Text>
+              <View style={styles.docIconWrap}>
+                <Ionicons name="document-text" size={26} color="#FFFFFF" />
+                {docExt && <Text style={styles.docExtBadge}>{docExt}</Text>}
               </View>
-              <Ionicons name="download-outline" size={20} color="#8B9DC3" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.docFileName} numberOfLines={2}>{docFileName}</Text>
+                <Text style={styles.docOpenHint}>📂 Tap to open</Text>
+              </View>
+              <Ionicons name="arrow-down-circle" size={22} color={isOutgoing ? '#DCF8C6' : '#25D366'} />
             </View>
           </TouchableOpacity>
         )}
         {isDocument && !imageUri && (
           <View style={styles.documentBubble}>
-            <Ionicons name="document-text" size={32} color={isOutgoing ? '#DCF8C6' : '#8B9DC3'} />
-            <Text style={[styles.documentName, isOutgoing ? styles.outgoingText : styles.incomingText]} numberOfLines={2}>
-              {item.content || 'Document'}
-            </Text>
+            <View style={styles.docIconWrap}>
+              <Ionicons name="document-text" size={26} color="#FFFFFF" />
+              {docExt && <Text style={styles.docExtBadge}>{docExt}</Text>}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.docFileName} numberOfLines={2}>{docFileName}</Text>
+              <Text style={styles.docOpenHint}>No preview available</Text>
+            </View>
           </View>
         )}
         {!isDocument && item.content && (
@@ -777,11 +804,11 @@ export default function ChatScreen() {
                       {isSelected && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
                     </View>
                     {imageUri ? (
-                      <Image 
-                        source={{ uri: imageUri }} 
-                        style={styles.productImage} 
+                      <Image
+                        source={{ uri: imageUri }}
+                        style={styles.productImage}
                         resizeMode="cover"
-                        onError={() => {}}
+                        onError={() => { }}
                       />
                     ) : (
                       <View style={[styles.productImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A2A4A' }]}>
@@ -1136,11 +1163,39 @@ const styles = StyleSheet.create({
   documentBubble: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.15)',
-    borderRadius: 8,
-    padding: 10,
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    borderRadius: 10,
+    padding: 12,
     marginBottom: 6,
-    gap: 10,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    minWidth: 220,
+  },
+  docIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: '#4A90D9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  docExtBadge: {
+    fontSize: 8,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+    marginTop: 1,
+  },
+  docFileName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 3,
+  },
+  docOpenHint: {
+    fontSize: 11,
+    color: '#8B9DC3',
   },
   documentName: {
     flex: 1,

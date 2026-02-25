@@ -197,13 +197,16 @@ export default function SalesScreen() {
         due_date: isCreditSale && dueDate ? dueDate : undefined,
       });
 
-      setSales([response.data, ...sales]);
       setModalVisible(false);
       resetForm();
+      fetchData();
+      if (sendReceipt && !isWalkInCustomer) {
+        setTimeout(() => fetchData(), 4000);
+      }
 
       Alert.alert(
         'Success',
-        `Sale recorded!${sendReceipt ? ' Receipt sent to customer.' : ''}`,
+        `Sale recorded!${sendReceipt && !isWalkInCustomer ? ' Receipt sent to customer.' : ''}`,
         [{ text: 'OK' }]
       );
     } catch (error: any) {
@@ -245,9 +248,9 @@ export default function SalesScreen() {
         description: expenseDescription.trim() || undefined,
       });
 
-      setExpenses([response.data, ...expenses]);
       setModalVisible(false);
       resetExpenseForm();
+      fetchData();
 
       Alert.alert('Success', 'Expense recorded!');
     } catch (error: any) {
@@ -314,7 +317,6 @@ export default function SalesScreen() {
         due_date: orderDueDate || undefined,
       });
 
-      setOrders([response.data, ...orders]);
       setModalVisible(false);
       Alert.alert('Success', 'Order created successfully!');
 
@@ -326,6 +328,7 @@ export default function SalesScreen() {
       setOrderPrice('');
       setOrderNotes('');
       setOrderDueDate('');
+      fetchData();
     } catch (error: any) {
       console.error('Error creating order:', error);
       Alert.alert('Error', error.response?.data?.detail || 'Failed to create order');
@@ -569,31 +572,35 @@ export default function SalesScreen() {
   );
 
   const renderExpense = ({ item: expense }: { item: Expense }) => (
-    <View style={styles.expenseCard}>
-      <View style={styles.expenseHeader}>
-        <View style={styles.expenseInfo}>
-          <View style={styles.categoryBadge}>
-            <Text style={styles.categoryText}>{expense.category}</Text>
+    <View style={styles.saleCard}>
+      <View style={styles.saleHeader}>
+        <View style={styles.saleCustomer}>
+          <View style={[styles.avatar, { backgroundColor: '#E74C3C22' }]}>
+            <Ionicons name="wallet-outline" size={16} color="#E74C3C" />
           </View>
-          <Text style={styles.expenseDate}>
-            {new Date(expense.created_at).toLocaleDateString('en-KE', {
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </Text>
+          <View>
+            <Text style={styles.customerName}>{expense.category}</Text>
+            <Text style={styles.saleDate}>
+              {new Date(expense.created_at).toLocaleDateString('en-KE', {
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
+          </View>
         </View>
-        <View style={styles.expenseAmountContainer}>
-          <Text style={styles.expenseAmount}>{currency} {expense.amount.toLocaleString()}</Text>
+        <View style={styles.amountContainer}>
+          <Text style={[styles.amount, { color: '#FF6B6B' }]}>{currency} {expense.amount.toLocaleString()}</Text>
           <TouchableOpacity onPress={() => handleDeleteExpense(expense.id)}>
-            <Ionicons name="trash-outline" size={20} color="#FF6B6B" />
+            <Ionicons name="trash-outline" size={16} color="#FF6B6B" />
           </TouchableOpacity>
         </View>
       </View>
-      {!!expense.description && (
-        <Text style={styles.expenseDescription}>{expense.description}</Text>
-      )}
+      <View style={styles.saleDetails}>
+        <Ionicons name="pricetag-outline" size={14} color="#666" />
+        <Text style={styles.itemText}>{expense.description || 'No description'}</Text>
+      </View>
     </View>
   );
 

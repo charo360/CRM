@@ -102,6 +102,7 @@ from contact_classifier import get_classifier
 from fastapi import UploadFile, File, Body, Form
 from fastapi.staticfiles import StaticFiles
 from daily_scheduler import start_daily_scheduler
+from mongo_http_client import AsyncMongoHTTPClient
 
 
 
@@ -150,6 +151,7 @@ from agents.router import Router
 
 def normalize_url(u):
     """Normalize media URLs for Docker/local access."""
+    import re as _re
     if not u:
         return u
     if u.startswith('/'):
@@ -159,15 +161,33 @@ def normalize_url(u):
         return u.replace('http://localhost:', 'http://host.docker.internal:')
     if u.startswith('http://127.0.0.1:'):
         return u.replace('http://127.0.0.1:', 'http://host.docker.internal:')
+    # Replace any LAN/private IP (10.x, 192.168.x, 172.x) with host.docker.internal
+    u = _re.sub(r'http://(10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.\d+\.\d+\.\d+):(\d+)', 
+                lambda m: f'http://host.docker.internal:{m.group(2)}', u)
     return u
 
 # OpenAI API Key
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'whatsapp_crm')]
+if os.environ.get('TUNNEL_MODE') == 'true':
+    print("STARTUP_CHECK: TUNNEL_MODE ENABLED - Using MongoDB Data API")
+    api_url = os.environ.get('MONGO_DATA_API_URL')
+    api_key = os.environ.get('MONGO_DATA_API_KEY')
+    cluster = os.environ.get('MONGO_CLUSTER_NAME', 'Cluster0')
+    db_name = os.environ.get('DB_NAME', 'whatsapp_crm')
+    
+    if not api_url or not api_key:
+        print("❌ CRITICAL: TUNNEL_MODE=true but MONGO_DATA_API_URL or MONGO_DATA_API_KEY is missing")
+        sys.exit(1)
+        
+    client = AsyncMongoHTTPClient(api_url, api_key, cluster, db_name)
+    db = client[db_name]
+else:
+    mongo_url = os.environ['MONGO_URL']
+    client = AsyncIOMotorClient(mongo_url)
+    db = client[os.environ.get('DB_NAME', 'whatsapp_crm')]
+
 router = Router(db) # specific router for agents
 
 # WhatsApp via Evolution API (config in .env: EVOLUTION_API_URL, EVOLUTION_API_KEY)
@@ -201,6 +221,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def fix_team_members_index():
+    try:
+        await db.team_members.drop_index("business_id_1_email_1")
+        logging.info("Dropped bad team_members index: business_id_1_email_1")
+    except Exception:
+        pass
+    try:
+        await db.team_members.create_index(
+            [("business_id", 1), ("phone_number", 1)], unique=True, name="business_id_1_phone_1"
+        )
+        logging.info("Ensured team_members index: business_id_1_phone_1")
+    except Exception:
+        pass
 
 @app.get("/health")
 async def health_check():
@@ -588,19 +623,24 @@ class BroadcastResponse(BaseModel):
 @api_router.post("/broadcasts", response_model=BroadcastResponse)
 async def create_broadcast(broadcast: BroadcastCreate, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
     """Create and send a broadcast message"""
+    business_id = user.get("business_id", user["_id"])
     # Get recipients based on filter
-    query = {"user_id": user["_id"]}
-    
+    query = {"user_id": business_id}
+
     if broadcast.filter_type == "returning":
         query["tags"] = "Returning"
     elif broadcast.filter_type == "vip":
         query["tags"] = "VIP"
     elif broadcast.filter_type == "new":
         query["tags"] = "New"
-    elif broadcast.customer_ids:
+    elif broadcast.filter_type in ("custom", "group") or broadcast.customer_ids:
+        # Custom group / specific IDs — must have IDs, otherwise refuse
+        if not broadcast.customer_ids:
+            raise HTTPException(status_code=400, detail="customer_ids required for custom/group broadcast")
         query["_id"] = {"$in": broadcast.customer_ids}
-    
-    customers = await db.customers.find(query).to_list(1000)
+    # else filter_type == "all" — no extra filter, send to everyone
+
+    customers = await db.customers.find(query).to_list(None)  # no hard cap
     
     # Handle images: Normalize to image_urls list
     image_urls = broadcast.image_urls or []
@@ -613,7 +653,7 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
     broadcast_id = str(uuid.uuid4())
     broadcast_doc = {
         "_id": broadcast_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "message": broadcast.message,
         "filter_type": broadcast.filter_type,
         "recipients_count": len(customers),
@@ -632,7 +672,7 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         background_tasks.add_task(
             send_broadcast_messages,
             broadcast_id,
-            user["_id"],
+            business_id,
             broadcast.message,
             customers,
             image_urls
@@ -640,7 +680,7 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
     
     return BroadcastResponse(
         id=broadcast_id,
-        user_id=user["_id"],
+        user_id=business_id,
         message=broadcast.message,
         filter_type=broadcast.filter_type,
         recipients_count=len(customers),
@@ -656,27 +696,35 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
     """Send broadcast to all recipients"""
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
-    
+
+    # Normalize relative image URLs to absolute so Evolution API can fetch them
+    server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+    def _full_url(url: str) -> str:
+        if not url:
+            return url
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        return f"{server_url}{url}" if server_url else url
+
+    resolved_images = [_full_url(u) for u in image_urls if u]
+
     sent_count = 0
     for customer in customers:
         try:
-            # Personalize message with customer name
             personalized_message = message.replace("{{name}}", customer.get("name", "there"))
-            
-            # 1. Send text message (optionally with first image)
-            first_image = image_urls[0] if image_urls else None
-            await whatsapp_service.send_message(
-                user_id=user_id,
-                to_number=customer["phone_number"],
-                message=personalized_message,
-                customer_name=customer.get("name"),
-                media_url=first_image,
-                send_context="broadcast",
-            )
-            
-            # 2. Send remaining images
-            if len(image_urls) > 1:
-                for img_url in image_urls[1:]:
+
+            if resolved_images:
+                # First image carries the caption
+                await whatsapp_service.send_message(
+                    user_id=user_id,
+                    to_number=customer["phone_number"],
+                    message=personalized_message,
+                    customer_name=customer.get("name"),
+                    media_url=resolved_images[0],
+                    send_context="broadcast",
+                )
+                # Remaining images — no caption (gallery style)
+                for img_url in resolved_images[1:]:
                     await whatsapp_service.send_message(
                         user_id=user_id,
                         to_number=customer["phone_number"],
@@ -685,6 +733,15 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                         media_url=img_url,
                         send_context="broadcast",
                     )
+            else:
+                # Text-only broadcast
+                await whatsapp_service.send_message(
+                    user_id=user_id,
+                    to_number=customer["phone_number"],
+                    message=personalized_message,
+                    customer_name=customer.get("name"),
+                    send_context="broadcast",
+                )
 
             sent_count += 1
         except Exception as e:
@@ -704,7 +761,8 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 @api_router.get("/broadcasts", response_model=List[BroadcastResponse])
 async def get_broadcasts(user = Depends(get_current_user)):
     """Get all broadcasts for current user"""
-    broadcasts = await db.broadcasts.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
+    business_id = user.get("business_id", user["_id"])
+    broadcasts = await db.broadcasts.find({"user_id": business_id}).sort("created_at", -1).to_list(100)
     
     return [
         BroadcastResponse(
@@ -722,6 +780,15 @@ async def get_broadcasts(user = Depends(get_current_user)):
         )
         for b in broadcasts
     ]
+
+@api_router.delete("/broadcasts/{broadcast_id}")
+async def delete_broadcast(broadcast_id: str, user = Depends(get_current_user)):
+    """Delete a broadcast"""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.broadcasts.delete_one({"_id": broadcast_id, "user_id": business_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+    return {"status": "deleted"}
 
 # AI Message Generation
 class AIMessageRequest(BaseModel):
@@ -1151,6 +1218,65 @@ async def get_me(user = Depends(get_current_user)):
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
     })
 
+@api_router.post("/auth/push-token")
+async def save_push_token(request: Request, user = Depends(get_current_user)):
+    """Save Expo push token for this user device"""
+    body = await request.json()
+    token = body.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token required")
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$addToSet": {"push_tokens": token}}
+    )
+    return {"status": "ok"}
+
+@api_router.delete("/auth/push-token")
+async def remove_push_token(request: Request, user = Depends(get_current_user)):
+    """Remove Expo push token (on logout)"""
+    body = await request.json()
+    token = body.get("token", "").strip()
+    if token:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$pull": {"push_tokens": token}}
+        )
+    return {"status": "ok"}
+
+async def send_push_notification(user_id: str, title: str, body: str, data: dict = None):
+    """Send Expo push notification to all devices of a user"""
+    import httpx
+    user = await db.users.find_one({"_id": user_id})
+    if not user:
+        return
+    tokens = user.get("push_tokens", [])
+    if not tokens:
+        return
+    messages = [
+        {
+            "to": token,
+            "title": title,
+            "body": body,
+            "data": data or {},
+            "sound": "default",
+            "priority": "high",
+        }
+        for token in tokens
+        if token.startswith("ExponentPushToken") or token.startswith("ExpoPushToken")
+    ]
+    if not messages:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://exp.host/--/api/v2/push/send",
+                json=messages,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+            logging.info(f"Push notification sent to {len(messages)} device(s): {resp.status_code}")
+    except Exception as e:
+        logging.error(f"Push notification failed: {e}")
+
 # ============ TEAM MANAGEMENT ENDPOINTS ============
 
 def check_permission(user: dict, required_role: str) -> bool:
@@ -1464,9 +1590,10 @@ async def get_supplier_categories():
 @api_router.get("/suppliers/insights")
 async def get_supplier_insights(user = Depends(get_current_user)):
     """Get supplier insights and potential suppliers"""
+    business_id = user.get("business_id", user["_id"])
     analyzer = SupplierAnalyzer(db)
-    potential = await analyzer.identify_potential_suppliers(user["_id"])
-    restock = await analyzer.get_restock_suggestions(user["_id"])
+    potential = await analyzer.identify_potential_suppliers(business_id)
+    restock = await analyzer.get_restock_suggestions(business_id)
     return serialize_doc({
         "potential_suppliers": potential,
         "restock_suggestions": restock
@@ -1475,8 +1602,9 @@ async def get_supplier_insights(user = Depends(get_current_user)):
 @api_router.get("/suppliers")
 async def get_suppliers(user = Depends(get_current_user)):
     """Get all suppliers with their details"""
+    business_id = user.get("business_id", user["_id"])
     suppliers = await db.customers.find({
-        "user_id": user["_id"],
+        "user_id": business_id,
         "tags": "Supplier"
     }).to_list(100)
     
@@ -1494,8 +1622,9 @@ async def get_suppliers(user = Depends(get_current_user)):
 @api_router.post("/suppliers/{customer_id}/tag")
 async def tag_supplier(customer_id: str, user = Depends(get_current_user)):
     """Tag a customer as a supplier"""
+    business_id = user.get("business_id", user["_id"])
     await db.customers.update_one(
-        {"_id": customer_id, "user_id": user["_id"]},
+        {"_id": customer_id, "user_id": business_id},
         {"$addToSet": {"tags": "Supplier"}}
     )
     return {"status": "success"}
@@ -1515,9 +1644,10 @@ async def update_supplier_details(customer_id: str, body: dict = Body(...), user
     if "rating" in body:
         update_fields["rating"] = int(body["rating"])
     
+    business_id = user.get("business_id", user["_id"])
     if update_fields:
         await db.customers.update_one(
-            {"_id": customer_id, "user_id": user["_id"]},
+            {"_id": customer_id, "user_id": business_id},
             {"$set": update_fields}
         )
     
@@ -1526,8 +1656,9 @@ async def update_supplier_details(customer_id: str, body: dict = Body(...), user
 @api_router.delete("/suppliers/{customer_id}")
 async def remove_supplier_tag(customer_id: str, user = Depends(get_current_user)):
     """Remove supplier tag from a customer"""
+    business_id = user.get("business_id", user["_id"])
     await db.customers.update_one(
-        {"_id": customer_id, "user_id": user["_id"]},
+        {"_id": customer_id, "user_id": business_id},
         {"$pull": {"tags": "Supplier"}, "$unset": {"supplier_category": "", "products_supplied": "", "payment_terms": "", "lead_time": "", "rating": ""}}
     )
     return {"status": "success"}
@@ -1547,8 +1678,9 @@ async def classify_contacts(background_tasks: BackgroundTasks, user = Depends(ge
 @api_router.get("/contacts/pending")
 async def get_pending_classifications(user = Depends(get_current_user)):
     """Get all pending AI classifications awaiting user approval"""
+    business_id = user.get("business_id", user["_id"])
     pending = await db.pending_classifications.find({
-        "user_id": user["_id"],
+        "user_id": business_id,
         "status": "pending"
     }).sort("confidence", -1).to_list(50)
     
@@ -1566,6 +1698,7 @@ async def confirm_classification(customer_id: str, body: dict = Body(...), user 
     """
     action = body.get("action", "approve")
     contact_type = body.get("type", "customer")
+    business_id = user.get("business_id", user["_id"])
     
     if action == "approve":
         update_tags = {}
@@ -1581,7 +1714,7 @@ async def confirm_classification(customer_id: str, body: dict = Body(...), user 
             }
             # If AI detected a category, apply it
             pending = await db.pending_classifications.find_one({
-                "customer_id": customer_id, "user_id": user["_id"]
+                "customer_id": customer_id, "user_id": business_id
             })
             if pending and pending.get("detected_details", {}).get("suggested_category"):
                 update_tags["$set"]["supplier_category"] = pending["detected_details"]["suggested_category"]
@@ -1599,13 +1732,13 @@ async def confirm_classification(customer_id: str, body: dict = Body(...), user 
             }
         
         await db.customers.update_one(
-            {"_id": customer_id, "user_id": user["_id"]},
+            {"_id": customer_id, "user_id": business_id},
             update_tags
         )
     
     # Mark classification as handled
     await db.pending_classifications.update_one(
-        {"customer_id": customer_id, "user_id": user["_id"]},
+        {"customer_id": customer_id, "user_id": business_id},
         {"$set": {
             "status": "approved" if action == "approve" else "rejected",
             "resolved_at": datetime.utcnow(),
@@ -1617,8 +1750,9 @@ async def confirm_classification(customer_id: str, body: dict = Body(...), user 
 @api_router.post("/contacts/{customer_id}/dismiss")
 async def dismiss_classification(customer_id: str, user = Depends(get_current_user)):
     """Dismiss a pending classification without confirming"""
+    business_id = user.get("business_id", user["_id"])
     await db.pending_classifications.update_one(
-        {"customer_id": customer_id, "user_id": user["_id"]},
+        {"customer_id": customer_id, "user_id": business_id},
         {"$set": {"status": "dismissed", "resolved_at": datetime.utcnow()}}
     )
     return {"status": "success"}
@@ -1640,9 +1774,10 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         raise HTTPException(status_code=400, detail="Valid phone number is required")
 
     customer_id = str(uuid.uuid4())
+    business_id = user.get("business_id", user["_id"])
     customer_doc = {
         "_id": customer_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "name": clean_name,
         "phone_number": clean_phone,
         "notes": clean_notes,
@@ -1658,7 +1793,7 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
     
     return CustomerResponse(
         id=customer_id,
-        user_id=user["_id"],
+        user_id=business_id,
         name=customer.name,
         phone_number=customer.phone_number,
         notes=customer.notes,
@@ -1669,6 +1804,39 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         last_contacted=None,
         created_at=customer_doc["created_at"]
     )
+
+def _normalize_phone(phone: str) -> str:
+    """Normalize a phone number — strip +, spaces, dashes, and truncate to max 15 digits (E.164 max)"""
+    if not phone:
+        return phone
+    digits = phone.lstrip('+').replace(' ', '').replace('-', '')
+    # E.164 max is 15 digits. If longer, it's a malformed JID — truncate to 15
+    if len(digits) > 15:
+        digits = digits[:15]
+    return digits
+
+@api_router.get("/customers/all-contacts")
+async def get_all_contacts(user = Depends(get_current_user)):
+    """Return all contacts synced from WhatsApp regardless of customer/supplier status"""
+    business_id = user.get("business_id", user["_id"])
+    contacts = await db.customers.find({"user_id": business_id}).sort("created_at", -1).to_list(2000)
+    result = []
+    for c in contacts:
+        raw_phone = c.get("phone_number", "")
+        result.append({
+            "id": c["_id"],
+            "name": c.get("name", ""),
+            "phone_number": raw_phone,
+            "tags": c.get("tags", []),
+            "classification_type": c.get("classification_type", ""),
+            "classification_confirmed": c.get("classification_confirmed", False),
+            "last_contacted": c.get("last_contacted"),
+            "last_message": c.get("last_message", ""),
+            "created_at": c.get("created_at"),
+            "is_customer": bool(c.get("classification_confirmed") and c.get("classification_type") == "customer")
+                          or (not c.get("classification_type") and "Supplier" not in c.get("tags", [])),
+        })
+    return result
 
 @api_router.get("/customers", response_model=List[CustomerResponse])
 async def get_customers(
@@ -1765,9 +1933,10 @@ async def get_customers(
 @api_router.get("/customers/cold")
 async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
     """Get customers who haven't been contacted in X days"""
+    business_id = user.get("business_id", user["_id"])
     cutoff_date = datetime.utcnow() - timedelta(days=days)
     customers = await db.customers.find({
-        "user_id": user["_id"],
+        "user_id": business_id,
         "$or": [
             {"last_contacted": {"$lt": cutoff_date}},
             {"last_contacted": None}
@@ -1780,7 +1949,7 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
     # Try to get Smart Insights first (AI Daily Analysis)
     # This respects the "Smart Tiers" (limit 10/20/30) and "Smart Cadence" (24h/3d)
     smart_insights = await db.customer_analysis.find({
-        "user_id": user["_id"],
+        "user_id": business_id,
         "analysis_date": {"$gte": today}
     }).sort("urgency_score", -1).to_list(100)
     
@@ -1806,7 +1975,7 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
         # Fallback to legacy "Cold" logic if AI hasn't run yet
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         customers = await db.customers.find({
-            "user_id": user["_id"],
+            "user_id": business_id,
             "$or": [
                 {"last_contacted": {"$lt": cutoff_date}},
                 {"last_contacted": None}
@@ -1859,6 +2028,20 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         is_personal=customer.get("is_personal", False),
         created_at=customer["created_at"]
     )
+
+@api_router.post("/customers/{customer_id}/promote")
+async def promote_to_customer(customer_id: str, user = Depends(get_current_user)):
+    """Promote a contact to a confirmed customer"""
+    business_id = user.get("business_id", user["_id"])
+    await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$set": {
+            "classification_type": "customer",
+            "classification_confirmed": True,
+            "classified_at": datetime.utcnow(),
+        }, "$pull": {"tags": "Supplier"}}
+    )
+    return {"status": "success"}
 
 @api_router.put("/customers/{customer_id}", response_model=CustomerResponse)
 async def update_customer(customer_id: str, update: CustomerUpdate, user = Depends(get_current_user)):
@@ -1941,7 +2124,7 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
     
     return FollowUpResponse(
         id=followup_id,
-        user_id=user["_id"],
+        user_id=business_id,
         customer_id=followup.customer_id,
         customer_name=customer["name"],
         customer_phone=customer["phone_number"],
@@ -1955,7 +2138,8 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
 @api_router.get("/followups", response_model=List[FollowUpResponse])
 async def get_followups(status: Optional[str] = None, user = Depends(get_current_user)):
     """Get all follow-ups for current user"""
-    query = {"user_id": user["_id"]}
+    business_id = user.get("business_id", user["_id"])
+    query = {"user_id": business_id}
     if status:
         query["status"] = status
     
@@ -1982,7 +2166,8 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
 @api_router.put("/followups/{followup_id}", response_model=FollowUpResponse)
 async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depends(get_current_user)):
     """Update a follow-up"""
-    followup = await db.followups.find_one({"_id": followup_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    followup = await db.followups.find_one({"_id": followup_id, "user_id": business_id})
     if not followup:
         raise HTTPException(status_code=404, detail="Follow-up not found")
     
@@ -2009,7 +2194,8 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
 @api_router.delete("/followups/{followup_id}")
 async def delete_followup(followup_id: str, user = Depends(get_current_user)):
     """Delete a follow-up"""
-    result = await db.followups.delete_one({"_id": followup_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    result = await db.followups.delete_one({"_id": followup_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Follow-up not found")
     return {"status": "success", "message": "Follow-up deleted"}
@@ -2020,7 +2206,8 @@ async def snooze_followup(followup_id: str, days: int = 1, user = Depends(get_cu
     Snooze a follow-up by X days
     Common options: 1 day, 3 days, 7 days
     """
-    followup = await db.followups.find_one({"_id": followup_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    followup = await db.followups.find_one({"_id": followup_id, "user_id": business_id})
     if not followup:
         raise HTTPException(status_code=404, detail="Follow-up not found")
     
@@ -2061,15 +2248,91 @@ async def get_analytics_summary(user = Depends(get_current_user)):
     Get quick analytics summary for menu/dashboard
     Shows key metrics at a glance
     """
+    business_id = user.get("business_id", user["_id"])
     analytics = get_analytics(db)
-    stats_30d = await analytics.get_followup_stats(user["_id"], days=30)
-    stats_7d = await analytics.get_followup_stats(user["_id"], days=7)
-    
-    # Get smart notification insight
-    smart_notif = get_smart_notifications(db)
-    insight = await smart_notif.get_meaningful_insights(user["_id"])
-    
+
+    # Follow-up stats
+    try:
+        stats_30d = await analytics.get_followup_stats(user["_id"], days=30)
+        stats_7d = await analytics.get_followup_stats(user["_id"], days=7)
+    except Exception as e:
+        logging.error(f"followup stats error: {e}")
+        stats_30d = {"conversion_rate": 0, "response_rate": 0, "total_revenue": 0, "total_followups": 0}
+        stats_7d = {"conversion_rate": 0, "total_followups": 0, "total_revenue": 0}
+
+    # Smart insight
+    try:
+        smart_notif = get_smart_notifications(db)
+        insight = await smart_notif.get_meaningful_insights(user["_id"])
+    except Exception as e:
+        logging.error(f"insight error: {e}")
+        insight = None
+
+    # Top products from orders
+    try:
+        top_products = await analytics.get_product_insights(user["_id"], days=30)
+    except Exception as e:
+        logging.error(f"top products error: {e}")
+        top_products = []
+
+    # Best followup times
+    try:
+        best_times = await analytics.get_best_followup_times(user["_id"])
+    except Exception as e:
+        logging.error(f"best times error: {e}")
+        best_times = {"best_day": "Monday", "best_hour": 10, "sample_size": 0}
+
+    # Top selling items from sales (last 30 days)
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        sales_pipeline = [
+            {"$match": {"user_id": business_id, "created_at": {"$gte": cutoff}}},
+            {"$group": {"_id": "$item", "total_revenue": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+            {"$sort": {"total_revenue": -1}},
+            {"$limit": 5}
+        ]
+        top_items_raw = await db.sales.aggregate(sales_pipeline).to_list(5)
+        top_items = [{"name": r["_id"], "count": r["count"], "revenue": r["total_revenue"]} for r in top_items_raw]
+    except Exception as e:
+        logging.error(f"top items error: {e}")
+        top_items = []
+
+    # Best days of week from sales
+    try:
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        all_sales = await db.sales.find({"user_id": business_id, "created_at": {"$gte": cutoff}}).to_list(1000)
+        day_revenue = {}
+        for s in all_sales:
+            dow = s["created_at"].weekday()
+            day_revenue[dow] = day_revenue.get(dow, 0) + s.get("amount", 0)
+        best_days = sorted(
+            [{"day": day_names[k], "revenue": v} for k, v in day_revenue.items()],
+            key=lambda x: x["revenue"], reverse=True
+        )
+    except Exception as e:
+        logging.error(f"best days error: {e}")
+        best_days = []
+
+    # Customers
+    try:
+        total_customers = await db.customers.count_documents({"user_id": business_id})
+        now = datetime.utcnow()
+        month_start = datetime(now.year, now.month, 1)
+        new_customers = await db.customers.count_documents({"user_id": business_id, "created_at": {"$gte": month_start}})
+    except Exception as e:
+        logging.error(f"customers error: {e}")
+        total_customers = 0
+        new_customers = 0
+
+    # Currency from owner settings
+    try:
+        owner = await db.users.find_one({"_id": business_id})
+        currency = (owner or user).get("currency", "USD")
+    except Exception:
+        currency = user.get("currency", "USD")
+
     return {
+        "currency": currency,
         "last_30_days": {
             "conversion_rate": round(stats_30d["conversion_rate"], 1),
             "response_rate": round(stats_30d["response_rate"], 1),
@@ -2079,9 +2342,55 @@ async def get_analytics_summary(user = Depends(get_current_user)):
         "last_7_days": {
             "conversion_rate": round(stats_7d["conversion_rate"], 1),
             "followups": stats_7d["total_followups"],
-            "revenue": stats_7d["total_revenue"]
+            "revenue": stats_7d.get("total_revenue", 0)
         },
-        "insight": insight  # Current meaningful insight
+        "top_products": top_products,
+        "top_items": top_items,
+        "best_days": best_days,
+        "best_times": best_times,
+        "customers": {"total": total_customers, "new_this_month": new_customers},
+        "insight": insight
+    }
+
+@api_router.get("/analytics/stock")
+async def get_stock_analytics(user = Depends(get_current_user)):
+    """Get stock analytics: low stock, out of stock, total inventory value"""
+    business_id = user.get("business_id", user["_id"])
+    products = await db.products.find({"user_id": business_id}).to_list(1000)
+
+    total_products = len(products)
+    out_of_stock = []
+    low_stock = []
+    total_value = 0.0
+    in_stock_count = 0
+
+    for p in products:
+        sq = p.get("stock_quantity")
+        price = p.get("price") or 0
+        name = p.get("name", "Unknown")
+        category = p.get("category", "Other")
+
+        if not p.get("in_stock", True):
+            out_of_stock.append({"name": name, "category": category})
+        elif sq is not None:
+            if sq == 0:
+                out_of_stock.append({"name": name, "category": category, "stock_quantity": 0})
+            elif sq <= 5:
+                low_stock.append({"name": name, "category": category, "stock_quantity": sq})
+            else:
+                in_stock_count += 1
+            total_value += sq * price
+        else:
+            in_stock_count += 1
+
+    return {
+        "total_products": total_products,
+        "in_stock_count": in_stock_count,
+        "out_of_stock_count": len(out_of_stock),
+        "low_stock_count": len(low_stock),
+        "total_inventory_value": round(total_value, 2),
+        "out_of_stock": out_of_stock[:10],
+        "low_stock": low_stock[:10],
     }
 
 @api_router.post("/notifications/test-smart")
@@ -2160,16 +2469,22 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
     )
     
     # Send receipt via WhatsApp (background task)
+    # Use business_id (owner) for WhatsApp instance, since team members don't have their own instance
     if sale.send_receipt:
+        owner = await db.users.find_one({"_id": business_id}) if business_id != user["_id"] else user
+        currency = (owner or user).get("currency", "USD")
+        business_name = (owner or user).get("business_name", user.get("business_name", "Your Shop"))
         background_tasks.add_task(
             send_receipt_message,
             customer["phone_number"],
             customer["name"],
             sale.item,
             sale.amount,
-            user.get("business_name", "Your Shop"),
+            business_name,
             sale_id,
-            sale.receipt_message
+            sale.receipt_message,
+            currency,
+            business_id
         )
     
     return SaleResponse(
@@ -2270,10 +2585,40 @@ async def get_sales(user = Depends(get_current_user)):
     
     return result
 
+@api_router.get("/sales/by-employee")
+async def get_sales_by_employee(user = Depends(get_current_user)):
+    """Get sales totals grouped by employee (owner/manager only)"""
+    business_id = user.get("business_id", user["_id"])
+
+    pipeline = [
+        {"$match": {"user_id": business_id}},
+        {"$group": {
+            "_id": "$recorded_by",
+            "total": {"$sum": "$amount"},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"total": -1}}
+    ]
+    rows = await db.sales.aggregate(pipeline).to_list(100)
+
+    result = []
+    for row in rows:
+        uid = row["_id"]
+        member = await db.team_members.find_one({"user_id": uid, "business_id": business_id})
+        name = member["name"] if member else "Owner"
+        result.append({
+            "user_id": uid,
+            "name": name,
+            "total": row["total"],
+            "count": row["count"]
+        })
+    return result
+
 @api_router.post("/sales/{sale_id}/resend-receipt")
 async def resend_receipt(sale_id: str, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
     """Resend receipt for a sale"""
-    sale = await db.sales.find_one({"_id": sale_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    sale = await db.sales.find_one({"_id": sale_id, "user_id": business_id})
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
     
@@ -2333,6 +2678,17 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
         "created_at": datetime.utcnow()
     }
     
+    # Reduce stock if matching product is found and quantity is tracked
+    await db.products.update_one(
+        {
+            "user_id": business_id, 
+            "name": order.product, 
+            "stock_quantity": {"$exists": True, "$ne": None},
+            "stock_quantity": {"$gte": order.quantity}
+        },
+        {"$inc": {"stock_quantity": -order.quantity}}
+    )
+
     await db.orders.insert_one(order_doc)
     
     return OrderResponse(
@@ -2680,123 +3036,17 @@ async def delete_expense(expense_id: str, user = Depends(get_current_user)):
 
 # ============ BROADCAST ENDPOINTS ============
 
-@api_router.post("/broadcasts", response_model=BroadcastResponse)
-async def create_broadcast(broadcast: BroadcastCreate, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
-    """Create and send a broadcast message"""
-    # Get recipients based on filter
-    query = {"user_id": user["_id"]}
-    
-    if broadcast.filter_type == "returning":
-        query["tags"] = "Returning"
-    elif broadcast.filter_type == "vip":
-        query["tags"] = "VIP"
-    elif broadcast.filter_type == "new":
-        query["tags"] = "New"
-    elif broadcast.customer_ids:
-        query["_id"] = {"$in": broadcast.customer_ids}
-    
-    customers = await db.customers.find(query).to_list(1000)
-    
-    broadcast_id = str(uuid.uuid4())
-    broadcast_doc = {
-        "_id": broadcast_id,
-        "user_id": user["_id"],
-        "message": broadcast.message,
-        "filter_type": broadcast.filter_type,
-        "recipients_count": len(customers),
-        "sent_count": 0,
-        "status": "scheduled" if broadcast.scheduled_at else "pending",
-        "image_url": broadcast.image_url,
-        "scheduled_at": broadcast.scheduled_at,
-        "created_at": datetime.utcnow()
-    }
-    
-    await db.broadcasts.insert_one(broadcast_doc)
-    
-    # Send messages in background (only if not scheduled)
-    if not broadcast.scheduled_at:
-        background_tasks.add_task(
-            send_broadcast_messages,
-            broadcast_id,
-            user["_id"],
-            broadcast.message,
-            customers,
-            broadcast.image_url
-        )
-    
-    return BroadcastResponse(
-        id=broadcast_id,
-        user_id=user["_id"],
-        message=broadcast.message,
-        filter_type=broadcast.filter_type,
-        recipients_count=len(customers),
-        sent_count=0,
-        status="scheduled" if broadcast.scheduled_at else "sending",
-        image_url=broadcast.image_url,
-        scheduled_at=broadcast.scheduled_at,
-        created_at=broadcast_doc["created_at"]
-    )
-
-async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str, customers: list, image_url: Optional[str] = None):
-    """Send broadcast to all recipients"""
-    from whatsapp_service import get_whatsapp_service
-    whatsapp_service = get_whatsapp_service(db)
-    
-    sent_count = 0
-    for customer in customers:
-        try:
-            # Personalize message with customer name
-            personalized_message = message.replace("{{name}}", customer.get("name", "there"))
-            
-            # Send using service (handles logging and contact updates)
-            await whatsapp_service.send_message(
-                user_id=user_id,
-                to_number=customer["phone_number"],
-                message=personalized_message,
-                customer_name=customer.get("name"),
-                media_url=image_url,
-                send_context="broadcast",
-            )
-            sent_count += 1
-        except Exception as e:
-            logging.error(f"Failed to send to {customer['phone_number']}: {e}")
-    
-    # Update broadcast status
-    await db.broadcasts.update_one(
-        {"_id": broadcast_id},
-        {"$set": {"sent_count": sent_count, "status": "completed"}}
-    )
-
-@api_router.get("/broadcasts", response_model=List[BroadcastResponse])
-async def get_broadcasts(user = Depends(get_current_user)):
-    """Get all broadcasts for current user"""
-    broadcasts = await db.broadcasts.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
-    
-    return [
-        BroadcastResponse(
-            id=b["_id"],
-            user_id=b["user_id"],
-            message=b["message"],
-            filter_type=b["filter_type"],
-            recipients_count=b["recipients_count"],
-            sent_count=b.get("sent_count", 0),
-            status=b["status"],
-            image_url=b.get("image_url"),
-            scheduled_at=b.get("scheduled_at"),
-            created_at=b["created_at"]
-        )
-        for b in broadcasts
-    ]
 
 # ============ BROADCAST TEMPLATE ENDPOINTS ============
 
 @api_router.post("/broadcast-templates", response_model=BroadcastTemplateResponse)
 async def create_broadcast_template(template: BroadcastTemplateCreate, user = Depends(get_current_user)):
     """Create a reusable broadcast template"""
+    business_id = user.get("business_id", user["_id"])
     template_id = str(uuid.uuid4())
     template_doc = {
         "_id": template_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "name": template.name,
         "message": template.message,
         "image_url": template.image_url,
@@ -2807,7 +3057,7 @@ async def create_broadcast_template(template: BroadcastTemplateCreate, user = De
     
     return BroadcastTemplateResponse(
         id=template_id,
-        user_id=user["_id"],
+        user_id=business_id,
         name=template.name,
         message=template.message,
         image_url=template.image_url,
@@ -2817,7 +3067,8 @@ async def create_broadcast_template(template: BroadcastTemplateCreate, user = De
 @api_router.get("/broadcast-templates", response_model=List[BroadcastTemplateResponse])
 async def get_broadcast_templates(user = Depends(get_current_user)):
     """Get all broadcast templates for current user"""
-    templates = await db.broadcast_templates.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
+    business_id = user.get("business_id", user["_id"])
+    templates = await db.broadcast_templates.find({"user_id": business_id}).sort("created_at", -1).to_list(100)
     
     return [
         BroadcastTemplateResponse(
@@ -2834,7 +3085,8 @@ async def get_broadcast_templates(user = Depends(get_current_user)):
 @api_router.delete("/broadcast-templates/{template_id}")
 async def delete_broadcast_template(template_id: str, user = Depends(get_current_user)):
     """Delete a broadcast template"""
-    result = await db.broadcast_templates.delete_one({"_id": template_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    result = await db.broadcast_templates.delete_one({"_id": template_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Template not found")
     return {"status": "success", "message": "Template deleted"}
@@ -2856,6 +3108,7 @@ class CustomerGroupResponse(BaseModel):
 @api_router.post("/customer-groups", response_model=CustomerGroupResponse)
 async def create_customer_group(group: CustomerGroupCreate, user = Depends(get_current_user)):
     """Create a custom group of customers"""
+    business_id = user.get("business_id", user["_id"])
     group_id = str(uuid.uuid4())
     
     # deduplicate ids
@@ -2863,7 +3116,7 @@ async def create_customer_group(group: CustomerGroupCreate, user = Depends(get_c
     
     group_doc = {
         "_id": group_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "name": group.name,
         "customer_ids": customer_ids,
         "created_at": datetime.utcnow()
@@ -2873,7 +3126,7 @@ async def create_customer_group(group: CustomerGroupCreate, user = Depends(get_c
     
     return CustomerGroupResponse(
         id=group_id,
-        user_id=user["_id"],
+        user_id=business_id,
         name=group.name,
         customer_ids=customer_ids,
         count=len(customer_ids),
@@ -2883,7 +3136,8 @@ async def create_customer_group(group: CustomerGroupCreate, user = Depends(get_c
 @api_router.get("/customer-groups", response_model=List[CustomerGroupResponse])
 async def get_customer_groups(user = Depends(get_current_user)):
     """Get all customer groups for user"""
-    groups = await db.customer_groups.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
+    business_id = user.get("business_id", user["_id"])
+    groups = await db.customer_groups.find({"user_id": business_id}).sort("created_at", -1).to_list(100)
     
     return [
         CustomerGroupResponse(
@@ -2900,7 +3154,8 @@ async def get_customer_groups(user = Depends(get_current_user)):
 @api_router.delete("/customer-groups/{group_id}")
 async def delete_customer_group(group_id: str, user = Depends(get_current_user)):
     """Delete a customer group"""
-    result = await db.customer_groups.delete_one({"_id": group_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customer_groups.delete_one({"_id": group_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Group not found")
     return {"status": "success", "message": "Group deleted"}
@@ -2918,12 +3173,14 @@ class ProductResponse(BaseModel):
     images: List[str] = []
     description: Optional[str] = None
     in_stock: bool = True
+    stock_quantity: Optional[int] = None
     created_at: datetime
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
     """Get all products for the user"""
-    products = await db.products.find({"user_id": user["_id"]}).to_list(100)
+    business_id = user.get("business_id", user["_id"])
+    products = await db.products.find({"user_id": business_id}).to_list(100)
     
     result = []
     for p in products:
@@ -2941,6 +3198,7 @@ async def get_products(user = Depends(get_current_user)):
             images=imgs,
             description=p.get("description"),
             in_stock=p.get("in_stock", True),
+            stock_quantity=p.get("stock_quantity"),
             created_at=p.get("created_at", datetime.utcnow())
         ))
     return result
@@ -2954,6 +3212,7 @@ class ProductCreate(BaseModel):
     images: List[str] = []
     description: Optional[str] = None
     in_stock: bool = True
+    stock_quantity: Optional[int] = None
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -2964,14 +3223,16 @@ class ProductUpdate(BaseModel):
     images: Optional[List[str]] = None
     description: Optional[str] = None
     in_stock: Optional[bool] = None
+    stock_quantity: Optional[int] = None
 
 MAX_PRODUCTS = 20
 
 @api_router.post("/products", response_model=ProductResponse)
 async def create_product(product: ProductCreate, user = Depends(get_current_user)):
     """Create a new product"""
+    business_id = user.get("business_id", user["_id"])
     # Check product limit
-    count = await db.products.count_documents({"user_id": user["_id"]})
+    count = await db.products.count_documents({"user_id": business_id})
     if count >= MAX_PRODUCTS:
         raise HTTPException(status_code=400, detail=f"Product limit reached. Maximum {MAX_PRODUCTS} products allowed.")
     
@@ -2996,7 +3257,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
     
     product_doc = {
         "_id": str(uuid.uuid4()),
-        "user_id": user["_id"],
+        "user_id": business_id,
         "name": clean_name,
         "price": product.price,
         "discount_price": product.discount_price,
@@ -3005,6 +3266,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "images": images,
         "description": clean_description,
         "in_stock": product.in_stock,
+        "stock_quantity": product.stock_quantity,
         "created_at": datetime.utcnow()
     }
     
@@ -3020,6 +3282,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         images=product_doc["images"],
         description=product_doc["description"],
         in_stock=product_doc["in_stock"],
+        stock_quantity=product_doc["stock_quantity"],
         created_at=product_doc["created_at"]
     )
 
@@ -3036,8 +3299,9 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
     if "discount_price" in update_data and update_data["discount_price"] is not None:
         if update_data["discount_price"] < 0:
             raise HTTPException(status_code=400, detail="Discount price cannot be negative")
+        business_id = user.get("business_id", user["_id"])
         # Get current product to validate discount vs regular price
-        current = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+        current = await db.products.find_one({"_id": product_id, "user_id": business_id})
         if not current:
             raise HTTPException(status_code=404, detail="Product not found")
         # Use the new price if being updated, otherwise use current price
@@ -3045,6 +3309,7 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         if update_data["discount_price"] >= comparison_price:
             raise HTTPException(status_code=400, detail="Discount price must be less than regular price")
         
+    business_id = user.get("business_id", user["_id"])
     # If updating images, ensure image_url is consistent (take first image)
     if "images" in update_data and update_data["images"]:
         update_data["image_url"] = update_data["images"][0]
@@ -3052,7 +3317,7 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         update_data["image_url"] = None
 
     result = await db.products.find_one_and_update(
-        {"_id": product_id, "user_id": user["_id"]},
+        {"_id": product_id, "user_id": business_id},
         {"$set": update_data},
         return_document=True
     )
@@ -3075,6 +3340,7 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         images=imgs,
         description=result.get("description"),
         in_stock=result.get("in_stock", True),
+        stock_quantity=result.get("stock_quantity"),
         created_at=result["created_at"]
     )
 
@@ -3085,7 +3351,8 @@ async def add_product_images(
     user = Depends(get_current_user)
 ):
     """Add images to an existing product (max 5 images per product)"""
-    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    product = await db.products.find_one({"_id": product_id, "user_id": business_id})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
@@ -3125,7 +3392,8 @@ async def delete_product_image(
     user = Depends(get_current_user)
 ):
     """Delete a specific image from a product"""
-    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    product = await db.products.find_one({"_id": product_id, "user_id": business_id})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
@@ -3638,8 +3906,9 @@ async def whatsapp_disconnect(user = Depends(get_current_user)):
 @api_router.post("/customers/{customer_id}/messages/read")
 async def mark_messages_read(customer_id: str, user = Depends(get_current_user)):
     """Mark all incoming messages for a customer as read"""
+    business_id = user.get("business_id", user["_id"])
     result = await db.messages.update_many(
-        {"customer_id": customer_id, "user_id": user["_id"], "direction": "incoming", "read": {"$ne": True}},
+        {"customer_id": customer_id, "user_id": business_id, "direction": "incoming", "read": {"$ne": True}},
         {"$set": {"read": True}}
     )
     return {"marked_read": result.modified_count}
@@ -3649,7 +3918,7 @@ async def mark_messages_read(customer_id: str, user = Depends(get_current_user))
 @api_router.get("/dashboard/summary")
 async def get_dashboard_summary(user = Depends(get_current_user)):
     """Get a quick dashboard summary: unread messages, today's follow-ups, today's sales"""
-    uid = user["_id"]
+    uid = user.get("business_id", user["_id"])
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
 
@@ -3689,11 +3958,12 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
 @api_router.get("/customers/{customer_id}/messages/search")
 async def search_messages(customer_id: str, q: str = "", user = Depends(get_current_user)):
     """Search messages within a customer conversation"""
+    business_id = user.get("business_id", user["_id"])
     if not q.strip():
         return []
     messages = await db.messages.find({
         "customer_id": customer_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "content": {"$regex": q, "$options": "i"}
     }).sort("created_at", -1).limit(50).to_list(50)
     return serialize_doc(messages)
@@ -3703,7 +3973,7 @@ async def search_messages(customer_id: str, q: str = "", user = Depends(get_curr
 @api_router.get("/customers/{customer_id}/timeline")
 async def get_customer_timeline(customer_id: str, user = Depends(get_current_user)):
     """Get a unified timeline of all activities for a customer"""
-    uid = user["_id"]
+    uid = user.get("business_id", user["_id"])
 
     # Fetch messages (last 20)
     messages = await db.messages.find({
@@ -3786,9 +4056,13 @@ async def send_whatsapp_media(
             server_url = os.environ.get("SERVER_URL", "").rstrip("/")
             media_url = f"{server_url}/uploads/media/{unique_name}" if server_url else f"/uploads/media/{unique_name}"
         
+        # Normalize URL so Docker (Evolution API) can reach it
+        media_url = normalize_url(media_url)
+
+        business_id = user.get("business_id", user["_id"])
         whatsapp_service = get_whatsapp_service(db)
         send_result = await whatsapp_service.send_message(
-            user_id=user["_id"],
+            user_id=business_id,
             to_number=to_number,
             message=caption,
             customer_name=customer_name,
@@ -4072,7 +4346,52 @@ async def evolution_webhook(request: Request):
                     except Exception as e:
                         logging.debug(f"Could not fetch profile pic for new contact {phone}: {e}")
                 asyncio.create_task(_fetch_pic(user["_id"], customer_id, from_number))
-            
+
+                # Notify owner of new contact messaging for the first time
+                async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
+                    try:
+                        owner_phone = owner_user.get("phone_number") or owner_user.get("whatsapp", {}).get("phone_number")
+                        if not owner_phone:
+                            return
+                        # Don't notify if owner IS the new contact (self-message edge case)
+                        if owner_phone == cust_phone:
+                            return
+                        ws = get_whatsapp_service(db)
+                        preview = msg_body[:100] + ("..." if len(msg_body) > 100 else "")
+                        notification = (
+                            f"🆕 *New contact just messaged you!*\n\n"
+                            f"👤 *{cust_name}*\n"
+                            f"📱 {cust_phone}\n\n"
+                            f"💬 _{preview}_\n\n"
+                            f"Open your CRM app to view and reply."
+                        )
+                        await ws.send_message(
+                            user_id=owner_user["_id"],
+                            to_number=owner_phone,
+                            message=notification,
+                            send_context="auto_reply"
+                        )
+                        logging.info(f"Owner notified of new contact: {cust_name} ({cust_phone})")
+                    except Exception as e:
+                        logging.error(f"Failed to notify owner of new contact: {e}")
+
+                asyncio.create_task(_notify_owner_new_contact(user, customer_name, from_number, body))
+
+                # Also send Expo push notification to owner's device(s)
+                async def _push_new_contact(owner_id, cust_name, msg_body):
+                    try:
+                        preview = msg_body[:80] + ("..." if len(msg_body) > 80 else "")
+                        await send_push_notification(
+                            user_id=owner_id,
+                            title=f"🆕 New contact: {cust_name}",
+                            body=preview,
+                            data={"type": "new_contact", "contact_name": cust_name}
+                        )
+                    except Exception as e:
+                        logging.error(f"Push for new contact failed: {e}")
+
+                asyncio.create_task(_push_new_contact(user["_id"], customer_name, body))
+
             # Store message (both incoming and outgoing)
             if customer_id and body:
                 evo_msg_id = parsed.get("evo_message_id", "")
@@ -4103,6 +4422,9 @@ async def evolution_webhook(request: Request):
                 # Add image URL if present
                 if parsed.get("image_url"):
                     msg_doc["image_url"] = parsed["image_url"]
+                # Store original filename for documents
+                if parsed.get("file_name"):
+                    msg_doc["file_name"] = parsed["file_name"]
                 if evo_msg_id:
                     msg_doc["evo_message_id"] = evo_msg_id
                 await db.messages.insert_one(msg_doc)
@@ -4253,6 +4575,13 @@ async def evolution_webhook(request: Request):
                             "status": "pending",
                             "created_at": datetime.utcnow()
                         })
+                        
+                        # Reduce stock if tracked
+                        if _ordered_product.get("stock_quantity") is not None:
+                            await db.products.update_one(
+                                {"_id": _ordered_pid, "stock_quantity": {"$gte": 1}},
+                                {"$inc": {"stock_quantity": -1}}
+                            )
                         try:
                             ws = get_whatsapp_service(db)
                             price_display = f"{currency} {_ordered_product.get('price', 0):,.0f}"
@@ -4331,6 +4660,13 @@ async def evolution_webhook(request: Request):
                             "status": "pending",
                             "created_at": datetime.utcnow()
                         })
+
+                        # Reduce stock if tracked
+                        if matched_product.get("id"):
+                            await db.products.update_one(
+                                {"_id": matched_product["id"], "stock_quantity": {"$exists": True, "$ne": None}, "stock_quantity": {"$gte": 1}},
+                                {"$inc": {"stock_quantity": -1}}
+                            )
                         
                         try:
                             ws = get_whatsapp_service(db)
@@ -4856,6 +5192,7 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
             "content": m["content"],
             "message_type": m.get("message_type", "text"),
             "image_url": m.get("image_url"),
+            "file_name": m.get("file_name"),
             "status": m.get("status"),
             "created_at": m.get("created_at", m.get("timestamp"))
         }
@@ -4948,15 +5285,16 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
     """Generate AI-drafted follow-up message for a customer"""
     logging.info(f"DEBUG: draft_ai_message called for customer_id={request.customer_id}")
     try:
+        business_id = user.get("business_id", user["_id"])
         # Get customer
-        customer = await db.customers.find_one({"_id": request.customer_id, "user_id": user["_id"]})
+        customer = await db.customers.find_one({"_id": request.customer_id, "user_id": business_id})
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
         
         # Get message history
         messages = await db.messages.find({
             "customer_id": request.customer_id,
-            "user_id": user["_id"]
+            "user_id": business_id
         }).sort("created_at", 1).limit(10).to_list(10)
         
         # Get business name
@@ -4999,7 +5337,7 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
                 business_knowledge = "\n".join(knowledge_parts)
         
         # Inject product catalog
-        user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
+        user_products = await db.products.find({"user_id": business_id}).to_list(50)
         if user_products:
             currency = user_settings.get("currency", "USD")
             catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
@@ -5647,7 +5985,8 @@ async def upload_products(
         raise HTTPException(status_code=400, detail="No files provided")
     
     # Check product limit
-    count = await db.products.count_documents({"user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    count = await db.products.count_documents({"user_id": business_id})
     if count >= MAX_PRODUCTS:
         raise HTTPException(status_code=400, detail=f"Product limit reached. Maximum {MAX_PRODUCTS} products allowed.")
     if count + len(files) > MAX_PRODUCTS:
@@ -5670,32 +6009,45 @@ async def upload_products(
         for img in successful_uploads
     ]
     
-    ai_analyses = await organizer.analyze_multiple_images([str(p) for p in image_paths])
+    # Get business context for AI
+    business_knowledge_data = user.get('business_knowledge', {})
+    business_context = ""
+    if business_knowledge_data:
+        parts = []
+        if business_knowledge_data.get('business_description'):
+            parts.append(f"Description: {business_knowledge_data['business_description']}")
+        if business_knowledge_data.get('products_services'):
+            parts.append(f"Products/Services: {business_knowledge_data['products_services']}")
+        business_context = " | ".join(parts)
+    
+    ai_analyses = await organizer.analyze_multiple_images([str(p) for p in image_paths], business_context=business_context)
     
     # Create product documents
     products = []
     now = datetime.utcnow()
     
     for i, (img_data, ai_data) in enumerate(zip(successful_uploads, ai_analyses)):
-        if 'error' in ai_data:
-            continue
-        
+        ai_failed = 'error' in ai_data
+
         product_id = str(uuid.uuid4())
         product_doc = {
             "_id": product_id,
-            "user_id": user["_id"],
-            "name": ai_data.get('name', f'Product {i+1}'),
-            "price": ai_data.get('suggested_price', 0.0),
+            "user_id": business_id,
+            "name": ai_data.get('name', f'Product {i+1}') if not ai_failed else f'Product {i+1}',
+            "price": float(ai_data.get('suggested_price') or 0.0) if not ai_failed else 0.0,
             "image_url": img_data['image_url'],
-            "category": ai_data.get('category', 'Other'),
-            "description": ai_data.get('description', ''),
+            "images": [img_data['image_url']],
+            "category": ai_data.get('category', 'Other') if not ai_failed else 'Other',
+            "description": ai_data.get('description', '') if not ai_failed else '',
             "in_stock": True,
-            "ai_suggested_name": ai_data.get('name'),
-            "ai_confidence": ai_data.get('confidence', 0.5),
+            "ai_suggested_name": ai_data.get('name') if not ai_failed else None,
+            "ai_confidence": ai_data.get('confidence', 0.5) if not ai_failed else 0.0,
+            "ai_failed": ai_failed,
+            "needs_review": True,
             "created_at": now,
             "updated_at": now
         }
-        
+
         await db.products.insert_one(product_doc)
         products.append(product_doc)
     
@@ -5708,9 +6060,14 @@ async def upload_products(
                 "id": p["_id"],
                 "name": p["name"],
                 "price": p["price"],
+                "discount_price": p.get("discount_price"),
                 "category": p["category"],
+                "description": p.get("description", ""),
                 "image_url": p["image_url"],
-                "ai_confidence": p["ai_confidence"]
+                "images": p.get("images", []),
+                "in_stock": p.get("in_stock", True),
+                "ai_confidence": p.get("ai_confidence", 0),
+                "ai_failed": p.get("ai_failed", False),
             }
             for p in products
         ]
@@ -5751,8 +6108,8 @@ async def get_products(
 @api_router.get("/products/{product_id}")
 async def get_product(product_id: str, user = Depends(get_current_user)):
     """Get a single product"""
-    
-    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    product = await db.products.find_one({"_id": product_id, "user_id": business_id})
     
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -5783,8 +6140,8 @@ async def update_product(
     user = Depends(get_current_user)
 ):
     """Update product details"""
-    
-    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    product = await db.products.find_one({"_id": product_id, "user_id": business_id})
     
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -5816,8 +6173,8 @@ async def update_product(
 @api_router.delete("/products/{product_id}")
 async def delete_product(product_id: str, user = Depends(get_current_user)):
     """Delete a product"""
-    
-    product = await db.products.find_one({"_id": product_id, "user_id": user["_id"]})
+    business_id = user.get("business_id", user["_id"])
+    product = await db.products.find_one({"_id": product_id, "user_id": business_id})
     
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -5887,7 +6244,7 @@ async def send_product_to_customer(
     if len(all_images) > 1:
         for extra_img in all_images[:-1]:
             await whatsapp_service.send_message(
-                user_id=user["_id"],
+                user_id=business_id,
                 to_number=customer["phone_number"],
                 message="",
                 customer_name=customer.get("name"),
@@ -5897,7 +6254,7 @@ async def send_product_to_customer(
     
     # Send last image (or only image) with the product details caption
     result = await whatsapp_service.send_message(
-        user_id=user["_id"],
+        user_id=business_id,
         to_number=customer["phone_number"],
         message=message_text,
         customer_name=customer.get("name"),
@@ -5907,7 +6264,7 @@ async def send_product_to_customer(
     
     # Store as pending catalog so "Yes"/"Order" auto-creates the order
     await db.pending_catalogs.update_one(
-        {"customer_id": customer_id, "user_id": user["_id"]},
+        {"customer_id": customer_id, "user_id": business_id},
         {"$set": {
             "products": [{"id": product["_id"], "name": product["name"], "price": product.get("price", 0), "index": 1}],
             "single_product": True,
@@ -5991,7 +6348,7 @@ async def send_catalog_to_customer(
         if len(all_images) > 1:
             for extra_img in all_images[:-1]:
                 await whatsapp_service.send_message(
-                    user_id=user["_id"],
+                    user_id=business_id,
                     to_number=customer["phone_number"],
                     message="",
                     customer_name=customer.get("name"),
@@ -6001,7 +6358,7 @@ async def send_catalog_to_customer(
         
         # Send last image with product details caption
         result = await whatsapp_service.send_message(
-            user_id=user["_id"],
+            user_id=business_id,
             to_number=customer["phone_number"],
             message=message_text,
             customer_name=customer.get("name"),
@@ -6011,7 +6368,7 @@ async def send_catalog_to_customer(
     
     # Store product IDs in a pending catalog for this customer (for order matching)
     await db.pending_catalogs.update_one(
-        {"customer_id": request.customer_id, "user_id": user["_id"]},
+        {"customer_id": request.customer_id, "user_id": business_id},
         {"$set": {
             "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i} for i, p in enumerate(products, 1)],
             "created_at": datetime.utcnow()
@@ -6028,22 +6385,26 @@ async def send_catalog_to_customer(
 @api_router.post("/products/broadcast-catalog")
 async def broadcast_catalog(
     request: BroadcastCatalogRequest,
+    background_tasks: BackgroundTasks,
     user = Depends(get_current_user)
 ):
     """Broadcast a product catalog to multiple customers via WhatsApp"""
-    
+
+    business_id = user.get("business_id", user["_id"])
+    logging.info(f"broadcast_catalog: user_id={user['_id']} business_id={business_id} product_ids={request.product_ids}")
+
     # Get products
     catalog_products = []
     for pid in request.product_ids[:10]:
-        p = await db.products.find_one({"_id": pid, "user_id": user["_id"]})
-        if p and p.get("in_stock", True):
+        p = await db.products.find_one({"_id": pid})
+        if p and p.get("user_id") == business_id:
             catalog_products.append(p)
-    
+
     if not catalog_products:
-        raise HTTPException(status_code=400, detail="No valid in-stock products found")
-    
+        raise HTTPException(status_code=400, detail="No valid products found")
+
     # Get target customers based on filter
-    query = {"user_id": user["_id"]}
+    query = {"user_id": business_id}
     if request.filter_type == "custom" and request.customer_ids:
         query["_id"] = {"$in": request.customer_ids}
     elif request.filter_type == "new":
@@ -6052,86 +6413,119 @@ async def broadcast_catalog(
         query["tags"] = "Returning"
     elif request.filter_type == "vip":
         query["tags"] = "VIP"
-    
-    target_customers = await db.customers.find(query).to_list(500)
+
+    target_customers = await db.customers.find(query).to_list(None)
     if not target_customers:
         raise HTTPException(status_code=400, detail="No customers match this filter")
-    
+
     currency = user.get("settings", {}).get("currency", "USD")
     business_name = user.get("business_name", "Our Store")
-    
-    # Build catalog message
-    lines = [f"🛍️ *{business_name}*\n"]
+    server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+
+    def _resolve_img(img: str) -> Optional[str]:
+        if not img:
+            return None
+        if img.startswith("http://") or img.startswith("https://"):
+            return img
+        return f"{server_url}{img}" if server_url else None
+
+    # Build per-product messages
+    product_messages = []
     for i, p in enumerate(catalog_products, 1):
-        desc = f"  _{p['description']}_\n" if p.get("description") else ""
-        lines.append(f"*{i}.* {p['name']}\n  💰 {currency} {p.get('price', 0):,.0f}\n{desc}")
-    lines.append(f"\n👉 *Reply with a number to order!*\nE.g. just send *1* or *2*")
-    message_text = "\n".join(lines)
-    
-    # Get first product image
-    first_image = None
-    for p in catalog_products:
-        img = p.get("image_url")
-        if img:
-            if img.startswith("http"):
-                first_image = img
-            else:
-                server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-                if server_url:
-                    first_image = f"{server_url}{img}"
-            logging.info(f"Using image URL for catalog: {first_image}")
-            break
-    
-    # Send to all target customers
-    from whatsapp_service import get_whatsapp_service
-    whatsapp_service = get_whatsapp_service(db)
-    
-    sent_count = 0
-    failed_count = 0
+        desc = f"\n_{p['description']}_" if p.get("description") else ""
+        caption = (
+            f"🛍️ *{business_name}*\n\n"
+            f"*{i}. {p['name']}*{desc}\n"
+            f"💰 {currency} {p.get('price', 0):,.0f}\n\n"
+            f"👉 Reply *{i}* to order!"
+        )
+        imgs = p.get("images") or ([p["image_url"]] if p.get("image_url") else [])
+        resolved_imgs = [u for u in (_resolve_img(u) for u in imgs) if u]
+        product_messages.append({"caption": caption, "images": resolved_imgs})
+
+    # Summary text for broadcast log
+    summary_lines = [f"🛍️ *{business_name}* Catalog\n"]
+    for i, p in enumerate(catalog_products, 1):
+        summary_lines.append(f"*{i}.* {p['name']} — {currency} {p.get('price', 0):,.0f}")
+    message_text = "\n".join(summary_lines)
+    first_image = product_messages[0]["images"][0] if product_messages and product_messages[0]["images"] else None
     product_index_list = [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i} for i, p in enumerate(catalog_products, 1)]
-    
-    for customer in target_customers:
-        try:
-            await whatsapp_service.send_message(
-                user_id=user["_id"],
-                to_number=customer["phone_number"],
-                message=message_text,
-                customer_name=customer.get("name"),
-                media_url=first_image,
-                send_context="broadcast",
-            )
-            # Store pending catalog for order matching
-            await db.pending_catalogs.update_one(
-                {"customer_id": customer["_id"], "user_id": user["_id"]},
-                {"$set": {"products": product_index_list, "created_at": datetime.utcnow()}},
-                upsert=True
-            )
-            sent_count += 1
-        except Exception as e:
-            logging.error(f"Failed to send catalog to {customer.get('name')}: {e}")
-            failed_count += 1
-    
-    # Log as broadcast
+
+    # Insert broadcast record immediately as "sending"
     broadcast_id = str(uuid.uuid4())
     await db.broadcasts.insert_one({
         "_id": broadcast_id,
-        "user_id": user["_id"],
+        "user_id": business_id,
         "message": message_text,
         "filter_type": request.filter_type,
         "recipients_count": len(target_customers),
-        "sent_count": sent_count,
-        "status": "sent",
+        "sent_count": 0,
+        "status": "sending",
         "is_catalog": True,
         "product_ids": request.product_ids,
         "image_url": first_image,
         "created_at": datetime.utcnow()
     })
-    
+
+    async def _send_catalog_bg():
+        from whatsapp_service import get_whatsapp_service
+        whatsapp_service = get_whatsapp_service(db)
+        sent_count = 0
+        for customer in target_customers:
+            try:
+                for pm in product_messages:
+                    if pm["images"]:
+                        # Extra images first — no caption
+                        for extra_img in pm["images"][:-1]:
+                            await whatsapp_service.send_message(
+                                user_id=business_id,
+                                to_number=customer["phone_number"],
+                                message="",
+                                customer_name=customer.get("name"),
+                                media_url=extra_img,
+                                send_context="broadcast",
+                            )
+                        # Last image carries the caption
+                        await whatsapp_service.send_message(
+                            user_id=business_id,
+                            to_number=customer["phone_number"],
+                            message=pm["caption"],
+                            customer_name=customer.get("name"),
+                            media_url=pm["images"][-1],
+                            send_context="broadcast",
+                        )
+                    else:
+                        await whatsapp_service.send_message(
+                            user_id=business_id,
+                            to_number=customer["phone_number"],
+                            message=pm["caption"],
+                            customer_name=customer.get("name"),
+                            send_context="broadcast",
+                        )
+                await db.pending_catalogs.update_one(
+                    {"customer_id": customer["_id"], "user_id": business_id},
+                    {"$set": {"products": product_index_list, "created_at": datetime.utcnow()}},
+                    upsert=True
+                )
+                sent_count += 1
+            except Exception as e:
+                logging.error(f"Failed to send catalog to {customer.get('name')}: {e}")
+            from whatsapp_service import BROADCAST_DELAY
+            import random as _rnd
+            await asyncio.sleep(_rnd.uniform(*BROADCAST_DELAY))
+
+        await db.broadcasts.update_one(
+            {"_id": broadcast_id},
+            {"$set": {"sent_count": sent_count, "status": "completed"}}
+        )
+
+    background_tasks.add_task(_send_catalog_bg)
+
     return {
-        "status": "success",
+        "status": "sending",
+        "broadcast_id": broadcast_id,
         "recipients_count": len(target_customers),
-        "sent_count": sent_count,
-        "failed_count": failed_count,
+        "sent_count": 0,
         "products_in_catalog": len(catalog_products)
     }
 
@@ -6236,6 +6630,7 @@ async def startup_tasks():
         logging.error(f"Failed to purge conversation memory: {e}")
 
     # Recalculate customer totals from sales (Self-Healing)
+    try:
         logging.info("Starting customer totals recalculation...")
         
         # 1. Reset all totals to 0 first (safety)

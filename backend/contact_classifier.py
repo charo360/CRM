@@ -332,22 +332,55 @@ PRODUCTS: Comma-separated list of products discussed (max 5), or "N/A" if unclea
         )
 
         if classification and classification["confidence"] >= 0.5:
-            await self.db.pending_classifications.update_one(
-                {"customer_id": customer_id, "user_id": user_id},
-                {"$set": {
-                    "customer_id": customer_id,
-                    "user_id": user_id,
-                    "contact_name": classification["contact_name"],
-                    "phone_number": classification["phone_number"],
-                    "suggested_type": classification["suggested_type"],
-                    "confidence": classification["confidence"],
-                    "reason": classification["reason"],
-                    "detected_details": classification.get("detected_details", {}),
-                    "status": "pending",
-                    "updated_at": datetime.utcnow(),
-                }},
-                upsert=True,
-            )
+            confidence = classification["confidence"]
+            suggested_type = classification["suggested_type"]
+
+            # HIGH CONFIDENCE (>= 0.8): auto-promote silently, no owner approval needed
+            if confidence >= 0.8:
+                update_fields = {
+                    "classification_type": suggested_type,
+                    "classification_confirmed": True,
+                    "classified_at": datetime.utcnow(),
+                    "auto_classified": True,
+                    "classification_confidence": confidence,
+                }
+                # If supplier, add supplier tag and remove New tag
+                if suggested_type == "supplier":
+                    await self.db.customers.update_one(
+                        {"_id": customer_id, "user_id": user_id},
+                        {"$set": update_fields, "$addToSet": {"tags": "Supplier"}, "$pull": {"tags": "New"}}
+                    )
+                else:
+                    await self.db.customers.update_one(
+                        {"_id": customer_id, "user_id": user_id},
+                        {"$set": update_fields, "$pull": {"tags": "Supplier"}}
+                    )
+                # Remove any pending classification for this contact
+                await self.db.pending_classifications.delete_one(
+                    {"customer_id": customer_id, "user_id": user_id}
+                )
+                logger.info(
+                    f"Auto-promoted {classification['contact_name']} as {suggested_type} "
+                    f"(confidence={confidence:.0%})"
+                )
+            else:
+                # MEDIUM CONFIDENCE (0.5–0.79): store as pending for owner review
+                await self.db.pending_classifications.update_one(
+                    {"customer_id": customer_id, "user_id": user_id},
+                    {"$set": {
+                        "customer_id": customer_id,
+                        "user_id": user_id,
+                        "contact_name": classification["contact_name"],
+                        "phone_number": classification["phone_number"],
+                        "suggested_type": suggested_type,
+                        "confidence": confidence,
+                        "reason": classification["reason"],
+                        "detected_details": classification.get("detected_details", {}),
+                        "status": "pending",
+                        "updated_at": datetime.utcnow(),
+                    }},
+                    upsert=True,
+                )
 
 
 # Singleton

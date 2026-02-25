@@ -43,12 +43,13 @@ class ProductOrganizer:
             self.vision_available = False
             logger.warning("OpenAI API key not configured - product image analysis will use fallback mode")
     
-    async def analyze_product_image(self, image_path: str) -> Dict[str, any]:
+    async def analyze_product_image(self, image_path: str, business_context: str = None) -> Dict[str, any]:
         """
         Analyze a product image and extract information
         
         Args:
             image_path: Path to product image
+            business_context: Optional context about the business (e.g. "Fashion store", "Electronics shop")
             
         Returns:
             Dict with suggested name, category, description, price (if visible)
@@ -69,11 +70,19 @@ class ProductOrganizer:
                 image_content = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}}
             
             # Create prompt for OpenAI Vision
-            prompt = """Analyze this product image and provide the following information in a structured format:
+            context_snippet = f"\nBusiness Context: {business_context}\n" if business_context else ""
+            prompt = f"""Analyze this product image and provide the following information in a structured format.{context_snippet}
 
+CRITICAL INSTRUCTIONS:
+- FOCUS ON THE PRODUCT ITEM(S) ONLY. 
+- If a person or model is wearing the product, IGNORE the person. Do NOT describe the person's pose, appearance, or actions (e.g., "person taking a selfie", "man smiling").
+- Instead, describe the garment or object (e.g., "White cotton T-shirt", "Sleek matte headphones").
+- Use the Business Context above to guide your identification and terminology.
+
+FIELDS TO EXTRACT:
 1. Product Name: What is this product? Be specific (brand, model if visible)
 2. Category: Choose ONE from: Electronics, Clothing, Food & Beverages, Beauty & Health, Home & Garden, Sports & Fitness, Books & Media, Toys & Games, Automotive, Other
-3. Description: Brief 1-2 sentence description
+3. Description: Brief 1-2 sentence description focusing ONLY on features/styling of the item.
 4. Visible Price: If you can see a price tag or price in the image, extract it. Otherwise say "Not visible"
 5. Confidence: How confident are you in this analysis? (High/Medium/Low)
 
@@ -171,12 +180,13 @@ CONFIDENCE: [High/Medium/Low]"""
             "confidence": 0.3
         }
     
-    async def analyze_multiple_images(self, image_paths: List[str]) -> List[Dict[str, any]]:
+    async def analyze_multiple_images(self, image_paths: List[str], business_context: str = None) -> List[Dict[str, any]]:
         """
         Analyze multiple product images
         
         Args:
             image_paths: List of image paths
+            business_context: Optional context about the business
             
         Returns:
             List of analysis results
@@ -185,7 +195,7 @@ CONFIDENCE: [High/Medium/Low]"""
         
         for image_path in image_paths:
             try:
-                result = await self.analyze_product_image(image_path)
+                result = await self.analyze_product_image(image_path, business_context)
                 result['image_path'] = image_path
                 results.append(result)
             except Exception as e:

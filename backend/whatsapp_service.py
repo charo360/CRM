@@ -47,7 +47,7 @@ TYPING_PAUSE_CHANCE = 0.3           # 30% chance of a pause per slot
 TYPING_PAUSE_DURATION = (0.5, 1.5)  # How long each pause lasts
 
 # Broadcast delays: time between each broadcast message
-BROADCAST_DELAY = (8, 20)           # Random delay between broadcast sends
+BROADCAST_DELAY = (2, 5)            # Random delay between broadcast sends
 
 # Max typing indicator duration (WhatsApp resets typing after ~25s)
 MAX_TYPING_DURATION = 22
@@ -437,24 +437,21 @@ class WhatsAppService:
             instance_name = wa["instance_name"]
             from_number = wa.get("number", "")
 
-            # Format recipient number for Evolution API (digits only, no +)
+            # Format recipient number for Evolution API (digits only, no +, max 15 digits E.164)
             clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+            if len(clean_to) > 15:
+                clean_to = clean_to[:15]
 
-            # --- Human behavior: "read" delay then typing simulation ---
+            # --- Human behavior: delays only for auto-replies (anti-ban) ---
+            # Manual sends skip all delays — user is actively waiting
             try:
-                if send_context == "product_send":
-                    pass  # Skip all delays for product sends (user is waiting)
-                elif send_context == "auto_reply":
+                if send_context == "auto_reply":
                     await self._human_delay(AUTO_REPLY_READ_DELAY)
+                    await self._simulate_typing(instance_name, to_number, message)
                 elif send_context == "order_confirm":
                     await self._human_delay(ORDER_CONFIRM_READ_DELAY)
-                elif send_context == "broadcast":
-                    pass  # Broadcast delay handled in _process_broadcast
-                else:
-                    await self._human_delay(MANUAL_SEND_READ_DELAY)
-
-                if send_context != "product_send":
                     await self._simulate_typing(instance_name, to_number, message)
+                # manual, product_send, broadcast — no delays
             except Exception as e:
                 logger.debug(f"Human behavior simulation error (non-critical): {e}")
 
@@ -516,6 +513,9 @@ class WhatsAppService:
             }
             if media_url:
                 message_doc["image_url"] = media_url
+            if media_filename:
+                import urllib.parse as _up
+                message_doc["file_name"] = _up.unquote(media_filename)
             await self.db.messages.insert_one(message_doc)
 
             # Step 3: Update customer last_contacted and last_message
@@ -532,13 +532,18 @@ class WhatsAppService:
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
                     if media_url:
+                        # Decode URL-encoded filename (e.g. "my%20file.pdf" → "my file.pdf")
+                        import urllib.parse
+                        clean_filename = urllib.parse.unquote(media_filename or "")
+                        if not clean_filename:
+                            clean_filename = "image.jpg" if (media_type or "image") == "image" else "document.pdf"
                         # Send media message (FLAT structure fix)
                         payload = {
                             "number": clean_to,
                             "mediatype": media_type or "image",
                             "media": media_url,
                             "caption": message,
-                            "fileName": media_filename or ("image.jpg" if (media_type or "image") == "image" else "document")
+                            "fileName": clean_filename,
                         }
                         logger.info(f"Sending media payload: {payload}")  # DEBUG LOG
                         resp = await client.post(
@@ -882,7 +887,32 @@ class WhatsAppService:
         # Extract image URL if present
         image_message = message_data.get("imageMessage", {})
         image_url = image_message.get("url") or image_message.get("directPath")
-        message_type = "image" if image_url else "text"
+
+        # Extract document if present
+        # Evolution API sends documents in two variants:
+        # 1. documentMessage — plain document
+        # 2. documentWithCaption — document with a text caption
+        doc_message = (
+            message_data.get("documentMessage")
+            or (message_data.get("documentWithCaption") or {}).get("message", {}).get("documentMessage")
+            or {}
+        )
+        doc_url = doc_message.get("url") or doc_message.get("directPath")
+        doc_filename = doc_message.get("fileName") or doc_message.get("title") or ""
+
+        if doc_url:
+            message_type = "document"
+            media_url = doc_url
+            # Use doc filename as body if body is empty
+            # Avoid the generic fallback string so frontend can detect it properly
+            if not body:
+                body = doc_filename or "📎 Received document"
+        elif image_url:
+            message_type = "image"
+            media_url = image_url
+        else:
+            message_type = "text"
+            media_url = None
 
         push_name = msg.get("pushName", "")
 
@@ -901,10 +931,14 @@ class WhatsAppService:
             "evo_message_id": evo_msg_id,
             "message_type": message_type,
         }
-        
-        if image_url:
-            result["image_url"] = image_url
-        
+
+        # Store the media URL (works for both images and documents)
+        if media_url:
+            result["image_url"] = media_url
+        # Store original filename for documents
+        if doc_filename:
+            result["file_name"] = doc_filename
+
         return result
 
     async def handle_message_update(self, instance_name: str, data: Dict):

@@ -33,6 +33,7 @@ interface Product {
     category: string;
     description?: string;
     in_stock: boolean;
+    stock_quantity?: number;
     created_at: string;
 }
 
@@ -63,9 +64,12 @@ export default function ProductCatalogModal({
     const [editCategory, setEditCategory] = useState('');
     const [editDescription, setEditDescription] = useState('');
     const [editInStock, setEditInStock] = useState(true);
+    const [editStockQuantity, setEditStockQuantity] = useState('');
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
     const [addingPhotos, setAddingPhotos] = useState(false);
+    const [aiFailedBanner, setAiFailedBanner] = useState(false);
+    const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
 
     const MAX_PRODUCTS = 20;
 
@@ -74,7 +78,7 @@ export default function ProductCatalogModal({
             try {
                 const settings = await settingsAPI.getSettings();
                 if (settings.currency) setCurrency(settings.currency);
-            } catch (e) {}
+            } catch (e) { }
         };
         loadCurrency();
     }, []);
@@ -125,36 +129,74 @@ export default function ProductCatalogModal({
     const inStockCount = useMemo(() => products.filter(p => p.in_stock !== false).length, [products]);
     const outOfStockCount = useMemo(() => products.filter(p => p.in_stock === false).length, [products]);
 
-    const handleUploadProducts = async () => {
+    const handleUploadProducts = async (source: 'library' | 'camera' = 'library') => {
         if (products.length >= MAX_PRODUCTS) {
             Alert.alert('Limit Reached', `You can have a maximum of ${MAX_PRODUCTS} products. Delete some to add new ones.`);
             return;
         }
         try {
-            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-            if (status !== 'granted') {
-                Alert.alert('Permission needed', 'Please allow access to your photos');
-                return;
+            if (source === 'library') {
+                const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                if (status !== 'granted') {
+                    Alert.alert('Permission needed', 'Please allow access to your photos');
+                    return;
+                }
+            } else {
+                const { status } = await ImagePicker.requestCameraPermissionsAsync();
+                if (status !== 'granted') {
+                    Alert.alert('Permission needed', 'Please allow access to your camera');
+                    return;
+                }
             }
 
-            const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ['images'] as any,
-                allowsMultipleSelection: true,
+            const options: ImagePicker.ImagePickerOptions = {
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsMultipleSelection: source === 'library',
                 quality: 0.8,
-            });
+            };
+
+            const result = source === 'library'
+                ? await ImagePicker.launchImageLibraryAsync(options)
+                : await ImagePicker.launchCameraAsync(options);
 
             if (!result.canceled && result.assets.length > 0) {
                 setUploading(true);
                 try {
                     const response = await productsAPI.uploadProducts(result.assets);
-                    Alert.alert(
-                        'Products Added!',
-                        `${response.products_created} product${response.products_created !== 1 ? 's' : ''} uploaded. AI suggested names & prices — tap any product to review and edit.`,
-                        [{ text: 'OK', onPress: fetchProducts }]
-                    );
+                    // Refresh product list first
+                    await fetchProducts();
+
+                    if (response.products && response.products.length > 0) {
+                        const first = response.products[0];
+                        const aiFailed = !!first.ai_failed;
+                        // Open the first uploaded product straight into edit mode
+                        setAiFailedBanner(aiFailed);
+                        startEdit({
+                            id: first.id,
+                            name: first.name,
+                            price: first.price ?? 0,
+                            discount_price: first.discount_price,
+                            category: first.category || 'Other',
+                            description: first.description || '',
+                            image_url: first.image_url,
+                            images: first.images ?? [],
+                            in_stock: first.in_stock ?? true,
+                            created_at: new Date().toISOString(),
+                        });
+                        if (response.products.length > 1) {
+                            // Non-blocking hint about the other products
+                            setTimeout(() => {
+                                Alert.alert(
+                                    `${response.products.length} Products Uploaded`,
+                                    'Reviewing the first one — go back to the catalog to check the rest.',
+                                    [{ text: 'OK' }]
+                                );
+                            }, 500);
+                        }
+                    }
                 } catch (error) {
                     console.error('Upload error:', error);
-                    Alert.alert('Error', 'Failed to upload products');
+                    Alert.alert('Upload Failed', 'Could not upload products. Please try again.');
                 } finally {
                     setUploading(false);
                 }
@@ -164,6 +206,7 @@ export default function ProductCatalogModal({
             Alert.alert('Error', 'Failed to open image picker');
         }
     };
+
 
     const handleDeleteProduct = (product: Product) => {
         Alert.alert(
@@ -216,6 +259,7 @@ export default function ProductCatalogModal({
         setEditCategory(product.category || 'Other');
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
+        setEditStockQuantity(product.stock_quantity?.toString() || '');
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -233,6 +277,7 @@ export default function ProductCatalogModal({
         setEditCategory('Other');
         setEditDescription('');
         setEditInStock(true);
+        setEditStockQuantity('');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -261,6 +306,10 @@ export default function ProductCatalogModal({
         setSaving(true);
         try {
             const discountPrice = discountPriceValue;
+            const stockQuantity = editStockQuantity.trim() ? parseInt(editStockQuantity) : null;
+
+            let createdProductId = '';
+
             if (addMode) {
                 const productData: any = {
                     name: editName.trim(),
@@ -268,11 +317,18 @@ export default function ProductCatalogModal({
                     category: editCategory.trim() || 'Other',
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
+                    stock_quantity: stockQuantity,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
                 }
-                await productsAPI.createProduct(productData);
+                const newProduct = await productsAPI.createProduct(productData);
+                createdProductId = newProduct.id;
+
+                // Upload pending photos if any
+                if (pendingAssets.length > 0) {
+                    await productsAPI.addProductImages(createdProductId, pendingAssets);
+                }
             } else if (selectedProduct) {
                 const updateData: any = {
                     name: editName.trim(),
@@ -280,15 +336,18 @@ export default function ProductCatalogModal({
                     category: editCategory.trim() || 'Other',
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
+                    stock_quantity: stockQuantity,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
                 }
                 await productsAPI.updateProduct(selectedProduct.id, updateData);
             }
+
             setEditMode(false);
             setAddMode(false);
             setDetailVisible(false);
+            setPendingAssets([]);
             fetchProducts();
         } catch (error) {
             console.error('Save error:', error);
@@ -311,44 +370,72 @@ export default function ProductCatalogModal({
         return `${process.env.EXPO_PUBLIC_BACKEND_URL}${url}`;
     };
 
-    const handleAddPhotosToProduct = async (product: Product) => {
+    const handleAddPhotosToProduct = async (product: Product | null, source: 'library' | 'camera' = 'library') => {
         try {
-            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-            if (status !== 'granted') {
-                Alert.alert('Permission needed', 'Please allow access to your photos');
-                return;
+            // Request appropriate permissions
+            if (source === 'library') {
+                const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                if (status !== 'granted') {
+                    Alert.alert('Permission needed', 'Please allow access to your photos');
+                    return;
+                }
+            } else {
+                const { status } = await ImagePicker.requestCameraPermissionsAsync();
+                if (status !== 'granted') {
+                    Alert.alert('Permission needed', 'Please allow access to your camera');
+                    return;
+                }
             }
-            const currentCount = (product.images || []).length;
+
+            const currentCount = addMode ? pendingAssets.length : (product?.images || []).length;
             if (currentCount >= 5) {
                 Alert.alert('Limit reached', 'Maximum 5 photos per product');
                 return;
             }
-            const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ['images'] as any,
-                allowsMultipleSelection: true,
+
+            const options: ImagePicker.ImagePickerOptions = {
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsMultipleSelection: source === 'library',
                 quality: 0.8,
-                selectionLimit: 5 - currentCount,
-            });
+                selectionLimit: source === 'library' ? 5 - currentCount : 1,
+            };
+
+            const result = source === 'library'
+                ? await ImagePicker.launchImageLibraryAsync(options)
+                : await ImagePicker.launchCameraAsync(options);
+
             if (!result.canceled && result.assets.length > 0) {
-                setAddingPhotos(true);
-                try {
-                    await productsAPI.addProductImages(product.id, result.assets);
-                    await fetchProducts();
-                    // Refresh selected product
-                    const updated = await productsAPI.getProduct(product.id);
-                    setSelectedProduct(updated);
-                } catch (error: any) {
-                    Alert.alert('Error', error.response?.data?.detail || 'Failed to add photos');
-                } finally {
-                    setAddingPhotos(false);
+                if (addMode) {
+                    setPendingAssets([...pendingAssets, ...result.assets]);
+                } else if (product) {
+                    setAddingPhotos(true);
+                    try {
+                        await productsAPI.addProductImages(product.id, result.assets);
+                        await fetchProducts();
+                        // Refresh selected product
+                        const updated = await productsAPI.getProduct(product.id);
+                        setSelectedProduct(updated);
+                    } catch (error: any) {
+                        Alert.alert('Error', error.response?.data?.detail || 'Failed to add photos');
+                    } finally {
+                        setAddingPhotos(false);
+                    }
                 }
             }
         } catch (error) {
+            console.error('Image picker error:', error);
             Alert.alert('Error', 'Failed to open image picker');
         }
     };
 
-    const handleDeletePhoto = async (product: Product, imageIndex: number) => {
+    const handleDeletePhoto = async (product: Product | null, imageIndex: number) => {
+        if (addMode) {
+            setPendingAssets(prev => prev.filter((_, i) => i !== imageIndex));
+            return;
+        }
+
+        if (!product) return;
+
         Alert.alert('Delete Photo', 'Remove this photo?', [
             { text: 'Cancel', style: 'cancel' },
             {
@@ -421,10 +508,10 @@ export default function ProductCatalogModal({
     // ============ PRODUCT DETAIL MODAL ============
 
     const renderDetailModal = () => (
-        <Modal visible={detailVisible} animationType="slide" onRequestClose={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); }}>
+        <Modal visible={detailVisible} animationType="slide" onRequestClose={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); setAiFailedBanner(false); }}>
             <SafeAreaView style={styles.container}>
                 <View style={styles.header}>
-                    <TouchableOpacity onPress={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); }}>
+                    <TouchableOpacity onPress={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); setAiFailedBanner(false); }}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
                     <Text style={styles.headerTitle}>{addMode ? 'Add Product' : editMode ? 'Edit Product' : 'Product Details'}</Text>
@@ -441,6 +528,15 @@ export default function ProductCatalogModal({
                     {editMode ? (
                         // ---- EDIT / ADD FORM ----
                         <View style={styles.editForm}>
+                            {/* AI failure banner */}
+                            {aiFailedBanner && (
+                                <View style={styles.aiBanner}>
+                                    <Ionicons name="warning-outline" size={16} color="#92400e" />
+                                    <Text style={styles.aiBannerText}>
+                                        AI couldn't analyse this image — please fill in the name, price and category.
+                                    </Text>
+                                </View>
+                            )}
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Product Name *</Text>
                                 <TextInput
@@ -500,6 +596,19 @@ export default function ProductCatalogModal({
                                 />
                             </View>
 
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Stock Quantity (Optional)</Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editStockQuantity}
+                                    onChangeText={setEditStockQuantity}
+                                    placeholder="Leave empty for unlimited stock"
+                                    placeholderTextColor="#555"
+                                    keyboardType="numeric"
+                                />
+                                <Text style={styles.stockHint}>Automatically reduces when orders are placed</Text>
+                            </View>
+
                             <View style={styles.stockToggleRow}>
                                 <View>
                                     <Text style={styles.formLabel}>In Stock</Text>
@@ -513,25 +622,73 @@ export default function ProductCatalogModal({
                                 />
                             </View>
 
-                            {!addMode && selectedProduct && (
-                                <TouchableOpacity
-                                    style={styles.uploadImageBtn}
-                                    onPress={() => handleAddPhotosToProduct(selectedProduct)}
-                                    disabled={addingPhotos}
-                                >
-                                    {addingPhotos ? (
-                                        <ActivityIndicator size="small" color="#25D366" />
-                                    ) : (
-                                        <>
+                            {(addMode || selectedProduct) && (
+                                <>
+                                    <View style={styles.imageActionRow}>
+                                        <TouchableOpacity
+                                            style={styles.imageActionBtn}
+                                            onPress={() => handleAddPhotosToProduct(selectedProduct!, 'library')}
+                                            disabled={addingPhotos}
+                                        >
+                                            {addingPhotos ? (
+                                                <ActivityIndicator size="small" color="#25D366" />
+                                            ) : (
+                                                <>
+                                                    <Ionicons name="images-outline" size={20} color="#25D366" />
+                                                    <Text style={styles.imageActionText}>
+                                                        {addMode ? (
+                                                            pendingAssets.length > 0 ? `Photos (${pendingAssets.length}/5)` : 'Gallery'
+                                                        ) : (
+                                                            (selectedProduct!.images || []).length > 0
+                                                                ? `Photos (${(selectedProduct!.images || []).length}/5)`
+                                                                : 'Gallery'
+                                                        )}
+                                                    </Text>
+                                                </>
+                                            )}
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity
+                                            style={styles.imageActionBtn}
+                                            onPress={() => handleAddPhotosToProduct(selectedProduct!, 'camera')}
+                                            disabled={addingPhotos}
+                                        >
                                             <Ionicons name="camera-outline" size={20} color="#25D366" />
-                                            <Text style={styles.uploadImageText}>
-                                                {(selectedProduct.images || []).length > 0
-                                                    ? `Add Photos (${(selectedProduct.images || []).length}/5)`
-                                                    : 'Add Photos'}
-                                            </Text>
-                                        </>
+                                            <Text style={styles.imageActionText}>Take Photo</Text>
+                                        </TouchableOpacity>
+                                    </View>
+
+                                    {/* Edit mode thumbnails */}
+                                    {((!addMode && selectedProduct && selectedProduct.images && selectedProduct.images.length > 0) || (addMode && pendingAssets.length > 0)) && (
+                                        <View style={styles.editThumbnailsContainer}>
+                                            {addMode ? (
+                                                pendingAssets.map((img, idx) => (
+                                                    <View key={idx} style={styles.editThumbnailWrapper}>
+                                                        <Image source={{ uri: img.uri }} style={styles.editThumbnail} />
+                                                        <TouchableOpacity
+                                                            style={styles.deleteThumbnailBtn}
+                                                            onPress={() => handleDeletePhoto(null, idx)}
+                                                        >
+                                                            <Ionicons name="close-circle" size={18} color="#FF6B6B" />
+                                                        </TouchableOpacity>
+                                                    </View>
+                                                ))
+                                            ) : (
+                                                selectedProduct!.images!.map((img, idx) => (
+                                                    <View key={idx} style={styles.editThumbnailWrapper}>
+                                                        <Image source={{ uri: resolveImageUrl(img) }} style={styles.editThumbnail} />
+                                                        <TouchableOpacity
+                                                            style={styles.deleteThumbnailBtn}
+                                                            onPress={() => handleDeletePhoto(selectedProduct!, idx)}
+                                                        >
+                                                            <Ionicons name="close-circle" size={18} color="#FF6B6B" />
+                                                        </TouchableOpacity>
+                                                    </View>
+                                                ))
+                                            )}
+                                        </View>
                                     )}
-                                </TouchableOpacity>
+                                </>
                             )}
 
                             <TouchableOpacity
@@ -628,6 +785,13 @@ export default function ProductCatalogModal({
                                 <View style={styles.detailCategoryRow}>
                                     <Ionicons name="pricetag-outline" size={14} color="#8899AA" />
                                     <Text style={styles.detailCategory}>{selectedProduct.category || 'Other'}</Text>
+
+                                    {selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
+                                        <View style={styles.detailStockInfo}>
+                                            <Ionicons name="cube-outline" size={14} color="#8899AA" style={{ marginLeft: 12 }} />
+                                            <Text style={styles.detailCategory}>Stock: {selectedProduct.stock_quantity}</Text>
+                                        </View>
+                                    )}
                                 </View>
 
                                 {selectedProduct.description ? (
@@ -780,10 +944,16 @@ export default function ProductCatalogModal({
                         </View>
                         <Text style={styles.emptyText}>Your catalog is empty</Text>
                         <Text style={styles.emptySubtext}>Add products to share with customers and let AI recommend them automatically</Text>
-                        <TouchableOpacity style={styles.emptyUploadBtn} onPress={handleUploadProducts}>
-                            <Ionicons name="cloud-upload-outline" size={20} color="#FFF" />
-                            <Text style={styles.emptyUploadText}>Upload Product Photos</Text>
-                        </TouchableOpacity>
+                        <View style={styles.emptyActionRow}>
+                            <TouchableOpacity style={styles.emptyUploadBtn} onPress={() => handleUploadProducts('library')}>
+                                <Ionicons name="images-outline" size={20} color="#FFF" />
+                                <Text style={styles.emptyUploadText}>Gallery</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.emptyCameraBtn} onPress={() => handleUploadProducts('camera')}>
+                                <Ionicons name="camera-outline" size={20} color="#25D366" />
+                                <Text style={styles.emptyCameraText}>Camera</Text>
+                            </TouchableOpacity>
+                        </View>
                         <TouchableOpacity style={styles.emptyAddBtn} onPress={startAddProduct}>
                             <Ionicons name="add-circle-outline" size={20} color="#25D366" />
                             <Text style={styles.emptyAddText}>Add Manually</Text>
@@ -791,19 +961,28 @@ export default function ProductCatalogModal({
                     </View>
                 )}
 
-                {/* FAB - Upload */}
+                {/* FABs */}
                 {products.length > 0 && (
-                    <TouchableOpacity
-                        style={[styles.fab, uploading && { opacity: 0.6 }]}
-                        onPress={handleUploadProducts}
-                        disabled={uploading}
-                    >
-                        {uploading ? (
-                            <ActivityIndicator color="#FFF" size="small" />
-                        ) : (
-                            <Ionicons name="camera" size={26} color="#FFF" />
-                        )}
-                    </TouchableOpacity>
+                    <View style={styles.fabsContainer}>
+                        <TouchableOpacity
+                            style={[styles.fab, styles.fabGallery, uploading && { opacity: 0.6 }]}
+                            onPress={() => handleUploadProducts('library')}
+                            disabled={uploading}
+                        >
+                            <Ionicons name="images-outline" size={24} color="#FFF" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.fab, styles.fabCamera, uploading && { opacity: 0.6 }]}
+                            onPress={() => handleUploadProducts('camera')}
+                            disabled={uploading}
+                        >
+                            {uploading ? (
+                                <ActivityIndicator color="#FFF" size="small" />
+                            ) : (
+                                <Ionicons name="camera" size={26} color="#FFF" />
+                            )}
+                        </TouchableOpacity>
+                    </View>
                 )}
 
                 {renderDetailModal()}
@@ -1078,19 +1257,45 @@ const styles = StyleSheet.create({
         lineHeight: 20,
     },
     emptyUploadBtn: {
+        flex: 1,
         flexDirection: 'row',
         alignItems: 'center',
+        justifyContent: 'center',
         backgroundColor: '#25D366',
-        paddingHorizontal: 24,
+        paddingHorizontal: 20,
         paddingVertical: 14,
         borderRadius: 12,
         gap: 8,
-        marginTop: 24,
     },
     emptyUploadText: {
         color: '#FFF',
-        fontSize: 15,
-        fontWeight: '600',
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    emptyCameraBtn: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#112233',
+        paddingHorizontal: 20,
+        paddingVertical: 14,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#25D366',
+        gap: 8,
+    },
+    emptyCameraText: {
+        color: '#25D366',
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    emptyActionRow: {
+        flexDirection: 'row',
+        gap: 12,
+        marginBottom: 12,
+        width: '100%',
+        paddingHorizontal: 10,
     },
     emptyAddBtn: {
         flexDirection: 'row',
@@ -1108,22 +1313,31 @@ const styles = StyleSheet.create({
 
     // FAB
     fab: {
-        position: 'absolute',
-        bottom: 30,
-        right: 20,
-        width: 56,
-        height: 56,
-        borderRadius: 28,
+        width: 50,
+        height: 50,
+        borderRadius: 25,
         backgroundColor: '#25D366',
         justifyContent: 'center',
         alignItems: 'center',
-        elevation: 8,
-        shadowColor: '#25D366',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 8,
+        elevation: 5,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
     },
-
+    fabsContainer: {
+        position: 'absolute',
+        bottom: 30,
+        right: 20,
+        flexDirection: 'row',
+        gap: 12,
+    },
+    fabGallery: {
+        backgroundColor: '#334455',
+    },
+    fabCamera: {
+        backgroundColor: '#25D366',
+    },
     // Detail View
     detailContent: {
         flex: 1,
@@ -1179,6 +1393,11 @@ const styles = StyleSheet.create({
     detailCategory: {
         fontSize: 14,
         color: '#8899AA',
+        marginLeft: 6,
+    },
+    detailStockInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
     },
     descriptionBox: {
         marginTop: 20,
@@ -1277,6 +1496,29 @@ const styles = StyleSheet.create({
         color: '#25D366',
         fontSize: 14,
         fontWeight: '600',
+        marginLeft: 8,
+    },
+    imageActionRow: {
+        flexDirection: 'row',
+        gap: 12,
+        marginBottom: 12,
+    },
+    imageActionBtn: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#0D1B2A',
+        borderWidth: 1,
+        borderColor: '#1A3A2A',
+        borderRadius: 12,
+        paddingVertical: 12,
+    },
+    imageActionText: {
+        color: '#25D366',
+        fontSize: 14,
+        fontWeight: '600',
+        marginLeft: 8,
     },
     saveBtn: {
         backgroundColor: '#25D366',
@@ -1337,5 +1579,44 @@ const styles = StyleSheet.create({
         color: '#8899AA',
         fontSize: 12,
         fontWeight: '600',
+    },
+    aiBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        backgroundColor: '#FEF3C7',
+        borderRadius: 10,
+        padding: 12,
+        marginBottom: 16,
+    },
+    aiBannerText: {
+        flex: 1,
+        color: '#92400e',
+        fontSize: 13,
+        fontWeight: '500',
+        lineHeight: 18,
+    },
+    editThumbnailsContainer: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 12,
+        marginTop: 4,
+        marginBottom: 20,
+    },
+    editThumbnailWrapper: {
+        position: 'relative',
+    },
+    editThumbnail: {
+        width: 60,
+        height: 60,
+        borderRadius: 8,
+        backgroundColor: '#0A1628',
+    },
+    deleteThumbnailBtn: {
+        position: 'absolute',
+        top: -6,
+        right: -6,
+        backgroundColor: '#0D1B2A',
+        borderRadius: 10,
     },
 });

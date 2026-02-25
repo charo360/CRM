@@ -5,6 +5,7 @@ Sends meaningful notifications at the right time, not too frequently
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
+from followup_analytics import get_analytics
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,25 @@ class SmartNotificationManager:
                 }
             }
         
-        # SCENARIO 4: Good performance - positive reinforcement
+        # SCENARIO 4: Monthly Performance Summary (Revenue growth)
+        stats_this_month = await get_analytics(self.db).get_followup_stats(user_id, days=30)
+        # Simple comparison if we have data
+        if stats_this_month["total_revenue"] > 10000:
+            top_products = await get_analytics(self.db).get_product_insights(user_id, days=30)
+            if top_products:
+                top_p = top_products[0]
+                return {
+                    "type": "monthly_performance",
+                    "title": "📈 Monthly Performance",
+                    "body": f"Total revenue this month: KES {stats_this_month['total_revenue']:,.0f}. Best seller: {top_p['name']} ({top_p['quantity']} sold)!",
+                    "priority": "medium",
+                    "data": {
+                        "revenue": stats_this_month["total_revenue"],
+                        "top_product": top_p["name"]
+                    }
+                }
+
+        # SCENARIO 5: Good performance - positive reinforcement
         if recent_followups >= 5 and recent_messages >= 10:
             return {
                 "type": "positive_feedback",

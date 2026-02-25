@@ -13,22 +13,34 @@ export const apiClient = axios.create({
 });
 
 // Helper for file uploads using native fetch (more reliable than Axios for multipart on RN)
-const uploadFetch = async (path: string, formData: FormData) => {
+const uploadFetch = async (path: string, formData: FormData, timeoutMs = 30000) => {
   const token = apiClient.defaults.headers.common['Authorization'];
-  const res = await fetch(`${API_URL}/api${path}`, {
-    method: 'POST',
-    headers: {
-      'Bypass-Tunnel-Reminder': 'true',
-      'ngrok-skip-browser-warning': 'true',
-      ...(token ? { 'Authorization': token as string } : {}),
-    },
-    body: formData,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
-    throw new Error(err.detail || `Upload failed (${res.status})`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_URL}/api${path}`, {
+      method: 'POST',
+      headers: {
+        'Bypass-Tunnel-Reminder': 'true',
+        'ngrok-skip-browser-warning': 'true',
+        ...(token ? { 'Authorization': token as string } : {}),
+      },
+      body: formData,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
+      throw new Error(err.detail || `Upload failed (${res.status})`);
+    }
+    return res.json();
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      throw new Error('Upload timed out — please try again with fewer images');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 };
 
 // Request interceptor for logging
@@ -37,7 +49,7 @@ apiClient.interceptors.request.use(
     // Force ngrok bypass headers on every request to avoid 503 interstitial page
     config.headers['ngrok-skip-browser-warning'] = 'true';
     config.headers['Bypass-Tunnel-Reminder'] = 'true';
-    
+
     console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
     return config;
   },
@@ -357,7 +369,8 @@ export const productsAPI = {
       } as any);
     });
 
-    return await uploadFetch('/products/upload', formData);
+    // Use 120s timeout — AI image analysis can take a while
+    return await uploadFetch('/products/upload', formData, 120000);
   },
 
   /**

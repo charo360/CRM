@@ -119,13 +119,17 @@ export default function CustomersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<'recently_added' | 'recently_contacted'>('recently_added');
+  const [sortBy, setSortBy] = useState<'recently_added' | 'recently_contacted'>('recently_contacted');
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   // Suppliers mode state
-  const [viewMode, setViewMode] = useState<'customers' | 'suppliers'>('customers');
+  const [viewMode, setViewMode] = useState<'customers' | 'suppliers' | 'contacts'>('customers');
+  const [showFilters, setShowFilters] = useState(false);
+  const [allContacts, setAllContacts] = useState<any[]>([]);
+  const [loadingContacts2, setLoadingContacts2] = useState(false);
+  const [contactSearch2, setContactSearch2] = useState('');
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [supplierCategories, setSupplierCategories] = useState<string[]>([]);
   const [selectedSupplierCategory, setSelectedSupplierCategory] = useState<string | null>(null);
@@ -262,6 +266,18 @@ export default function CustomersScreen() {
       console.error('Failed to update AI model');
     }
   };
+
+  const fetchAllContacts = useCallback(async () => {
+    setLoadingContacts2(true);
+    try {
+      const res = await apiClient.get('/customers/all-contacts');
+      setAllContacts(res.data);
+    } catch (e) {
+      console.error('Error fetching all contacts:', e);
+    } finally {
+      setLoadingContacts2(false);
+    }
+  }, []);
 
   const fetchCustomers = useCallback(async () => {
     try {
@@ -965,8 +981,8 @@ export default function CustomersScreen() {
             {item.last_message || item.notes || item.phone_number}
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            {/* Only show assignment badges for teams (2+ members) */}
-            {(user?.team_members_count ?? 0) > 1 ? (
+            {/* Only show assignment badges for teams (1+ members) */}
+            {(user?.team_members_count ?? 0) >= 1 ? (
               <>
                 {item.assigned_to_name && (
                   <View style={styles.assignedBadge}>
@@ -1189,7 +1205,7 @@ export default function CustomersScreen() {
   return (
     <SafeAreaView style={styles.container}>
 
-      {/* Customers / Suppliers Toggle */}
+      {/* Customers / Suppliers / Contacts Toggle */}
       <View style={styles.viewToggle}>
         <TouchableOpacity
           style={[styles.toggleButton, viewMode === 'customers' && styles.toggleButtonActive]}
@@ -1212,6 +1228,17 @@ export default function CustomersScreen() {
             color={viewMode === 'suppliers' ? '#FFFFFF' : '#666'}
           />
           <Text style={[styles.toggleText, viewMode === 'suppliers' && styles.toggleTextActive]}>Suppliers</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleButton, viewMode === 'contacts' && styles.toggleButtonActive]}
+          onPress={() => { setViewMode('contacts'); fetchAllContacts(); }}
+        >
+          <Ionicons
+            name="person-add"
+            size={18}
+            color={viewMode === 'contacts' ? '#FFFFFF' : '#666'}
+          />
+          <Text style={[styles.toggleText, viewMode === 'contacts' && styles.toggleTextActive]}>Contacts</Text>
         </TouchableOpacity>
       </View>
 
@@ -1281,8 +1308,76 @@ export default function CustomersScreen() {
         </View>
       )}
 
-      {/* ===== SUPPLIER MODE ===== */}
-      {viewMode === 'suppliers' ? (
+      {/* ===== CONTACTS MODE ===== */}
+      {viewMode === 'contacts' ? (
+        <>
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={contactSearch2}
+              onChangeText={setContactSearch2}
+              placeholder="Search contacts..."
+              placeholderTextColor="#666"
+            />
+          </View>
+          {loadingContacts2 ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#25D366" />
+            </View>
+          ) : (
+            <FlatList
+              data={allContacts.filter(c =>
+                !c.is_customer &&
+                c.classification_type !== 'supplier' &&
+                (c.name.toLowerCase().includes(contactSearch2.toLowerCase()) ||
+                c.phone_number.includes(contactSearch2))
+              )}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listContent}
+              refreshControl={
+                <RefreshControl refreshing={loadingContacts2} onRefresh={fetchAllContacts} tintColor="#25D366" />
+              }
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="people-outline" size={64} color="#666" />
+                  <Text style={styles.emptyText}>No contacts yet</Text>
+                  <Text style={styles.emptySubtext}>Sync your WhatsApp to see all contacts here</Text>
+                </View>
+              }
+              renderItem={({ item }) => (
+                <View style={styles.contactRow}>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                    onPress={() => router.push({ pathname: '/chat', params: { customerId: item.id, customerName: item.name, customerPhone: item.phone_number } })}
+                  >
+                    <View style={styles.contactAvatar}>
+                      <Text style={styles.contactAvatarText}>{item.name?.charAt(0)?.toUpperCase() || '?'}</Text>
+                    </View>
+                    <View style={styles.contactInfo}>
+                      <Text style={styles.contactName} numberOfLines={1}>{item.name}</Text>
+                      <Text style={styles.contactPhone}>{item.phone_number}</Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.contactAddBtn}
+                    onPress={async () => {
+                      try {
+                        await apiClient.post(`/customers/${item.id}/promote`);
+                        fetchAllContacts();
+                        fetchCustomers();
+                      } catch (e) { console.error('Promote failed', e); }
+                    }}
+                  >
+                    <Ionicons name="person-add" size={12} color="#FFF" />
+                    <Text style={styles.contactAddBtnText}>Add</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            />
+          )}
+        </>
+      ) : viewMode === 'suppliers' ? (
         <>
           {/* Scan button when no pending classifications */}
           {pendingClassifications.length === 0 && (
@@ -1546,6 +1641,7 @@ export default function CustomersScreen() {
       ) : (
         <>
           {/* ===== CUSTOMER MODE ===== */}
+          {/* dummy comment to keep structure */}
           {/* Dashboard Summary Card */}
           {dashboardSummary && (
             <View style={styles.dashboardCard}>
@@ -1581,120 +1677,140 @@ export default function CustomersScreen() {
             </View>
           )}
 
-          {/* Pipeline Stage Pills */}
-          <View style={{ height: 38, marginBottom: 8 }}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
-              {STAGES.map((stage) => (
-                <TouchableOpacity
-                  key={stage}
-                  style={[
-                    styles.stageChip,
-                    selectedStage === stage && styles.stageChipActive,
-                    selectedStage === stage && stage !== 'all' && { backgroundColor: STAGE_COLORS[stage] }
-                  ]}
-                  onPress={() => setSelectedStage(stage)}
-                >
-                  <Text style={[styles.stageChipText, selectedStage === stage && styles.stageChipTextActive]}>
-                    {STAGE_LABELS[stage]}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-          {/* Assignment Filter Pills - Only show for teams (2+ members) */}
-          {(user?.team_members_count ?? 0) > 1 ? (
-            <View style={{ height: 38, marginBottom: 8 }}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
-                <TouchableOpacity
-                  style={[styles.assignmentChip, assignmentFilter === 'all' && styles.assignmentChipActive]}
-                  onPress={() => setAssignmentFilter('all')}
-                >
-                  <Ionicons name="people" size={14} color={assignmentFilter === 'all' ? '#FFF' : '#8899AA'} />
-                  <Text style={[styles.assignmentChipText, assignmentFilter === 'all' && styles.assignmentChipTextActive]}>
-                    All
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.assignmentChip, assignmentFilter === 'assigned_to_me' && styles.assignmentChipActive]}
-                  onPress={() => setAssignmentFilter('assigned_to_me')}
-                >
-                  <Ionicons name="person" size={14} color={assignmentFilter === 'assigned_to_me' ? '#FFF' : '#8899AA'} />
-                  <Text style={[styles.assignmentChipText, assignmentFilter === 'assigned_to_me' && styles.assignmentChipTextActive]}>
-                    My Conversations
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.assignmentChip, assignmentFilter === 'unassigned' && styles.assignmentChipActive]}
-                  onPress={() => setAssignmentFilter('unassigned')}
-                >
-                  <Ionicons name="help-circle-outline" size={14} color={assignmentFilter === 'unassigned' ? '#FFF' : '#8899AA'} />
-                  <Text style={[styles.assignmentChipText, assignmentFilter === 'unassigned' && styles.assignmentChipTextActive]}>
-                    Unassigned
-                  </Text>
-                </TouchableOpacity>
-              </ScrollView>
+          {/* Filter Toggle Bar */}
+          <TouchableOpacity
+            style={styles.filterToggleBar}
+            onPress={() => setShowFilters(v => !v)}
+            activeOpacity={0.8}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="options-outline" size={16} color={showFilters ? '#25D366' : '#8899AA'} />
+              <Text style={[styles.filterToggleText, showFilters && { color: '#25D366' }]}>Filters & Search</Text>
+              {(selectedStage !== 'all' || selectedTag || searchQuery || assignmentFilter !== 'all') && (
+                <View style={styles.filterActiveDot} />
+              )}
             </View>
-          ) : null}
+            <Ionicons name={showFilters ? 'chevron-up' : 'chevron-down'} size={16} color={showFilters ? '#25D366' : '#8899AA'} />
+          </TouchableOpacity>
 
-          <View style={styles.searchContainer}>
-            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
-            <TextInput
-              style={styles.searchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search customers..."
-              placeholderTextColor="#666"
-            />
-          </View>
+          {showFilters && (
+            <View style={styles.filterPanel}>
+              {/* Pipeline Stage Pills */}
+              <View style={{ height: 38, marginBottom: 8 }}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
+                  {STAGES.map((stage) => (
+                    <TouchableOpacity
+                      key={stage}
+                      style={[
+                        styles.stageChip,
+                        selectedStage === stage && styles.stageChipActive,
+                        selectedStage === stage && stage !== 'all' && { backgroundColor: STAGE_COLORS[stage] }
+                      ]}
+                      onPress={() => setSelectedStage(stage)}
+                    >
+                      <Text style={[styles.stageChipText, selectedStage === stage && styles.stageChipTextActive]}>
+                        {STAGE_LABELS[stage]}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
 
-          {/* Sorting Toggle */}
-          <View style={styles.sortContainer}>
-            <TouchableOpacity
-              style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
-              onPress={() => setSortBy('recently_contacted')}
-            >
-              <Ionicons
-                name="chatbubble-outline"
-                size={16}
-                color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'}
-              />
-              <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
-                Recently Contacted
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
-              onPress={() => setSortBy('recently_added')}
-            >
-              <Ionicons
-                name="time-outline"
-                size={16}
-                color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'}
-              />
-              <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
-                Recently Added
-              </Text>
-            </TouchableOpacity>
-          </View>
+              {/* Assignment Filter Pills - Only show for teams (1+ members) */}
+              {(user?.team_members_count ?? 0) >= 1 ? (
+                <View style={{ height: 38, marginBottom: 8 }}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
+                    <TouchableOpacity
+                      style={[styles.assignmentChip, assignmentFilter === 'all' && styles.assignmentChipActive]}
+                      onPress={() => setAssignmentFilter('all')}
+                    >
+                      <Ionicons name="people" size={14} color={assignmentFilter === 'all' ? '#FFF' : '#8899AA'} />
+                      <Text style={[styles.assignmentChipText, assignmentFilter === 'all' && styles.assignmentChipTextActive]}>
+                        All
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.assignmentChip, assignmentFilter === 'assigned_to_me' && styles.assignmentChipActive]}
+                      onPress={() => setAssignmentFilter('assigned_to_me')}
+                    >
+                      <Ionicons name="person" size={14} color={assignmentFilter === 'assigned_to_me' ? '#FFF' : '#8899AA'} />
+                      <Text style={[styles.assignmentChipText, assignmentFilter === 'assigned_to_me' && styles.assignmentChipTextActive]}>
+                        My Conversations
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.assignmentChip, assignmentFilter === 'unassigned' && styles.assignmentChipActive]}
+                      onPress={() => setAssignmentFilter('unassigned')}
+                    >
+                      <Ionicons name="help-circle-outline" size={14} color={assignmentFilter === 'unassigned' ? '#FFF' : '#8899AA'} />
+                      <Text style={[styles.assignmentChipText, assignmentFilter === 'unassigned' && styles.assignmentChipTextActive]}>
+                        Unassigned
+                      </Text>
+                    </TouchableOpacity>
+                  </ScrollView>
+                </View>
+              ) : null}
 
-          <View style={styles.filterContainer}>
-            <TouchableOpacity
-              style={[styles.filterChip, !selectedTag && styles.filterChipActive]}
-              onPress={() => setSelectedTag(null)}
-            >
-              <Text style={[styles.filterText, !selectedTag && styles.filterTextActive]}>All</Text>
-            </TouchableOpacity>
-            {TAGS.map((tag) => (
-              <TouchableOpacity
-                key={tag}
-                style={[styles.filterChip, selectedTag === tag && styles.filterChipActive]}
-                onPress={() => setSelectedTag(selectedTag === tag ? null : tag)}
-              >
-                <Text style={[styles.filterText, selectedTag === tag && styles.filterTextActive]}>{tag}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+              <View style={styles.searchContainer}>
+                <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Search customers..."
+                  placeholderTextColor="#666"
+                />
+              </View>
+
+              {/* Sorting Toggle */}
+              <View style={styles.sortContainer}>
+                <TouchableOpacity
+                  style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
+                  onPress={() => setSortBy('recently_contacted')}
+                >
+                  <Ionicons
+                    name="chatbubble-outline"
+                    size={16}
+                    color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'}
+                  />
+                  <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
+                    Recently Contacted
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
+                  onPress={() => setSortBy('recently_added')}
+                >
+                  <Ionicons
+                    name="time-outline"
+                    size={16}
+                    color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'}
+                  />
+                  <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
+                    Recently Added
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.filterContainer}>
+                <TouchableOpacity
+                  style={[styles.filterChip, !selectedTag && styles.filterChipActive]}
+                  onPress={() => setSelectedTag(null)}
+                >
+                  <Text style={[styles.filterText, !selectedTag && styles.filterTextActive]}>All</Text>
+                </TouchableOpacity>
+                {TAGS.map((tag) => (
+                  <TouchableOpacity
+                    key={tag}
+                    style={[styles.filterChip, selectedTag === tag && styles.filterChipActive]}
+                    onPress={() => setSelectedTag(selectedTag === tag ? null : tag)}
+                  >
+                    <Text style={[styles.filterText, selectedTag === tag && styles.filterTextActive]}>{tag}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
 
           <FlatList
             data={filteredCustomers}
@@ -3335,5 +3451,116 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: '#25D366',
+  },
+  contactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
+    backgroundColor: '#0A1628',
+  },
+  contactAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#1A2942',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  contactAvatarText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  contactInfo: {
+    flex: 1,
+  },
+  contactName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  contactPhone: {
+    fontSize: 13,
+    color: '#8899AA',
+  },
+  contactBadgeCol: {
+    alignItems: 'flex-end',
+  },
+  contactBadgeCustomer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#25D36620',
+    borderRadius: 10,
+  },
+  contactBadgeCustomerText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#25D366',
+  },
+  contactBadgeSupplier: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#4A90D920',
+    borderRadius: 10,
+  },
+  contactBadgeSupplierText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#4A90D9',
+  },
+  contactAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#25D366',
+    borderRadius: 10,
+  },
+  contactAddBtnText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  filterToggleBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginBottom: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: '#111D30',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1A2942',
+  },
+  filterToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8899AA',
+  },
+  filterActiveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#25D366',
+  },
+  filterPanel: {
+    backgroundColor: '#0D1929',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
+    paddingBottom: 4,
   },
 });
