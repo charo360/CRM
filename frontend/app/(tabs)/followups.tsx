@@ -952,7 +952,7 @@ export default function FollowupsScreen() {
         </ScrollView>
       )}
 
-      {activeTab === 'needs_attention' ? (
+      {activeTab === 'analytics' ? null : activeTab === 'needs_attention' ? (
         <>
           {isAnalyzing && coldCustomers.length === 0 && (
             <View style={{ padding: 20, alignItems: 'center', backgroundColor: '#1A2942', margin: 16, borderRadius: 12 }}>
