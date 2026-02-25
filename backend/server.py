@@ -1532,6 +1532,143 @@ async def get_me(user = Depends(get_current_user)):
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
     })
 
+# ============ USER SETTINGS ============
+
+@api_router.get("/settings")
+async def get_settings(user = Depends(get_current_user)):
+    """Get current user settings"""
+    s = user.get("settings", {})
+    return {
+        "auto_reply_enabled": s.get("auto_reply_enabled", False),
+        "notification_enabled": s.get("notification_enabled", True),
+        "notification_time": s.get("notification_time", "09:00"),
+        "daily_alert_count": s.get("daily_alert_count", 5),
+        "message_tone": s.get("message_tone", "friendly"),
+        "push_token": s.get("push_token"),
+        "daily_pulse_enabled": s.get("daily_pulse_enabled", False),
+        "daily_pulse_time": s.get("daily_pulse_time", "08:00"),
+        "currency": user.get("currency", s.get("currency", "USD")),
+        "country_code": user.get("country_code", s.get("country_code", "")),
+        "ai_model": s.get("ai_model", "standard"),
+    }
+
+@api_router.put("/settings")
+async def update_settings(request: Request, user = Depends(get_current_user)):
+    """Update user settings"""
+    body = await request.json()
+    # Top-level fields (currency, country_code) live directly on the user doc
+    top_level_fields = {}
+    settings_fields = {}
+    for k, v in body.items():
+        if k in ("currency", "country_code"):
+            top_level_fields[k] = v
+        else:
+            settings_fields[f"settings.{k}"] = v
+    update_doc = {}
+    if top_level_fields:
+        update_doc.update(top_level_fields)
+    if settings_fields:
+        update_doc.update(settings_fields)
+    if update_doc:
+        await db.users.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    return {"status": "ok"}
+
+# ============ CONTACT CLASSIFICATION ============
+
+@api_router.post("/contacts/classify")
+async def classify_contacts(user = Depends(get_current_user)):
+    """Run AI classification on unclassified contacts"""
+    business_id = user.get("business_id", user["_id"])
+    classifier = get_classifier(db)
+    # Find customers without a confirmed classification
+    unclassified = await db.customers.find({
+        "user_id": business_id,
+        "classification_confirmed": {"$ne": True},
+    }).to_list(100)
+    results = []
+    for c in unclassified:
+        try:
+            result = await classifier.classify_contact(business_id, c["_id"])
+            if result and result.get("suggested_type"):
+                await db.customers.update_one(
+                    {"_id": c["_id"]},
+                    {"$set": {
+                        "pending_classification": result["suggested_type"],
+                        "classification_confidence": result.get("confidence", 0),
+                        "classification_reason": result.get("reason", ""),
+                        "classification_pending": True,
+                    }}
+                )
+                results.append({"id": c["_id"], "name": c["name"], "classification": result["suggested_type"]})
+        except Exception as e:
+            logging.error(f"Classification error for {c['_id']}: {e}")
+    return {"classified": len(results), "results": results}
+
+@api_router.get("/contacts/pending")
+async def get_pending_classifications(user = Depends(get_current_user)):
+    """Get contacts with pending (unconfirmed) AI classifications"""
+    business_id = user.get("business_id", user["_id"])
+    pending = await db.customers.find({
+        "user_id": business_id,
+        "classification_pending": True,
+    }).to_list(50)
+    result = []
+    for c in pending:
+        result.append({
+            "id": c["_id"],
+            "name": c["name"],
+            "phone_number": c["phone_number"],
+            "pending_classification": c.get("pending_classification"),
+            "classification_confidence": c.get("classification_confidence", 0),
+            "classification_reason": c.get("classification_reason", ""),
+        })
+    return result
+
+@api_router.post("/contacts/{customer_id}/confirm")
+async def confirm_classification(customer_id: str, request: Request, user = Depends(get_current_user)):
+    """Confirm or override a pending contact classification"""
+    business_id = user.get("business_id", user["_id"])
+    body = await request.json()
+    action = body.get("action")  # "approve" or "reject"
+    contact_type = body.get("type")  # "customer" or "supplier"
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    if action == "approve":
+        classification = contact_type or customer.get("pending_classification", "customer")
+        tags = list(customer.get("tags", []))
+        if classification == "supplier" and "Supplier" not in tags:
+            tags.append("Supplier")
+        elif classification == "customer" and "Supplier" in tags:
+            tags.remove("Supplier")
+        await db.customers.update_one(
+            {"_id": customer_id},
+            {"$set": {
+                "classification_type": classification,
+                "classification_confirmed": True,
+                "classification_pending": False,
+                "tags": tags,
+                "classified_at": datetime.utcnow(),
+            }}
+        )
+    else:
+        # Reject — just clear the pending flag
+        await db.customers.update_one(
+            {"_id": customer_id},
+            {"$set": {"classification_pending": False}}
+        )
+    return {"status": "ok", "action": action}
+
+@api_router.post("/contacts/{customer_id}/dismiss")
+async def dismiss_classification(customer_id: str, user = Depends(get_current_user)):
+    """Dismiss a pending classification without confirming"""
+    business_id = user.get("business_id", user["_id"])
+    await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$set": {"classification_pending": False}}
+    )
+    return {"status": "ok"}
+
 @api_router.post("/auth/push-token")
 async def save_push_token(request: Request, user = Depends(get_current_user)):
     """Save Expo push token for this user device"""
