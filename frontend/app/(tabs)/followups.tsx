@@ -70,6 +70,29 @@ interface Message {
   created_at: string;
 }
 
+interface FollowUpAnalytics {
+  stats: {
+    period_days: number;
+    total_followups: number;
+    contacted: number;
+    converted: number;
+    responded: number;
+    no_response: number;
+    not_contacted: number;
+    conversion_rate: number;
+    response_rate: number;
+    avg_response_time_hours: number;
+    total_revenue: number;
+    revenue_per_followup: number;
+  };
+  best_times: {
+    best_day: string;
+    best_hour: number;
+    sample_size: number;
+  };
+  outcome_counts?: Record<string, number>;
+}
+
 type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week' | 'later';
 
 export default function FollowupsScreen() {
@@ -80,7 +103,10 @@ export default function FollowupsScreen() {
   const [suggestions, setSuggestions] = useState<Suggestions | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'reminders' | 'needs_attention'>('needs_attention');
+  const [activeTab, setActiveTab] = useState<'reminders' | 'needs_attention' | 'analytics'>('needs_attention');
+  const [analytics, setAnalytics] = useState<FollowUpAnalytics | null>(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [analyticsPeriod, setAnalyticsPeriod] = useState(30);
   const [filter, setFilter] = useState<FilterType>('all');
 
   // Add Reminder Modal State
@@ -111,6 +137,12 @@ export default function FollowupsScreen() {
   const [analyzeRetries, setAnalyzeRetries] = useState(0);
   const MAX_ANALYZE_RETRIES = 3;
 
+  useEffect(() => {
+    if (activeTab === 'analytics') {
+      fetchAnalytics(analyticsPeriod);
+    }
+  }, [activeTab, analyticsPeriod]);
+
   // Snooze state
   const [snoozingId, setSnoozingId] = useState<string | null>(null);
 
@@ -124,6 +156,26 @@ export default function FollowupsScreen() {
   // AI note draft state
   const [noteAIDirection, setNoteAIDirection] = useState('');
   const [generatingNoteAI, setGeneratingNoteAI] = useState(false);
+
+  const fetchAnalytics = useCallback(async (days = 30) => {
+    setLoadingAnalytics(true);
+    try {
+      const res = await apiClient.get(`/followups/analytics?days=${days}`);
+      // Also get manual outcome counts from completed followups
+      const completed = await apiClient.get('/followups?status=completed').catch(() => ({ data: [] }));
+      const outcomeCounts: Record<string, number> = {};
+      (completed.data as any[]).forEach((f: any) => {
+        if (f.outcome) {
+          outcomeCounts[f.outcome] = (outcomeCounts[f.outcome] || 0) + 1;
+        }
+      });
+      setAnalytics({ ...res.data, outcome_counts: outcomeCounts });
+    } catch (e) {
+      console.error('Analytics fetch error:', e);
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -313,13 +365,12 @@ export default function FollowupsScreen() {
 
   const scheduleLocalNotification = async (date: Date, customerName: string, message: string | null, followupType: string) => {
     try {
-      const { Notifications } = await import('expo-notifications');
-      const { requestPermissionsAsync, scheduleNotificationAsync } = Notifications;
-      const { status } = await requestPermissionsAsync();
+      const Notifications = await import('expo-notifications');
+      const { status } = await Notifications.requestPermissionsAsync();
       if (status !== 'granted') return;
       const trigger = new Date(date);
       if (trigger <= new Date()) return;
-      await scheduleNotificationAsync({
+      await Notifications.scheduleNotificationAsync({
         content: {
           title: `Follow-up: ${customerName}`,
           body: message || `Time to ${followupType} ${customerName}`,
@@ -683,26 +734,27 @@ export default function FollowupsScreen() {
           style={[styles.tab, activeTab === 'needs_attention' && styles.tabActive]}
           onPress={() => setActiveTab('needs_attention')}
         >
-          <Ionicons
-            name="alert-circle"
-            size={18}
-            color={activeTab === 'needs_attention' ? '#FFFFFF' : '#666'}
-          />
+          <Ionicons name="alert-circle" size={18} color={activeTab === 'needs_attention' ? '#FFFFFF' : '#666'} />
           <Text style={[styles.tabText, activeTab === 'needs_attention' && styles.tabTextActive]}>
-            Needs Attention ({coldCustomers.filter(c => !c.has_pending_followup).length})
+            Attention
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'reminders' && styles.tabActive]}
           onPress={() => setActiveTab('reminders')}
         >
-          <Ionicons
-            name="notifications"
-            size={18}
-            color={activeTab === 'reminders' ? '#FFFFFF' : '#666'}
-          />
+          <Ionicons name="notifications" size={18} color={activeTab === 'reminders' ? '#FFFFFF' : '#666'} />
           <Text style={[styles.tabText, activeTab === 'reminders' && styles.tabTextActive]}>
             Reminders ({followups.length})
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'analytics' && styles.tabActive]}
+          onPress={() => setActiveTab('analytics')}
+        >
+          <Ionicons name="bar-chart" size={18} color={activeTab === 'analytics' ? '#FFFFFF' : '#666'} />
+          <Text style={[styles.tabText, activeTab === 'analytics' && styles.tabTextActive]}>
+            Results
           </Text>
         </TouchableOpacity>
       </View>
@@ -726,6 +778,175 @@ export default function FollowupsScreen() {
               </Text>
             </TouchableOpacity>
           ))}
+        </ScrollView>
+      )}
+
+      {/* Analytics Tab */}
+      {activeTab === 'analytics' && (
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+          {/* Period picker */}
+          <View style={{ flexDirection: 'row', gap: 8, marginBottom: 20 }}>
+            {[7, 30, 90].map(d => (
+              <TouchableOpacity
+                key={d}
+                style={{
+                  flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center',
+                  backgroundColor: analyticsPeriod === d ? '#25D366' : '#1A2942',
+                }}
+                onPress={() => setAnalyticsPeriod(d)}
+              >
+                <Text style={{ color: analyticsPeriod === d ? '#FFF' : '#888', fontWeight: '600', fontSize: 13 }}>
+                  {d === 7 ? '7 days' : d === 30 ? '30 days' : '90 days'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {loadingAnalytics ? (
+            <View style={{ alignItems: 'center', paddingTop: 40 }}>
+              <ActivityIndicator size="large" color="#25D366" />
+              <Text style={{ color: '#666', marginTop: 12 }}>Calculating results...</Text>
+            </View>
+          ) : !analytics ? (
+            <View style={{ alignItems: 'center', paddingTop: 40 }}>
+              <Ionicons name="bar-chart-outline" size={48} color="#333" />
+              <Text style={{ color: '#666', marginTop: 12, textAlign: 'center' }}>
+                No data yet. Complete some follow-ups to see results.
+              </Text>
+            </View>
+          ) : (
+            <>
+              {/* Summary strip */}
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 20 }}>
+                <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
+                  <Text style={{ color: '#25D366', fontSize: 22, fontWeight: '800' }}>{analytics.stats.total_followups}</Text>
+                  <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Total Done</Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
+                  <Text style={{ color: '#FFD700', fontSize: 22, fontWeight: '800' }}>{Math.round(analytics.stats.response_rate)}%</Text>
+                  <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Response Rate</Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
+                  <Text style={{ color: '#4A90D9', fontSize: 22, fontWeight: '800' }}>{Math.round(analytics.stats.conversion_rate)}%</Text>
+                  <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Converted</Text>
+                </View>
+              </View>
+
+              {/* Manual outcome breakdown (from Done button) */}
+              {analytics.outcome_counts && Object.keys(analytics.outcome_counts).length > 0 && (
+                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+                  <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 14 }}>What happened?</Text>
+                  {[
+                    { id: 'called',          label: 'Called — answered',        icon: 'call',                color: '#25D366' },
+                    { id: 'replied',         label: 'Replied on WhatsApp',       icon: 'logo-whatsapp',       color: '#25D366' },
+                    { id: 'converted',       label: 'Made a sale',               icon: 'trophy',              color: '#FFD700' },
+                    { id: 'no_answer',       label: 'No answer / no reply',      icon: 'phone-portrait',      color: '#FF6B6B' },
+                    { id: 'rescheduled',     label: 'Rescheduled',               icon: 'calendar',            color: '#4A90D9' },
+                    { id: 'not_interested',  label: 'Not interested',            icon: 'close-circle',        color: '#666' },
+                  ].map(o => {
+                    const count = analytics.outcome_counts?.[o.id] || 0;
+                    if (count === 0) return null;
+                    const total = Object.values(analytics.outcome_counts || {}).reduce((a, b) => a + b, 0);
+                    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+                    return (
+                      <View key={o.id} style={{ marginBottom: 12 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Ionicons name={o.icon as any} size={15} color={o.color} />
+                            <Text style={{ color: '#CCD6E0', fontSize: 13 }}>{o.label}</Text>
+                          </View>
+                          <Text style={{ color: o.color, fontWeight: '700', fontSize: 13 }}>{count}  <Text style={{ color: '#555', fontWeight: '400' }}>({pct}%)</Text></Text>
+                        </View>
+                        <View style={{ height: 5, backgroundColor: '#0A1628', borderRadius: 3 }}>
+                          <View style={{ height: 5, width: `${pct}%`, backgroundColor: o.color, borderRadius: 3 }} />
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+
+              {/* Auto-detected outcomes (from message analysis) */}
+              <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+                <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 4 }}>Auto-detected Activity</Text>
+                <Text style={{ color: '#555', fontSize: 11, marginBottom: 14 }}>Based on messages sent/received after each follow-up</Text>
+                {[
+                  { key: 'converted',      label: 'Led to a sale',         color: '#FFD700', val: analytics.stats.converted },
+                  { key: 'responded',      label: 'Customer replied',       color: '#25D366', val: analytics.stats.responded },
+                  { key: 'no_response',    label: 'No reply',               color: '#FF6B6B', val: analytics.stats.no_response },
+                  { key: 'not_contacted',  label: 'Never messaged',         color: '#444',    val: analytics.stats.not_contacted },
+                ].map(row => (
+                  <View key={row.key} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#0A1628' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: row.color }} />
+                      <Text style={{ color: '#CCD6E0', fontSize: 13 }}>{row.label}</Text>
+                    </View>
+                    <Text style={{ color: row.color, fontSize: 15, fontWeight: '700' }}>{row.val}</Text>
+                  </View>
+                ))}
+              </View>
+
+              {/* Revenue */}
+              {analytics.stats.total_revenue > 0 && (
+                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View>
+                    <Text style={{ color: '#888', fontSize: 12 }}>Revenue from follow-ups</Text>
+                    <Text style={{ color: '#FFD700', fontSize: 22, fontWeight: '800', marginTop: 2 }}>
+                      {analytics.stats.total_revenue.toLocaleString()}
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={{ color: '#888', fontSize: 12 }}>Per follow-up</Text>
+                    <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '700', marginTop: 2 }}>
+                      {Math.round(analytics.stats.revenue_per_followup).toLocaleString()}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Avg response time */}
+              {analytics.stats.avg_response_time_hours > 0 && (
+                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+                  <Text style={{ color: '#888', fontSize: 12, marginBottom: 4 }}>Avg. time for customer to reply</Text>
+                  <Text style={{ color: '#4A90D9', fontSize: 20, fontWeight: '700' }}>
+                    {analytics.stats.avg_response_time_hours < 1
+                      ? `${Math.round(analytics.stats.avg_response_time_hours * 60)} min`
+                      : `${Math.round(analytics.stats.avg_response_time_hours)} hrs`}
+                  </Text>
+                </View>
+              )}
+
+              {/* Best time to follow up */}
+              {analytics.best_times.sample_size > 0 && (
+                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+                  <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 12 }}>Best time to follow up</Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
+                    <View style={{ alignItems: 'center' }}>
+                      <Ionicons name="calendar-outline" size={24} color="#25D366" />
+                      <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '700', marginTop: 6 }}>{analytics.best_times.best_day}</Text>
+                      <Text style={{ color: '#555', fontSize: 11 }}>Best day</Text>
+                    </View>
+                    <View style={{ alignItems: 'center' }}>
+                      <Ionicons name="time-outline" size={24} color="#FFD700" />
+                      <Text style={{ color: '#FFD700', fontSize: 16, fontWeight: '700', marginTop: 6 }}>
+                        {analytics.best_times.best_hour < 12
+                          ? `${analytics.best_times.best_hour || 12}am`
+                          : analytics.best_times.best_hour === 12
+                            ? '12pm'
+                            : `${analytics.best_times.best_hour - 12}pm`}
+                      </Text>
+                      <Text style={{ color: '#555', fontSize: 11 }}>Best hour</Text>
+                    </View>
+                    <View style={{ alignItems: 'center' }}>
+                      <Ionicons name="checkmark-circle-outline" size={24} color="#4A90D9" />
+                      <Text style={{ color: '#4A90D9', fontSize: 16, fontWeight: '700', marginTop: 6 }}>{analytics.best_times.sample_size}</Text>
+                      <Text style={{ color: '#555', fontSize: 11 }}>Sample size</Text>
+                    </View>
+                  </View>
+                </View>
+              )}
+            </>
+          )}
         </ScrollView>
       )}
 
