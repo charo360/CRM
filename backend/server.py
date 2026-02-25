@@ -652,17 +652,21 @@ class FollowUpUpdate(BaseModel):
     message: Optional[str] = None
     status: Optional[str] = None
     type: Optional[str] = None
+    outcome: Optional[str] = None  # called, replied, no_answer, converted, rescheduled
+    outcome_note: Optional[str] = None
 
 class FollowUpResponse(BaseModel):
     id: str
     user_id: str
     customer_id: str
-    customer_name: Optional[str] = None
+    customer_name: str
     customer_phone: Optional[str] = None
     reminder_date: datetime
     message: Optional[str] = None
-    status: str = "pending"  # pending, completed, cancelled
-    type: str = "call"
+    status: str
+    type: str
+    outcome: Optional[str] = None
+    outcome_note: Optional[str] = None
     created_at: datetime
 
 # Sales/Receipt Models
@@ -1527,6 +1531,143 @@ async def get_me(user = Depends(get_current_user)):
         "currency": user.get("currency", "USD"),
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
     })
+
+# ============ USER SETTINGS ============
+
+@api_router.get("/settings")
+async def get_settings(user = Depends(get_current_user)):
+    """Get current user settings"""
+    s = user.get("settings", {})
+    return {
+        "auto_reply_enabled": s.get("auto_reply_enabled", False),
+        "notification_enabled": s.get("notification_enabled", True),
+        "notification_time": s.get("notification_time", "09:00"),
+        "daily_alert_count": s.get("daily_alert_count", 5),
+        "message_tone": s.get("message_tone", "friendly"),
+        "push_token": s.get("push_token"),
+        "daily_pulse_enabled": s.get("daily_pulse_enabled", False),
+        "daily_pulse_time": s.get("daily_pulse_time", "08:00"),
+        "currency": user.get("currency", s.get("currency", "USD")),
+        "country_code": user.get("country_code", s.get("country_code", "")),
+        "ai_model": s.get("ai_model", "standard"),
+    }
+
+@api_router.put("/settings")
+async def update_settings(request: Request, user = Depends(get_current_user)):
+    """Update user settings"""
+    body = await request.json()
+    # Top-level fields (currency, country_code) live directly on the user doc
+    top_level_fields = {}
+    settings_fields = {}
+    for k, v in body.items():
+        if k in ("currency", "country_code"):
+            top_level_fields[k] = v
+        else:
+            settings_fields[f"settings.{k}"] = v
+    update_doc = {}
+    if top_level_fields:
+        update_doc.update(top_level_fields)
+    if settings_fields:
+        update_doc.update(settings_fields)
+    if update_doc:
+        await db.users.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    return {"status": "ok"}
+
+# ============ CONTACT CLASSIFICATION ============
+
+@api_router.post("/contacts/classify")
+async def classify_contacts(user = Depends(get_current_user)):
+    """Run AI classification on unclassified contacts"""
+    business_id = user.get("business_id", user["_id"])
+    classifier = get_classifier(db)
+    # Find customers without a confirmed classification
+    unclassified = await db.customers.find({
+        "user_id": business_id,
+        "classification_confirmed": {"$ne": True},
+    }).to_list(100)
+    results = []
+    for c in unclassified:
+        try:
+            result = await classifier.classify_contact(business_id, c["_id"])
+            if result and result.get("suggested_type"):
+                await db.customers.update_one(
+                    {"_id": c["_id"]},
+                    {"$set": {
+                        "pending_classification": result["suggested_type"],
+                        "classification_confidence": result.get("confidence", 0),
+                        "classification_reason": result.get("reason", ""),
+                        "classification_pending": True,
+                    }}
+                )
+                results.append({"id": c["_id"], "name": c["name"], "classification": result["suggested_type"]})
+        except Exception as e:
+            logging.error(f"Classification error for {c['_id']}: {e}")
+    return {"classified": len(results), "results": results}
+
+@api_router.get("/contacts/pending")
+async def get_pending_classifications(user = Depends(get_current_user)):
+    """Get contacts with pending (unconfirmed) AI classifications"""
+    business_id = user.get("business_id", user["_id"])
+    pending = await db.customers.find({
+        "user_id": business_id,
+        "classification_pending": True,
+    }).to_list(50)
+    result = []
+    for c in pending:
+        result.append({
+            "id": c["_id"],
+            "name": c["name"],
+            "phone_number": c["phone_number"],
+            "pending_classification": c.get("pending_classification"),
+            "classification_confidence": c.get("classification_confidence", 0),
+            "classification_reason": c.get("classification_reason", ""),
+        })
+    return result
+
+@api_router.post("/contacts/{customer_id}/confirm")
+async def confirm_classification(customer_id: str, request: Request, user = Depends(get_current_user)):
+    """Confirm or override a pending contact classification"""
+    business_id = user.get("business_id", user["_id"])
+    body = await request.json()
+    action = body.get("action")  # "approve" or "reject"
+    contact_type = body.get("type")  # "customer" or "supplier"
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    if action == "approve":
+        classification = contact_type or customer.get("pending_classification", "customer")
+        tags = list(customer.get("tags", []))
+        if classification == "supplier" and "Supplier" not in tags:
+            tags.append("Supplier")
+        elif classification == "customer" and "Supplier" in tags:
+            tags.remove("Supplier")
+        await db.customers.update_one(
+            {"_id": customer_id},
+            {"$set": {
+                "classification_type": classification,
+                "classification_confirmed": True,
+                "classification_pending": False,
+                "tags": tags,
+                "classified_at": datetime.utcnow(),
+            }}
+        )
+    else:
+        # Reject — just clear the pending flag
+        await db.customers.update_one(
+            {"_id": customer_id},
+            {"$set": {"classification_pending": False}}
+        )
+    return {"status": "ok", "action": action}
+
+@api_router.post("/contacts/{customer_id}/dismiss")
+async def dismiss_classification(customer_id: str, user = Depends(get_current_user)):
+    """Dismiss a pending classification without confirming"""
+    business_id = user.get("business_id", user["_id"])
+    await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$set": {"classification_pending": False}}
+    )
+    return {"status": "ok"}
 
 @api_router.post("/auth/push-token")
 async def save_push_token(request: Request, user = Depends(get_current_user)):
@@ -2454,10 +2595,17 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
         query["status"] = status
     
     followups = await db.followups.find(query).sort("reminder_date", 1).to_list(1000)
-    
+    if not followups:
+        return []
+
+    # Batch fetch all customers in one query (fixes N+1)
+    customer_ids = list({f["customer_id"] for f in followups})
+    customers_list = await db.customers.find({"_id": {"$in": customer_ids}}).to_list(None)
+    customers_map = {c["_id"]: c for c in customers_list}
+
     result = []
     for f in followups:
-        customer = await db.customers.find_one({"_id": f["customer_id"]})
+        customer = customers_map.get(f["customer_id"])
         result.append(FollowUpResponse(
             id=f["_id"],
             user_id=f["user_id"],
@@ -2468,6 +2616,8 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
             message=f.get("message"),
             status=f["status"],
             type=f.get("type", "call"),
+            outcome=f.get("outcome"),
+            outcome_note=f.get("outcome_note"),
             created_at=f["created_at"]
         ))
     
@@ -2550,6 +2700,49 @@ async def get_followup_analytics(days: int = 30, user = Depends(get_current_user
     return {
         "stats": stats,
         "best_times": best_times
+    }
+
+@api_router.get("/stats/followup-suggestions")
+async def get_followup_suggestions(user = Depends(get_current_user)):
+    """Get follow-up suggestion counts for the follow-ups tab header stats"""
+    business_id = user.get("business_id", user["_id"])
+    now = datetime.utcnow()
+    cutoff_week = now - timedelta(days=7)
+    cutoff_month = now - timedelta(days=30)
+
+    # Customers not contacted in 7+ days
+    neglected_week = await db.customers.count_documents({
+        "user_id": business_id,
+        "$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]
+    })
+    # Customers not contacted in 30+ days
+    neglected_month = await db.customers.count_documents({
+        "user_id": business_id,
+        "$or": [{"last_contacted": {"$lt": cutoff_month}}, {"last_contacted": None}]
+    })
+    # New customers (created in last 7 days) with no follow-up
+    new_cutoff = now - timedelta(days=7)
+    new_customers = await db.customers.find({
+        "user_id": business_id,
+        "created_at": {"$gte": new_cutoff}
+    }).to_list(None)
+    new_no_followup = 0
+    for c in new_customers:
+        has_fu = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
+        if not has_fu:
+            new_no_followup += 1
+    # VIP customers not contacted in 7+ days
+    vip_neglected = await db.customers.count_documents({
+        "user_id": business_id,
+        "tags": "VIP",
+        "$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]
+    })
+    return {
+        "neglected_week": neglected_week,
+        "neglected_month": neglected_month,
+        "new_no_followup": new_no_followup,
+        "vip_neglected": vip_neglected,
+        "total_needing_attention": neglected_week
     }
 
 @api_router.get("/analytics/summary")
@@ -4237,10 +4430,12 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
         "user_id": uid, "direction": "incoming", "read": {"$ne": True}
     })
 
-    # Today's follow-ups
+    # Today's follow-ups — widen window by ±1 day to cover all timezones (UTC-12 to UTC+14)
+    tz_window_start = today_start - timedelta(hours=14)
+    tz_window_end = today_end + timedelta(hours=14)
     followups_today = await db.followups.count_documents({
         "user_id": uid, "status": "pending",
-        "reminder_date": {"$gte": today_start, "$lt": today_end}
+        "reminder_date": {"$gte": tz_window_start, "$lt": tz_window_end}
     })
 
     # Today's sales total
