@@ -652,17 +652,21 @@ class FollowUpUpdate(BaseModel):
     message: Optional[str] = None
     status: Optional[str] = None
     type: Optional[str] = None
+    outcome: Optional[str] = None  # called, replied, no_answer, converted, rescheduled
+    outcome_note: Optional[str] = None
 
 class FollowUpResponse(BaseModel):
     id: str
     user_id: str
     customer_id: str
-    customer_name: Optional[str] = None
+    customer_name: str
     customer_phone: Optional[str] = None
     reminder_date: datetime
     message: Optional[str] = None
-    status: str = "pending"  # pending, completed, cancelled
-    type: str = "call"
+    status: str
+    type: str
+    outcome: Optional[str] = None
+    outcome_note: Optional[str] = None
     created_at: datetime
 
 # Sales/Receipt Models
@@ -2454,10 +2458,17 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
         query["status"] = status
     
     followups = await db.followups.find(query).sort("reminder_date", 1).to_list(1000)
-    
+    if not followups:
+        return []
+
+    # Batch fetch all customers in one query (fixes N+1)
+    customer_ids = list({f["customer_id"] for f in followups})
+    customers_list = await db.customers.find({"_id": {"$in": customer_ids}}).to_list(None)
+    customers_map = {c["_id"]: c for c in customers_list}
+
     result = []
     for f in followups:
-        customer = await db.customers.find_one({"_id": f["customer_id"]})
+        customer = customers_map.get(f["customer_id"])
         result.append(FollowUpResponse(
             id=f["_id"],
             user_id=f["user_id"],
@@ -2468,6 +2479,8 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
             message=f.get("message"),
             status=f["status"],
             type=f.get("type", "call"),
+            outcome=f.get("outcome"),
+            outcome_note=f.get("outcome_note"),
             created_at=f["created_at"]
         ))
     

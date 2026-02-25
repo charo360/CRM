@@ -29,6 +29,8 @@ interface FollowUp {
   message: string | null;
   status: string;
   type: 'call' | 'whatsapp' | 'meeting' | 'email';
+  outcome?: string | null;
+  outcome_note?: string | null;
   created_at: string;
 }
 
@@ -68,7 +70,7 @@ interface Message {
   created_at: string;
 }
 
-type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week';
+type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week' | 'later';
 
 export default function FollowupsScreen() {
   const router = useRouter();
@@ -108,6 +110,20 @@ export default function FollowupsScreen() {
   const [showRecentMessages, setShowRecentMessages] = useState(false);
   const [analyzeRetries, setAnalyzeRetries] = useState(0);
   const MAX_ANALYZE_RETRIES = 3;
+
+  // Snooze state
+  const [snoozingId, setSnoozingId] = useState<string | null>(null);
+
+  // Outcome modal state
+  const [outcomeModalVisible, setOutcomeModalVisible] = useState(false);
+  const [outcomeFollowup, setOutcomeFollowup] = useState<FollowUp | null>(null);
+  const [selectedOutcome, setSelectedOutcome] = useState('');
+  const [outcomeNote, setOutcomeNote] = useState('');
+  const [savingOutcome, setSavingOutcome] = useState(false);
+
+  // AI note draft state
+  const [noteAIDirection, setNoteAIDirection] = useState('');
+  const [generatingNoteAI, setGeneratingNoteAI] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -201,12 +217,48 @@ export default function FollowupsScreen() {
     later: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'later'),
   };
 
-  const handleComplete = async (followup: FollowUp) => {
+  const handleComplete = (followup: FollowUp) => {
+    setOutcomeFollowup(followup);
+    setSelectedOutcome('');
+    setOutcomeNote('');
+    setOutcomeModalVisible(true);
+  };
+
+  const handleSaveOutcome = async () => {
+    if (!outcomeFollowup || !selectedOutcome) {
+      Alert.alert('Select Outcome', 'Please select what happened with this follow-up.');
+      return;
+    }
+    setSavingOutcome(true);
     try {
-      await apiClient.put(`/followups/${followup.id}`, { status: 'completed' });
-      setFollowups(followups.filter(f => f.id !== followup.id));
+      await apiClient.put(`/followups/${outcomeFollowup.id}`, {
+        status: 'completed',
+        outcome: selectedOutcome,
+        outcome_note: outcomeNote || null,
+      });
+      setFollowups(followups.filter(f => f.id !== outcomeFollowup.id));
+      setOutcomeModalVisible(false);
+      setOutcomeFollowup(null);
     } catch (error) {
-      Alert.alert('Error', 'Failed to complete follow-up');
+      Alert.alert('Error', 'Failed to save outcome');
+    } finally {
+      setSavingOutcome(false);
+    }
+  };
+
+  const handleSnooze = async (followup: FollowUp, days: number) => {
+    setSnoozingId(followup.id);
+    try {
+      const res = await apiClient.post(`/followups/${followup.id}/snooze?days=${days}`);
+      const newDate = res.data.new_date;
+      setFollowups(followups.map(f =>
+        f.id === followup.id ? { ...f, reminder_date: newDate } : f
+      ));
+      Alert.alert('Snoozed', `Reminder moved to ${new Date(newDate).toLocaleDateString('en-KE', { weekday: 'short', day: 'numeric', month: 'short' })}`);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to snooze reminder');
+    } finally {
+      setSnoozingId(null);
     }
   };
 
@@ -259,6 +311,27 @@ export default function FollowupsScreen() {
     setShowAddModal(true);
   };
 
+  const scheduleLocalNotification = async (date: Date, customerName: string, message: string | null, followupType: string) => {
+    try {
+      const { Notifications } = await import('expo-notifications');
+      const { requestPermissionsAsync, scheduleNotificationAsync } = Notifications;
+      const { status } = await requestPermissionsAsync();
+      if (status !== 'granted') return;
+      const trigger = new Date(date);
+      if (trigger <= new Date()) return;
+      await scheduleNotificationAsync({
+        content: {
+          title: `Follow-up: ${customerName}`,
+          body: message || `Time to ${followupType} ${customerName}`,
+          sound: true,
+        },
+        trigger,
+      });
+    } catch (e) {
+      console.log('Notification scheduling error:', e);
+    }
+  };
+
   const handleAddReminder = async () => {
     if (!selectedCustomer) {
       Alert.alert('Error', 'Please select a customer');
@@ -277,6 +350,7 @@ export default function FollowupsScreen() {
         setFollowups(followups.map(f =>
           f.id === editingFollowup.id ? { ...f, ...response.data } : f
         ));
+        await scheduleLocalNotification(reminderDate, selectedCustomer.name, reminderMessage, selectedType);
         Alert.alert('Success', 'Reminder updated!');
       } else {
         const response = await apiClient.post('/followups', {
@@ -291,6 +365,7 @@ export default function FollowupsScreen() {
           customer_name: selectedCustomer.name,
           customer_phone: selectedCustomer.phone_number,
         }]);
+        await scheduleLocalNotification(reminderDate, selectedCustomer.name, reminderMessage, selectedType);
         Alert.alert('Success', 'Reminder added!');
       }
 
@@ -436,10 +511,22 @@ export default function FollowupsScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBtn}
-            onPress={() => openEditModal(item)}
+            onPress={() => Alert.alert(
+              'Snooze',
+              'Remind me again in...',
+              [
+                { text: '1 day', onPress: () => handleSnooze(item, 1) },
+                { text: '3 days', onPress: () => handleSnooze(item, 3) },
+                { text: '1 week', onPress: () => handleSnooze(item, 7) },
+                { text: 'Cancel', style: 'cancel' },
+              ]
+            )}
+            disabled={snoozingId === item.id}
           >
-            <Ionicons name="create-outline" size={16} color="#4A90D9" />
-            <Text style={[styles.actionBtnText, { color: '#4A90D9' }]}>Edit</Text>
+            {snoozingId === item.id
+              ? <ActivityIndicator size="small" color="#F59E0B" />
+              : <Ionicons name="alarm-outline" size={16} color="#F59E0B" />}
+            <Text style={[styles.actionBtnText, { color: '#F59E0B' }]}>Snooze</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBtn}
@@ -447,6 +534,13 @@ export default function FollowupsScreen() {
           >
             <Ionicons name="checkmark-circle-outline" size={16} color="#25D366" />
             <Text style={[styles.actionBtnText, { color: '#25D366' }]}>Done</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={() => openEditModal(item)}
+          >
+            <Ionicons name="create-outline" size={16} color="#4A90D9" />
+            <Text style={[styles.actionBtnText, { color: '#4A90D9' }]}>Edit</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBtn}
@@ -539,10 +633,11 @@ export default function FollowupsScreen() {
 
   const filters: { key: FilterType; label: string }[] = [
     { key: 'all', label: 'All' },
-    { key: 'overdue', label: 'Overdue' },
-    { key: 'today', label: 'Today' },
-    { key: 'tomorrow', label: 'Tomorrow' },
-    { key: 'this_week', label: 'This Week' },
+    { key: 'overdue', label: '🔴 Overdue' },
+    { key: 'today', label: '📅 Today' },
+    { key: 'tomorrow', label: '🌅 Tomorrow' },
+    { key: 'this_week', label: '📆 This Week' },
+    { key: 'later', label: '🗓 Later' },
   ];
 
   if (loading) {
@@ -920,8 +1015,45 @@ export default function FollowupsScreen() {
                   />
                 )}
 
-                {/* Message */}
+                {/* Note with AI draft */}
                 <Text style={styles.inputLabel}>Note (Optional)</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <TextInput
+                    style={[styles.messageInput, { flex: 1, marginBottom: 0, minHeight: 40 }]}
+                    placeholder="Tell AI what to write..."
+                    placeholderTextColor="#555"
+                    value={noteAIDirection}
+                    onChangeText={setNoteAIDirection}
+                  />
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#1A2942', paddingHorizontal: 10, paddingVertical: 10, borderRadius: 8 }}
+                    disabled={generatingNoteAI}
+                    onPress={async () => {
+                      if (!selectedCustomer) { Alert.alert('Select a customer first'); return; }
+                      setGeneratingNoteAI(true);
+                      try {
+                        const res = await apiClient.post('/ai/generate-broadcast-message', {
+                          prompt: noteAIDirection.trim()
+                            ? `Write a short internal follow-up note for ${selectedCustomer.name}. Direction: ${noteAIDirection}. 1 sentence max.`
+                            : `Write a short internal follow-up note for ${selectedCustomer.name} (type: ${selectedType}). 1 sentence, actionable.`,
+                        });
+                        setReminderMessage(res.data.message);
+                        setNoteAIDirection('');
+                      } catch (e: any) {
+                        Alert.alert('Error', 'Failed to generate note');
+                      } finally {
+                        setGeneratingNoteAI(false);
+                      }
+                    }}
+                  >
+                    {generatingNoteAI
+                      ? <ActivityIndicator size="small" color="#FFD700" />
+                      : <Ionicons name="sparkles" size={14} color="#FFD700" />}
+                    <Text style={{ color: '#FFD700', fontSize: 12, fontWeight: '600' }}>
+                      {generatingNoteAI ? '...' : 'Draft'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
                 <TextInput
                   style={styles.messageInput}
                   placeholder="What should you follow up about?"
@@ -980,6 +1112,73 @@ export default function FollowupsScreen() {
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Outcome Modal */}
+      <Modal
+        visible={outcomeModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setOutcomeModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '70%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>What happened?</Text>
+              <TouchableOpacity onPress={() => setOutcomeModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+            {outcomeFollowup && (
+              <Text style={{ color: '#666', fontSize: 13, marginBottom: 16 }}>
+                Follow-up with {outcomeFollowup.customer_name}
+              </Text>
+            )}
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {[
+                { id: 'called', label: '📞 Called — They answered', color: '#25D366' },
+                { id: 'replied', label: '💬 Replied on WhatsApp', color: '#25D366' },
+                { id: 'converted', label: '🎉 Made a sale!', color: '#FFD700' },
+                { id: 'no_answer', label: '📵 No answer / No reply', color: '#FF6B6B' },
+                { id: 'rescheduled', label: '📅 Rescheduled for later', color: '#4A90D9' },
+                { id: 'not_interested', label: '❌ Not interested', color: '#666' },
+              ].map(outcome => (
+                <TouchableOpacity
+                  key={outcome.id}
+                  style={{
+                    flexDirection: 'row', alignItems: 'center', padding: 14,
+                    backgroundColor: selectedOutcome === outcome.id ? outcome.color + '22' : '#1A2942',
+                    borderRadius: 10, marginBottom: 8,
+                    borderWidth: selectedOutcome === outcome.id ? 1.5 : 0,
+                    borderColor: selectedOutcome === outcome.id ? outcome.color : 'transparent',
+                  }}
+                  onPress={() => setSelectedOutcome(outcome.id)}
+                >
+                  <Text style={{ color: selectedOutcome === outcome.id ? outcome.color : '#CCD6E0', fontSize: 15, fontWeight: selectedOutcome === outcome.id ? '700' : '400' }}>
+                    {outcome.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+              <TextInput
+                style={[styles.messageInput, { marginTop: 8 }]}
+                placeholder="Add a note (optional)..."
+                placeholderTextColor="#555"
+                value={outcomeNote}
+                onChangeText={setOutcomeNote}
+                multiline
+              />
+              <TouchableOpacity
+                style={[styles.saveButton, (!selectedOutcome || savingOutcome) && styles.saveButtonDisabled, { marginTop: 8 }]}
+                onPress={handleSaveOutcome}
+                disabled={!selectedOutcome || savingOutcome}
+              >
+                {savingOutcome
+                  ? <ActivityIndicator color="#FFF" />
+                  : <Text style={styles.saveButtonText}>Save & Close</Text>}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
         </View>
       </Modal>
 
