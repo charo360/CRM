@@ -178,7 +178,7 @@ if os.environ.get('TUNNEL_MODE') == 'true':
     db_name = os.environ.get('DB_NAME', 'whatsapp_crm')
     
     if not api_url or not api_key:
-        print("❌ CRITICAL: TUNNEL_MODE=true but MONGO_DATA_API_URL or MONGO_DATA_API_KEY is missing")
+        print("[CRITICAL] TUNNEL_MODE=true but MONGO_DATA_API_URL or MONGO_DATA_API_KEY is missing")
         sys.exit(1)
         
     client = AsyncMongoHTTPClient(api_url, api_key, cluster, db_name)
@@ -198,7 +198,7 @@ if not _jwt_secret_raw or _jwt_secret_raw == 'default-secret-key':
     import secrets as _secrets
     _jwt_secret_raw = _secrets.token_urlsafe(64)
     print("\n" + "="*60)
-    print("⚠️  WARNING: JWT_SECRET not set in .env — auto-generated for this session.")
+    print("[WARNING] JWT_SECRET not set in .env -- auto-generated for this session.")
     print("   Add a strong JWT_SECRET to .env for persistence across restarts.")
     print("="*60 + "\n")
 JWT_SECRET = _jwt_secret_raw
@@ -236,6 +236,163 @@ async def fix_team_members_index():
         logging.info("Ensured team_members index: business_id_1_phone_1")
     except Exception:
         pass
+    # Start automation scheduler in background
+    import asyncio
+    asyncio.create_task(run_automation_scheduler())
+
+async def run_automation_scheduler():
+    """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
+    import asyncio
+    await asyncio.sleep(10)  # brief delay to let server finish starting
+    while True:
+        try:
+            await execute_broadcast_automations()
+        except Exception as e:
+            logging.error(f"Automation scheduler error: {e}")
+        await asyncio.sleep(3600)  # check every hour
+
+async def execute_broadcast_automations():
+    """Find and execute all due broadcast automations"""
+    from whatsapp_service import get_whatsapp_service
+    now = datetime.utcnow()
+    whatsapp_service = get_whatsapp_service(db)
+
+    automations = await db.broadcast_automations.find({"status": "active"}).to_list(None)
+
+    for automation in automations:
+        try:
+            user_id = automation["user_id"]
+            a_type = automation.get("type")
+
+            if a_type == "auto_followup":
+                broadcast_id = automation.get("broadcast_id")
+                delay_days = automation.get("delay_days", 3)
+                followup_msg = automation.get("followup_message", "")
+                if not broadcast_id or not followup_msg:
+                    continue
+
+                broadcast = await db.broadcasts.find_one({"_id": broadcast_id})
+                if not broadcast:
+                    continue
+
+                # Only run once, after the delay has passed since broadcast
+                sent_at = broadcast.get("created_at")
+                if not sent_at or (now - sent_at).days < delay_days:
+                    continue
+
+                # Skip if already executed
+                if automation.get("last_run"):
+                    continue
+
+                # Find customers who received broadcast but haven't replied since
+                customer_ids = broadcast.get("customer_ids")
+                query = {"user_id": user_id}
+                if customer_ids:
+                    query["_id"] = {"$in": customer_ids}
+                elif broadcast.get("filter_type") == "returning":
+                    query["tags"] = "Returning"
+                elif broadcast.get("filter_type") == "vip":
+                    query["tags"] = "VIP"
+                elif broadcast.get("filter_type") == "new":
+                    query["tags"] = "New"
+
+                customers = await db.customers.find(query).to_list(None)
+
+                # Filter to only customers who have NOT replied since broadcast
+                no_reply_customers = []
+                for c in customers:
+                    replied = await db.messages.find_one({
+                        "customer_id": c["_id"],
+                        "user_id": user_id,
+                        "direction": "incoming",
+                        "created_at": {"$gte": sent_at}
+                    })
+                    if not replied:
+                        no_reply_customers.append(c)
+
+                # Send follow-up to non-responders
+                sent = 0
+                for c in no_reply_customers:
+                    try:
+                        msg = followup_msg.replace("{{name}}", c.get("name", "there"))
+                        await whatsapp_service.send_message(
+                            user_id=user_id,
+                            to_number=c["phone_number"],
+                            message=msg,
+                            customer_name=c.get("name"),
+                            send_context="broadcast",
+                        )
+                        sent += 1
+                    except Exception as e:
+                        logging.error(f"Auto follow-up send error: {e}")
+
+                # Mark automation as run
+                await db.broadcast_automations.update_one(
+                    {"_id": automation["_id"]},
+                    {"$set": {"last_run": now, "last_run_sent": sent, "status": "completed"}}
+                )
+                logging.info(f"Auto follow-up executed: {sent} messages sent for broadcast {broadcast_id}")
+
+            elif a_type == "recurring":
+                recurrence = automation.get("recurrence", "weekly")
+                last_run = automation.get("last_run")
+                send_hour = automation.get("send_hour", 9)
+
+                # Check if it's time to run
+                if now.hour != send_hour:
+                    continue
+
+                if last_run:
+                    days_since = (now - last_run).days
+                    if recurrence == "weekly" and days_since < 7:
+                        continue
+                    if recurrence == "monthly" and days_since < 28:
+                        continue
+
+                message = automation.get("message", "")
+                image_urls = automation.get("image_urls", [])
+                filter_type = automation.get("filter_type", "all")
+                if not message:
+                    continue
+
+                query = {"user_id": user_id}
+                if filter_type == "returning":
+                    query["tags"] = "Returning"
+                elif filter_type == "vip":
+                    query["tags"] = "VIP"
+                elif filter_type == "new":
+                    query["tags"] = "New"
+
+                customers = await db.customers.find(query).to_list(None)
+                if not customers:
+                    continue
+
+                # Create broadcast record
+                new_id = str(uuid.uuid4())
+                await db.broadcasts.insert_one({
+                    "_id": new_id,
+                    "user_id": user_id,
+                    "message": message,
+                    "name": f"Recurring ({recurrence})",
+                    "filter_type": filter_type,
+                    "recipients_count": len(customers),
+                    "sent_count": 0,
+                    "status": "pending",
+                    "image_urls": image_urls,
+                    "image_url": image_urls[0] if image_urls else None,
+                    "scheduled_at": None,
+                    "created_at": now,
+                })
+                await send_broadcast_messages(new_id, user_id, message, customers, image_urls)
+
+                await db.broadcast_automations.update_one(
+                    {"_id": automation["_id"]},
+                    {"$set": {"last_run": now}, "$inc": {"runs": 1}}
+                )
+                logging.info(f"Recurring broadcast executed: {len(customers)} recipients")
+
+        except Exception as e:
+            logging.error(f"Error executing automation {automation.get('_id')}: {e}")
 
 @app.get("/health")
 async def health_check():
@@ -594,6 +751,7 @@ class BroadcastTemplateResponse(BaseModel):
 # Broadcast Models
 class BroadcastCreate(BaseModel):
     message: str
+    name: Optional[str] = None
     filter_type: str = "all"  # all, returning, vip, new
     customer_ids: Optional[List[str]] = None
     image_url: Optional[str] = None
@@ -605,6 +763,7 @@ class BroadcastResponse(BaseModel):
     id: str
     user_id: str
     message: str
+    name: Optional[str] = None
     filter_type: str
     recipients_count: int
     sent_count: int = 0
@@ -655,7 +814,9 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         "_id": broadcast_id,
         "user_id": business_id,
         "message": broadcast.message,
+        "name": broadcast.name or None,
         "filter_type": broadcast.filter_type,
+        "customer_ids": broadcast.customer_ids or None,
         "recipients_count": len(customers),
         "sent_count": 0,
         "status": "scheduled" if broadcast.scheduled_at else "pending",
@@ -682,6 +843,7 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         id=broadcast_id,
         user_id=business_id,
         message=broadcast.message,
+        name=broadcast.name or None,
         filter_type=broadcast.filter_type,
         recipients_count=len(customers),
         sent_count=0,
@@ -769,6 +931,7 @@ async def get_broadcasts(user = Depends(get_current_user)):
             id=b["_id"],
             user_id=b["user_id"],
             message=b["message"],
+            name=b.get("name"),
             filter_type=b["filter_type"],
             recipients_count=b["recipients_count"],
             sent_count=b.get("sent_count", 0),
@@ -781,6 +944,22 @@ async def get_broadcasts(user = Depends(get_current_user)):
         for b in broadcasts
     ]
 
+@api_router.get("/broadcasts/automations")
+async def get_broadcast_automations(user = Depends(get_current_user)):
+    """Get all broadcast automations for user"""
+    business_id = user.get("business_id", user["_id"])
+    automations = await db.broadcast_automations.find({"user_id": business_id}).sort("created_at", -1).to_list(50)
+    return [serialize_doc(a) for a in automations]
+
+@api_router.delete("/broadcasts/automations/{automation_id}")
+async def delete_broadcast_automation(automation_id: str, user = Depends(get_current_user)):
+    """Delete a broadcast automation"""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.broadcast_automations.delete_one({"_id": automation_id, "user_id": business_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    return {"status": "deleted"}
+
 @api_router.delete("/broadcasts/{broadcast_id}")
 async def delete_broadcast(broadcast_id: str, user = Depends(get_current_user)):
     """Delete a broadcast"""
@@ -789,6 +968,137 @@ async def delete_broadcast(broadcast_id: str, user = Depends(get_current_user)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Broadcast not found")
     return {"status": "deleted"}
+
+@api_router.post("/broadcasts/{broadcast_id}/resend")
+async def resend_broadcast(broadcast_id: str, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
+    """Resend an existing broadcast to the same audience"""
+    business_id = user.get("business_id", user["_id"])
+    original = await db.broadcasts.find_one({"_id": broadcast_id, "user_id": business_id})
+    if not original:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    # Build recipients same way as original
+    query = {"user_id": business_id}
+    filter_type = original.get("filter_type", "all")
+    if filter_type == "returning":
+        query["tags"] = "Returning"
+    elif filter_type == "vip":
+        query["tags"] = "VIP"
+    elif filter_type == "new":
+        query["tags"] = "New"
+    elif filter_type in ("custom", "group") or original.get("customer_ids"):
+        stored_ids = original.get("customer_ids")
+        if stored_ids:
+            query["_id"] = {"$in": stored_ids}
+        # else old broadcast with no saved ids — fall back to "all" for this business
+    # else "all" — no extra filter
+    customers = await db.customers.find(query).to_list(None)
+
+    image_urls = original.get("image_urls") or ([original["image_url"]] if original.get("image_url") else [])
+    new_id = str(uuid.uuid4())
+    original_name = original.get("name")
+    new_doc = {
+        "_id": new_id,
+        "user_id": business_id,
+        "message": original["message"],
+        "name": f"{original_name} (Resend)" if original_name else None,
+        "filter_type": filter_type,
+        "customer_ids": original.get("customer_ids") or None,
+        "recipients_count": len(customers),
+        "sent_count": 0,
+        "status": "pending",
+        "image_url": original.get("image_url"),
+        "image_urls": image_urls,
+        "scheduled_at": None,
+        "created_at": datetime.utcnow()
+    }
+    await db.broadcasts.insert_one(new_doc)
+    background_tasks.add_task(send_broadcast_messages, new_id, business_id, original["message"], customers, image_urls)
+    return {"status": "resending", "broadcast_id": new_id, "recipients_count": len(customers)}
+
+@api_router.get("/broadcasts/{broadcast_id}/performance")
+async def get_broadcast_performance(broadcast_id: str, user = Depends(get_current_user)):
+    """Get reply rate and performance stats for a broadcast"""
+    business_id = user.get("business_id", user["_id"])
+    broadcast = await db.broadcasts.find_one({"_id": broadcast_id, "user_id": business_id})
+    if not broadcast:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    sent_at = broadcast.get("created_at", datetime.utcnow())
+    window_end = sent_at + timedelta(days=3)
+
+    # Count how many customers replied after the broadcast
+    replies = await db.messages.count_documents({
+        "user_id": business_id,
+        "direction": "incoming",
+        "created_at": {"$gte": sent_at, "$lte": window_end}
+    })
+
+    sent_count = broadcast.get("sent_count", 0)
+    reply_rate = round((replies / sent_count * 100), 1) if sent_count > 0 else 0
+
+    return {
+        "broadcast_id": broadcast_id,
+        "sent_count": sent_count,
+        "recipients_count": broadcast.get("recipients_count", 0),
+        "replies": replies,
+        "reply_rate": reply_rate,
+    }
+
+class AutoFollowUpCreate(BaseModel):
+    broadcast_id: str
+    follow_up_message: str
+    delay_days: int = 2
+
+class RecurringBroadcastCreate(BaseModel):
+    message: str
+    filter_type: str = "all"
+    image_urls: List[str] = []
+    recurrence: str = "weekly"  # "weekly" or "monthly"
+    send_hour: int = 9  # hour of day (0-23)
+
+@api_router.post("/broadcasts/auto-followup")
+async def create_auto_followup(data: AutoFollowUpCreate, user = Depends(get_current_user)):
+    """Set up auto follow-up for customers who didn't reply to a broadcast"""
+    business_id = user.get("business_id", user["_id"])
+    broadcast = await db.broadcasts.find_one({"_id": data.broadcast_id, "user_id": business_id})
+    if not broadcast:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    followup_id = str(uuid.uuid4())
+    await db.broadcast_automations.insert_one({
+        "_id": followup_id,
+        "user_id": business_id,
+        "type": "auto_followup",
+        "broadcast_id": data.broadcast_id,
+        "follow_up_message": data.follow_up_message,
+        "delay_days": data.delay_days,
+        "status": "active",
+        "created_at": datetime.utcnow(),
+        "runs": 0,
+    })
+    return {"status": "created", "automation_id": followup_id, "delay_days": data.delay_days}
+
+@api_router.post("/broadcasts/recurring")
+async def create_recurring_broadcast(data: RecurringBroadcastCreate, user = Depends(get_current_user)):
+    """Set up a recurring broadcast (weekly or monthly)"""
+    business_id = user.get("business_id", user["_id"])
+    rec_id = str(uuid.uuid4())
+    await db.broadcast_automations.insert_one({
+        "_id": rec_id,
+        "user_id": business_id,
+        "type": "recurring",
+        "message": data.message,
+        "filter_type": data.filter_type,
+        "image_urls": data.image_urls,
+        "recurrence": data.recurrence,
+        "send_hour": data.send_hour,
+        "status": "active",
+        "last_run": None,
+        "created_at": datetime.utcnow(),
+        "runs": 0,
+    })
+    return {"status": "created", "automation_id": rec_id, "recurrence": data.recurrence}
 
 # AI Message Generation
 class AIMessageRequest(BaseModel):

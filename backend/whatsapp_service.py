@@ -573,9 +573,9 @@ class WhatsAppService:
                             {"_id": message_id},
                             {"$set": {"status": "sent", "evo_message_id": evo_msg_id}}
                         )
-                        logger.info(f"✓ Sent message via Evolution API: {evo_msg_id}")
+                        logger.info(f"[OK] Sent message via Evolution API: {evo_msg_id}")
                     else:
-                        logger.error(f"✗ Evolution API send error [{resp.status_code}]: {resp.text}")
+                        logger.error(f"[FAIL] Evolution API send error [{resp.status_code}]: {resp.text}")
                         await self.db.messages.update_one(
                             {"_id": message_id},
                             {"$set": {"status": "failed", "error": resp.text}}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -30,6 +30,7 @@ interface Customer {
 interface Broadcast {
   id: string;
   message: string;
+  name?: string;
   filter_type: string;
   recipients_count: number;
   sent_count: number;
@@ -37,6 +38,27 @@ interface Broadcast {
   image_url?: string;
   image_urls?: string[];
   scheduled_at?: string;
+  created_at: string;
+}
+
+interface BroadcastPerformance {
+  broadcast_id: string;
+  sent_count: number;
+  recipients_count: number;
+  replies: number;
+  reply_rate: number;
+}
+
+interface BroadcastAutomation {
+  _id: string;
+  type: 'auto_followup' | 'recurring';
+  status: string;
+  follow_up_message?: string;
+  delay_days?: number;
+  message?: string;
+  recurrence?: string;
+  send_hour?: number;
+  runs: number;
   created_at: string;
 }
 
@@ -104,6 +126,23 @@ export default function BroadcastScreen() {
   const [currency, setCurrency] = useState('USD');
   const [broadcastSearch, setBroadcastSearch] = useState('');
   const [deletingBroadcast, setDeletingBroadcast] = useState(false);
+  const [activeTab, setActiveTab] = useState<'broadcasts' | 'automations'>('broadcasts');
+  const [automations, setAutomations] = useState<BroadcastAutomation[]>([]);
+  const [performance, setPerformance] = useState<Record<string, BroadcastPerformance>>({});
+  const [automationModalVisible, setAutomationModalVisible] = useState(false);
+  const [automationType, setAutomationType] = useState<'auto_followup' | 'recurring'>('auto_followup');
+  const [followUpMessage, setFollowUpMessage] = useState('');
+  const [followUpDelayDays, setFollowUpDelayDays] = useState('2');
+  const [selectedBroadcastForFollowUp, setSelectedBroadcastForFollowUp] = useState('');
+  const [recurringMessage, setRecurringMessage] = useState('');
+  const [recurringFilter, setRecurringFilter] = useState('all');
+  const [recurrence, setRecurrence] = useState<'weekly' | 'monthly'>('weekly');
+  const [sendHour, setSendHour] = useState('9');
+  const [resending, setResending] = useState<string | null>(null);
+  const [generatingFollowUpAI, setGeneratingFollowUpAI] = useState(false);
+  const [generatingRecurringAI, setGeneratingRecurringAI] = useState(false);
+  const [followUpAIDirection, setFollowUpAIDirection] = useState('');
+  const [recurringAIDirection, setRecurringAIDirection] = useState('');
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -111,6 +150,8 @@ export default function BroadcastScreen() {
   const [aiModalVisible, setAiModalVisible] = useState(false);
   const [sending, setSending] = useState(false);
   const [generatingAI, setGeneratingAI] = useState(false);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollAttemptsRef = useRef(0);
 
   // New Modals
   const [createGroupModalVisible, setCreateGroupModalVisible] = useState(false);
@@ -127,6 +168,7 @@ export default function BroadcastScreen() {
   const [selectedFilter, setSelectedFilter] = useState('all');
   const [selectedGroup, setSelectedGroup] = useState(''); // For custom groups
   const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [broadcastName, setBroadcastName] = useState('');
   const [message, setMessage] = useState('');
   const [scheduledDate, setScheduledDate] = useState('');
   const [saveAsTemplate, setSaveAsTemplate] = useState(false);
@@ -157,18 +199,20 @@ export default function BroadcastScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [broadcastsRes, customersRes, templatesRes, groupsRes, productsRes] = await Promise.all([
+      const [broadcastsRes, customersRes, templatesRes, groupsRes, productsRes, automationsRes] = await Promise.all([
         apiClient.get('/broadcasts'),
         apiClient.get('/customers'),
         apiClient.get('/broadcast-templates'),
         apiClient.get('/customer-groups'),
         apiClient.get('/products'),
+        apiClient.get('/broadcasts/automations'),
       ]);
       setBroadcasts(broadcastsRes.data);
       setCustomers(customersRes.data);
       setTemplates(templatesRes.data);
       setGroups(groupsRes.data);
       setProducts(productsRes.data);
+      setAutomations(automationsRes.data);
       // Load currency
       try {
         const settings = await settingsAPI.getSettings();
@@ -184,6 +228,9 @@ export default function BroadcastScreen() {
 
   useEffect(() => {
     fetchData();
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
   }, [fetchData]);
 
   const handleRefresh = () => {
@@ -443,9 +490,7 @@ export default function BroadcastScreen() {
         business_type: businessType || undefined,
       });
       setMessage(response.data.message);
-      setAiModalVisible(false);
       setAiPrompt('');
-      setBusinessType('');
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to generate message');
     } finally {
@@ -602,6 +647,7 @@ export default function BroadcastScreen() {
     // Prepare payload
     const payload: any = {
       message: message,
+      name: broadcastName.trim() || undefined,
       filter_type: selectedFilter,
       image_urls: selectedImages,
       image_url: selectedImages[0] || undefined,
@@ -633,7 +679,7 @@ export default function BroadcastScreen() {
             try {
               const response = await apiClient.post('/broadcasts', payload);
 
-              setBroadcasts([response.data, ...broadcasts]);
+              setBroadcasts(prev => [response.data, ...prev]);
               setModalVisible(false);
               resetForm();
 
@@ -643,6 +689,10 @@ export default function BroadcastScreen() {
                   ? `Broadcast scheduled for ${new Date(scheduledDate).toLocaleString()}!`
                   : `Broadcast sent to ${response.data.recipients_count} customers!`
               );
+
+              if (!scheduledDate) {
+                startPolling(response.data.id);
+              }
             } catch (error: any) {
               Alert.alert('Error', error.response?.data?.detail || 'Failed to send broadcast');
             } finally {
@@ -654,15 +704,118 @@ export default function BroadcastScreen() {
     );
   };
 
+  const startPolling = useCallback((broadcastId: string) => {
+    pollAttemptsRef.current = 0;
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = setInterval(async () => {
+      pollAttemptsRef.current += 1;
+      try {
+        const res = await apiClient.get('/broadcasts');
+        setBroadcasts(res.data);
+        const updated = res.data.find((b: Broadcast) => b.id === broadcastId);
+        if (updated?.status === 'completed' || pollAttemptsRef.current >= 5) {
+          clearInterval(pollIntervalRef.current!);
+          pollIntervalRef.current = null;
+        }
+      } catch {
+        clearInterval(pollIntervalRef.current!);
+        pollIntervalRef.current = null;
+      }
+    }, 3000);
+  }, []);
+
   const resetForm = () => {
     setSelectedFilter('all');
     setSelectedGroup('');
     setSelectedTemplate('');
+    setBroadcastName('');
     setMessage('');
     setSelectedImages([]);
     setScheduledDate('');
     setSaveAsTemplate(false);
     setTemplateName('');
+  };
+
+  const handleResend = async (broadcast: Broadcast) => {
+    const audienceLabel = broadcast.filter_type === 'all'
+      ? 'all customers'
+      : broadcast.filter_type === 'custom' || broadcast.filter_type === 'group'
+        ? `the same ${broadcast.recipients_count} customer${broadcast.recipients_count !== 1 ? 's' : ''} from this broadcast`
+        : `${broadcast.filter_type} customers`;
+    const broadcastLabel = broadcast.name ? `"${broadcast.name}"` : 'this broadcast';
+    Alert.alert(
+      'Resend Broadcast',
+      `Resend ${broadcastLabel} to ${audienceLabel} again?\n\n${broadcast.recipients_count} recipient${broadcast.recipients_count !== 1 ? 's' : ''} will receive this message.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Resend',
+          onPress: async () => {
+            setResending(broadcast.id);
+            try {
+              const res = await apiClient.post(`/broadcasts/${broadcast.id}/resend`);
+              fetchData();
+              Alert.alert('Resending!', `Message sent to ${res.data.recipients_count} customer${res.data.recipients_count !== 1 ? 's' : ''}.`);
+            } catch (e: any) {
+              Alert.alert('Error', e.response?.data?.detail || 'Failed to resend');
+            } finally {
+              setResending(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const fetchPerformance = async (broadcastId: string) => {
+    if (performance[broadcastId]) return;
+    try {
+      const res = await apiClient.get(`/broadcasts/${broadcastId}/performance`);
+      setPerformance(prev => ({ ...prev, [broadcastId]: res.data }));
+    } catch (e) {}
+  };
+
+  const handleCreateAutomation = async () => {
+    try {
+      if (automationType === 'auto_followup') {
+        if (!selectedBroadcastForFollowUp) { Alert.alert('Error', 'Select a broadcast'); return; }
+        if (!followUpMessage.trim()) { Alert.alert('Error', 'Enter follow-up message'); return; }
+        await apiClient.post('/broadcasts/auto-followup', {
+          broadcast_id: selectedBroadcastForFollowUp,
+          follow_up_message: followUpMessage,
+          delay_days: parseInt(followUpDelayDays) || 2,
+        });
+      } else {
+        if (!recurringMessage.trim()) { Alert.alert('Error', 'Enter message'); return; }
+        await apiClient.post('/broadcasts/recurring', {
+          message: recurringMessage,
+          filter_type: recurringFilter,
+          recurrence,
+          send_hour: parseInt(sendHour) || 9,
+        });
+      }
+      setAutomationModalVisible(false);
+      setFollowUpMessage(''); setRecurringMessage(''); setSelectedBroadcastForFollowUp('');
+      fetchData();
+      Alert.alert('Success', 'Automation created!');
+    } catch (e: any) {
+      Alert.alert('Error', e.response?.data?.detail || 'Failed to create automation');
+    }
+  };
+
+  const handleDeleteAutomation = async (id: string) => {
+    Alert.alert('Delete Automation', 'Remove this automation?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete', style: 'destructive',
+        onPress: async () => {
+          try {
+            await apiClient.delete(`/broadcasts/automations/${id}`);
+            setAutomations(prev => prev.filter(a => a._id !== id));
+          } catch (e) { Alert.alert('Error', 'Failed to delete'); }
+        },
+      },
+    ]);
   };
 
   // Group products by category
@@ -724,76 +877,148 @@ export default function BroadcastScreen() {
         )}
       </View>
 
-      {/* Broadcast List */}
-      <FlatList
-        data={broadcasts.filter(b => !broadcastSearch || b.message.toLowerCase().includes(broadcastSearch.toLowerCase()))}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.broadcastCard}
-            onPress={() => setViewingBroadcast(item)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.broadcastHeader}>
-              <View style={styles.broadcastIcon}>
-                <Ionicons name="megaphone" size={20} color="#25D366" />
+      {/* Tabs */}
+      <View style={{ flexDirection: 'row', marginHorizontal: 16, marginBottom: 8, backgroundColor: '#1A2942', borderRadius: 10, padding: 4 }}>
+        <TouchableOpacity
+          style={{ flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8, backgroundColor: activeTab === 'broadcasts' ? '#25D366' : 'transparent' }}
+          onPress={() => setActiveTab('broadcasts')}
+        >
+          <Text style={{ color: activeTab === 'broadcasts' ? '#FFF' : '#666', fontWeight: '600', fontSize: 13 }}>Broadcasts</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={{ flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8, backgroundColor: activeTab === 'automations' ? '#25D366' : 'transparent' }}
+          onPress={() => setActiveTab('automations')}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Text style={{ color: activeTab === 'automations' ? '#FFF' : '#666', fontWeight: '600', fontSize: 13 }}>Automations</Text>
+            {automations.length > 0 && (
+              <View style={{ backgroundColor: '#F59E0B', borderRadius: 8, minWidth: 16, paddingHorizontal: 4, alignItems: 'center' }}>
+                <Text style={{ color: '#FFF', fontSize: 10, fontWeight: 'bold' }}>{automations.length}</Text>
               </View>
-              <View style={styles.broadcastInfo}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Text style={styles.broadcastDate}>
-                    {new Date(item.created_at).toLocaleDateString('en-KE', {
-                      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-                    })}
-                  </Text>
-                  {item.scheduled_at && new Date(item.scheduled_at) > new Date() && (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#3B82F6', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
-                      <Ionicons name="time-outline" size={12} color="#FFF" />
-                      <Text style={{ color: '#FFF', fontSize: 10, marginLeft: 4, fontWeight: '600' }}>
-                        {new Date(item.scheduled_at).toLocaleString('en-KE', {
-                          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-                        })}
-                      </Text>
-                    </View>
-                  )}
+            )}
+          </View>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === 'broadcasts' && (
+        <FlatList
+          data={broadcasts.filter(b => !broadcastSearch || b.message.toLowerCase().includes(broadcastSearch.toLowerCase()))}
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={styles.broadcastCard}
+              onPress={() => { setViewingBroadcast(item); fetchPerformance(item.id); }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.broadcastHeader}>
+                <View style={styles.broadcastIcon}>
+                  <Ionicons name="megaphone" size={20} color="#25D366" />
                 </View>
-                <View style={styles.statusRow}>
-                  <View style={[
-                    styles.statusBadge,
-                    item.status === 'completed' && styles.statusCompleted,
-                    item.status === 'sending' && styles.statusSending,
-                  ]}>
-                    <Text style={styles.statusText}>
-                      {item.status === 'completed' ? 'Sent' : 'Sending...'}
+                <View style={styles.broadcastInfo}>
+                  {item.name ? (
+                    <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 14, marginBottom: 2 }} numberOfLines={1}>{item.name}</Text>
+                  ) : null}
+                  <View style={styles.statusRow}>
+                    <Text style={styles.broadcastDate}>
+                      {new Date(item.created_at).toLocaleDateString('en-KE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </Text>
+                    {item.scheduled_at && new Date(item.scheduled_at) > new Date() && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#3B82F6', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                        <Ionicons name="time-outline" size={12} color="#FFF" />
+                        <Text style={{ color: '#FFF', fontSize: 10, marginLeft: 4, fontWeight: '600' }}>
+                          {new Date(item.scheduled_at).toLocaleString('en-KE', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </View>
+                    )}
                   </View>
-                  <Text style={styles.recipientCount}>
-                    {item.sent_count}/{item.recipients_count} delivered
-                  </Text>
+                  <View style={styles.statusRow}>
+                    <View style={[styles.statusBadge, item.status === 'completed' && styles.statusCompleted, item.status === 'sending' && styles.statusSending]}>
+                      <Text style={styles.statusText}>{item.status === 'completed' ? 'Sent' : 'Sending...'}</Text>
+                    </View>
+                    <Text style={styles.recipientCount}>{item.sent_count}/{item.recipients_count} delivered</Text>
+                  </View>
                 </View>
+                <TouchableOpacity
+                  style={{ backgroundColor: '#1E3A5F', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginLeft: 8 }}
+                  onPress={() => handleResend(item)}
+                  disabled={resending === item.id}
+                >
+                  {resending === item.id
+                    ? <ActivityIndicator size="small" color="#25D366" />
+                    : <Ionicons name="refresh" size={16} color="#25D366" />}
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.broadcastMessage} numberOfLines={2}>{item.message}</Text>
+            </TouchableOpacity>
+          )}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Ionicons name="megaphone-outline" size={64} color="#666" />
+              <Text style={styles.emptyText}>No broadcasts yet</Text>
+            </View>
+          }
+        />
+      )}
+
+      {activeTab === 'automations' && (
+        <FlatList
+          data={automations}
+          keyExtractor={item => item._id}
+          contentContainerStyle={styles.listContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />}
+          renderItem={({ item }) => (
+            <View style={styles.broadcastCard}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons
+                    name={item.type === 'recurring' ? 'repeat' : 'chatbubble-ellipses'}
+                    size={18}
+                    color={item.type === 'recurring' ? '#8B5CF6' : '#F59E0B'}
+                  />
+                  <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 14 }}>
+                    {item.type === 'recurring' ? `${item.recurrence === 'weekly' ? 'Weekly' : 'Monthly'} Broadcast` : 'Auto Follow-up'}
+                  </Text>
+                  <View style={{ backgroundColor: item.status === 'active' ? '#25D36622' : '#FF4A4A22', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                    <Text style={{ color: item.status === 'active' ? '#25D366' : '#FF4A4A', fontSize: 11, fontWeight: '600' }}>{item.status}</Text>
+                  </View>
+                </View>
+                <TouchableOpacity onPress={() => handleDeleteAutomation(item._id)}>
+                  <Ionicons name="trash-outline" size={18} color="#FF4444" />
+                </TouchableOpacity>
+              </View>
+              <Text style={{ color: '#CCD6E0', fontSize: 13, marginBottom: 8 }} numberOfLines={2}>
+                {item.type === 'auto_followup' ? item.followup_message : item.message}
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                {item.type === 'auto_followup' && <Text style={{ color: '#666', fontSize: 12 }}>⏱ After {item.delay_days}d no reply</Text>}
+                {item.type === 'recurring' && <Text style={{ color: '#666', fontSize: 12 }}>🕐 Every {item.recurrence} at {item.send_hour}:00</Text>}
+                <Text style={{ color: '#666', fontSize: 12 }}>Runs: {item.runs || 0}</Text>
+                {item.last_run
+                  ? <Text style={{ color: '#25D366', fontSize: 12 }}>✓ Last ran {new Date(item.last_run).toLocaleDateString()}</Text>
+                  : <Text style={{ color: '#F59E0B', fontSize: 12 }}>⏳ Not run yet</Text>
+                }
               </View>
             </View>
-            <Text style={styles.broadcastMessage} numberOfLines={3}>{item.message}</Text>
-          </TouchableOpacity>
-        )}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Ionicons name="megaphone-outline" size={64} color="#666" />
-            <Text style={styles.emptyText}>No broadcasts yet</Text>
-          </View>
-        }
-      />
+          )}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Ionicons name="flash-outline" size={64} color="#666" />
+              <Text style={styles.emptyText}>No automations yet</Text>
+              <Text style={{ color: '#666', textAlign: 'center', marginTop: 8, paddingHorizontal: 20 }}>Tap + to create auto follow-ups or recurring broadcasts</Text>
+            </View>
+          }
+        />
+      )}
 
-      {/* New Broadcast FAB */}
+      {/* FAB */}
       <TouchableOpacity
         style={styles.fab}
-        onPress={() => setModalVisible(true)}
+        onPress={() => activeTab === 'broadcasts' ? setModalVisible(true) : setAutomationModalVisible(true)}
         activeOpacity={0.8}
       >
-        <Ionicons name="add" size={22} color="#FFFFFF" />
+        <Ionicons name={activeTab === 'broadcasts' ? 'add' : 'flash'} size={22} color="#FFFFFF" />
       </TouchableOpacity>
 
       {/* Main Broadcast Modal */}
@@ -817,6 +1042,18 @@ export default function BroadcastScreen() {
           </View>
 
           <ScrollView style={styles.modalContent}>
+            {/* 0. Broadcast Name */}
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Broadcast Name <Text style={{ color: '#666', fontWeight: '400' }}>(optional)</Text></Text>
+              <TextInput
+                style={styles.formInput}
+                placeholder="e.g. January Sale, New Stock Alert..."
+                placeholderTextColor="#666"
+                value={broadcastName}
+                onChangeText={setBroadcastName}
+              />
+            </View>
+
             {/* 1. Recipient Selection */}
             <View style={styles.formGroup}>
               <View style={styles.labelRow}>
@@ -887,14 +1124,26 @@ export default function BroadcastScreen() {
 
             {/* 2. Message Input */}
             <View style={styles.formGroup}>
-              <View style={styles.labelRow}>
-                <Text style={styles.formLabel}>Message</Text>
+              <Text style={styles.formLabel}>Message</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <TextInput
+                  style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                  placeholder="Tell AI what to write, e.g. 20% off sale this weekend..."
+                  placeholderTextColor="#555"
+                  value={aiPrompt}
+                  onChangeText={setAiPrompt}
+                />
                 <TouchableOpacity
-                  style={styles.aiButton}
-                  onPress={() => setAiModalVisible(true)}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#1A2942', paddingHorizontal: 10, paddingVertical: 10, borderRadius: 8 }}
+                  disabled={generatingAI}
+                  onPress={handleGenerateAI}
                 >
-                  <Ionicons name="sparkles" size={14} color="#FFD700" />
-                  <Text style={styles.aiButtonText}>Draft with AI</Text>
+                  {generatingAI
+                    ? <ActivityIndicator size="small" color="#FFD700" />
+                    : <Ionicons name="sparkles" size={14} color="#FFD700" />}
+                  <Text style={{ color: '#FFD700', fontSize: 12, fontWeight: '600' }}>
+                    {generatingAI ? 'Writing...' : 'Draft'}
+                  </Text>
                 </TouchableOpacity>
               </View>
               <TextInput
@@ -1105,7 +1354,9 @@ export default function BroadcastScreen() {
             <TouchableOpacity onPress={() => setViewingBroadcast(null)}>
               <Text style={styles.modalCancel}>Close</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>Broadcast Details</Text>
+            <Text style={styles.modalTitle} numberOfLines={1}>
+              {viewingBroadcast?.name || 'Broadcast Details'}
+            </Text>
             <TouchableOpacity
               onPress={() => {
                 if (!viewingBroadcast) return;
@@ -1198,18 +1449,58 @@ export default function BroadcastScreen() {
                   Sent on {new Date(viewingBroadcast.created_at).toLocaleString()}
                 </Text>
 
-                <TouchableOpacity
-                  style={styles.generateButton}
-                  onPress={() => {
-                    setMessage(viewingBroadcast.message);
-                    if (viewingBroadcast.image_urls) setSelectedImages(viewingBroadcast.image_urls);
-                    else if (viewingBroadcast.image_url) setSelectedImages([viewingBroadcast.image_url]);
+                {/* Performance */}
+                {performance[viewingBroadcast.id] && (
+                  <View style={{ backgroundColor: '#0A1628', borderRadius: 12, padding: 16, marginBottom: 16 }}>
+                    <Text style={[styles.formLabel, { marginBottom: 12 }]}>📊 Performance (3-day window)</Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
+                      <View style={{ alignItems: 'center' }}>
+                        <Text style={{ color: '#25D366', fontSize: 22, fontWeight: 'bold' }}>{performance[viewingBroadcast.id].replies}</Text>
+                        <Text style={{ color: '#666', fontSize: 11 }}>Replies</Text>
+                      </View>
+                      <View style={{ alignItems: 'center' }}>
+                        <Text style={{ color: '#F59E0B', fontSize: 22, fontWeight: 'bold' }}>{performance[viewingBroadcast.id].reply_rate}%</Text>
+                        <Text style={{ color: '#666', fontSize: 11 }}>Reply Rate</Text>
+                      </View>
+                      <View style={{ alignItems: 'center' }}>
+                        <Text style={{ color: '#4A90D9', fontSize: 22, fontWeight: 'bold' }}>{performance[viewingBroadcast.id].sent_count}</Text>
+                        <Text style={{ color: '#666', fontSize: 11 }}>Delivered</Text>
+                      </View>
+                    </View>
+                  </View>
+                )}
 
+                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
+                  <TouchableOpacity
+                    style={[styles.generateButton, { flex: 1, backgroundColor: '#1E3A5F' }]}
+                    onPress={() => {
+                      setMessage(viewingBroadcast.message);
+                      setBroadcastName(viewingBroadcast.name ? `${viewingBroadcast.name} (Copy)` : '');
+                      if (viewingBroadcast.image_urls) setSelectedImages(viewingBroadcast.image_urls);
+                      else if (viewingBroadcast.image_url) setSelectedImages([viewingBroadcast.image_url]);
+                      setViewingBroadcast(null);
+                      setModalVisible(true);
+                    }}
+                  >
+                    <Text style={[styles.generateButtonText, { color: '#4A90D9' }]}>Reuse Message</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.generateButton, { flex: 1 }]}
+                    onPress={() => { handleResend(viewingBroadcast); setViewingBroadcast(null); }}
+                  >
+                    <Text style={styles.generateButtonText}>🔁 Resend Now</Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity
+                  style={[styles.generateButton, { backgroundColor: '#F59E0B' }]}
+                  onPress={() => {
+                    setSelectedBroadcastForFollowUp(viewingBroadcast.id);
+                    setAutomationType('auto_followup');
                     setViewingBroadcast(null);
-                    setModalVisible(true);
+                    setAutomationModalVisible(true);
                   }}
                 >
-                  <Text style={styles.generateButtonText}>Reuse Message</Text>
+                  <Text style={styles.generateButtonText}>⚡ Create Auto Follow-up</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -1469,31 +1760,227 @@ export default function BroadcastScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* AI Modal (Existing) */}
+      {/* Automation Modal */}
       <Modal
-        visible={aiModalVisible}
+        visible={automationModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setAiModalVisible(false)}
+        onRequestClose={() => setAutomationModalVisible(false)}
       >
-        {/* ... Existing AI Modal Content ... */}
         <SafeAreaView style={styles.modalContainer}>
-          {/* Simplified for brevity - reuse logic from previous implementation */}
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>AI Message Generator</Text>
-            <TextInput
-              style={styles.messageInput}
-              value={aiPrompt}
-              onChangeText={setAiPrompt}
-              placeholder="What to promote?"
-              placeholderTextColor="#666"
-            />
-            <TouchableOpacity style={styles.generateButton} onPress={handleGenerateAI}>
-              <Text style={styles.generateButtonText}>Generate Message</Text>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setAutomationModalVisible(false)}>
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>New Automation</Text>
+            <TouchableOpacity onPress={handleCreateAutomation}>
+              <Text style={styles.modalSave}>Save</Text>
             </TouchableOpacity>
           </View>
+
+          <ScrollView style={styles.modalContent}>
+            {/* Type toggle */}
+            <View style={{ flexDirection: 'row', backgroundColor: '#1A2942', borderRadius: 10, padding: 4, marginBottom: 20 }}>
+              <TouchableOpacity
+                style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8, backgroundColor: automationType === 'auto_followup' ? '#F59E0B' : 'transparent' }}
+                onPress={() => setAutomationType('auto_followup')}
+              >
+                <Text style={{ color: automationType === 'auto_followup' ? '#FFF' : '#666', fontWeight: '600' }}>Auto Follow-up</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8, backgroundColor: automationType === 'recurring' ? '#8B5CF6' : 'transparent' }}
+                onPress={() => setAutomationType('recurring')}
+              >
+                <Text style={{ color: automationType === 'recurring' ? '#FFF' : '#666', fontWeight: '600' }}>Recurring</Text>
+              </TouchableOpacity>
+            </View>
+
+            {automationType === 'auto_followup' && (
+              <>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Select Broadcast to Follow Up</Text>
+                  <ScrollView style={{ maxHeight: 160, backgroundColor: '#1A2942', borderRadius: 8, padding: 4 }}>
+                    {broadcasts.filter(b => b.status === 'completed').map(b => (
+                      <TouchableOpacity
+                        key={b.id}
+                        style={{ flexDirection: 'row', alignItems: 'center', padding: 10, backgroundColor: selectedBroadcastForFollowUp === b.id ? '#1E3A5F' : 'transparent', borderRadius: 8, marginBottom: 4, borderWidth: selectedBroadcastForFollowUp === b.id ? 1 : 0, borderColor: '#25D366' }}
+                        onPress={() => setSelectedBroadcastForFollowUp(b.id)}
+                      >
+                        <Ionicons name={selectedBroadcastForFollowUp === b.id ? 'radio-button-on' : 'radio-button-off'} size={18} color="#25D366" />
+                        <View style={{ flex: 1, marginLeft: 10 }}>
+                          {b.name ? (
+                            <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }} numberOfLines={1}>{b.name}</Text>
+                          ) : null}
+                          <Text style={{ color: b.name ? '#888' : '#FFF', fontSize: b.name ? 11 : 13 }} numberOfLines={1}>{b.message}</Text>
+                        </View>
+                        <Text style={{ color: '#666', fontSize: 11, marginLeft: 6 }}>{new Date(b.created_at).toLocaleDateString()}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    {broadcasts.filter(b => b.status === 'completed').length === 0 && (
+                      <Text style={{ color: '#666', padding: 10, textAlign: 'center' }}>No completed broadcasts yet</Text>
+                    )}
+                  </ScrollView>
+                </View>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Follow-up Message</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <TextInput
+                      style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                      placeholder="Tell AI what to write, e.g. remind them about our 20% sale..."
+                      placeholderTextColor="#555"
+                      value={followUpAIDirection}
+                      onChangeText={setFollowUpAIDirection}
+                    />
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#1A2942', paddingHorizontal: 10, paddingVertical: 10, borderRadius: 8 }}
+                      disabled={generatingFollowUpAI}
+                      onPress={async () => {
+                        const selectedB = broadcasts.find(b => b.id === selectedBroadcastForFollowUp);
+                        const context = selectedB ? `for customers who didn't reply to our broadcast: "${selectedB.name || selectedB.message.slice(0, 60)}"` : `for customers who didn't reply to our broadcast`;
+                        const direction = followUpAIDirection.trim();
+                        setGeneratingFollowUpAI(true);
+                        try {
+                          const res = await apiClient.post('/ai/generate-broadcast-message', {
+                            prompt: direction
+                              ? `Write a short WhatsApp follow-up message ${context}. Direction: ${direction}. Keep it under 2 sentences, conversational, include {{name}}.`
+                              : `Write a short, friendly WhatsApp follow-up message ${context}. Keep it under 2 sentences, conversational, include {{name}}.`,
+                          });
+                          setFollowUpMessage(res.data.message);
+                        } catch (e: any) {
+                          Alert.alert('Error', e.response?.data?.detail || 'Failed to generate');
+                        } finally {
+                          setGeneratingFollowUpAI(false);
+                        }
+                      }}
+                    >
+                      {generatingFollowUpAI
+                        ? <ActivityIndicator size="small" color="#25D366" />
+                        : <Ionicons name="sparkles" size={14} color="#25D366" />}
+                      <Text style={{ color: '#25D366', fontSize: 12, fontWeight: '600' }}>
+                        {generatingFollowUpAI ? 'Writing...' : 'Draft'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <TextInput
+                    style={[styles.messageInput, { minHeight: 80 }]}
+                    multiline
+                    placeholder="e.g. Hey! Just checking if you saw our message 😊"
+                    placeholderTextColor="#666"
+                    value={followUpMessage}
+                    onChangeText={setFollowUpMessage}
+                  />
+                </View>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Send After (days of no reply)</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    keyboardType="numeric"
+                    value={followUpDelayDays}
+                    onChangeText={setFollowUpDelayDays}
+                    placeholder="2"
+                    placeholderTextColor="#666"
+                  />
+                  <Text style={{ color: '#666', fontSize: 12, marginTop: 4 }}>Customers who didn't reply after {followUpDelayDays} day(s) will get this message</Text>
+                </View>
+              </>
+            )}
+
+            {automationType === 'recurring' && (
+              <>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Message</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <TextInput
+                      style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                      placeholder="Tell AI what to write, e.g. new arrivals, weekend sale..."
+                      placeholderTextColor="#555"
+                      value={recurringAIDirection}
+                      onChangeText={setRecurringAIDirection}
+                    />
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#1A2942', paddingHorizontal: 10, paddingVertical: 10, borderRadius: 8 }}
+                      disabled={generatingRecurringAI}
+                      onPress={async () => {
+                        setGeneratingRecurringAI(true);
+                        try {
+                          const audience = recurringFilter === 'all' ? 'all customers' : `${recurringFilter} customers`;
+                          const direction = recurringAIDirection.trim();
+                          const res = await apiClient.post('/ai/generate-broadcast-message', {
+                            prompt: direction
+                              ? `Write a short WhatsApp broadcast message to ${audience}. Direction: ${direction}. Keep it under 3 sentences, friendly, include a call to action, include {{name}}.`
+                              : `Write a short, engaging WhatsApp broadcast message for a ${recurrence} recurring message to ${audience}. Keep it under 3 sentences, friendly, include a call to action, include {{name}}.`,
+                          });
+                          setRecurringMessage(res.data.message);
+                        } catch (e: any) {
+                          Alert.alert('Error', e.response?.data?.detail || 'Failed to generate');
+                        } finally {
+                          setGeneratingRecurringAI(false);
+                        }
+                      }}
+                    >
+                      {generatingRecurringAI
+                        ? <ActivityIndicator size="small" color="#8B5CF6" />
+                        : <Ionicons name="sparkles" size={14} color="#8B5CF6" />}
+                      <Text style={{ color: '#8B5CF6', fontSize: 12, fontWeight: '600' }}>
+                        {generatingRecurringAI ? 'Writing...' : 'Draft'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <TextInput
+                    style={[styles.messageInput, { minHeight: 80 }]}
+                    multiline
+                    placeholder="e.g. New stock just arrived! Reply to see what's new 🔥"
+                    placeholderTextColor="#666"
+                    value={recurringMessage}
+                    onChangeText={setRecurringMessage}
+                  />
+                </View>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Send To</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    {FILTERS.map(f => (
+                      <TouchableOpacity
+                        key={f.id}
+                        style={[styles.filterOption, recurringFilter === f.id && styles.filterOptionSelected]}
+                        onPress={() => setRecurringFilter(f.id)}
+                      >
+                        <Text style={[styles.filterOptionText, recurringFilter === f.id && styles.filterOptionTextSelected]}>{f.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Frequency</Text>
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    {(['weekly', 'monthly'] as const).map(r => (
+                      <TouchableOpacity
+                        key={r}
+                        style={{ flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 8, backgroundColor: recurrence === r ? '#8B5CF6' : '#1A2942' }}
+                        onPress={() => setRecurrence(r)}
+                      >
+                        <Text style={{ color: recurrence === r ? '#FFF' : '#666', fontWeight: '600' }}>{r === 'weekly' ? '📅 Weekly' : '🗓 Monthly'}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Send Hour (0–23)</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    keyboardType="numeric"
+                    value={sendHour}
+                    onChangeText={setSendHour}
+                    placeholder="9"
+                    placeholderTextColor="#666"
+                  />
+                  <Text style={{ color: '#666', fontSize: 12, marginTop: 4 }}>Will send at {sendHour}:00 every {recurrence === 'weekly' ? 'week' : 'month'}</Text>
+                </View>
+              </>
+            )}
+          </ScrollView>
         </SafeAreaView>
       </Modal>
+
 
     </SafeAreaView>
   );
