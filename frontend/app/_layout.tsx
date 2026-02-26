@@ -3,9 +3,43 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider } from '../context/AuthContext';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Platform } from 'react-native';
+import { settingsAPI } from '../context/api';
+
+async function registerPushToken() {
+  try {
+    const Notifications = await import('expo-notifications');
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+    if (finalStatus !== 'granted') return;
+
+    const tokenData = await Notifications.getExpoPushTokenAsync();
+    const token = tokenData.data;
+    if (token) {
+      await settingsAPI.registerPushToken(token);
+    }
+
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('followups', {
+        name: 'Follow-up Reminders',
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: 'default',
+      });
+    }
+  } catch (e) {
+    console.log('Push token registration skipped:', e);
+  }
+}
 
 export default function RootLayout() {
+  useEffect(() => {
+    registerPushToken();
+  }, []);
+
   return (
     <GestureHandlerRootView style={styles.container}>
       <AuthProvider>

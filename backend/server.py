@@ -2648,6 +2648,8 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
         message=updated.get("message"),
         status=updated["status"],
         type=updated.get("type", "call"),
+        outcome=updated.get("outcome"),
+        outcome_note=updated.get("outcome_note"),
         created_at=updated["created_at"]
     )
 
