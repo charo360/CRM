@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View,
     Text,
@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { suppliersAPI, apiClient } from '../context/api';
 
 const PRESET_CATEGORIES = [
@@ -29,6 +30,9 @@ interface Supplier {
     phone_number: string;
     tags: string[];
     supplier_category?: string;
+    payment_terms?: string;
+    lead_time?: string;
+    rating?: number;
 }
 
 interface RestockSuggestion {
@@ -45,6 +49,7 @@ interface SupplierListModalProps {
 }
 
 export default function SupplierListModal({ visible, onClose }: SupplierListModalProps) {
+    const router = useRouter();
     const [suppliers, setSuppliers] = useState<Supplier[]>([]);
     const [potentialSuppliers, setPotentialSuppliers] = useState<Supplier[]>([]);
     const [restockSuggestions, setRestockSuggestions] = useState<RestockSuggestion[]>([]);
@@ -62,11 +67,15 @@ export default function SupplierListModal({ visible, onClose }: SupplierListModa
     const [customCategory, setCustomCategory] = useState('');
     const [showCustomInput, setShowCustomInput] = useState(false);
 
-    // Edit category state (for existing suppliers)
-    const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+    // Expanded card edit state
+    const [expandedId, setExpandedId] = useState<string | null>(null);
     const [editCategory, setEditCategory] = useState('');
     const [editCustomCategory, setEditCustomCategory] = useState('');
     const [showEditCustomInput, setShowEditCustomInput] = useState(false);
+    const [editPaymentTerms, setEditPaymentTerms] = useState('');
+    const [editLeadTime, setEditLeadTime] = useState('');
+    const [editRating, setEditRating] = useState(0);
+    const [savingId, setSavingId] = useState<string | null>(null);
 
     useEffect(() => {
         if (visible) {
@@ -118,17 +127,15 @@ export default function SupplierListModal({ visible, onClose }: SupplierListModa
     const handleAddSupplier = async (customer: Supplier, category?: string) => {
         const id = customer._id || customer.id;
         if (!id) return;
-
         setAddingIds(prev => [...prev, id]);
         try {
             await suppliersAPI.tagSupplier(id);
-            if (category) {
-                await suppliersAPI.updateSupplier(id, { supplier_category: category });
-            }
+            if (category) await suppliersAPI.updateSupplier(id, { supplier_category: category });
             setCategoryTarget(null);
             setAllCustomers(prev => prev.filter(c => (c._id || c.id) !== id));
+            setPotentialSuppliers(prev => prev.filter(c => (c._id || c.id) !== id));
             fetchData();
-        } catch (error) {
+        } catch {
             Alert.alert('Error', 'Failed to add supplier');
         } finally {
             setAddingIds(prev => prev.filter(pid => pid !== id));
@@ -141,21 +148,78 @@ export default function SupplierListModal({ visible, onClose }: SupplierListModa
         handleAddSupplier(categoryTarget, finalCategory || undefined);
     };
 
-    const handleSaveEditCategory = async (supplier: Supplier) => {
+    const handleRemoveSupplier = (supplier: Supplier) => {
+        const id = supplier._id || supplier.id || '';
+        Alert.alert(
+            'Remove Supplier',
+            `Remove ${supplier.name} as a supplier? Their contact will remain.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Remove', style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            await suppliersAPI.removeSupplier(id);
+                            setSuppliers(prev => prev.filter(s => (s._id || s.id) !== id));
+                            if (expandedId === id) setExpandedId(null);
+                        } catch {
+                            Alert.alert('Error', 'Failed to remove supplier');
+                        }
+                    }
+                }
+            ]
+        );
+    };
+
+    const handleOpenExpand = (supplier: Supplier) => {
+        const id = supplier._id || supplier.id || '';
+        if (expandedId === id) { setExpandedId(null); return; }
+        setExpandedId(id);
+        const cat = supplier.supplier_category || '';
+        const isPreset = PRESET_CATEGORIES.includes(cat);
+        setEditCategory(isPreset ? cat : '');
+        setEditCustomCategory(!isPreset && cat ? cat : '');
+        setShowEditCustomInput(!isPreset && !!cat);
+        setEditPaymentTerms(supplier.payment_terms || '');
+        setEditLeadTime(supplier.lead_time || '');
+        setEditRating(supplier.rating || 0);
+    };
+
+    const handleSaveDetails = async (supplier: Supplier) => {
         const id = supplier._id || supplier.id;
         if (!id) return;
         const finalCategory = showEditCustomInput ? editCustomCategory.trim() : editCategory;
-        if (!finalCategory) return;
+        setSavingId(id);
         try {
-            await suppliersAPI.updateSupplier(id, { supplier_category: finalCategory });
+            await suppliersAPI.updateSupplier(id, {
+                ...(finalCategory ? { supplier_category: finalCategory } : {}),
+                ...(editPaymentTerms.trim() ? { payment_terms: editPaymentTerms.trim() } : {}),
+                ...(editLeadTime.trim() ? { lead_time: editLeadTime.trim() } : {}),
+                ...(editRating ? { rating: editRating } : {}),
+            });
             setSuppliers(prev => prev.map(s =>
-                (s._id || s.id) === id ? { ...s, supplier_category: finalCategory } : s
+                (s._id || s.id) === id
+                    ? { ...s, supplier_category: finalCategory || s.supplier_category, payment_terms: editPaymentTerms.trim(), lead_time: editLeadTime.trim(), rating: editRating }
+                    : s
             ));
+            setExpandedId(null);
         } catch {
-            Alert.alert('Error', 'Failed to update category');
+            Alert.alert('Error', 'Failed to save details');
         } finally {
-            setEditingCategoryId(null);
+            setSavingId(null);
         }
+    };
+
+    const handleChatSupplier = (supplier: Supplier) => {
+        onClose();
+        router.push({
+            pathname: '/chat',
+            params: {
+                customerId: supplier._id || supplier.id || '',
+                customerName: supplier.name,
+                customerPhone: supplier.phone_number,
+            },
+        });
     };
 
     const startAddMode = () => {
@@ -163,78 +227,146 @@ export default function SupplierListModal({ visible, onClose }: SupplierListModa
         fetchAllCustomers();
     };
 
+    const renderStars = (rating: number, onPress?: (r: number) => void) => (
+        <View style={{ flexDirection: 'row', gap: 3 }}>
+            {[1, 2, 3, 4, 5].map(star => (
+                <TouchableOpacity key={star} onPress={() => onPress?.(star)} disabled={!onPress}>
+                    <Ionicons
+                        name={star <= rating ? 'star' : 'star-outline'}
+                        size={18}
+                        color={star <= rating ? '#FFB800' : '#3A4F6A'}
+                    />
+                </TouchableOpacity>
+            ))}
+        </View>
+    );
+
     const renderSupplierCard = (supplier: Supplier) => {
         const sid = supplier._id || supplier.id || '';
-        const isEditing = editingCategoryId === sid;
+        const isExpanded = expandedId === sid;
+        const isSaving = savingId === sid;
+        const cat = supplier.supplier_category;
+        const displayCat = cat && cat !== 'Other' ? cat : null;
+
         return (
             <View key={sid} style={styles.card}>
-                <View style={styles.cardIcon}>
-                    <Ionicons name="business" size={24} color="#4A90D9" />
-                </View>
-                <View style={styles.cardContent}>
-                    <Text style={styles.cardTitle}>{supplier.name}</Text>
-                    <Text style={styles.cardSubtitle}>{supplier.phone_number}</Text>
-                    {isEditing ? (
-                        <View style={{ marginTop: 8 }}>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
-                                <View style={{ flexDirection: 'row', gap: 6 }}>
-                                    {PRESET_CATEGORIES.map(cat => (
-                                        <TouchableOpacity
-                                            key={cat}
-                                            onPress={() => { setEditCategory(cat); setShowEditCustomInput(false); }}
-                                            style={[styles.categoryChip, editCategory === cat && !showEditCustomInput && styles.categoryChipSelected]}
-                                        >
-                                            <Text style={[styles.categoryChipText, editCategory === cat && !showEditCustomInput && styles.categoryChipTextSelected]}>{cat}</Text>
-                                        </TouchableOpacity>
-                                    ))}
-                                    <TouchableOpacity
-                                        onPress={() => { setShowEditCustomInput(true); setEditCategory(''); }}
-                                        style={[styles.categoryChip, showEditCustomInput && styles.categoryChipSelected]}
-                                    >
-                                        <Text style={[styles.categoryChipText, showEditCustomInput && styles.categoryChipTextSelected]}>✏️ Custom</Text>
-                                    </TouchableOpacity>
+                {/* Header row — tap to expand */}
+                <TouchableOpacity
+                    style={styles.cardHeader}
+                    onPress={() => handleOpenExpand(supplier)}
+                    activeOpacity={0.75}
+                >
+                    <View style={styles.cardIcon}>
+                        <Ionicons name="business" size={22} color="#4A90D9" />
+                    </View>
+                    <View style={styles.cardContent}>
+                        <Text style={styles.cardTitle}>{supplier.name}</Text>
+                        <Text style={styles.cardSubtitle}>{supplier.phone_number}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                            {displayCat ? (
+                                <View style={styles.categoryBadge}>
+                                    <Ionicons name="pricetag-outline" size={10} color="#4A90D9" />
+                                    <Text style={styles.categoryBadgeText}>{displayCat}</Text>
                                 </View>
-                            </ScrollView>
-                            {showEditCustomInput && (
-                                <TextInput
-                                    style={styles.customInput}
-                                    placeholder="Type your category..."
-                                    placeholderTextColor="#556"
-                                    value={editCustomCategory}
-                                    onChangeText={setEditCustomCategory}
-                                    autoFocus
-                                />
+                            ) : (
+                                <Text style={styles.setCategoryHint}>Tap to set category</Text>
                             )}
-                            <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-                                <TouchableOpacity style={styles.saveBtn} onPress={() => handleSaveEditCategory(supplier)}>
-                                    <Text style={styles.saveBtnText}>Save</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditingCategoryId(null)}>
-                                    <Text style={styles.cancelBtnText}>Cancel</Text>
+                            {!!supplier.rating && renderStars(supplier.rating)}
+                        </View>
+                        {supplier.payment_terms ? (
+                            <Text style={styles.detailHint}>💳 {supplier.payment_terms}</Text>
+                        ) : null}
+                        {supplier.lead_time ? (
+                            <Text style={styles.detailHint}>⏱ {supplier.lead_time}</Text>
+                        ) : null}
+                    </View>
+                    <View style={{ alignItems: 'center', gap: 6 }}>
+                        <TouchableOpacity style={styles.cardAction} onPress={() => handleChatSupplier(supplier)}>
+                            <Ionicons name="chatbubble-ellipses-outline" size={20} color="#25D366" />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.cardAction} onPress={() => handleRemoveSupplier(supplier)}>
+                            <Ionicons name="trash-outline" size={18} color="#FF6B6B" />
+                        </TouchableOpacity>
+                    </View>
+                </TouchableOpacity>
+
+                {/* Expanded edit panel */}
+                {isExpanded && (
+                    <View style={styles.expandPanel}>
+                        {/* Category chips */}
+                        <Text style={styles.expandLabel}>Category</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+                            <View style={{ flexDirection: 'row', gap: 6 }}>
+                                {PRESET_CATEGORIES.map(c => (
+                                    <TouchableOpacity
+                                        key={c}
+                                        onPress={() => { setEditCategory(c); setShowEditCustomInput(false); }}
+                                        style={[styles.categoryChip, editCategory === c && !showEditCustomInput && styles.categoryChipSelected]}
+                                    >
+                                        <Text style={[styles.categoryChipText, editCategory === c && !showEditCustomInput && styles.categoryChipTextSelected]}>{c}</Text>
+                                    </TouchableOpacity>
+                                ))}
+                                <TouchableOpacity
+                                    onPress={() => { setShowEditCustomInput(true); setEditCategory(''); }}
+                                    style={[styles.categoryChip, showEditCustomInput && styles.categoryChipSelected]}
+                                >
+                                    <Text style={[styles.categoryChipText, showEditCustomInput && styles.categoryChipTextSelected]}>✏️ Custom</Text>
                                 </TouchableOpacity>
                             </View>
+                        </ScrollView>
+                        {showEditCustomInput && (
+                            <TextInput
+                                style={styles.customInput}
+                                placeholder="Type your category..."
+                                placeholderTextColor="#556"
+                                value={editCustomCategory}
+                                onChangeText={setEditCustomCategory}
+                                autoFocus
+                            />
+                        )}
+
+                        {/* Payment terms */}
+                        <Text style={styles.expandLabel}>Payment Terms</Text>
+                        <TextInput
+                            style={styles.customInput}
+                            placeholder="e.g. Net 30, Cash on delivery..."
+                            placeholderTextColor="#556"
+                            value={editPaymentTerms}
+                            onChangeText={setEditPaymentTerms}
+                        />
+
+                        {/* Lead time */}
+                        <Text style={styles.expandLabel}>Lead Time</Text>
+                        <TextInput
+                            style={styles.customInput}
+                            placeholder="e.g. 3-5 days, 2 weeks..."
+                            placeholderTextColor="#556"
+                            value={editLeadTime}
+                            onChangeText={setEditLeadTime}
+                        />
+
+                        {/* Rating */}
+                        <Text style={styles.expandLabel}>Rating</Text>
+                        {renderStars(editRating, setEditRating)}
+
+                        {/* Actions */}
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                            <TouchableOpacity style={styles.cancelBtn} onPress={() => setExpandedId(null)}>
+                                <Text style={styles.cancelBtnText}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.saveBtn, { flex: 1 }]}
+                                onPress={() => handleSaveDetails(supplier)}
+                                disabled={isSaving}
+                            >
+                                {isSaving
+                                    ? <ActivityIndicator size="small" color="#0A1628" />
+                                    : <Text style={styles.saveBtnText}>Save</Text>
+                                }
+                            </TouchableOpacity>
                         </View>
-                    ) : (
-                        <TouchableOpacity
-                            onPress={() => {
-                                setEditingCategoryId(sid);
-                                setEditCategory(supplier.supplier_category || '');
-                                setEditCustomCategory('');
-                                setShowEditCustomInput(false);
-                            }}
-                            style={styles.categoryBadge}
-                        >
-                            <Ionicons name="pricetag-outline" size={11} color="#4A90D9" />
-                            <Text style={styles.categoryBadgeText}>
-                                {supplier.supplier_category && supplier.supplier_category !== 'Other' ? supplier.supplier_category : 'Set category'}
-                            </Text>
-                            <Ionicons name="pencil" size={10} color="#4A90D9" />
-                        </TouchableOpacity>
-                    )}
-                </View>
-                <TouchableOpacity style={styles.cardAction}>
-                    <Ionicons name="chatbubble-ellipses-outline" size={20} color="#666" />
-                </TouchableOpacity>
+                    </View>
+                )}
             </View>
         );
     };
@@ -262,7 +394,7 @@ export default function SupplierListModal({ visible, onClose }: SupplierListModa
             </View>
             <TouchableOpacity
                 style={styles.addButton}
-                onPress={() => handleAddSupplier(customer)}
+                onPress={() => openCategoryPicker(customer)}
                 disabled={addingIds.includes(customer._id || customer.id || '')}
             >
                 {addingIds.includes(customer._id || customer.id || '') ? (
@@ -470,12 +602,41 @@ const styles = StyleSheet.create({
     },
     // Cards
     card: {
-        flexDirection: 'row',
-        alignItems: 'center',
+        flexDirection: 'column',
         backgroundColor: '#1A2942',
         borderRadius: 12,
-        padding: 16,
         marginBottom: 10,
+        overflow: 'hidden',
+    },
+    cardHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: 14,
+    },
+    expandPanel: {
+        paddingHorizontal: 16,
+        paddingBottom: 16,
+        borderTopWidth: 1,
+        borderTopColor: '#243550',
+    },
+    expandLabel: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#8899AA',
+        textTransform: 'uppercase',
+        letterSpacing: 0.8,
+        marginTop: 12,
+        marginBottom: 6,
+    },
+    setCategoryHint: {
+        fontSize: 12,
+        color: '#4A90D9',
+        fontStyle: 'italic',
+    },
+    detailHint: {
+        fontSize: 12,
+        color: '#8899AA',
+        marginTop: 2,
     },
     cardIcon: {
         width: 40,
