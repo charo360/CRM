@@ -5773,6 +5773,15 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
         for m in messages
     ])
 
+@api_router.delete("/messages/{message_id}")
+async def delete_message(message_id: str, user = Depends(get_current_user)):
+    """Delete a single message from the CRM (local only, does not unsend on WhatsApp)"""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.messages.delete_one({"_id": message_id, "user_id": business_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return {"status": "success", "message": "Message deleted"}
+
 @api_router.post("/customers/{customer_id}/messages")
 async def add_customer_message(customer_id: str, message: MessageCreate, user = Depends(get_current_user)):
     """Manually add a message to customer history"""

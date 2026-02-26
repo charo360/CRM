@@ -72,6 +72,7 @@ export default function ChatScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Message[]>([]);
   const [searching, setSearching] = useState(false);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
 
   useEffect(() => {
     if (showToast) {
@@ -429,6 +430,30 @@ export default function ChatScreen() {
     }
   };
 
+  const handleDeleteMessage = (messageId: string) => {
+    Alert.alert(
+      'Delete Message',
+      'Remove this message from your CRM? This will not unsend it on WhatsApp.',
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => setSelectedMessageId(null) },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await apiClient.delete(`/messages/${messageId}`);
+              setMessages(prev => prev.filter(m => m.id !== messageId));
+            } catch (e) {
+              Alert.alert('Error', 'Failed to delete message');
+            } finally {
+              setSelectedMessageId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const renderMessage = ({ item }: { item: Message }) => {
     const isOutgoing = item.direction === 'outgoing';
     const isDocument = item.message_type === 'document';
@@ -457,11 +482,20 @@ export default function ChatScreen() {
     const docExt = docDisplayName.includes('.') ? docDisplayName.split('.').pop()?.toUpperCase() : null;
     const docFileName = docDisplayName;
 
+    const isSelected = selectedMessageId === item.id;
+
     return (
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)}
+        delayLongPress={400}
+        style={{ alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }}
+      >
       <View
         style={[
           styles.messageBubble,
           isOutgoing ? styles.outgoing : styles.incoming,
+          isSelected && { opacity: 0.75 },
         ]}
       >
         {hasImage && imageUri && (
@@ -533,6 +567,19 @@ export default function ChatScreen() {
           )}
         </View>
       </View>
+      {isSelected && (
+        <TouchableOpacity
+          onPress={() => handleDeleteMessage(item.id)}
+          style={[
+            styles.deleteBtn,
+            isOutgoing ? { alignSelf: 'flex-end' } : { alignSelf: 'flex-start' },
+          ]}
+        >
+          <Ionicons name="trash-outline" size={13} color="#FF4444" />
+          <Text style={styles.deleteBtnText}>Delete</Text>
+        </TouchableOpacity>
+      )}
+      </TouchableOpacity>
     );
   };
 
@@ -1267,5 +1314,21 @@ const styles = StyleSheet.create({
   searchResultDate: {
     fontSize: 11,
     color: '#8B9DC3',
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginTop: 2,
+    marginBottom: 4,
+    backgroundColor: 'rgba(255,68,68,0.12)',
+    borderRadius: 8,
+  },
+  deleteBtnText: {
+    fontSize: 12,
+    color: '#FF4444',
+    fontWeight: '600',
   },
 });
