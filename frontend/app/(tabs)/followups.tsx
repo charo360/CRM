@@ -84,6 +84,8 @@ interface FollowUpAnalytics {
     avg_response_time_hours: number;
     total_revenue: number;
     revenue_per_followup: number;
+    needs_attention_contacted?: number;
+    total_all?: number;
   };
   best_times: {
     best_day: string;
@@ -157,19 +159,40 @@ export default function FollowupsScreen() {
   const [noteAIDirection, setNoteAIDirection] = useState('');
   const [generatingNoteAI, setGeneratingNoteAI] = useState(false);
 
+  // Cold customer Done modal state
+  const [coldDoneModalVisible, setColdDoneModalVisible] = useState(false);
+  const [coldDoneCustomer, setColdDoneCustomer] = useState<ColdCustomer | null>(null);
+  const [coldSelectedOutcome, setColdSelectedOutcome] = useState('');
+  const [coldOutcomeNote, setColdOutcomeNote] = useState('');
+  const [savingColdOutcome, setSavingColdOutcome] = useState(false);
+
+  const handleColdDone = async () => {
+    if (!coldDoneCustomer || !coldSelectedOutcome) return;
+    setSavingColdOutcome(true);
+    try {
+      await apiClient.post('/followup-events', {
+        customer_id: coldDoneCustomer.id,
+        outcome: coldSelectedOutcome,
+        note: coldOutcomeNote || null,
+      });
+      setColdCustomers(prev => prev.filter(c => c.id !== coldDoneCustomer.id));
+      setColdDoneModalVisible(false);
+      setColdDoneCustomer(null);
+      setColdSelectedOutcome('');
+      setColdOutcomeNote('');
+    } catch (e) {
+      Alert.alert('Error', 'Could not save outcome');
+    } finally {
+      setSavingColdOutcome(false);
+    }
+  };
+
   const fetchAnalytics = useCallback(async (days = 30) => {
     setLoadingAnalytics(true);
     try {
       const res = await apiClient.get(`/followups/analytics?days=${days}`);
-      // Also get manual outcome counts from completed followups
-      const completed = await apiClient.get('/followups?status=completed').catch(() => ({ data: [] }));
-      const outcomeCounts: Record<string, number> = {};
-      (completed.data as any[]).forEach((f: any) => {
-        if (f.outcome) {
-          outcomeCounts[f.outcome] = (outcomeCounts[f.outcome] || 0) + 1;
-        }
-      });
-      setAnalytics({ ...res.data, outcome_counts: outcomeCounts });
+      // Backend now returns outcome_counts merged from reminders + needs-attention events
+      setAnalytics(res.data);
     } catch (e) {
       console.error('Analytics fetch error:', e);
     } finally {
@@ -678,6 +701,18 @@ export default function FollowupsScreen() {
           <Ionicons name="alarm-outline" size={16} color="#4A90D9" />
           <Text style={[styles.coldActionText, { color: '#4A90D9' }]}>Remind</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.coldActionBtn}
+          onPress={() => {
+            setColdDoneCustomer(customer);
+            setColdSelectedOutcome('');
+            setColdOutcomeNote('');
+            setColdDoneModalVisible(true);
+          }}
+        >
+          <Ionicons name="checkmark-circle" size={16} color="#A8FF78" />
+          <Text style={[styles.coldActionText, { color: '#A8FF78' }]}>Done</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -817,9 +852,9 @@ export default function FollowupsScreen() {
           ) : (
             <>
               {/* Summary strip */}
-              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 20 }}>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
                 <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
-                  <Text style={{ color: '#25D366', fontSize: 22, fontWeight: '800' }}>{analytics.stats.total_followups}</Text>
+                  <Text style={{ color: '#25D366', fontSize: 22, fontWeight: '800' }}>{analytics.stats.total_all ?? analytics.stats.total_followups}</Text>
                   <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Total Done</Text>
                 </View>
                 <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
@@ -829,6 +864,17 @@ export default function FollowupsScreen() {
                 <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
                   <Text style={{ color: '#4A90D9', fontSize: 22, fontWeight: '800' }}>{Math.round(analytics.stats.conversion_rate)}%</Text>
                   <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Converted</Text>
+                </View>
+              </View>
+              {/* Breakdown: reminders vs needs-attention */}
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 20 }}>
+                <View style={{ flex: 1, backgroundColor: '#0F1E33', borderRadius: 10, padding: 10, alignItems: 'center' }}>
+                  <Text style={{ color: '#4A90D9', fontSize: 16, fontWeight: '700' }}>{analytics.stats.total_followups}</Text>
+                  <Text style={{ color: '#555', fontSize: 10, marginTop: 2 }}>Reminders</Text>
+                </View>
+                <View style={{ flex: 1, backgroundColor: '#0F1E33', borderRadius: 10, padding: 10, alignItems: 'center' }}>
+                  <Text style={{ color: '#A8FF78', fontSize: 16, fontWeight: '700' }}>{analytics.stats.needs_attention_contacted ?? 0}</Text>
+                  <Text style={{ color: '#555', fontSize: 10, marginTop: 2 }}>Needs Attention</Text>
                 </View>
               </View>
 
@@ -1397,6 +1443,73 @@ export default function FollowupsScreen() {
                 disabled={!selectedOutcome || savingOutcome}
               >
                 {savingOutcome
+                  ? <ActivityIndicator color="#FFF" />
+                  : <Text style={styles.saveButtonText}>Save & Close</Text>}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Cold Customer Done Modal */}
+      <Modal
+        visible={coldDoneModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setColdDoneModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '70%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>What happened?</Text>
+              <TouchableOpacity onPress={() => setColdDoneModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+            {coldDoneCustomer && (
+              <Text style={{ color: '#666', fontSize: 13, marginBottom: 16 }}>
+                Follow-up with {coldDoneCustomer.name}
+              </Text>
+            )}
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {[
+                { id: 'called',         label: '📞 Called — They answered',  color: '#25D366' },
+                { id: 'replied',        label: '💬 Replied on WhatsApp',      color: '#25D366' },
+                { id: 'converted',      label: '🎉 Made a sale!',             color: '#FFD700' },
+                { id: 'no_answer',      label: '📵 No answer / No reply',     color: '#FF6B6B' },
+                { id: 'rescheduled',    label: '📅 Rescheduled for later',    color: '#4A90D9' },
+                { id: 'not_interested', label: '❌ Not interested',           color: '#666' },
+              ].map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={{
+                    flexDirection: 'row', alignItems: 'center', padding: 14,
+                    backgroundColor: coldSelectedOutcome === o.id ? o.color + '22' : '#1A2942',
+                    borderRadius: 10, marginBottom: 8,
+                    borderWidth: coldSelectedOutcome === o.id ? 1.5 : 0,
+                    borderColor: coldSelectedOutcome === o.id ? o.color : 'transparent',
+                  }}
+                  onPress={() => setColdSelectedOutcome(o.id)}
+                >
+                  <Text style={{ color: coldSelectedOutcome === o.id ? o.color : '#CCD6E0', fontSize: 15, fontWeight: coldSelectedOutcome === o.id ? '700' : '400' }}>
+                    {o.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+              <TextInput
+                style={[styles.messageInput, { marginTop: 8 }]}
+                placeholder="Add a note (optional)..."
+                placeholderTextColor="#555"
+                value={coldOutcomeNote}
+                onChangeText={setColdOutcomeNote}
+                multiline
+              />
+              <TouchableOpacity
+                style={[styles.saveButton, (!coldSelectedOutcome || savingColdOutcome) && styles.saveButtonDisabled, { marginTop: 8 }]}
+                onPress={handleColdDone}
+                disabled={!coldSelectedOutcome || savingColdOutcome}
+              >
+                {savingColdOutcome
                   ? <ActivityIndicator color="#FFF" />
                   : <Text style={styles.saveButtonText}>Save & Close</Text>}
               </TouchableOpacity>

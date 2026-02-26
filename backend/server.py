@@ -2687,19 +2687,86 @@ async def snooze_followup(followup_id: str, days: int = 1, user = Depends(get_cu
         "new_date": new_date
     }
 
+@api_router.post("/followup-events")
+async def record_followup_event(
+    customer_id: str = Body(...),
+    outcome: str = Body(...),  # called, replied, converted, no_answer, rescheduled, not_interested
+    note: Optional[str] = Body(None),
+    user = Depends(get_current_user)
+):
+    """Record a manual follow-up outcome for a cold/needs-attention customer"""
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    event = {
+        "_id": str(uuid.uuid4()),
+        "user_id": business_id,
+        "customer_id": customer_id,
+        "customer_name": customer.get("name", "Unknown"),
+        "outcome": outcome,
+        "note": note,
+        "source": "needs_attention",
+        "created_at": datetime.utcnow(),
+    }
+    await db.followup_events.insert_one(event)
+
+    # Update last_contacted so they drop off Needs Attention
+    await db.customers.update_one(
+        {"_id": customer_id},
+        {"$set": {"last_contacted": datetime.utcnow()}}
+    )
+    return {"status": "ok", "id": event["_id"]}
+
+
 @api_router.get("/followups/analytics")
 async def get_followup_analytics(days: int = 30, user = Depends(get_current_user)):
     """
     Get follow-up success metrics for analytics dashboard
     Automatically tracks: conversions, responses, timing
+    Also includes needs-attention contact events
     """
+    business_id = user.get("business_id", user["_id"])
     analytics = get_analytics(db)
     stats = await analytics.get_followup_stats(user["_id"], days)
     best_times = await analytics.get_best_followup_times(user["_id"])
-    
+
+    # Pull manual followup_events (from Needs Attention "Done" button)
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    events = await db.followup_events.find({
+        "user_id": business_id,
+        "created_at": {"$gte": cutoff}
+    }).to_list(1000)
+
+    # Aggregate outcome counts across both reminders (followups) and needs-attention events
+    # Start from completed followups outcome field
+    completed_followups = await db.followups.find({
+        "user_id": business_id,
+        "status": "completed",
+        "reminder_date": {"$gte": cutoff}
+    }).to_list(1000)
+
+    outcome_counts: dict = {}
+    for f in completed_followups:
+        o = f.get("outcome")
+        if o:
+            outcome_counts[o] = outcome_counts.get(o, 0) + 1
+
+    for e in events:
+        o = e.get("outcome")
+        if o:
+            outcome_counts[o] = outcome_counts.get(o, 0) + 1
+
+    # Merge event totals into stats
+    events_total = len(events)
+    stats["needs_attention_contacted"] = events_total
+    stats["total_all"] = stats.get("total_followups", 0) + events_total
+
     return {
         "stats": stats,
-        "best_times": best_times
+        "best_times": best_times,
+        "outcome_counts": outcome_counts,
     }
 
 @api_router.get("/stats/followup-suggestions")
