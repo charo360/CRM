@@ -1543,31 +1543,32 @@ export default function FollowupsScreen() {
                 </TouchableOpacity>
               </View>
 
-              {loadingDraft ? (
-                <View style={styles.draftLoadingContainer}>
-                  <ActivityIndicator size="large" color="#4A90D9" />
-                  <Text style={styles.draftLoadingText}>Writing perfect message...</Text>
-                </View>
-              ) : (
-                <ScrollView
+              <ScrollView
                   keyboardShouldPersistTaps="handled"
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={{ paddingBottom: 20 }}
                 >
                   <Text style={styles.inputLabel}>Message Preview (tap to edit)</Text>
-                  <TextInput
-                    style={[styles.messageInput, { minHeight: 120 }]}
-                    placeholder="Message..."
-                    placeholderTextColor="#666"
-                    value={draftMessage}
-                    onChangeText={setDraftMessage}
-                    multiline
-                  />
+                  {loadingDraft ? (
+                    <View style={[styles.messageInput, { minHeight: 120, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 10 }]}>
+                      <ActivityIndicator size="small" color="#4A90D9" />
+                      <Text style={{ color: '#555', fontSize: 13 }}>Writing message...</Text>
+                    </View>
+                  ) : (
+                    <TextInput
+                      style={[styles.messageInput, { minHeight: 120 }]}
+                      placeholder="Message..."
+                      placeholderTextColor="#666"
+                      value={draftMessage}
+                      onChangeText={setDraftMessage}
+                      multiline
+                    />
+                  )}
 
                   <View style={styles.aiReasonBox}>
                     <Text style={styles.aiReasonLabel}>Why this message?</Text>
                     <Text style={styles.aiReasonTextSmall}>
-                      {draftReason}
+                      {loadingDraft ? '...' : draftReason}
                     </Text>
                   </View>
 
@@ -1657,7 +1658,6 @@ export default function FollowupsScreen() {
                     <Text style={styles.whatsappSendText}>Open in WhatsApp</Text>
                   </TouchableOpacity>
                 </ScrollView>
-              )}
             </View>
           </KeyboardAvoidingView>
         </View>
