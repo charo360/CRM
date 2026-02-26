@@ -33,6 +33,8 @@ interface Message {
   message_type?: string;
   image_url?: string;
   file_name?: string;
+  evo_message_id?: string | null;
+  remote_jid?: string | null;
 }
 
 export default function ChatScreen() {
@@ -430,27 +432,48 @@ export default function ChatScreen() {
     }
   };
 
-  const handleDeleteMessage = (messageId: string) => {
+  const handleDeleteMessage = (item: Message) => {
+    const canDeleteForEveryone = item.direction === 'outgoing' && !!item.evo_message_id && !!item.remote_jid;
+
+    const doDeleteLocal = async () => {
+      try {
+        await apiClient.delete(`/messages/${item.id}`);
+        setMessages(prev => prev.filter(m => m.id !== item.id));
+      } catch (e) {
+        Alert.alert('Error', 'Failed to delete message');
+      } finally {
+        setSelectedMessageId(null);
+      }
+    };
+
+    const doDeleteForEveryone = async () => {
+      try {
+        await apiClient.delete(`/messages/${item.id}/for-everyone`);
+        setMessages(prev => prev.filter(m => m.id !== item.id));
+        setToastMessage('Deleted for everyone');
+        setShowToast(true);
+      } catch (e: any) {
+        const detail = e?.response?.data?.detail || 'Failed to delete for everyone';
+        Alert.alert('Could Not Delete', detail);
+      } finally {
+        setSelectedMessageId(null);
+      }
+    };
+
+    const buttons: any[] = [
+      { text: 'Cancel', style: 'cancel', onPress: () => setSelectedMessageId(null) },
+      { text: 'Delete for Me', style: 'destructive', onPress: doDeleteLocal },
+    ];
+    if (canDeleteForEveryone) {
+      buttons.splice(1, 0, { text: 'Delete for Everyone', onPress: doDeleteForEveryone });
+    }
+
     Alert.alert(
       'Delete Message',
-      'Remove this message from your CRM? This will not unsend it on WhatsApp.',
-      [
-        { text: 'Cancel', style: 'cancel', onPress: () => setSelectedMessageId(null) },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await apiClient.delete(`/messages/${messageId}`);
-              setMessages(prev => prev.filter(m => m.id !== messageId));
-            } catch (e) {
-              Alert.alert('Error', 'Failed to delete message');
-            } finally {
-              setSelectedMessageId(null);
-            }
-          },
-        },
-      ]
+      canDeleteForEveryone
+        ? 'Delete just for yourself, or delete for everyone on WhatsApp?'
+        : 'Remove this message from your CRM?',
+      buttons
     );
   };
 
@@ -569,7 +592,7 @@ export default function ChatScreen() {
       </View>
       {isSelected && (
         <TouchableOpacity
-          onPress={() => handleDeleteMessage(item.id)}
+          onPress={() => handleDeleteMessage(item)}
           style={[
             styles.deleteBtn,
             isOutgoing ? { alignSelf: 'flex-end' } : { alignSelf: 'flex-start' },

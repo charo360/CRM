@@ -5001,6 +5001,9 @@ async def evolution_webhook(request: Request):
                     msg_doc["file_name"] = parsed["file_name"]
                 if evo_msg_id:
                     msg_doc["evo_message_id"] = evo_msg_id
+                remote_jid = parsed.get("remote_jid", "")
+                if remote_jid:
+                    msg_doc["remote_jid"] = remote_jid
                 await db.messages.insert_one(msg_doc)
                 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
@@ -5768,7 +5771,9 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
             "image_url": m.get("image_url"),
             "file_name": m.get("file_name"),
             "status": m.get("status"),
-            "created_at": m.get("created_at", m.get("timestamp"))
+            "created_at": m.get("created_at", m.get("timestamp")),
+            "evo_message_id": m.get("evo_message_id"),
+            "remote_jid": m.get("remote_jid"),
         }
         for m in messages
     ])
@@ -5781,6 +5786,47 @@ async def delete_message(message_id: str, user = Depends(get_current_user)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Message not found")
     return {"status": "success", "message": "Message deleted"}
+
+@api_router.delete("/messages/{message_id}/for-everyone")
+async def delete_message_for_everyone(message_id: str, user = Depends(get_current_user)):
+    """Delete a message for everyone on WhatsApp (revoke) then remove from CRM.
+    Only works for outgoing messages within WhatsApp's ~60 hour window."""
+    business_id = user.get("business_id", user["_id"])
+    msg = await db.messages.find_one({"_id": message_id, "user_id": business_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    evo_msg_id = msg.get("evo_message_id")
+    remote_jid = msg.get("remote_jid")
+
+    if not evo_msg_id or not remote_jid:
+        raise HTTPException(status_code=400, detail="Cannot delete for everyone: message has no WhatsApp ID (may be too old or not sent via this CRM)")
+
+    wa_user = await db.users.find_one({"_id": business_id})
+    wa = wa_user.get("whatsapp", {}) if wa_user else {}
+    instance_name = wa.get("instance_name")
+    if not instance_name:
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+
+    import os as _os, httpx as _httpx
+    base_url = _os.environ.get("EVOLUTION_API_URL", "http://localhost:8080")
+    api_key = _os.environ.get("EVOLUTION_API_KEY", "")
+
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            resp = await client.request(
+                method="DELETE",
+                url=f"{base_url}/chat/deleteMessageForEveryone/{instance_name}",
+                headers={"apikey": api_key, "Content-Type": "application/json"},
+                json={"id": evo_msg_id, "remoteJid": remote_jid, "fromMe": True},
+            )
+        if resp.status_code not in (200, 201):
+            raise HTTPException(status_code=502, detail=f"WhatsApp delete failed: {resp.text}")
+    except _httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach WhatsApp: {str(e)}")
+
+    await db.messages.delete_one({"_id": message_id})
+    return {"status": "success", "message": "Message deleted for everyone"}
 
 @api_router.post("/customers/{customer_id}/messages")
 async def add_customer_message(customer_id: str, message: MessageCreate, user = Depends(get_current_user)):
