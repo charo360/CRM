@@ -1142,48 +1142,59 @@ class WhatsAppService:
 
         logger.info(f"Phase 1 (findContacts cache): {updated} pics, {names_updated} names updated")
 
-        # --- Phase 2: Individual fetch for all remaining ---
+        # --- Phase 2: Parallel batch fetch for all remaining ---
+        BATCH_SIZE = 20  # fetch 20 at a time in parallel
         errors = 0
-        consecutive_errors = 0
         phase2_updated = 0
-        for cust in still_missing:
-            phone = cust.get("phone_number", "").lstrip("+").replace(" ", "").replace("-", "")
-            if not phone or len(phone) > 15:
-                continue
-            try:
-                async with httpx.AsyncClient(timeout=8) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/chat/fetchProfilePictureUrl/{instance_name}",
-                        headers=self._headers(),
-                        json={"number": phone},
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        pic_url = data.get("profilePictureUrl") or data.get("profilePicUrl") or data.get("url")
-                        if pic_url:
-                            await self.db.customers.update_one(
-                                {"_id": cust["_id"]},
-                                {"$set": {"profile_picture": pic_url}}
-                            )
-                            phase2_updated += 1
-                        consecutive_errors = 0
-                    elif resp.status_code == 404 and "instance does not exist" in resp.text.lower():
-                        logger.warning(f"Instance {instance_name} gone, aborting individual fetch")
-                        break
-                    else:
-                        errors += 1
-                        consecutive_errors += 1
-            except Exception:
-                errors += 1
-                consecutive_errors += 1
+        abort = False
 
-            await asyncio.sleep(0.2)
-            if consecutive_errors >= 10:
-                logger.warning(f"10 consecutive errors in phase 2, stopping early")
-                break
+        valid_missing = [
+            c for c in still_missing
+            if c.get("phone_number") and 5 <= len(c["phone_number"].lstrip("+").replace(" ", "").replace("-", "")) <= 15
+        ]
+
+        async def _fetch_one(client: httpx.AsyncClient, cust: Dict):
+            phone = cust.get("phone_number", "").lstrip("+").replace(" ", "").replace("-", "")
+            try:
+                resp = await client.post(
+                    f"{self.base_url}/chat/fetchProfilePictureUrl/{instance_name}",
+                    headers=self._headers(),
+                    json={"number": phone},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pic_url = data.get("profilePictureUrl") or data.get("profilePicUrl") or data.get("url")
+                    return (cust["_id"], pic_url, None)
+                if resp.status_code == 404 and "instance does not exist" in resp.text.lower():
+                    return (cust["_id"], None, "instance_gone")
+                return (cust["_id"], None, "no_pic")
+            except Exception as e:
+                return (cust["_id"], None, str(e))
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            for i in range(0, len(valid_missing), BATCH_SIZE):
+                if abort:
+                    break
+                batch = valid_missing[i:i + BATCH_SIZE]
+                results = await asyncio.gather(*[_fetch_one(client, c) for c in batch])
+                for cust_id, pic_url, err in results:
+                    if err == "instance_gone":
+                        logger.warning(f"Instance {instance_name} gone, aborting")
+                        abort = True
+                        break
+                    if pic_url:
+                        await self.db.customers.update_one(
+                            {"_id": cust_id},
+                            {"$set": {"profile_picture": pic_url}}
+                        )
+                        phase2_updated += 1
+                    elif err and err not in ("no_pic", "instance_gone"):
+                        errors += 1
+                # Small pause between batches to avoid hammering Evolution API
+                await asyncio.sleep(0.5)
 
         updated += phase2_updated
-        logger.info(f"Phase 2 (individual fetch): updated {phase2_updated}, errors: {errors}")
+        logger.info(f"Phase 2 (parallel batch fetch): updated {phase2_updated}, errors: {errors}")
         logger.info(f"Total profile pictures updated: {updated} (user {user_id})")
         return {"updated": updated, "errors": errors}
 
