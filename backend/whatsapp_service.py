@@ -1068,7 +1068,9 @@ class WhatsAppService:
         updated = 0
 
         # --- Phase 1: Bulk update from findContacts cache ---
-        evo_pics = {}  # phone -> pic_url
+        # Must send {"where": {}} — empty body returns 0 contacts
+        evo_pics = {}    # digits-only phone -> pic_url
+        evo_names = {}   # digits-only phone -> pushName
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
@@ -1078,15 +1080,21 @@ class WhatsAppService:
                 )
                 if resp.status_code == 200:
                     contacts = resp.json()
+                    if not isinstance(contacts, list):
+                        contacts = contacts.get("contacts", contacts.get("data", []))
                     for c in contacts:
-                        pic_url = c.get("profilePicUrl")
-                        if not pic_url:
-                            continue
                         remote_jid = c.get("remoteJid") or ""
-                        if "@s.whatsapp.net" in remote_jid:
-                            phone = remote_jid.replace("@s.whatsapp.net", "")
-                            evo_pics[phone] = pic_url
-                    logger.info(f"findContacts returned {len(contacts)} contacts, {len(evo_pics)} with profile pics")
+                        # Only match standard JIDs — @lid format can't be mapped to phone
+                        if "@s.whatsapp.net" not in remote_jid:
+                            continue
+                        digits = remote_jid.replace("@s.whatsapp.net", "").strip()
+                        pic_url = c.get("profilePicUrl")
+                        push_name = c.get("pushName") or c.get("name") or ""
+                        if pic_url:
+                            evo_pics[digits] = pic_url
+                        if push_name:
+                            evo_names[digits] = push_name
+                    logger.info(f"findContacts: {len(contacts)} contacts, {len(evo_pics)} with pics, {len(evo_names)} with names")
                 elif resp.status_code == 404 and "instance does not exist" in resp.text.lower():
                     logger.warning(f"Instance {instance_name} not found, skipping bulk profile fetch")
                     return {"updated": 0}
@@ -1108,34 +1116,42 @@ class WhatsAppService:
 
         logger.info(f"{len(customers)} customers missing profile pictures")
 
-        # Match customers to cached pics
+        # Match customers to cached pics (and backfill names while we're at it)
         still_missing = []
+        names_updated = 0
         for cust in customers:
             phone = cust.get("phone_number", "").lstrip("+").replace(" ", "").replace("-", "")
             if not phone:
                 continue
             pic_url = evo_pics.get(phone)
+            push_name = evo_names.get(phone, "")
+            updates = {}
             if pic_url:
-                await self.db.customers.update_one(
-                    {"_id": cust["_id"]},
-                    {"$set": {"profile_picture": pic_url}}
-                )
+                updates["profile_picture"] = pic_url
                 updated += 1
             else:
                 still_missing.append(cust)
+            # Also fix fallback names while we have the data
+            current_name = cust.get("name", "")
+            is_fallback = not current_name or current_name.startswith("Contact ") or current_name.startswith("+")
+            if push_name and is_fallback:
+                updates["name"] = push_name
+                names_updated += 1
+            if updates:
+                await self.db.customers.update_one({"_id": cust["_id"]}, {"$set": updates})
 
-        logger.info(f"Phase 1 (findContacts cache): updated {updated} customers")
+        logger.info(f"Phase 1 (findContacts cache): {updated} pics, {names_updated} names updated")
 
-        # --- Phase 2: Individual fetch for remaining (capped to avoid spam) ---
-        MAX_INDIVIDUAL = 50
+        # --- Phase 2: Individual fetch for all remaining ---
         errors = 0
+        consecutive_errors = 0
         phase2_updated = 0
-        for cust in still_missing[:MAX_INDIVIDUAL]:
+        for cust in still_missing:
             phone = cust.get("phone_number", "").lstrip("+").replace(" ", "").replace("-", "")
-            if not phone:
+            if not phone or len(phone) > 15:
                 continue
             try:
-                async with httpx.AsyncClient(timeout=5) as client:
+                async with httpx.AsyncClient(timeout=8) as client:
                     resp = await client.post(
                         f"{self.base_url}/chat/fetchProfilePictureUrl/{instance_name}",
                         headers=self._headers(),
@@ -1150,17 +1166,20 @@ class WhatsAppService:
                                 {"$set": {"profile_picture": pic_url}}
                             )
                             phase2_updated += 1
+                        consecutive_errors = 0
                     elif resp.status_code == 404 and "instance does not exist" in resp.text.lower():
                         logger.warning(f"Instance {instance_name} gone, aborting individual fetch")
                         break
                     else:
                         errors += 1
+                        consecutive_errors += 1
             except Exception:
                 errors += 1
+                consecutive_errors += 1
 
-            await asyncio.sleep(0.3)
-            if errors >= 5:
-                logger.warning(f"Too many errors in phase 2, stopping early")
+            await asyncio.sleep(0.2)
+            if consecutive_errors >= 10:
+                logger.warning(f"10 consecutive errors in phase 2, stopping early")
                 break
 
         updated += phase2_updated
@@ -1196,7 +1215,7 @@ class WhatsAppService:
                 resp = await client.post(
                     f"{self.base_url}/chat/findContacts/{instance_name}",
                     headers=self._headers(),
-                    json={},
+                    json={"where": {}},
                 )
 
                 if resp.status_code != 200:
@@ -1220,11 +1239,11 @@ class WhatsAppService:
                         continue
                     phone = f"+{phone}"
 
-                    name = (
+                    raw_name = (
                         contact.get("pushName")
                         or contact.get("name")
                         or contact.get("notify")
-                        or f"Contact {phone[-4:]}"
+                        or ""
                     )
 
                     # Check if contact already exists
@@ -1233,16 +1252,23 @@ class WhatsAppService:
                         "phone_number": phone
                     })
                     if existing:
-                        # Mark existing contact as synced so chat history gets pulled
                         updates = {}
                         if not existing.get("synced_from_whatsapp"):
                             updates["synced_from_whatsapp"] = True
-                        
-                        # Update name if we have a real name and existing is a fallback
+
                         current_name = existing.get("name", "")
-                        if name and not name.startswith("Contact ") and (not current_name or current_name.startswith("Contact ")):
-                            updates["name"] = name
-                            
+                        is_fallback = not current_name or current_name.startswith("Contact ") or current_name.startswith("+")
+                        if raw_name and not raw_name.startswith("Contact ") and is_fallback:
+                            updates["name"] = raw_name
+                        elif is_fallback and not raw_name:
+                            # Try to get name from most recent message pushName
+                            recent_msg = await self.db.messages.find_one(
+                                {"customer_id": existing["_id"], "user_id": user_id, "push_name": {"$exists": True, "$ne": ""}},
+                                sort=[("created_at", -1)]
+                            )
+                            if recent_msg and recent_msg.get("push_name"):
+                                updates["name"] = recent_msg["push_name"]
+
                         if updates:
                             await self.db.customers.update_one(
                                 {"_id": existing["_id"]},
@@ -1252,6 +1278,9 @@ class WhatsAppService:
                         else:
                             skipped += 1
                         continue
+
+                    # For new contacts with no name, use phone last 4 as temp fallback
+                    name = raw_name or f"Contact {phone[-4:]}"
 
                     await self.db.customers.insert_one({
                         "_id": str(uuid.uuid4()),
@@ -1391,6 +1420,7 @@ class WhatsAppService:
                             records = []
 
                         last_body = None
+                        best_push_name = chat.get("pushName") or chat.get("name") or ""
                         for msg in records:
                             key = msg.get("key", {})
                             from_me = key.get("fromMe", False)
@@ -1404,6 +1434,11 @@ class WhatsAppService:
                             if not body:
                                 continue
 
+                            # Capture pushName from incoming messages
+                            msg_push_name = msg.get("pushName", "")
+                            if msg_push_name and not from_me:
+                                best_push_name = best_push_name or msg_push_name
+
                             # Parse timestamp
                             ts = msg.get("messageTimestamp")
                             if isinstance(ts, (int, float)):
@@ -1413,7 +1448,7 @@ class WhatsAppService:
 
                             direction = "outgoing" if from_me else "incoming"
 
-                            await self.db.messages.insert_one({
+                            msg_doc = {
                                 "_id": str(uuid.uuid4()),
                                 "customer_id": customer["_id"],
                                 "user_id": user_id,
@@ -1423,20 +1458,25 @@ class WhatsAppService:
                                 "from_number": phone if not from_me else user.get("phone_number", ""),
                                 "created_at": msg_time,
                                 "synced_from_history": True,
-                            })
+                            }
+                            if msg_push_name and not from_me:
+                                msg_doc["push_name"] = msg_push_name
+                            await self.db.messages.insert_one(msg_doc)
                             total_messages += 1
                             last_body = body
 
-                        # Update customer's last message
+                        # Update customer's last message + resolve name
                         updates = {
-                            "last_message": last_body[:200],
                             "last_contacted": datetime.utcnow(),
                         }
-                        
-                        # Use pushName from chat if we only have a fallback "Contact ..." name
-                        push_name = chat.get("pushName") or chat.get("name")
-                        if push_name and customer.get("name", "").startswith("Contact "):
-                            updates["name"] = push_name
+                        if last_body:
+                            updates["last_message"] = last_body[:200]
+
+                        # Update name if current is a fallback and we found a real pushName
+                        current_name = customer.get("name", "")
+                        is_fallback = not current_name or current_name.startswith("Contact ") or current_name.startswith("+")
+                        if best_push_name and is_fallback:
+                            updates["name"] = best_push_name
                         
                         await self.db.customers.update_one(
                             {"_id": customer["_id"]},

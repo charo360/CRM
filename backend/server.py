@@ -1405,6 +1405,18 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
     user = await db.users.find_one({"_id": user_id})
     is_new_user = session["is_new_user"] or not user.get("setup_complete", True)
 
+    # Auto-trigger contact sync + profile pictures in background
+    async def _auto_sync(uid):
+        try:
+            ws = get_whatsapp_service(db)
+            await ws.fetch_contacts(uid)
+            await ws.fetch_chat_history(uid)
+            await ws.fetch_profile_pictures_bulk(uid)
+            logging.info(f"Auto-sync complete for user {uid}")
+        except Exception as e:
+            logging.error(f"Auto-sync error for user {uid}: {e}")
+    asyncio.create_task(_auto_sync(user_id))
+
     return serialize_doc({
         "status": "success",
         "connected": True,
@@ -4455,7 +4467,6 @@ async def refresh_profile_pictures(user = Depends(get_current_user)):
     """Fetch profile pictures for customers that are missing them"""
     whatsapp_service = get_whatsapp_service(db)
     
-    # Run bulk fetch in background (only fetches for customers missing pictures)
     async def _refresh(uid):
         try:
             result = await whatsapp_service.fetch_profile_pictures_bulk(uid)
@@ -4465,6 +4476,96 @@ async def refresh_profile_pictures(user = Depends(get_current_user)):
     asyncio.create_task(_refresh(user["_id"]))
     
     return {"status": "started", "message": "Profile pictures are being refreshed in the background."}
+
+@api_router.post("/customers/backfill-names")
+async def backfill_contact_names(user = Depends(get_current_user)):
+    """
+    Fix contacts with fallback names like 'Contact 1234' or raw phone numbers.
+    Strategy:
+    1. Pull all contacts from Evolution API findContacts (has pushName/name)
+    2. Match by phone and update name in DB
+    3. For remaining fallbacks, check their stored messages for push_name field
+    """
+    uid = user.get("business_id", user["_id"])
+    wa_user = await db.users.find_one({"_id": uid}, {"whatsapp": 1})
+    wa = wa_user.get("whatsapp") if wa_user else None
+    if not wa or not wa.get("instance_name"):
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+
+    instance_name = wa["instance_name"]
+
+    async def _backfill(uid, instance_name):
+        updated = 0
+        try:
+            import httpx as _httpx
+            from whatsapp_service import EVOLUTION_API_URL, EVOLUTION_API_KEY
+            base_url = EVOLUTION_API_URL.rstrip("/")
+            headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
+
+            # Step 1: Get all contacts from Evolution API with their pushName
+            evo_names = {}
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{base_url}/chat/findContacts/{instance_name}",
+                    headers=headers,
+                    json={"where": {}},
+                )
+                if resp.status_code == 200:
+                    contacts = resp.json()
+                    if not isinstance(contacts, list):
+                        contacts = contacts.get("contacts", contacts.get("data", []))
+                    for c in contacts:
+                        jid = c.get("remoteJid", "")
+                        name = c.get("pushName") or c.get("name") or c.get("notify") or ""
+                        if "@s.whatsapp.net" in jid and name:
+                            # Store by raw digits (no + prefix) for reliable matching
+                            digits = jid.replace("@s.whatsapp.net", "").strip()
+                            evo_names[digits] = name
+
+            logging.info(f"Backfill: Evolution API returned {len(evo_names)} named contacts")
+
+            # Step 2: Find all customers with fallback names
+            fallback_customers = await db.customers.find({
+                "user_id": uid,
+                "$or": [
+                    {"name": {"$regex": "^Contact [0-9]"}},
+                    {"name": {"$regex": "^[+][0-9]"}},
+                    {"name": ""},
+                    {"name": None},
+                ]
+            }, {"_id": 1, "phone_number": 1, "name": 1}).to_list(None)
+
+            logging.info(f"Backfill: {len(fallback_customers)} customers with fallback names")
+
+            for cust in fallback_customers:
+                raw_phone = cust.get("phone_number", "")
+                # Normalize to raw digits for matching
+                digits = raw_phone.lstrip("+").replace(" ", "").replace("-", "")
+                new_name = evo_names.get(digits, "")
+
+                if not new_name:
+                    # Try finding pushName from stored messages
+                    msg = await db.messages.find_one(
+                        {"customer_id": cust["_id"], "user_id": uid,
+                         "push_name": {"$exists": True, "$ne": ""}},
+                        sort=[("created_at", -1)]
+                    )
+                    if msg:
+                        new_name = msg.get("push_name", "")
+
+                if new_name and not new_name.startswith("Contact "):
+                    await db.customers.update_one(
+                        {"_id": cust["_id"]},
+                        {"$set": {"name": new_name}}
+                    )
+                    updated += 1
+
+            logging.info(f"Backfill names complete: updated {updated} contacts for user {uid}")
+        except Exception as e:
+            logging.error(f"Backfill names error: {e}")
+
+    asyncio.create_task(_backfill(uid, instance_name))
+    return {"status": "started", "message": "Contact name backfill running in background."}
 
 @api_router.post("/whatsapp/disconnect")
 async def whatsapp_disconnect(user = Depends(get_current_user)):
