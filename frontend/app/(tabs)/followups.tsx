@@ -1301,10 +1301,11 @@ export default function FollowupsScreen() {
                       if (!selectedCustomer) { Alert.alert('Select a customer first'); return; }
                       setGeneratingNoteAI(true);
                       try {
+                        const dir = noteAIDirection.trim();
                         const res = await apiClient.post('/ai/generate-broadcast-message', {
-                          prompt: noteAIDirection.trim()
-                            ? `Write a short internal follow-up note for ${selectedCustomer.name}. Direction: ${noteAIDirection}. 1 sentence max.`
-                            : `Write a short internal follow-up note for ${selectedCustomer.name} (type: ${selectedType}). 1 sentence, actionable.`,
+                          prompt: dir
+                            ? `You are writing a WhatsApp follow-up message to send to a customer named ${selectedCustomer.name}. Write ONLY the message text, nothing else. The message should: ${dir}. Keep it short (1-2 sentences), friendly and natural.`
+                            : `You are writing a WhatsApp follow-up message to send to a customer named ${selectedCustomer.name}. Write ONLY the message text, nothing else. It is a ${selectedType} follow-up. Keep it short (1-2 sentences), friendly and natural.`,
                         });
                         setReminderMessage(res.data.message);
                         setNoteAIDirection('');

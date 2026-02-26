@@ -612,9 +612,13 @@ Reply:"""
         if past_answers_context:
             base_prompt = base_prompt + f"\n\n{past_answers_context}"
         
-        # If we have custom instructions, add them (but never override conversation progression rules)
+        # If we have custom instructions, treat them as a writing directive, not something to reply to
         if custom_instructions:
-            custom_section = f"\n\nADDITIONAL CONTEXT:\n{custom_instructions}\nIMPORTANT: Step 1 (classify intent) ALWAYS takes top priority. Only use the order flow if the customer is actively buying. For greetings and casual messages, just be natural."
+            custom_section = (
+                f"\n\nWRITING DIRECTIVE (override default intent):\n"
+                f"Ignore what the last message was about. Instead, write a message that: {custom_instructions}\n"
+                f"Output ONLY the message text to send. Do NOT explain, do NOT answer the directive as a question, do NOT add commentary. Just write the message."
+            )
             base_prompt = base_prompt + custom_section
         
         # If we have user style information, enhance the prompt
