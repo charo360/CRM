@@ -193,7 +193,7 @@ export default function CustomersScreen() {
   const [assignmentFilter, setAssignmentFilter] = useState<string>('all'); // 'all', 'assigned_to_me', 'unassigned'
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
@@ -930,12 +930,19 @@ export default function CustomersScreen() {
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
+  const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
   const CustomerAvatar = ({ customer }: { customer: Customer }) => {
     const [imgError, setImgError] = React.useState(false);
-    if (customer.profile_picture && !imgError) {
+    // Use backend endpoint which fetches fresh from Evolution API and proxies the image.
+    // Token passed as query param because React Native Image can't set custom headers.
+    const picUrl = customer.profile_picture && token
+      ? `${BACKEND_URL}/api/customers/${customer.id}/profile-picture?token=${encodeURIComponent(token)}`
+      : null;
+    if (picUrl && !imgError) {
       return (
         <Image
-          source={{ uri: customer.profile_picture }}
+          source={{ uri: picUrl }}
           style={[styles.customerAvatar, styles.avatarImage]}
           onError={() => setImgError(true)}
         />

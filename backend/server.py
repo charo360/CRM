@@ -4462,6 +4462,73 @@ async def whatsapp_sync(user = Depends(get_current_user)):
         }
     }
 
+@api_router.get("/customers/{customer_id}/profile-picture")
+async def get_customer_profile_picture(customer_id: str, token: str = Query(default=None), request: Request = None):
+    """Fetch a fresh profile picture for a customer directly from Evolution API.
+    Accepts token as Bearer header OR ?token= query param (needed for React Native Image src).
+    """
+    from fastapi.responses import Response as FastAPIResponse
+
+    # Resolve token from header or query param
+    raw_token = token
+    if not raw_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            raw_token = auth_header[7:]
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = verify_token(raw_token)
+    except HTTPException:
+        raise
+
+    user = await db.users.find_one({"_id": payload["user_id"]})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    business_id = user.get("business_id", user["_id"])
+    customer_full = await db.customers.find_one({"_id": customer_id, "user_id": business_id}, {"phone_number": 1, "profile_picture": 1})
+    if not customer_full:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    async def _proxy_url(url: str):
+        """Try to fetch an image URL and return Response, or None if it fails."""
+        try:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                img_resp = await client.get(url)
+                if img_resp.status_code == 200 and img_resp.headers.get("content-type", "").startswith("image/"):
+                    return FastAPIResponse(
+                        content=img_resp.content,
+                        media_type=img_resp.headers.get("content-type", "image/jpeg"),
+                        headers={"Cache-Control": "public, max-age=3600"},
+                    )
+        except Exception:
+            pass
+        return None
+
+    # Step 1: Try the stored URL (it may still be valid if fetched recently)
+    stored_url = customer_full.get("profile_picture") if customer_full else None
+    if stored_url:
+        result = await _proxy_url(stored_url)
+        if result:
+            return result
+
+    # Step 2: Stored URL expired or missing — re-fetch from Evolution API
+    whatsapp_service = get_whatsapp_service(db)
+    try:
+        pic_url = await whatsapp_service.fetch_profile_picture(business_id, customer_full["phone_number"])
+    except Exception:
+        pic_url = None
+
+    if pic_url:
+        await db.customers.update_one({"_id": customer_id}, {"$set": {"profile_picture": pic_url}})
+        result = await _proxy_url(pic_url)
+        if result:
+            return result
+
+    raise HTTPException(status_code=404, detail="No profile picture")
+
 @api_router.post("/customers/refresh-profile-pictures")
 async def refresh_profile_pictures(user = Depends(get_current_user)):
     """Fetch profile pictures for customers that are missing them"""
