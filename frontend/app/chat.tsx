@@ -4,6 +4,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   FlatList,
   StyleSheet,
   KeyboardAvoidingView,
@@ -522,14 +523,18 @@ export default function ChatScreen() {
         ]}
       >
         {hasImage && imageUri && (
-          <TouchableOpacity activeOpacity={0.8} onPress={() => setViewerImage(imageUri)} onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)} delayLongPress={400}>
+          <Pressable
+            onPress={() => { if (!isSelected) setViewerImage(imageUri); else setSelectedMessageId(null); }}
+            onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)}
+            delayLongPress={300}
+          >
             <Image
               source={{ uri: imageUri }}
-              style={styles.messageImage}
+              style={[styles.messageImage, isSelected && { opacity: 0.7 }]}
               resizeMode="cover"
               onError={() => { }}
             />
-          </TouchableOpacity>
+          </Pressable>
         )}
         {isDocument && imageUri && (
           <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenDocument(imageUri)} onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)} delayLongPress={400}>
