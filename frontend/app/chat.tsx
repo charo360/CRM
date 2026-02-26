@@ -4,6 +4,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   FlatList,
   StyleSheet,
   KeyboardAvoidingView,
@@ -33,6 +34,8 @@ interface Message {
   message_type?: string;
   image_url?: string;
   file_name?: string;
+  evo_message_id?: string | null;
+  remote_jid?: string | null;
 }
 
 export default function ChatScreen() {
@@ -72,6 +75,7 @@ export default function ChatScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Message[]>([]);
   const [searching, setSearching] = useState(false);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
 
   useEffect(() => {
     if (showToast) {
@@ -429,6 +433,51 @@ export default function ChatScreen() {
     }
   };
 
+  const handleDeleteMessage = (item: Message) => {
+    const canDeleteForEveryone = item.direction === 'outgoing' && !!item.evo_message_id && !!item.remote_jid;
+
+    const doDeleteLocal = async () => {
+      try {
+        await apiClient.delete(`/messages/${item.id}`);
+        setMessages(prev => prev.filter(m => m.id !== item.id));
+      } catch (e) {
+        Alert.alert('Error', 'Failed to delete message');
+      } finally {
+        setSelectedMessageId(null);
+      }
+    };
+
+    const doDeleteForEveryone = async () => {
+      try {
+        await apiClient.delete(`/messages/${item.id}/for-everyone`);
+        setMessages(prev => prev.filter(m => m.id !== item.id));
+        setToastMessage('Deleted for everyone');
+        setShowToast(true);
+      } catch (e: any) {
+        const detail = e?.response?.data?.detail || 'Failed to delete for everyone';
+        Alert.alert('Could Not Delete', detail);
+      } finally {
+        setSelectedMessageId(null);
+      }
+    };
+
+    const buttons: any[] = [
+      { text: 'Cancel', style: 'cancel', onPress: () => setSelectedMessageId(null) },
+      { text: 'Delete for Me', style: 'destructive', onPress: doDeleteLocal },
+    ];
+    if (canDeleteForEveryone) {
+      buttons.splice(1, 0, { text: 'Delete for Everyone', onPress: doDeleteForEveryone });
+    }
+
+    Alert.alert(
+      'Delete Message',
+      canDeleteForEveryone
+        ? 'Delete just for yourself, or delete for everyone on WhatsApp?'
+        : 'Remove this message from your CRM?',
+      buttons
+    );
+  };
+
   const renderMessage = ({ item }: { item: Message }) => {
     const isOutgoing = item.direction === 'outgoing';
     const isDocument = item.message_type === 'document';
@@ -457,25 +506,38 @@ export default function ChatScreen() {
     const docExt = docDisplayName.includes('.') ? docDisplayName.split('.').pop()?.toUpperCase() : null;
     const docFileName = docDisplayName;
 
+    const isSelected = selectedMessageId === item.id;
+
     return (
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)}
+        delayLongPress={400}
+        style={{ alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }}
+      >
       <View
         style={[
           styles.messageBubble,
           isOutgoing ? styles.outgoing : styles.incoming,
+          isSelected && { opacity: 0.75 },
         ]}
       >
         {hasImage && imageUri && (
-          <TouchableOpacity activeOpacity={0.8} onPress={() => setViewerImage(imageUri)}>
+          <Pressable
+            onPress={() => { if (!isSelected) setViewerImage(imageUri); else setSelectedMessageId(null); }}
+            onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)}
+            delayLongPress={300}
+          >
             <Image
               source={{ uri: imageUri }}
-              style={styles.messageImage}
+              style={[styles.messageImage, isSelected && { opacity: 0.7 }]}
               resizeMode="cover"
               onError={() => { }}
             />
-          </TouchableOpacity>
+          </Pressable>
         )}
         {isDocument && imageUri && (
-          <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenDocument(imageUri)}>
+          <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenDocument(imageUri)} onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)} delayLongPress={400}>
             <View style={styles.documentBubble}>
               <View style={styles.docIconWrap}>
                 <Ionicons name="document-text" size={26} color="#FFFFFF" />
@@ -533,6 +595,19 @@ export default function ChatScreen() {
           )}
         </View>
       </View>
+      {isSelected && (
+        <TouchableOpacity
+          onPress={() => handleDeleteMessage(item)}
+          style={[
+            styles.deleteBtn,
+            isOutgoing ? { alignSelf: 'flex-end' } : { alignSelf: 'flex-start' },
+          ]}
+        >
+          <Ionicons name="trash-outline" size={13} color="#FF4444" />
+          <Text style={styles.deleteBtnText}>Delete</Text>
+        </TouchableOpacity>
+      )}
+      </TouchableOpacity>
     );
   };
 
@@ -1267,5 +1342,21 @@ const styles = StyleSheet.create({
   searchResultDate: {
     fontSize: 11,
     color: '#8B9DC3',
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginTop: 2,
+    marginBottom: 4,
+    backgroundColor: 'rgba(255,68,68,0.12)',
+    borderRadius: 8,
+  },
+  deleteBtnText: {
+    fontSize: 12,
+    color: '#FF4444',
+    fontWeight: '600',
   },
 });

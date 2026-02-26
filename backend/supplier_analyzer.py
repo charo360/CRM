@@ -3,11 +3,22 @@ Supplier Analyzer
 Identifies suppliers from chat history and suggests restocking
 """
 import logging
+import json
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from ai_service import get_drafter
 
 logger = logging.getLogger(__name__)
+
+# Strong keyword signals — fast pre-filter before AI call
+SUPPLIER_KEYWORDS = [
+    "invoice", "delivery note", "stock", "supply", "shipment", "tracking",
+    "restock", "wholesale", "bulk", "proforma", "purchase order", "po ",
+    "consignment", "dispatch", "goods", "price list", "quotation", "quote",
+    "minimum order", "moq", "payment terms", "net 30", "net 60",
+    "bei", "nipe bei", "stock yako", "delivery", "nimepeleka", "nimesend",
+]
 
 class SupplierAnalyzer:
     """Analyzes chats to find suppliers and sourcing opportunities"""
@@ -15,107 +26,156 @@ class SupplierAnalyzer:
     def __init__(self, db):
         self.db = db
         self.drafter = get_drafter()
-        
+
     async def identify_potential_suppliers(self, user_id: str) -> List[Dict]:
         """
-        Scan all contacts to find potential suppliers based on chat history
+        Scan recent active contacts and find potential suppliers using
+        a two-stage approach: fast keyword pre-filter → AI confirmation.
+        Only contacts with at least one keyword signal are sent to AI,
+        keeping API costs low.
         """
         try:
-            # Get all customers/contacts
-            # In a real app, we might filter by those NOT already tagged as suppliers
-            # But here we'll just scan recent active chats
-            
-            # Find contacts with recent messages
-            pipeline = [
-                {"$match": {"user_id": user_id}},
-                {"$sort": {"last_contacted": -1}},
-                {"$limit": 50}  # Scan top 50 active chats
-            ]
-            
             contacts = await self.db.customers.find({
                 "user_id": user_id
-            }).sort("last_contacted", -1).limit(50).to_list(50)
-            
-            potential_suppliers = []
-            
+            }).sort("last_contacted", -1).limit(60).to_list(60)
+
+            # Stage 1: keyword pre-filter (free, instant)
+            candidates = []
             for contact in contacts:
-                # Skip if already tagged as supplier (assuming we add this tag)
                 if "Supplier" in contact.get("tags", []):
                     continue
-                    
-                is_supplier = await self._analyze_contact_for_supplier_signals(contact)
-                if is_supplier:
-                    potential_suppliers.append(contact)
-                    
+                messages = await self.db.messages.find({
+                    "customer_id": contact["_id"],
+                    "user_id": user_id
+                }).sort("created_at", -1).limit(15).to_list(15)
+
+                if not messages:
+                    continue
+
+                full_text = " ".join([m.get("content", "").lower() for m in messages])
+                if any(kw in full_text for kw in SUPPLIER_KEYWORDS):
+                    candidates.append((contact, messages))
+
+            if not candidates:
+                return []
+
+            # Stage 2: batch AI confirmation — send all candidates in one call
+            potential_suppliers = await self._batch_ai_classify(candidates)
             return potential_suppliers
-            
+
         except Exception as e:
             logger.error(f"Error identifying suppliers: {e}")
             return []
 
-    async def _analyze_contact_for_supplier_signals(self, contact: Dict) -> bool:
+    async def _batch_ai_classify(self, candidates: List[tuple]) -> List[Dict]:
         """
-        Analyze a single contact's messages for supplier signals
-        Signals: "invoice", "delivery", "stock", "payment received", "order"
+        Send all keyword-matched candidates to AI in a single prompt.
+        Returns list of contact dicts that AI confirmed as likely suppliers.
         """
         try:
-            messages = await self.db.messages.find({
-                "customer_id": contact["_id"],
-                "user_id": contact.get("user_id")
-            }).sort("timestamp", -1).limit(10).to_list(10)
-            
-            if not messages:
-                return False
-                
-            # supplier_keywords = [
-            #     "invoice", "receipt", "delivery", "stock", "supply", 
-            #     "payment received", "order confirmed", "tracking", "shipment"
-            # ]
-            
-            # Simple heuristic analysis
-            # In production, use LLM for better accuracy
-            full_text = " ".join([m.get("content", "").lower() for m in messages])
-            
-            # Check for strong supplier indicators
-            if "invoice" in full_text or "delivery note" in full_text:
-                return True
-                
-            # Check for context: You asking for price/stock usually means they are supplier
-            # But let's assume we use AI for this to be smarter
-            
-            return False # Default to False for now to avoid false positives without AI
-            
+            entries = []
+            for i, (contact, messages) in enumerate(candidates):
+                snippet = " | ".join([
+                    m.get("content", "")[:120] for m in messages[:8]
+                ])
+                entries.append(f'{i}. Name: {contact.get("name","?")} | Chat: {snippet}')
+
+            prompt = (
+                "You are analyzing business WhatsApp chats to identify which contacts are SUPPLIERS "
+                "(people/companies that SELL goods or materials TO the business owner).\n\n"
+                "For each contact below, reply with just the index numbers (comma-separated) "
+                "of those who are likely suppliers. If none qualify, reply with an empty list [].\n\n"
+                "Contacts:\n" + "\n".join(entries) + "\n\n"
+                "Reply with JSON only, e.g.: {\"suppliers\": [0, 2, 5]}"
+            )
+
+            result_str = await self.drafter._call_llm(prompt, model_pref="standard")
+
+            json_match = re.search(r'\{.*\}', result_str, re.DOTALL)
+            if not json_match:
+                return []
+
+            data = json.loads(json_match.group())
+            confirmed_indices = data.get("suppliers", [])
+
+            return [candidates[i][0] for i in confirmed_indices if i < len(candidates)]
+
         except Exception as e:
-            logger.error(f"Error analyzing contact {contact.get('_id')}: {e}")
-            return False
+            logger.error(f"Batch AI supplier classification error: {e}")
+            return []
 
     async def get_restock_suggestions(self, user_id: str) -> List[Dict]:
         """
-        Generate restocking suggestions based on sales velocity
+        Generate restocking suggestions based on stock level and sales velocity.
+        Prioritises products that are selling fast AND running low.
         """
-        # This would require linking Products to Suppliers
-        # For MVP, we'll return a mock suggestion if low stock
-        
         suggestions = []
         try:
-            # Get low stock products
-            low_stock_products = await self.db.products.find({
-                "user_id": user_id, 
-                "stock_count": {"$lt": 5} # Threshold
-            }).to_list(10)
-            
-            for product in low_stock_products:
-                # Find distinct suppliers for this product (if linked)
-                # Or just generic suggestion
+            products = await self.db.products.find({
+                "user_id": user_id,
+                "in_stock": True
+            }).to_list(50)
+
+            if not products:
+                return []
+
+            # Get sales from the last 30 days to compute velocity
+            since = datetime.utcnow() - timedelta(days=30)
+            sales = await self.db.sales.find({
+                "user_id": user_id,
+                "created_at": {"$gte": since}
+            }).to_list(500)
+
+            # Count units sold per product name (sales store product name not id)
+            sales_counts: Dict[str, int] = {}
+            for sale in sales:
+                name = (sale.get("product_name") or sale.get("product") or "").strip().lower()
+                if name:
+                    sales_counts[name] = sales_counts.get(name, 0) + sale.get("quantity", 1)
+
+            for product in products:
+                stock = product.get("stock_count")
+                if stock is None:
+                    continue
+
+                p_name = product.get("name", "")
+                velocity = sales_counts.get(p_name.lower(), 0)
+
+                # High: out of stock or stock < 3 and selling
+                # Medium: stock < 10 and some sales, or stock < 5 regardless
+                if stock == 0:
+                    priority = "High"
+                    action = "Out of stock — reorder immediately"
+                elif stock < 3 and velocity > 0:
+                    priority = "High"
+                    action = f"Only {stock} left and {velocity} sold this month — reorder soon"
+                elif stock < 5:
+                    priority = "Medium"
+                    action = f"Low stock ({stock} remaining) — consider restocking"
+                elif stock < 10 and velocity >= 5:
+                    priority = "Medium"
+                    action = f"{velocity} units sold this month — stock may run out soon"
+                else:
+                    continue
+
+                # Find linked supplier if any
+                supplier_hint = ""
+                if product.get("products_supplied"):
+                    supplier_hint = f" Contact your supplier for {p_name}."
+
                 suggestions.append({
                     "type": "restock",
-                    "product_name": product["name"],
-                    "current_stock": product.get("stock_count", 0),
-                    "suggested_action": "Reorder from supplier",
-                    "priority": "High" if product.get("stock_count", 0) == 0 else "Medium"
+                    "product_name": p_name,
+                    "current_stock": stock,
+                    "monthly_sales": velocity,
+                    "suggested_action": action + supplier_hint,
+                    "priority": priority,
                 })
-                
+
+            # Sort: High first, then by lowest stock
+            suggestions.sort(key=lambda x: (0 if x["priority"] == "High" else 1, x["current_stock"]))
+
         except Exception as e:
             logger.error(f"Error getting restock suggestions: {e}")
-            
+
         return suggestions

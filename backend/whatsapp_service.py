@@ -569,9 +569,10 @@ class WhatsAppService:
                     if resp.status_code in (200, 201):
                         resp_data = resp.json()
                         evo_msg_id = resp_data.get("key", {}).get("id")
+                        remote_jid_out = resp_data.get("key", {}).get("remoteJid") or f"{clean_to}@s.whatsapp.net"
                         await self.db.messages.update_one(
                             {"_id": message_id},
-                            {"$set": {"status": "sent", "evo_message_id": evo_msg_id}}
+                            {"$set": {"status": "sent", "evo_message_id": evo_msg_id, "remote_jid": remote_jid_out}}
                         )
                         logger.info(f"[OK] Sent message via Evolution API: {evo_msg_id}")
                     else:
