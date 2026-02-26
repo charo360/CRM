@@ -522,7 +522,7 @@ export default function ChatScreen() {
         ]}
       >
         {hasImage && imageUri && (
-          <TouchableOpacity activeOpacity={0.8} onPress={() => setViewerImage(imageUri)}>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => setViewerImage(imageUri)} onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)} delayLongPress={400}>
             <Image
               source={{ uri: imageUri }}
               style={styles.messageImage}
@@ -532,7 +532,7 @@ export default function ChatScreen() {
           </TouchableOpacity>
         )}
         {isDocument && imageUri && (
-          <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenDocument(imageUri)}>
+          <TouchableOpacity activeOpacity={0.7} onPress={() => handleOpenDocument(imageUri)} onLongPress={() => setSelectedMessageId(isSelected ? null : item.id)} delayLongPress={400}>
             <View style={styles.documentBubble}>
               <View style={styles.docIconWrap}>
                 <Ionicons name="document-text" size={26} color="#FFFFFF" />
