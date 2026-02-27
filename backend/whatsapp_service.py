@@ -127,6 +127,7 @@ class WhatsAppService:
                         "events": [
                             "MESSAGES_UPSERT",
                             "MESSAGES_UPDATE",
+                            "CHATS_UPDATE",
                             "CONNECTION_UPDATE",
                         ]
                     }
@@ -399,6 +400,26 @@ class WhatsAppService:
         delay = random.uniform(*delay_range)
         logger.info(f"Human behavior: waiting {delay:.1f}s before typing")
         await asyncio.sleep(delay)
+
+    async def mark_as_read(self, instance_name: str, remote_jid: str, message_id: str):
+        """Send read receipt to Evolution API — gives customer blue ticks immediately."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"{self.base_url}/message/markAsRead/{instance_name}",
+                    headers=self._headers(),
+                    json={
+                        "readMessages": [
+                            {
+                                "id": message_id,
+                                "fromMe": False,
+                                "remoteJid": remote_jid,
+                            }
+                        ]
+                    },
+                )
+        except Exception as e:
+            logger.debug(f"markAsRead failed (non-critical): {e}")
 
     # ============ MESSAGING ============
 
@@ -974,12 +995,65 @@ class WhatsAppService:
                 from_me = update.get("fromMe", False)
 
             logger.info(f"remoteJid={remote_jid}, fromMe={from_me}, msgId={msg_id_field}")
-            # Only track status for outgoing messages
-            if not from_me:
-                logger.info("Skipping: not fromMe")
+
+            ack = update.get("status")
+
+            # When the user opens a chat on native WhatsApp, Evolution API fires messages.update
+            # with status=READ.  The fromMe flag on these READ receipts is TRUE (it's your device
+            # acknowledging you read the incoming message) — so we check both fromMe values.
+            if ack == "READ":
+                customer_id_found = None
+
+                # Method 1: find a message with this remote_jid and get its customer_id
+                if remote_jid:
+                    sample_msg = await self.db.messages.find_one({
+                        "user_id": user["_id"],
+                        "remote_jid": remote_jid,
+                        "direction": "incoming",
+                    })
+                    if sample_msg:
+                        customer_id_found = sample_msg.get("customer_id")
+
+                # Method 2: match by lid_jid stored on customer (handles @lid READ events)
+                if not customer_id_found and "@lid" in remote_jid:
+                    customer = await self.db.customers.find_one({
+                        "user_id": user["_id"],
+                        "lid_jid": remote_jid,
+                    })
+                    if customer:
+                        customer_id_found = customer["_id"]
+
+                # Method 3: fallback — try phone number match (only works for @s.whatsapp.net)
+                if not customer_id_found and "@s.whatsapp.net" in remote_jid:
+                    phone = remote_jid.replace("@s.whatsapp.net", "")
+                    if not phone.startswith("+"):
+                        phone = f"+{phone}"
+                    customer = await self.db.customers.find_one({
+                        "user_id": user["_id"],
+                        "phone_number": phone,
+                    })
+                    if customer:
+                        customer_id_found = customer["_id"]
+
+                if customer_id_found:
+                    result = await self.db.messages.update_many(
+                        {
+                            "user_id": user["_id"],
+                            "customer_id": customer_id_found,
+                            "direction": "incoming",
+                            "read": {"$ne": True},
+                        },
+                        {"$set": {"read": True}}
+                    )
+                    if result.modified_count:
+                        logger.info(f"Marked {result.modified_count} incoming messages as read (jid={remote_jid}, fromMe={from_me}, opened on WhatsApp)")
                 continue
 
-            # Map ack level to status
+            # Skip non-READ updates for incoming messages — only track delivery status on outgoing
+            if not from_me:
+                continue
+
+            # Map ack level to status (outgoing delivery tracking)
             ack = update.get("status")
             if ack is None:
                 ack = update.get("update", {}).get("status")
@@ -1307,6 +1381,7 @@ class WhatsAppService:
                         "created_at": datetime.utcnow(),
                         "auto_created": True,
                         "synced_from_whatsapp": True,
+                        "is_customer": False,
                     })
                     created += 1
 
@@ -1389,6 +1464,7 @@ class WhatsAppService:
                             "created_at": datetime.utcnow(),
                             "auto_created": True,
                             "synced_from_whatsapp": True,
+                            "is_customer": False,
                         }
                         await self.db.customers.insert_one(customer)
 

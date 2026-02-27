@@ -343,6 +343,8 @@ PRODUCTS: Comma-separated list of products discussed (max 5), or "N/A" if unclea
                     "classified_at": datetime.utcnow(),
                     "auto_classified": True,
                     "classification_confidence": confidence,
+                    # Promote out of contacts pool into the appropriate tab
+                    "is_customer": True,
                 }
                 # If supplier, add supplier tag and remove New tag
                 if suggested_type == "supplier":

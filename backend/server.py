@@ -236,6 +236,20 @@ async def fix_team_members_index():
         logging.info("Ensured team_members index: business_id_1_phone_1")
     except Exception:
         pass
+    # Migrate existing records: auto_created=True → is_customer=False (contacts pool)
+    # Records without auto_created (manually added) → is_customer=True
+    try:
+        r1 = await db.customers.update_many(
+            {"auto_created": True, "is_customer": {"$exists": False}},
+            {"$set": {"is_customer": False}}
+        )
+        r2 = await db.customers.update_many(
+            {"auto_created": {"$ne": True}, "is_customer": {"$exists": False}},
+            {"$set": {"is_customer": True}}
+        )
+        logging.info(f"[Migration] is_customer backfill: {r1.modified_count} contacts, {r2.modified_count} customers")
+    except Exception as e:
+        logging.warning(f"[Migration] is_customer backfill failed: {e}")
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
@@ -1659,15 +1673,25 @@ async def confirm_classification(customer_id: str, request: Request, user = Depe
                 "classification_type": classification,
                 "classification_confirmed": True,
                 "classification_pending": False,
+                "is_customer": True,
                 "tags": tags,
                 "classified_at": datetime.utcnow(),
             }}
         )
+        # Clear pending classification entry
+        await db.pending_classifications.update_one(
+            {"customer_id": customer_id, "user_id": business_id},
+            {"$set": {"status": "approved", "resolved_at": datetime.utcnow()}}
+        )
     else:
-        # Reject — just clear the pending flag
+        # Reject — clear pending flag and dismiss classification
         await db.customers.update_one(
             {"_id": customer_id},
             {"$set": {"classification_pending": False}}
+        )
+        await db.pending_classifications.update_one(
+            {"customer_id": customer_id, "user_id": business_id},
+            {"$set": {"status": "rejected", "resolved_at": datetime.utcnow()}}
         )
     return {"status": "ok", "action": action}
 
@@ -2173,6 +2197,7 @@ async def confirm_classification(customer_id: str, body: dict = Body(...), user 
                     "classification_confirmed": True,
                     "classification_type": "supplier",
                     "classified_at": datetime.utcnow(),
+                    "is_customer": True,
                 }
             }
             # If AI detected a category, apply it
@@ -2191,6 +2216,7 @@ async def confirm_classification(customer_id: str, body: dict = Body(...), user 
                     "classification_confirmed": True,
                     "classification_type": "customer",
                     "classified_at": datetime.utcnow(),
+                    "is_customer": True,
                 }
             }
         
@@ -2249,7 +2275,8 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "total_spent": 0.0,
         "last_message": None,
         "last_contacted": None,
-        "created_at": datetime.utcnow()
+        "created_at": datetime.utcnow(),
+        "is_customer": True,
     }
     
     await db.customers.insert_one(customer_doc)
@@ -2301,6 +2328,141 @@ async def get_all_contacts(user = Depends(get_current_user)):
         })
     return result
 
+@api_router.get("/contacts")
+async def get_contacts(search: str = "", user = Depends(get_current_user)):
+    """Return all WhatsApp-synced contacts that are NOT yet customers."""
+    business_id = user.get("business_id", user["_id"])
+    query = {
+        "user_id": business_id,
+        "is_customer": False,
+        "auto_created": True,
+    }
+    contacts = await db.customers.find(query).to_list(2000)
+    if search:
+        s = search.lower()
+        contacts = [c for c in contacts if s in c.get("name", "").lower() or s in c.get("phone_number", "").lower()]
+
+    # Merge pending classification data onto contacts
+    contact_ids = [c["_id"] for c in contacts]
+    pending_list = await db.pending_classifications.find({
+        "user_id": business_id,
+        "customer_id": {"$in": contact_ids},
+        "status": "pending",
+    }).to_list(2000)
+    pending_map = {p["customer_id"]: p for p in pending_list}
+
+    # Sort: suggested contacts first, then A-Z, symbols/numbers last
+    def _sort_key(c):
+        has_suggestion = c["_id"] in pending_map
+        name = (c.get("name") or "").strip()
+        first = name[0].upper() if name else ""
+        is_letter = first.isalpha()
+        return (0 if has_suggestion else 1, 0 if is_letter else 1, name.lower())
+    contacts.sort(key=_sort_key)
+
+    result = []
+    for c in contacts:
+        pending = pending_map.get(c["_id"])
+        result.append({
+            "id": c["_id"],
+            "name": c.get("name", ""),
+            "phone_number": c.get("phone_number", ""),
+            "profile_picture": c.get("profile_picture"),
+            "last_message": c.get("last_message", ""),
+            "last_contacted": c.get("last_contacted"),
+            "suggested_type": pending["suggested_type"] if pending else c.get("suggested_type"),
+            "suggestion_reason": pending["reason"] if pending else c.get("suggestion_reason"),
+            "suggestion_confidence": pending["confidence"] if pending else c.get("suggestion_confidence", 0),
+            "tags": c.get("tags", []),
+            "created_at": c.get("created_at"),
+        })
+    return result
+
+@api_router.get("/contacts/suggestions")
+async def get_contact_suggestions(user = Depends(get_current_user)):
+    """Return contacts that AI has flagged as likely customers."""
+    business_id = user.get("business_id", user["_id"])
+    contacts = await db.customers.find({
+        "user_id": business_id,
+        "is_customer": False,
+        "suggested_type": "customer",
+    }).sort("suggestion_confidence", -1).to_list(100)
+    return [
+        {
+            "id": c["_id"],
+            "name": c.get("name", ""),
+            "phone_number": c.get("phone_number", ""),
+            "profile_picture": c.get("profile_picture"),
+            "last_message": c.get("last_message", ""),
+            "last_contacted": c.get("last_contacted"),
+            "suggested_type": c.get("suggested_type"),
+            "suggestion_reason": c.get("suggestion_reason"),
+            "suggestion_confidence": c.get("suggestion_confidence", 0),
+        }
+        for c in contacts
+    ]
+
+@api_router.post("/contacts/{contact_id}/add-as-customer")
+async def add_contact_as_customer(contact_id: str, user = Depends(get_current_user)):
+    """Promote a WhatsApp contact to a CRM customer."""
+    business_id = user.get("business_id", user["_id"])
+    contact = await db.customers.find_one({"_id": contact_id, "user_id": business_id})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    if contact.get("is_customer"):
+        return {"status": "already_customer", "customer_id": contact_id}
+    await db.customers.update_one(
+        {"_id": contact_id},
+        {"$set": {"is_customer": True, "promoted_at": datetime.utcnow()}}
+    )
+    return {"status": "success", "customer_id": contact_id}
+
+@api_router.delete("/contacts/{contact_id}")
+async def delete_contact(contact_id: str, user = Depends(get_current_user)):
+    """Remove a WhatsApp contact (not a customer) from the contacts pool."""
+    business_id = user.get("business_id", user["_id"])
+    contact = await db.customers.find_one({"_id": contact_id, "user_id": business_id})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    if contact.get("is_customer"):
+        raise HTTPException(status_code=400, detail="Cannot delete a customer from contacts — remove them from Customers instead")
+    await db.customers.delete_one({"_id": contact_id})
+    await db.messages.delete_many({"customer_id": contact_id})
+    return {"status": "deleted"}
+
+@api_router.post("/contacts/scan-suggestions")
+async def scan_contact_suggestions(background_tasks: BackgroundTasks, user = Depends(get_current_user)):
+    """Run AI classification on all unclassified contacts to generate customer suggestions."""
+    business_id = user.get("business_id", user["_id"])
+
+    async def _scan():
+        classifier = get_classifier(db)
+        contacts = await db.customers.find({
+            "user_id": business_id,
+            "is_customer": False,
+            "suggested_type": {"$exists": False},
+        }).to_list(500)
+        updated = 0
+        for contact in contacts:
+            try:
+                result = await classifier.classify_contact(business_id, contact["_id"], keyword_only=True)
+                if result and result.get("confidence", 0) >= 0.4:
+                    await db.customers.update_one(
+                        {"_id": contact["_id"]},
+                        {"$set": {
+                            "suggested_type": result["suggested_type"],
+                            "suggestion_reason": result["reason"],
+                            "suggestion_confidence": result["confidence"],
+                        }}
+                    )
+                    updated += 1
+            except Exception:
+                continue
+        logging.info(f"Contact suggestion scan: {updated}/{len(contacts)} contacts classified")
+
+    background_tasks.add_task(_scan)
+    return {"status": "scanning", "message": "Suggestion scan started in background"}
+
 @api_router.get("/customers", response_model=List[CustomerResponse])
 async def get_customers(
     tag: Optional[str] = None, 
@@ -2318,7 +2480,8 @@ async def get_customers(
     user_role = user.get("role", "owner")
     
     # Base query uses business_id for multi-user support
-    query = {"user_id": business_id}
+    # Only return explicit customers — WhatsApp-synced contacts live in /contacts
+    query = {"user_id": business_id, "$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}]}
     if tag:
         query["tags"] = tag
     
@@ -4662,9 +4825,14 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
 
-    # Total unread messages
+    # Total unread messages — only from confirmed customers (is_customer: True)
+    customer_ids_for_unread = await db.customers.distinct(
+        "_id",
+        {"user_id": uid, "is_customer": True}
+    )
     unread_count = await db.messages.count_documents({
-        "user_id": uid, "direction": "incoming", "read": {"$ne": True}
+        "user_id": uid, "direction": "incoming", "read": {"$ne": True},
+        "customer_id": {"$in": customer_ids_for_unread}
     })
 
     # Today's follow-ups — widen window by ±1 day to cover all timezones (UTC-12 to UTC+14)
@@ -4684,8 +4852,11 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
     sales_today = sales_result[0]["total"] if sales_result else 0
     sales_count = sales_result[0]["count"] if sales_result else 0
 
-    # Total customers
-    total_customers = await db.customers.count_documents({"user_id": uid})
+    # Total customers (confirmed only, not raw contacts)
+    total_customers = await db.customers.count_documents({
+        "user_id": uid,
+        "$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}]
+    })
 
     return {
         "unread_messages": unread_count,
@@ -4954,15 +5125,26 @@ async def evolution_webhook(request: Request):
                                     {"_id": uid},
                                     {"$set": {"whatsapp.initial_sync_done": True}}
                                 )
-                                # Run AI classification on all synced contacts
+                                # Run AI classification on all synced contacts — auto-promotes high-confidence ones
                                 try:
                                     classifier = get_classifier(db)
-                                    customers = await db.customers.find({"user_id": uid, "synced_from_whatsapp": True}).to_list(None)
-                                    for c in customers:
-                                        msg_count = await db.messages.count_documents({"customer_id": c["_id"], "user_id": uid})
-                                        if msg_count >= 2:
-                                            await classifier.classify_contact(uid, c["_id"])
-                                    logging.info(f"AI classification done for {len(customers)} synced contacts")
+                                    contacts = await db.customers.find({"user_id": uid, "synced_from_whatsapp": True}).to_list(None)
+                                    promoted = 0
+                                    pending = 0
+                                    for c in contacts:
+                                        try:
+                                            msg_count = await db.messages.count_documents({"customer_id": c["_id"], "user_id": uid})
+                                            if msg_count >= 2:
+                                                await classifier.classify_single_on_message(uid, c["_id"])
+                                                # Check if it got auto-promoted
+                                                updated = await db.customers.find_one({"_id": c["_id"]})
+                                                if updated and updated.get("classification_confirmed"):
+                                                    promoted += 1
+                                                else:
+                                                    pending += 1
+                                        except Exception as _ce:
+                                            logging.warning(f"classify_single_on_message failed for {c['_id']}: {_ce}")
+                                    logging.info(f"Initial sync classification: {promoted} auto-promoted, {pending} pending review")
                                 except Exception as cls_err:
                                     logging.error(f"Post-sync classification error: {cls_err}")
                                 
@@ -4986,6 +5168,41 @@ async def evolution_webhook(request: Request):
             import json as _json
             logging.info(f"messages.update payload: {_json.dumps(data, default=str)[:800]}")
             await whatsapp_service.handle_message_update(instance_name, data)
+            return {"status": "ok"}
+
+        # Handle chats.update — fired when a chat is read on native WhatsApp
+        if event == "chats.update":
+            import json as _json2
+            logging.info(f"chats.update payload: {_json2.dumps(data, default=str)[:800]}")
+            user = await whatsapp_service.find_user_by_instance(instance_name)
+            if user:
+                updates = data if isinstance(data, list) else [data]
+                for upd in updates:
+                    inner = upd.get("data", upd)
+                    unread = inner.get("unreadCount", inner.get("unreadMessages", None))
+                    remote_jid = inner.get("id") or inner.get("remoteJid") or inner.get("jid") or ""
+                    if unread in (0, None) and remote_jid and "@g.us" not in remote_jid:
+                        # Look up customer by remote_jid on messages or by lid_jid
+                        sample = await db.messages.find_one({
+                            "user_id": user["_id"],
+                            "remote_jid": remote_jid,
+                            "direction": "incoming",
+                        })
+                        cid = sample.get("customer_id") if sample else None
+                        if not cid:
+                            cust = await db.customers.find_one({
+                                "user_id": user["_id"],
+                                "lid_jid": remote_jid,
+                            })
+                            if cust:
+                                cid = cust["_id"]
+                        if cid:
+                            res = await db.messages.update_many(
+                                {"user_id": user["_id"], "customer_id": cid, "direction": "incoming", "read": {"$ne": True}},
+                                {"$set": {"read": True}}
+                            )
+                            if res.modified_count:
+                                logging.info(f"chats.update: marked {res.modified_count} messages read for jid={remote_jid}")
             return {"status": "ok"}
 
         # Handle incoming AND outgoing messages
@@ -5035,6 +5252,17 @@ async def evolution_webhook(request: Request):
             direction = "outgoing" if from_me else "incoming"
             print(f"DEBUG: Webhook received. Direction={direction}, Body='{body}'")
             logging.info(f"messages.upsert: direction={direction}, from={from_number}, evo_id={evo_msg_id_log}, body={body[:60]}")
+
+            # For incoming messages: fire blue-tick read receipt back to Evolution API immediately
+            if not from_me:
+                _remote_jid = parsed.get("remote_jid", "")
+                _evo_msg_id = parsed.get("evo_message_id", "")
+                _wa = (await db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1}) or {}).get("whatsapp", {})
+                _inst = _wa.get("instance_name", "")
+                if _inst and _remote_jid and _evo_msg_id:
+                    asyncio.create_task(
+                        whatsapp_service.mark_as_read(_inst, _remote_jid, _evo_msg_id)
+                    )
             
             # Find or create customer (the contact on the other end)
             customer = await db.customers.find_one({
@@ -5049,11 +5277,16 @@ async def evolution_webhook(request: Request):
                 print(f"DEBUG: Customer found: {customer['name']}")
                 customer_id = customer["_id"]
                 customer_name = customer.get("name", customer_name)
+                remote_jid_val = parsed.get("remote_jid", "")
+                lid_update = {}
+                if remote_jid_val and "@lid" in remote_jid_val and not customer.get("lid_jid"):
+                    lid_update["lid_jid"] = remote_jid_val
                 await db.customers.update_one(
                     {"_id": customer["_id"]},
                     {"$set": {
                         "last_message": body[:200] if body else None,
                         "last_contacted": datetime.utcnow(),
+                        **lid_update,
                     }}
                 )
             else:
@@ -5070,6 +5303,7 @@ async def evolution_webhook(request: Request):
                     "last_contacted": datetime.utcnow(),
                     "created_at": datetime.utcnow(),
                     "auto_created": True,
+                    "is_customer": False,
                     "customer_initiated": not from_me,
                 })
                 logging.info(f"Auto-created contact from WhatsApp: {customer_name} ({from_number})")
@@ -5176,7 +5410,12 @@ async def evolution_webhook(request: Request):
                 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
-                    print(f"DEBUG: Ignoring outgoing message from me")
+                    # Mark all unread incoming messages from this customer as read,
+                    # since replying means you've already read them on native WhatsApp
+                    await db.messages.update_many(
+                        {"user_id": user["_id"], "customer_id": customer_id, "direction": "incoming", "read": {"$ne": True}},
+                        {"$set": {"read": True}}
+                    )
                     return {"status": "ok"}
                 
                 # Auto-classify contact in background (customer vs supplier)

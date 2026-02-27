@@ -19,7 +19,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, dashboardAPI, messageHelpers } from '../../context/api';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
@@ -116,6 +116,7 @@ export default function CustomersScreen() {
   const params = useLocalSearchParams<{ mode?: string }>();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
+  const isPollingRef = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -267,19 +268,35 @@ export default function CustomersScreen() {
     }
   };
 
-  const fetchAllContacts = useCallback(async () => {
-    setLoadingContacts2(true);
+  const fetchAllContacts = useCallback(async (search?: string, silent = false) => {
+    if (!silent) setLoadingContacts2(true);
     try {
-      const res = await apiClient.get('/customers/all-contacts');
-      setAllContacts(res.data);
+      const q = search ? `?search=${encodeURIComponent(search)}` : '';
+      const res = await apiClient.get(`/contacts${q}`);
+      const newData = res.data;
+      if (silent) {
+        setAllContacts(prev => {
+          if (prev.length !== newData.length) return newData;
+          const hasChange = newData.some((c: any, i: number) =>
+            prev[i]?.id !== c.id ||
+            prev[i]?.name !== c.name ||
+            prev[i]?.suggested_type !== c.suggested_type
+          );
+          return hasChange ? newData : prev;
+        });
+      } else {
+        setAllContacts(newData);
+      }
     } catch (e) {
       console.error('Error fetching all contacts:', e);
     } finally {
-      setLoadingContacts2(false);
+      if (!silent) setLoadingContacts2(false);
     }
   }, []);
 
-  const fetchCustomers = useCallback(async () => {
+  const fetchCustomers = useCallback(async (silent = false) => {
+    if (silent && isPollingRef.current) return; // skip if previous poll still in flight
+    if (silent) isPollingRef.current = true;
     try {
       let params = '';
 
@@ -307,12 +324,30 @@ export default function CustomersScreen() {
       }
 
       const response = await apiClient.get(`/customers${params}`);
-      setCustomers(response.data);
+      const newData = response.data;
+      if (silent) {
+        // Only update if something actually changed — avoids FlatList re-render and scroll reset
+        setCustomers(prev => {
+          if (prev.length !== newData.length) return newData;
+          const hasChange = newData.some((c: Customer, i: number) =>
+            prev[i]?.id !== c.id ||
+            prev[i]?.unread_count !== c.unread_count ||
+            prev[i]?.last_message !== c.last_message ||
+            prev[i]?.last_contacted !== c.last_contacted
+          );
+          return hasChange ? newData : prev;
+        });
+      } else {
+        setCustomers(newData);
+      }
     } catch (error) {
       console.error('Error fetching customers:', error);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (!silent) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+      isPollingRef.current = false;
     }
   }, [selectedTag, searchQuery, sortBy, assignmentFilter]);
 
@@ -325,6 +360,24 @@ export default function CustomersScreen() {
     }, 500);
     return () => clearTimeout(timeoutId);
   }, [fetchCustomers]);
+
+  // Auto-refresh every 5 seconds — runs silently in background, no loading state or scroll interruption
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchCustomers(true);
+      fetchDashboard();
+      if (viewMode === 'contacts') fetchAllContacts(contactSearch2, true);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [fetchCustomers, fetchAllContacts, viewMode, contactSearch2]);
+
+  // Immediately refresh when navigating back from chat (clears stale unread counts)
+  useFocusEffect(
+    useCallback(() => {
+      fetchCustomers();
+      fetchDashboard();
+    }, [fetchCustomers])
+  );
 
 
 
@@ -1318,15 +1371,24 @@ export default function CustomersScreen() {
       {/* ===== CONTACTS MODE ===== */}
       {viewMode === 'contacts' ? (
         <>
-          <View style={styles.searchContainer}>
-            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
-            <TextInput
-              style={styles.searchInput}
-              value={contactSearch2}
-              onChangeText={setContactSearch2}
-              placeholder="Search contacts..."
-              placeholderTextColor="#666"
-            />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 12 }}>
+            <View style={[styles.searchContainer, { flex: 1, marginBottom: 0 }]}>
+              <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+              <TextInput
+                style={styles.searchInput}
+                value={contactSearch2}
+                onChangeText={v => { setContactSearch2(v); fetchAllContacts(v); }}
+                placeholder="Search contacts..."
+                placeholderTextColor="#666"
+              />
+            </View>
+            <TouchableOpacity
+              onPress={async () => { setScanningContacts(true); try { await apiClient.post('/contacts/scan-suggestions'); await fetchAllContacts(contactSearch2); } catch(e){} finally { setScanningContacts(false); } }}
+              disabled={scanningContacts}
+              style={{ backgroundColor: '#1A2942', borderRadius: 8, padding: 8 }}
+            >
+              {scanningContacts ? <ActivityIndicator size="small" color="#FFD700" /> : <Ionicons name="sparkles-outline" size={20} color="#FFD700" />}
+            </TouchableOpacity>
           </View>
           {loadingContacts2 ? (
             <View style={styles.loadingContainer}>
@@ -1334,16 +1396,11 @@ export default function CustomersScreen() {
             </View>
           ) : (
             <FlatList
-              data={allContacts.filter(c =>
-                !c.is_customer &&
-                c.classification_type !== 'supplier' &&
-                (c.name.toLowerCase().includes(contactSearch2.toLowerCase()) ||
-                c.phone_number.includes(contactSearch2))
-              )}
+              data={allContacts}
               keyExtractor={(item) => item.id}
               contentContainerStyle={styles.listContent}
               refreshControl={
-                <RefreshControl refreshing={loadingContacts2} onRefresh={fetchAllContacts} tintColor="#25D366" />
+                <RefreshControl refreshing={loadingContacts2} onRefresh={() => fetchAllContacts(contactSearch2)} tintColor="#25D366" />
               }
               ListEmptyComponent={
                 <View style={styles.emptyContainer}>
@@ -1353,7 +1410,7 @@ export default function CustomersScreen() {
                 </View>
               }
               renderItem={({ item }) => (
-                <View style={styles.contactRow}>
+                <View style={[styles.contactRow, item.suggested_type && { borderLeftWidth: 3, borderLeftColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366' }]}>
                   <TouchableOpacity
                     style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
                     onPress={() => router.push({ pathname: '/chat', params: { customerId: item.id, customerName: item.name, customerPhone: item.phone_number } })}
@@ -1362,23 +1419,70 @@ export default function CustomersScreen() {
                       <Text style={styles.contactAvatarText}>{item.name?.charAt(0)?.toUpperCase() || '?'}</Text>
                     </View>
                     <View style={styles.contactInfo}>
-                      <Text style={styles.contactName} numberOfLines={1}>{item.name}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <Text style={styles.contactName} numberOfLines={1}>{item.name}</Text>
+                        {item.suggested_type === 'customer' && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A3B2A', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2, gap: 3 }}>
+                            <Ionicons name="sparkles" size={9} color="#25D366" />
+                            <Text style={{ color: '#25D366', fontSize: 9, fontWeight: '700' }}>Likely Customer</Text>
+                          </View>
+                        )}
+                        {item.suggested_type === 'supplier' && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#3B2A1A', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2, gap: 3 }}>
+                            <Ionicons name="sparkles" size={9} color="#FF9500" />
+                            <Text style={{ color: '#FF9500', fontSize: 9, fontWeight: '700' }}>Likely Supplier</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text style={styles.contactPhone}>{item.phone_number}</Text>
+                      {item.suggestion_reason ? <Text numberOfLines={1} style={{ color: '#8899AA', fontSize: 11, marginTop: 1 }}>{item.suggestion_reason}</Text> : null}
+                      {item.suggested_type && (
+                        <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
+                          <TouchableOpacity
+                            style={{ backgroundColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                            onPress={async () => {
+                              try {
+                                await apiClient.post(`/contacts/${item.id}/confirm`, { action: 'approve', type: item.suggested_type });
+                                fetchAllContacts(contactSearch2);
+                                fetchCustomers();
+                                Alert.alert('Done!', `${item.name} added as ${item.suggested_type}.`);
+                              } catch (e) { console.error(e); }
+                            }}
+                          >
+                            <Ionicons name="checkmark" size={11} color="#FFF" />
+                            <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '700' }}>Confirm as {item.suggested_type === 'supplier' ? 'Supplier' : 'Customer'}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={{ backgroundColor: '#1A2942', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 }}
+                            onPress={async () => {
+                              try {
+                                await apiClient.post(`/contacts/${item.id}/confirm`, { action: 'reject', type: item.suggested_type });
+                                fetchAllContacts(contactSearch2);
+                              } catch (e) { console.error(e); }
+                            }}
+                          >
+                            <Text style={{ color: '#8899AA', fontSize: 11 }}>Not this</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
                     </View>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.contactAddBtn}
-                    onPress={async () => {
-                      try {
-                        await apiClient.post(`/customers/${item.id}/promote`);
-                        fetchAllContacts();
-                        fetchCustomers();
-                      } catch (e) { console.error('Promote failed', e); }
-                    }}
-                  >
-                    <Ionicons name="person-add" size={12} color="#FFF" />
-                    <Text style={styles.contactAddBtnText}>Add</Text>
-                  </TouchableOpacity>
+                  {!item.suggested_type && (
+                    <TouchableOpacity
+                      style={styles.contactAddBtn}
+                      onPress={async () => {
+                        try {
+                          await apiClient.post(`/contacts/${item.id}/add-as-customer`);
+                          fetchAllContacts(contactSearch2);
+                          fetchCustomers();
+                          Alert.alert('Added!', `${item.name} is now a customer.`);
+                        } catch (e) { console.error('Add as customer failed', e); }
+                      }}
+                    >
+                      <Ionicons name="person-add" size={12} color="#FFF" />
+                      <Text style={styles.contactAddBtnText}>Add</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
             />
