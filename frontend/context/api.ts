@@ -147,6 +147,7 @@ export const settingsAPI = {
     currency?: string;
     country_code?: string;
     ai_model?: string;
+    auto_reply_audience?: 'everyone' | 'customers_only' | 'new_contacts_only';
   }) => {
     const response = await apiClient.put('/settings', settings);
     return response.data;

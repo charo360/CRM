@@ -86,6 +86,11 @@ export default function AccountScreen() {
   const [aiModel, setAiModel] = useState('standard');
   const [showModelPicker, setShowModelPicker] = useState(false);
 
+  // Auto Reply State
+  const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+  const [autoReplyAudience, setAutoReplyAudience] = useState<'everyone' | 'customers_only' | 'new_contacts_only'>('everyone');
+  const [showAudiencePicker, setShowAudiencePicker] = useState(false);
+
   // Team Management State
   const [showTeamModal, setShowTeamModal] = useState(false);
 
@@ -111,6 +116,8 @@ export default function AccountScreen() {
       setPulseTime(settingsRes.data.daily_pulse_time || '20:00');
       if (settingsRes.data.currency) setCurrency(settingsRes.data.currency);
       setAiModel(settingsRes.data.ai_model || 'standard');
+      setAutoReplyEnabled(settingsRes.data.auto_reply_enabled || false);
+      setAutoReplyAudience(settingsRes.data.auto_reply_audience || 'everyone');
 
       // Fetch WhatsApp status
       try {
@@ -712,16 +719,49 @@ export default function AccountScreen() {
               </View>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.settingItem}>
+            <View style={styles.settingItem}>
               <Ionicons name="chatbubble-outline" size={24} color="#666" />
-              <Text style={styles.settingText}>Auto Reply</Text>
+              <View style={{ flex: 1, marginLeft: 0 }}>
+                <Text style={styles.settingText}>Auto Reply</Text>
+                {autoReplyEnabled && (
+                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
+                    {autoReplyAudience === 'everyone' ? 'Replying to everyone' :
+                     autoReplyAudience === 'customers_only' ? 'Customers only' :
+                     'New contacts only'}
+                  </Text>
+                )}
+              </View>
               <Switch
-                value={false}
-                onValueChange={() => { }}
+                value={autoReplyEnabled}
+                onValueChange={async (val) => {
+                  setAutoReplyEnabled(val);
+                  try {
+                    await settingsAPI.updateSettings({ auto_reply_enabled: val });
+                  } catch (e) {
+                    setAutoReplyEnabled(!val);
+                  }
+                }}
                 trackColor={{ false: '#3e3e3e', true: '#25D366' }}
                 thumbColor="#f4f3f4"
               />
-            </TouchableOpacity>
+            </View>
+            {autoReplyEnabled && (
+              <TouchableOpacity
+                style={[styles.settingItem, { borderTopWidth: 1, borderTopColor: '#1e2d3d' }]}
+                onPress={() => setShowAudiencePicker(true)}
+              >
+                <Ionicons name="people-outline" size={24} color="#666" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.settingText}>Reply Audience</Text>
+                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
+                    {autoReplyAudience === 'everyone' ? 'Everyone who messages' :
+                     autoReplyAudience === 'customers_only' ? 'Only saved customers' :
+                     'Only new / first-time contacts'}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="notifications-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Notifications</Text>
@@ -953,6 +993,54 @@ export default function AccountScreen() {
 
         <Text style={styles.version}>Version 1.0.0</Text>
       </ScrollView>
+
+      {/* Auto Reply Audience Picker Modal */}
+      <Modal
+        visible={showAudiencePicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowAudiencePicker(false)}
+      >
+        <SafeAreaView style={styles.container}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#1e2d3d' }}>
+            <TouchableOpacity onPress={() => setShowAudiencePicker(false)}>
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 18, fontWeight: '600', color: '#FFFFFF' }}>Reply Audience</Text>
+            <View style={{ width: 24 }} />
+          </View>
+          <ScrollView style={{ flex: 1, padding: 16 }}>
+            <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 16 }}>
+              Choose who the AI auto-reply responds to. Individual contact overrides always take priority.
+            </Text>
+            {([
+              { value: 'everyone', label: 'Everyone', desc: 'Reply to all incoming messages' },
+              { value: 'customers_only', label: 'Customers Only', desc: 'Only reply to contacts you have saved as customers' },
+              { value: 'new_contacts_only', label: 'New Contacts Only', desc: 'Only reply to first-time or uncontacted messages' },
+            ] as const).map((opt) => (
+              <TouchableOpacity
+                key={opt.value}
+                style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A2942', borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 2, borderColor: autoReplyAudience === opt.value ? '#25D366' : 'transparent' }}
+                onPress={async () => {
+                  setAutoReplyAudience(opt.value);
+                  setShowAudiencePicker(false);
+                  try {
+                    await settingsAPI.updateSettings({ auto_reply_audience: opt.value });
+                  } catch (e) {}
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 15 }}>{opt.label}</Text>
+                  <Text style={{ color: '#8B9DC3', fontSize: 13, marginTop: 4 }}>{opt.desc}</Text>
+                </View>
+                {autoReplyAudience === opt.value && (
+                  <Ionicons name="checkmark-circle" size={24} color="#25D366" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
 
       {/* Daily Pulse Preview Modal */}
       <Modal

@@ -1193,6 +1193,7 @@ class UserSettingsUpdate(BaseModel):
     daily_pulse_enabled: Optional[bool] = None
     daily_pulse_time: Optional[str] = None  # e.g. '20:00'
     ai_model: Optional[str] = None  # standard, premium, claude-3.5, grok, etc.
+    auto_reply_audience: Optional[str] = None  # 'everyone', 'customers_only', 'new_contacts_only'
 
 # Business Knowledge Model
 class BusinessKnowledge(BaseModel):
@@ -1576,6 +1577,7 @@ async def get_settings(user = Depends(get_current_user)):
         "currency": user.get("currency", s.get("currency", "USD")),
         "country_code": user.get("country_code", s.get("country_code", "")),
         "ai_model": s.get("ai_model", "standard"),
+        "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
     }
 
 @api_router.put("/settings")
@@ -3368,6 +3370,9 @@ async def get_sales(user = Depends(get_current_user)):
             amount=s["amount"],
             payment_method=s["payment_method"],
             receipt_sent=s.get("receipt_sent", False),
+            is_credit=s.get("is_credit", False),
+            due_date=s.get("due_date"),
+            paid_date=s.get("paid_date"),
             created_at=s["created_at"]
         ))
     
@@ -5524,6 +5529,40 @@ async def evolution_webhook(request: Request):
                 )
                 
                 # ============================================================
+                # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
+                # Rules:
+                #   1. Global OFF + customer individual ON  → SEND (individual overrides)
+                #   2. Global ON  + customer individual OFF → SKIP (individual overrides)
+                #   3. Global ON  + customer individual unset → apply audience filter
+                #   4. Global OFF + customer individual unset → SKIP
+                # ============================================================
+                _user_settings = user.get('settings', {})
+                _global_auto_reply = _user_settings.get('auto_reply_enabled', False)
+                # customer.auto_reply: True=force ON, False=force OFF, None/missing=respect global
+                _customer_auto_reply = customer.get('auto_reply') if customer else None
+
+                if _customer_auto_reply is True:
+                    _should_auto_reply = True
+                elif _customer_auto_reply is False:
+                    _should_auto_reply = False
+                elif _global_auto_reply:
+                    _audience = _user_settings.get('auto_reply_audience', 'everyone')
+                    if _audience == 'customers_only':
+                        _should_auto_reply = bool(customer and customer.get('is_customer', False))
+                    elif _audience == 'new_contacts_only':
+                        _should_auto_reply = bool(not customer or not customer.get('last_contacted'))
+                    else:
+                        _should_auto_reply = True
+                else:
+                    _should_auto_reply = False
+
+                logging.info(f"Auto-reply gate: customer_override={_customer_auto_reply}, global={_global_auto_reply}, audience={_user_settings.get('auto_reply_audience','everyone')}, result={_should_auto_reply}")
+
+                if not _should_auto_reply:
+                    logging.info(f"Auto-reply BLOCKED for {from_number} (customer_override={_customer_auto_reply}, global={_global_auto_reply})")
+                    return {"status": "ok", "message": "auto-reply disabled for this contact"}
+
+                # ============================================================
                 # AGENT-BASED PRODUCT MATCHING & HANDLING (REPLACES OLD MONOLITH)
                 # ============================================================
                 
@@ -5725,23 +5764,9 @@ async def evolution_webhook(request: Request):
                         await db.pending_catalogs.delete_one({"_id": pending["_id"]})
                         return {"status": "ok"}
                 
-                # Auto-reply logic (Per-Customer overrides Global)
-                user_settings = user.get('settings', {})
-                print(f"DEBUG: User settings: {user_settings}", flush=True)
+                user_settings = _user_settings
                 
-                # Ensure we have the customer data
-                if not customer and customer_id:
-                    customer = await db.customers.find_one({"_id": customer_id})
-                
-                customer_auto_reply = customer.get('auto_reply') if customer else None
-                global_auto_reply = user_settings.get('auto_reply_enabled', False)
-                
-                should_auto_reply = customer_auto_reply if customer_auto_reply is not None else global_auto_reply
-                
-                print(f"DEBUG: Auto-reply check. Customer={customer_auto_reply}, Global={global_auto_reply} -> RESULT={should_auto_reply}", flush=True)
-                logging.info(f"Auto-reply check: Customer={customer_auto_reply}, Global={global_auto_reply}, Result={should_auto_reply}")
-                
-                if should_auto_reply:
+                if True:  # auto-reply already gated above
                     # Dedup check already done at top of handler
 
                     
