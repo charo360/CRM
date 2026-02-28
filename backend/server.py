@@ -2563,10 +2563,7 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
     cutoff_date = datetime.utcnow() - timedelta(days=days)
     customers = await db.customers.find({
         "user_id": business_id,
-        "$or": [
-            {"last_contacted": {"$lt": cutoff_date}},
-            {"last_contacted": None}
-        ]
+        "$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}],
     }).sort("last_contacted", 1).to_list(100)
     
     # Get today's analysis date
@@ -2580,13 +2577,23 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
     }).sort("urgency_score", -1).to_list(100)
     
     result = []
+    analyzed_customer_ids = set()
     
-    # If we have smart insights, use them as the primary source for "Needs Attention"
+    # First, add customers with smart insights (if available)
     if smart_insights:
         for analysis in smart_insights:
             c = await db.customers.find_one({"_id": analysis["customer_id"]})
             if not c: continue
+            # Skip raw contacts — only real customers
+            if not c.get("is_customer", True) and c.get("auto_created"):
+                continue
             
+            # CRITICAL: Only include if they actually need attention (>7 days or never contacted)
+            last_contacted = c.get("last_contacted")
+            if last_contacted and last_contacted >= cutoff_date:
+                continue  # Skip - contacted recently
+            
+            analyzed_customer_ids.add(c["_id"])
             result.append({
                 "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
                 "notes": c.get("notes"), "tags": c.get("tags", []),
@@ -2597,31 +2604,34 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
                 "urgency_score": analysis.get("urgency_score", 0),
                 "created_at": c["created_at"]
             })
-    else:
-        # Fallback to legacy "Cold" logic if AI hasn't run yet
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
-        customers = await db.customers.find({
-            "user_id": business_id,
-            "$or": [
-                {"last_contacted": {"$lt": cutoff_date}},
-                {"last_contacted": None}
-            ]
-        }).sort("last_contacted", 1).to_list(100)
-        
-        for c in customers:
-            pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
-            days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
+    
+    # Then, add customers that need attention but don't have analysis yet
+    customers_without_analysis = await db.customers.find({
+        "user_id": business_id,
+        "$and": [
+            {"$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}]},
+            {"$or": [{"last_contacted": {"$lt": cutoff_date}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]},
+        ],
+    }).sort("last_contacted", 1).to_list(100)
+    
+    for c in customers_without_analysis:
+        # Skip if already added from analysis
+        if c["_id"] in analyzed_customer_ids:
+            continue
             
-            # Use simple rule-based reason to avoid timeout
-            ai_reason = generate_simple_reason(c, days_since_contact)
-                
-            result.append({
-                "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
-                "notes": c.get("notes"), "tags": c.get("tags", []),
-                "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
-                "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
-                "ai_reason": ai_reason, "created_at": c["created_at"]
-            })
+        pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
+        days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
+        
+        # Use simple rule-based reason to avoid timeout
+        ai_reason = generate_simple_reason(c, days_since_contact)
+            
+        result.append({
+            "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+            "notes": c.get("notes"), "tags": c.get("tags", []),
+            "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
+            "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
+            "ai_reason": ai_reason, "created_at": c["created_at"]
+        })
             
     # Sort by urgency/days and limit to top 30 most urgent
     result.sort(key=lambda x: x.get("urgency_score", 0) if "urgency_score" in x else (x["days_since_contact"] if x["days_since_contact"] else 999), reverse=True)
@@ -2953,22 +2963,50 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
     now = datetime.utcnow()
     cutoff_week = now - timedelta(days=7)
     cutoff_month = now - timedelta(days=30)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Customers not contacted in 7+ days
-    neglected_week = await db.customers.count_documents({
+    # Real customers only — use $and to safely combine two $or conditions
+    _is_customer = {"$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}]}
+    _no_contact_week = {"$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]}
+    _no_contact_month = {"$or": [{"last_contacted": {"$lt": cutoff_month}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]}
+    
+    # Count today's analyzed customers that need attention (respects random daily quota)
+    analyzed_count = 0
+    smart_insights = await db.customer_analysis.find({
         "user_id": business_id,
-        "$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]
-    })
-    # Customers not contacted in 30+ days
+        "analysis_date": {"$gte": today}
+    }).to_list(100)
+    
+    for analysis in smart_insights:
+        c = await db.customers.find_one({"_id": analysis["customer_id"]})
+        if c:
+            last_contacted = c.get("last_contacted")
+            # Only count if they actually need attention (>7 days or never)
+            if not last_contacted or last_contacted < cutoff_week:
+                analyzed_count += 1
+    
+    # Count non-analyzed customers that still need attention
+    non_analyzed_customers = await db.customers.find({
+        "user_id": business_id,
+        "$and": [_is_customer, _no_contact_week]
+    }).to_list(100)
+    
+    analyzed_ids = {a["customer_id"] for a in smart_insights}
+    non_analyzed_count = sum(1 for c in non_analyzed_customers if c["_id"] not in analyzed_ids)
+    
+    # Total shown in Needs Attention list = analyzed + non-analyzed (up to 30 max per endpoint)
+    neglected_week = min(analyzed_count + non_analyzed_count, 30)
+    
+    # Customers not contacted in 30+ days (or never) - keep original logic
     neglected_month = await db.customers.count_documents({
         "user_id": business_id,
-        "$or": [{"last_contacted": {"$lt": cutoff_month}}, {"last_contacted": None}]
+        "$and": [_is_customer, _no_contact_month]
     })
     # New customers (created in last 7 days) with no follow-up
     new_cutoff = now - timedelta(days=7)
     new_customers = await db.customers.find({
         "user_id": business_id,
-        "created_at": {"$gte": new_cutoff}
+        "$and": [_is_customer, {"created_at": {"$gte": new_cutoff}}]
     }).to_list(None)
     new_no_followup = 0
     for c in new_customers:
@@ -2979,7 +3017,10 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
     vip_neglected = await db.customers.count_documents({
         "user_id": business_id,
         "tags": "VIP",
-        "$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]
+        "$and": [
+            _is_customer,
+            {"$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]}
+        ]
     })
     return {
         "neglected_week": neglected_week,
@@ -5407,7 +5448,17 @@ async def evolution_webhook(request: Request):
                 if remote_jid:
                     msg_doc["remote_jid"] = remote_jid
                 await db.messages.insert_one(msg_doc)
-                
+
+                # Always update last_contacted + last_message regardless of direction
+                # This ensures native WhatsApp conversations keep the customer active
+                await db.customers.update_one(
+                    {"_id": customer_id},
+                    {"$set": {
+                        "last_contacted": datetime.utcnow(),
+                        "last_message": body[:200] if body else "",
+                    }}
+                )
+
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
                     # Mark all unread incoming messages from this customer as read,
@@ -6537,22 +6588,22 @@ async def get_daily_insights(background_tasks: BackgroundTasks, limit: int = 10,
     """Get today's customer insights from AI analysis"""
     try:
         analyzer = DailyCustomerAnalyzer(db)
+        business_id = user.get("business_id", user["_id"])
         
         # Check if we have today's analysis
         today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         existing_analysis_count = await db.customer_analysis.count_documents({
-            "user_id": user["_id"],
+            "user_id": business_id,
             "analysis_date": {"$gte": today}
         })
         
-        # If no analysis for today OR we're just starting up, queue a background run
-        # We check count > 0 to see if results are already flowing in
+        # Only trigger background analysis if none exists today for this business
         if existing_analysis_count == 0:
-            logging.info(f"Triggering background analysis for user {user['_id']}")
-            background_tasks.add_task(analyzer.analyze_all_customers, user["_id"])
+            logging.info(f"Triggering background analysis for business {business_id}")
+            background_tasks.add_task(analyzer.analyze_all_customers, business_id)
         
         # Get whatever insights we have so far (poll correctly handles partial results)
-        insights = await analyzer.get_todays_insights(user["_id"], limit)
+        insights = await analyzer.get_todays_insights(business_id, limit)
         
         from bson import json_util
         import json
@@ -6574,6 +6625,144 @@ async def run_analysis_now(user = Depends(get_current_user)):
         "status": "success",
         "analyzed_count": len(analyses),
         "high_priority": len([a for a in analyses if a['urgency_level'] == 'high'])
+    }
+
+# ============ DIGEST ENDPOINTS ============
+
+@api_router.get("/digest/preview")
+async def preview_digest(digest_type: str = "morning", user = Depends(get_current_user)):
+    """Preview digest without sending it"""
+    from digest_service import get_digest_service
+    
+    business_id = user.get("business_id", user["_id"])
+    digest_service = get_digest_service(db)
+    
+    digest = await digest_service.generate_digest(business_id, digest_type)
+    whatsapp_message = digest_service.format_whatsapp_message(digest)
+    push_notification = digest_service.format_push_notification(digest)
+    
+    return {
+        "digest": digest,
+        "whatsapp_message": whatsapp_message,
+        "push_notification": push_notification
+    }
+
+@api_router.post("/digest/send-now")
+async def send_digest_now(digest_type: str = "morning", user = Depends(get_current_user)):
+    """Manually send digest to current user"""
+    from digest_service import get_digest_service
+    from notification_service import get_notification_service
+    from whatsapp_service import WhatsAppService
+    
+    business_id = user.get("business_id", user["_id"])
+    digest_service = get_digest_service(db)
+    
+    # Generate digest
+    digest = await digest_service.generate_digest(business_id, digest_type)
+    
+    results = {"whatsapp": False, "push": False}
+    
+    # Send via WhatsApp
+    if user.get("phone_number"):
+        try:
+            wa_service = WhatsAppService()
+            message = digest_service.format_whatsapp_message(digest)
+            result = await wa_service.send_message(
+                user_id=user["_id"],
+                to_number=user["phone_number"],
+                message=message
+            )
+            results["whatsapp"] = result.get("success", False)
+        except Exception as e:
+            logging.error(f"WhatsApp delivery failed: {e}")
+    
+    # Send via Push
+    if user.get("push_token"):
+        try:
+            notification_service = get_notification_service()
+            notification = digest_service.format_push_notification(digest)
+            results["push"] = await notification_service.send_notification(
+                push_token=user["push_token"],
+                title=notification["title"],
+                body=notification["body"],
+                data=notification["data"]
+            )
+        except Exception as e:
+            logging.error(f"Push delivery failed: {e}")
+    
+    return {
+        "status": "sent",
+        "digest": digest,
+        "delivery": results
+    }
+
+@api_router.post("/users/push-token")
+async def register_push_token(token: str = Body(..., embed=True), user = Depends(get_current_user)):
+    """Register user's push notification token"""
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"push_token": token}}
+    )
+    return {"status": "ok"}
+
+@api_router.post("/users/notifications/settings")
+async def update_notification_settings(
+    enabled: bool = Body(...),
+    user = Depends(get_current_user)
+):
+    """Update notification preferences"""
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"notifications_enabled": enabled}}
+    )
+    return {"status": "ok", "notifications_enabled": enabled}
+
+@api_router.get("/motivation/preview")
+async def preview_motivation(is_monday: bool = False, user = Depends(get_current_user)):
+    """Preview motivation message without sending"""
+    from motivation_service import get_motivation_service
+    
+    motivation_service = get_motivation_service(db)
+    
+    if is_monday:
+        motivation = await motivation_service.get_monday_motivation(user["_id"])
+    else:
+        motivation = await motivation_service.get_midweek_motivation(user["_id"])
+    
+    return motivation
+
+@api_router.post("/motivation/send-now")
+async def send_motivation_now(is_monday: bool = False, user = Depends(get_current_user)):
+    """Manually send motivation message to current user"""
+    from motivation_service import get_motivation_service
+    from whatsapp_service import WhatsAppService
+    
+    motivation_service = get_motivation_service(db)
+    
+    if is_monday:
+        motivation = await motivation_service.get_monday_motivation(user["_id"])
+    else:
+        motivation = await motivation_service.get_midweek_motivation(user["_id"])
+    
+    result = {"sent": False}
+    
+    # Send via WhatsApp
+    if user.get("phone_number"):
+        try:
+            wa_service = WhatsAppService()
+            response = await wa_service.send_message(
+                user_id=user["_id"],
+                to_number=user["phone_number"],
+                message=motivation["message"]
+            )
+            result["sent"] = response.get("success", False)
+        except Exception as e:
+            logging.error(f"WhatsApp delivery failed: {e}")
+    
+    return {
+        "status": "sent" if result["sent"] else "failed",
+        "motivation": motivation,
+        "delivery": result
     }
 
 # ============ DAILY PULSE ENDPOINTS ============
@@ -7727,6 +7916,15 @@ async def startup_tasks():
         logging.info("Daily pulse scheduler started")
     except Exception as e:
         logging.error(f"Failed to start daily pulse scheduler: {e}")
+    
+    # Start digest notification scheduler (8 AM and 3 PM)
+    try:
+        from scheduler import start_scheduler
+        logging.info("Starting digest notification scheduler...")
+        start_scheduler(db)
+        logging.info("Digest scheduler started - notifications at 8 AM and 3 PM EAT")
+    except Exception as e:
+        logging.error(f"Failed to start digest scheduler: {e}")
 
 logger = logging.getLogger(__name__)
 

@@ -34,10 +34,7 @@ class DailyCustomerAnalyzer:
             three_days_ago = datetime.utcnow() - timedelta(days=3)
             customers = await self.db.customers.find({
                 "user_id": user_id,
-                "$or": [
-                    {"last_contacted": {"$lt": three_days_ago}},
-                    {"last_contacted": None}
-                ]
+                "$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}],
             }).sort("last_contacted", 1).to_list(100) # Limit candidates to top 100 cold ones
             
             if not customers:
@@ -81,13 +78,15 @@ class DailyCustomerAnalyzer:
             return []
     
     def _get_daily_quota(self, total_customers: int) -> int:
-        """Get daily suggestion limit based on business size"""
+        """Get daily suggestion limit based on business size - randomized for natural feel"""
+        import random
+        
         if total_customers < 100:
-            return 10  # Small Shop
+            return random.randint(6, 10)  # Small Shop: 6-10 suggestions
         elif total_customers < 500:
-            return 20  # Medium Shop
+            return random.randint(8, 15)  # Medium Shop: 8-15 suggestions
         else:
-            return 30  # Power User (Hard Max)
+            return random.randint(10, 20)  # Power User: 10-20 suggestions (never overwhelming)
 
     async def analyze_single_customer(self, customer_id: str, user_id: str) -> Dict:
         """Analyze a single customer on demand"""
