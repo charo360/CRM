@@ -63,21 +63,19 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 import logging
 import asyncio
 
-# Configure logging to file (outside watched directory) and stdout
-# Using parent directory to avoid uvicorn reload loops
+# Configure logging with rotation (10 MB per file, keep 3 backups) + stdout
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
 log_file = ROOT_DIR.parent / "server.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(str(log_file)),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+_log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_file_handler = _RotatingFileHandler(str(log_file), maxBytes=10*1024*1024, backupCount=3, encoding='utf-8')
+_file_handler.setFormatter(_log_formatter)
+_stream_handler = logging.StreamHandler(sys.stdout)
+_stream_handler.setFormatter(_log_formatter)
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Any
 import uuid
 from datetime import datetime, timedelta
 import jwt
@@ -93,7 +91,6 @@ from daily_analyzer import DailyCustomerAnalyzer
 from notification_service import get_notification_service
 from image_handler import ImageUploadHandler, S3Handler
 from product_organizer import get_organizer
-from wow_enhancements import get_wow_generator
 from whatsapp_service import get_whatsapp_service
 from followup_analytics import get_analytics
 from smart_notifications import get_smart_notifications
@@ -114,6 +111,11 @@ import asyncio as _aio
 _auto_reply_dedup = {}  # key: evo_message_id -> timestamp
 _auto_reply_lock = _aio.Lock()
 _AUTO_REPLY_DEDUP_TTL = 120  # seconds
+
+# Ping-pong loop guard: tracks last auto-reply sent time per (user_id, phone)
+# key: "user_id:phone" -> timestamp of last auto-reply sent
+_last_auto_reply_sent: dict = {}
+_PING_PONG_TTL = 30  # seconds — if we sent an auto-reply within this window, skip the next one
 
 def serialize_doc(doc):
     """Recursively convert MongoDB ObjectId fields to strings for JSON serialization."""
@@ -1169,6 +1171,7 @@ class DraftMessageRequest(BaseModel):
     customer_id: str
     tone: Optional[str] = "friendly"  # professional, friendly, casual
     custom_instructions: Optional[str] = None
+    regenerate_count: Optional[int] = 0  # increments each regenerate to force variety
 
 class DraftMessageResponse(BaseModel):
     message: str
@@ -1179,12 +1182,17 @@ class SendAutoMessageRequest(BaseModel):
     customer_id: str
     message: str
 
+# Payment method object
+class PaymentMethodEntry(BaseModel):
+    name: str  # e.g. 'M-Pesa', 'PayPal', 'Bank Transfer'
+    details: Optional[str] = None  # e.g. phone number, email, account number
+
 # User Settings Models
 class UserSettingsUpdate(BaseModel):
     auto_reply_enabled: Optional[bool] = None
     notification_enabled: Optional[bool] = None
     notification_time: Optional[str] = None
-    payment_methods: Optional[List[str]] = None
+    payment_methods: Optional[List[Any]] = None  # supports both legacy List[str] and List[{name,details}]
     currency: Optional[str] = None
     country_code: Optional[str] = None  # ISO 3166-1 alpha-2 e.g. 'US', 'KE', 'NG'
     daily_alert_count: Optional[int] = None
@@ -1197,13 +1205,28 @@ class UserSettingsUpdate(BaseModel):
 
 # Business Knowledge Model
 class BusinessKnowledge(BaseModel):
-    products_services: Optional[str] = None  # What you sell/offer
-    pricing_info: Optional[str] = None  # Price ranges, payment methods
-    business_hours: Optional[str] = None  # When you're available
-    delivery_info: Optional[str] = None  # Delivery areas, costs, timing
-    faqs: Optional[str] = None  # Common questions and answers
-    special_offers: Optional[str] = None  # Current promotions
-    business_description: Optional[str] = None  # What makes you unique
+    products_services: Optional[str] = None
+    pricing_info: Optional[str] = None
+    business_hours: Optional[str] = None
+    delivery_info: Optional[str] = None
+    faqs: Optional[str] = None
+    special_offers: Optional[str] = None
+    business_description: Optional[str] = None
+    # Business type
+    business_type: Optional[str] = None  # 'general', 'retail', 'creator', 'restaurant', 'service'
+    # Creator-specific fields
+    creator_niche: Optional[str] = None
+    creator_platforms: Optional[str] = None
+    creator_audience_size: Optional[str] = None
+    creator_collab_types: Optional[str] = None
+    creator_rate_card: Optional[str] = None
+    creator_whats_included: Optional[str] = None
+    creator_turnaround: Optional[str] = None
+    creator_booking_process: Optional[str] = None
+    creator_min_budget: Optional[str] = None
+    creator_blacklisted_niches: Optional[str] = None
+    creator_fan_dm_response: Optional[str] = None
+    creator_media_kit_link: Optional[str] = None
 
 # Product Catalog Models
 class Product(BaseModel):
@@ -1222,8 +1245,9 @@ class Product(BaseModel):
 
 # ============ AUTH ENDPOINTS (WhatsApp-Only) ============
 
-# Temporary session store for WhatsApp pairing (in production, use Redis)
-wa_auth_sessions = {}
+# WhatsApp auth sessions stored in MongoDB (survives restarts)
+# Rate limiter: phone -> list of attempt timestamps
+_wa_start_rate: dict = {}
 
 @api_router.post("/auth/whatsapp-start")
 async def whatsapp_auth_start(request: WhatsAppAuthStart):
@@ -1238,6 +1262,17 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     phone = request.phone_number.strip()
     if not phone or len(phone) < 8:
         raise HTTPException(status_code=400, detail="Valid phone number is required")
+
+    # Rate limit: max 5 attempts per phone per 10 minutes
+    import time as _time
+    _now = _time.time()
+    _window = 600  # 10 minutes
+    _attempts = _wa_start_rate.get(phone, [])
+    _attempts = [t for t in _attempts if _now - t < _window]
+    if len(_attempts) >= 5:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please wait 10 minutes before trying again.")
+    _attempts.append(_now)
+    _wa_start_rate[phone] = _attempts
 
     # ── TEAM MEMBER FAST LOGIN ──────────────────────────────────────────────
     # If this phone number was pre-added as a team member, log them in directly.
@@ -1325,7 +1360,7 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
             "subscription_active": False,
             "country_code": country_code,
             "currency": country_config["currency"],
-            "payment_methods": country_config["methods"],
+            "payment_methods": [{"name": m, "details": ""} for m in country_config["methods"][:3]],
             "created_at": datetime.utcnow(),
             "setup_complete": False,
         }
@@ -1370,13 +1405,14 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     # Create a session token to track this auth attempt
     import secrets
     session_token = secrets.token_urlsafe(32)
-    wa_auth_sessions[session_token] = {
+    await db.wa_auth_sessions.insert_one({
+        "_id": session_token,
         "user_id": user_id,
         "phone": phone,
         "is_new_user": is_new_user,
         "created_at": datetime.utcnow(),
         "expires": datetime.utcnow() + timedelta(minutes=5),
-    }
+    })
 
     return {
         "status": "pairing",
@@ -1393,12 +1429,12 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
     Poll WhatsApp connection status during auth.
     Once connected, issues a JWT token and returns user data.
     """
-    session = wa_auth_sessions.get(request.session_token)
+    session = await db.wa_auth_sessions.find_one({"_id": request.session_token})
     if not session:
         raise HTTPException(status_code=400, detail="Invalid or expired session")
 
     if datetime.utcnow() > session["expires"]:
-        wa_auth_sessions.pop(request.session_token, None)
+        await db.wa_auth_sessions.delete_one({"_id": request.session_token})
         raise HTTPException(status_code=400, detail="Session expired. Please start again.")
 
     user_id = session["user_id"]
@@ -1415,7 +1451,7 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
     token = create_token(user_id, phone)
 
     # Clean up session
-    wa_auth_sessions.pop(request.session_token, None)
+    await db.wa_auth_sessions.delete_one({"_id": request.session_token})
 
     user = await db.users.find_one({"_id": user_id})
     is_new_user = session["is_new_user"] or not user.get("setup_complete", True)
@@ -1451,12 +1487,12 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
     """
     Refresh the pairing code during auth (called before 60s expiry).
     """
-    session = wa_auth_sessions.get(request.session_token)
+    session = await db.wa_auth_sessions.find_one({"_id": request.session_token})
     if not session:
         raise HTTPException(status_code=400, detail="Invalid or expired session")
 
     if datetime.utcnow() > session["expires"]:
-        wa_auth_sessions.pop(request.session_token, None)
+        await db.wa_auth_sessions.delete_one({"_id": request.session_token})
         raise HTTPException(status_code=400, detail="Session expired. Please start again.")
 
     user_id = session["user_id"]
@@ -1470,7 +1506,10 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
         raise HTTPException(status_code=500, detail=result.get("message", "Failed to refresh pairing code"))
 
     # Extend session expiry
-    session["expires"] = datetime.utcnow() + timedelta(minutes=5)
+    await db.wa_auth_sessions.update_one(
+        {"_id": request.session_token},
+        {"$set": {"expires": datetime.utcnow() + timedelta(minutes=5)}}
+    )
 
     return {
         "status": "pairing",
@@ -3105,10 +3144,10 @@ async def get_analytics_summary(user = Depends(get_current_user)):
 
     # Customers
     try:
-        total_customers = await db.customers.count_documents({"user_id": business_id})
+        total_customers = await db.customers.count_documents({"user_id": business_id, "is_customer": True})
         now = datetime.utcnow()
         month_start = datetime(now.year, now.month, 1)
-        new_customers = await db.customers.count_documents({"user_id": business_id, "created_at": {"$gte": month_start}})
+        new_customers = await db.customers.count_documents({"user_id": business_id, "is_customer": True, "created_at": {"$gte": month_start}})
     except Exception as e:
         logging.error(f"customers error: {e}")
         total_customers = 0
@@ -4018,16 +4057,42 @@ class ProductUpdate(BaseModel):
     in_stock: Optional[bool] = None
     stock_quantity: Optional[int] = None
 
-MAX_PRODUCTS = 20
+# Plan-based product and image limits
+PLAN_PRODUCT_LIMITS = {
+    "free":     {"products": 5,   "images": 25},
+    "starter":  {"products": 20,  "images": 100},
+    "standard": {"products": 50,  "images": 250},
+    "pro":      {"products": None, "images": None},  # None = unlimited
+}
+
+def get_plan_limits(user: dict) -> dict:
+    plan = user.get("subscription_plan", "free")
+    return PLAN_PRODUCT_LIMITS.get(plan, PLAN_PRODUCT_LIMITS["free"])
+
+async def count_total_images(db, business_id: str) -> int:
+    pipeline = [
+        {"$match": {"user_id": business_id}},
+        {"$project": {"img_count": {"$size": {"$ifNull": ["$images", []]}}}},
+        {"$group": {"_id": None, "total": {"$sum": "$img_count"}}}
+    ]
+    result = await db.products.aggregate(pipeline).to_list(1)
+    return result[0]["total"] if result else 0
 
 @api_router.post("/products", response_model=ProductResponse)
 async def create_product(product: ProductCreate, user = Depends(get_current_user)):
     """Create a new product"""
     business_id = user.get("business_id", user["_id"])
+    limits = get_plan_limits(user)
     # Check product limit
     count = await db.products.count_documents({"user_id": business_id})
-    if count >= MAX_PRODUCTS:
-        raise HTTPException(status_code=400, detail=f"Product limit reached. Maximum {MAX_PRODUCTS} products allowed.")
+    if limits["products"] is not None and count >= limits["products"]:
+        raise HTTPException(status_code=400, detail=f"Product limit reached ({limits['products']} on your plan). Upgrade for more.")
+    # Check total image limit
+    new_images = product.images or ([product.image_url] if product.image_url else [])
+    if limits["images"] is not None and new_images:
+        current_images = await count_total_images(db, business_id)
+        if current_images + len(new_images) > limits["images"]:
+            raise HTTPException(status_code=400, detail=f"Image limit reached ({limits['images']} total on your plan). Upgrade for more.")
     
     # Sanitize inputs
     clean_name = sanitize_string(product.name, 200)
@@ -4256,68 +4321,74 @@ PLAN_FEATURES = {
     "starter": {
         "name": "Starter",
         "interval": "monthly",
-        "features": ["Up to 100 customers", "Basic follow-ups", "Receipt sending"]
+        "features": ["2,500 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"]
     },
     "standard": {
-        "name": "Standard",
+        "name": "Growth",
         "interval": "monthly",
-        "features": ["Up to 500 customers", "Unlimited follow-ups", "Broadcast messages", "Priority support"]
+        "features": ["5,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Priority support"]
     },
     "pro": {
         "name": "Pro",
         "interval": "monthly",
-        "features": ["Unlimited customers", "Advanced analytics", "Custom templates", "WhatsApp Business API", "Dedicated support"]
+        "features": ["10,000 messages/month", "Unlimited customers", "Advanced analytics", "Custom templates", "Dedicated support"]
     }
 }
 
 # Regional pricing: currency -> (starter, standard, pro)
+# Anchor: KES 700 / 1500 / 2500  ≈  USD 5.40 / 11.60 / 19.30
 REGIONAL_PRICING = {
     # East Africa
-    "KES": (700, 1000, 1500),       # Kenya
-    "TZS": (15000, 22000, 33000),   # Tanzania
-    "UGX": (25000, 37000, 55000),   # Uganda
-    "RWF": (7000, 10000, 15000),    # Rwanda
-    "ETB": (400, 600, 900),         # Ethiopia
-    "BIF": (20000, 30000, 45000),   # Burundi
-    "SOS": (4000, 6000, 9000),      # Somalia
+    "KES": (700, 1500, 2500),       # Kenya
+    "TZS": (14000, 30000, 50000),   # Tanzania
+    "UGX": (20000, 43000, 72000),   # Uganda
+    "RWF": (6000, 13000, 22000),    # Rwanda
+    "ETB": (300, 650, 1100),        # Ethiopia
+    "BIF": (16000, 34000, 57000),   # Burundi
+    "SOS": (3000, 6500, 11000),     # Somalia
     # West Africa
-    "NGN": (5000, 7500, 11000),     # Nigeria
-    "GHS": (50, 75, 110),           # Ghana
-    "XOF": (4000, 6000, 9000),      # CFA (Senegal, Ivory Coast, etc.)
-    "XAF": (4000, 6000, 9000),      # CFA (Cameroon, etc.)
+    "NGN": (4500, 9500, 16000),     # Nigeria
+    "GHS": (45, 95, 160),           # Ghana
+    "XOF": (3500, 7500, 12500),     # CFA (Senegal, Ivory Coast, etc.)
+    "XAF": (3500, 7500, 12500),     # CFA (Cameroon, etc.)
     # Southern Africa
-    "ZAR": (100, 150, 220),         # South Africa
-    "CDF": (18000, 27000, 40000),   # DR Congo
+    "ZAR": (100, 210, 350),         # South Africa
+    "CDF": (15000, 32000, 53000),   # DR Congo
     # North Africa / Middle East
-    "EGP": (200, 300, 450),         # Egypt
-    "MAD": (60, 90, 135),           # Morocco
-    "TND": (20, 30, 45),            # Tunisia
-    "AED": (25, 37, 55),            # UAE
-    "SAR": (25, 37, 55),            # Saudi Arabia
+    "EGP": (170, 360, 600),         # Egypt
+    "MAD": (55, 115, 195),          # Morocco
+    "TND": (17, 36, 60),            # Tunisia
+    "AED": (20, 43, 71),            # UAE
+    "SAR": (20, 43, 71),            # Saudi Arabia
     # South Asia
-    "INR": (500, 750, 1100),        # India
-    "PKR": (2000, 3000, 4500),      # Pakistan
-    "BDT": (700, 1000, 1500),       # Bangladesh
+    "INR": (450, 960, 1600),        # India
+    "PKR": (1500, 3200, 5400),      # Pakistan
+    "BDT": (600, 1300, 2100),       # Bangladesh
     # Southeast Asia
-    "PHP": (400, 600, 900),         # Philippines
-    "IDR": (100000, 150000, 220000),# Indonesia
-    "MYR": (30, 45, 65),            # Malaysia
-    "THB": (250, 375, 550),         # Thailand
-    "VND": (170000, 250000, 370000),# Vietnam
+    "PHP": (300, 650, 1100),        # Philippines
+    "IDR": (85000, 180000, 300000), # Indonesia
+    "MYR": (25, 54, 90),            # Malaysia
+    "THB": (190, 410, 680),         # Thailand
+    "VND": (135000, 290000, 480000),# Vietnam
     # East Asia
-    "CNY": (45, 65, 100),           # China
-    "JPY": (1000, 1500, 2200),      # Japan
-    "KRW": (9000, 13000, 20000),    # South Korea
+    "CNY": (39, 84, 140),           # China
+    "JPY": (800, 1700, 2900),       # Japan
+    "KRW": (7200, 15500, 26000),    # South Korea
     # Americas
-    "USD": (7, 10, 15),             # USA/Canada
-    "BRL": (35, 50, 75),            # Brazil
-    "MXN": (120, 180, 270),         # Mexico
-    "COP": (28000, 42000, 63000),   # Colombia
-    "CLP": (5500, 8000, 12000),     # Chile
-    "ARS": (5000, 7500, 11000),     # Argentina
+    "USD": (10, 18, 28),            # USA/Canada (Tier 1)
+    "BRL": (30, 65, 108),           # Brazil
+    "MXN": (100, 215, 360),         # Mexico
+    "COP": (22000, 47000, 78000),   # Colombia
+    "CLP": (4800, 10200, 17000),    # Chile
+    "ARS": (4500, 9600, 16000),     # Argentina
     # Europe
-    "GBP": (5, 8, 12),             # UK
-    "EUR": (6, 9, 14),             # Eurozone
+    "GBP": (8, 14, 22),             # UK (Tier 1)
+    "EUR": (9, 16, 25),             # Eurozone (Tier 1)
+    "AUD": (15, 27, 42),            # Australia (Tier 1)
+    "NZD": (16, 28, 44),            # New Zealand (Tier 1)
+    "CAD": (13, 23, 36),            # Canada (Tier 1)
+    "CHF": (9, 16, 25),             # Switzerland (Tier 1)
+    "SGD": (13, 23, 36),            # Singapore (Tier 1)
 }
 
 def get_regional_plans(currency: str) -> list:
@@ -4347,8 +4418,8 @@ def get_regional_plans(currency: str) -> list:
 @api_router.get("/subscription/plans")
 async def get_subscription_plans(user = Depends(get_current_user)):
     """Get available subscription plans with regional pricing"""
-    user_settings = user.get('settings', {})
-    currency = user_settings.get('currency', 'USD')
+    # Check user.currency first (top-level), then user.settings.currency, then USD
+    currency = user.get('currency') or user.get('settings', {}).get('currency', 'USD') or 'USD'
     return get_regional_plans(currency)
 
 async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dict:
@@ -4493,7 +4564,80 @@ async def get_subscription_status(user = Depends(get_current_user)):
     return {
         "subscription_plan": user.get("subscription_plan"),
         "subscription_active": user.get("subscription_active", False),
-        "subscription_date": user.get("subscription_date")
+        "subscription_date": user.get("subscription_date"),
+        "extra_credits": user.get("extra_credits", 0),
+    }
+
+# Credit top-up bundles: bundle_id -> {credits, price_usd}
+CREDIT_BUNDLES = {
+    "credits_500":  {"credits": 500,  "price_usd": 2.99,  "label": "500 Credits"},
+    "credits_1000": {"credits": 1000, "price_usd": 4.99,  "label": "1,000 Credits"},
+    "credits_2500": {"credits": 2500, "price_usd": 9.99,  "label": "2,500 Credits"},
+    "credits_5000": {"credits": 5000, "price_usd": 17.99, "label": "5,000 Credits"},
+}
+
+class CreditTopUpRequest(BaseModel):
+    bundle_id: str
+    purchase_token: str
+    platform: str  # "android" | "ios"
+
+@api_router.get("/subscription/credit-bundles")
+async def get_credit_bundles_list(user = Depends(get_current_user)):
+    """Return available credit top-up bundles"""
+    return [{"bundle_id": k, **v} for k, v in CREDIT_BUNDLES.items()]
+
+@api_router.post("/subscription/add-credits")
+async def add_credits(request: CreditTopUpRequest, user = Depends(get_current_user)):
+    """Purchase a credit top-up bundle via IAP"""
+    bundle = CREDIT_BUNDLES.get(request.bundle_id)
+    if not bundle:
+        raise HTTPException(status_code=400, detail="Invalid bundle")
+
+    # Prevent duplicate token usage
+    existing = await db.transactions.find_one({"purchase_token": request.purchase_token, "status": "success"})
+    if existing:
+        raise HTTPException(status_code=400, detail="This purchase has already been redeemed")
+
+    # Server-side receipt verification (reuse same IAP flow)
+    if request.platform == "android":
+        verification = await _verify_google_play_purchase(request.purchase_token, request.bundle_id)
+    elif request.platform == "ios":
+        verification = await _verify_apple_receipt(request.purchase_token)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
+    if not verification.get("valid"):
+        raise HTTPException(status_code=403, detail=f"Purchase verification failed: {verification.get('reason', 'unknown')}")
+
+    credits_to_add = bundle["credits"]
+
+    # Add credits to user (never expires, accumulates)
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$inc": {"extra_credits": credits_to_add}}
+    )
+
+    # Store transaction
+    await db.transactions.insert_one({
+        "_id": str(uuid.uuid4()),
+        "user_id": user["_id"],
+        "purchase_token": request.purchase_token,
+        "bundle_id": request.bundle_id,
+        "credits": credits_to_add,
+        "platform": request.platform,
+        "type": "credit_topup",
+        "verification": verification,
+        "status": "success",
+        "created_at": datetime.utcnow()
+    })
+
+    # Return updated balance
+    updated_user = await db.users.find_one({"_id": user["_id"]}, {"extra_credits": 1})
+    return {
+        "status": "success",
+        "credits_added": credits_to_add,
+        "total_extra_credits": updated_user.get("extra_credits", 0),
+        "message": f"{bundle['label']} added to your account"
     }
 
 # ============ ACCOUNT MANAGEMENT ============
@@ -5529,6 +5673,20 @@ async def evolution_webhook(request: Request):
                 )
                 
                 # ============================================================
+                # PING-PONG LOOP GUARD (in-memory, zero DB cost)
+                # If we sent an auto-reply to this number in the last 30s,
+                # we're in an AI↔AI loop — stop immediately.
+                # Real customers get normal replies; loops are cut after 1 reply.
+                # ============================================================
+                import time as _t_loop
+                _loop_key = f"{user['_id']}:{from_number}"
+                _now_loop = _t_loop.time()
+                _last_sent = _last_auto_reply_sent.get(_loop_key, 0)
+                if _now_loop - _last_sent < _PING_PONG_TTL:
+                    logging.info(f"Auto-reply BLOCKED: ping-pong loop detected for {from_number} (last reply {_now_loop - _last_sent:.1f}s ago)")
+                    return {"status": "ok", "message": "loop guard: recent auto-reply detected"}
+
+                # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
                 # Rules:
                 #   1. Global OFF + customer individual ON  → SEND (individual overrides)
@@ -5563,69 +5721,103 @@ async def evolution_webhook(request: Request):
                     return {"status": "ok", "message": "auto-reply disabled for this contact"}
 
                 # ============================================================
-                # AGENT-BASED PRODUCT MATCHING & HANDLING (REPLACES OLD MONOLITH)
+                # AGENT-BASED PIPELINE
                 # ============================================================
-                
-                # Placeholder for last_context, if needed by agents
-                last_context = {} # You might fetch this from customer.get("agent_context", {})
-                
+
                 # Check if this is a personal contact
                 is_personal = customer.get("is_personal", False) if customer else False
-                
-                # 2. Fetch recent message history (last 5) for context
+
+                # Fetch recent message history (last 20) for full conversation context
                 history = []
                 if customer_id:
                     recent_msgs = await db.messages.find({
                         "user_id": user["_id"],
                         "customer_id": customer_id
-                    }).sort("created_at", -1).limit(5).to_list(5)
-                    
-                    # Store as [{"direction": "incoming/outgoing", "content": "..."}]
-                    # Reverse because we fetched -1 but usually need chronological for LLM
-                    history = [{"direction": m["direction"], "content": m["content"]} for m in reversed(recent_msgs)]
+                    }).sort("created_at", -1).limit(20).to_list(20)
+                    history = [
+                        {"direction": m["direction"], "content": m["content"]}
+                        for m in reversed(recent_msgs)
+                    ]
 
-                currency = user.get('settings', {}).get('currency', 'USD')
+                # Build business knowledge string for agents
+                _bk_data = user.get("business_knowledge", {})
+                _bk_parts = []
+                if _bk_data:
+                    if _bk_data.get("business_description"):
+                        _bk_parts.append(f"About: {_bk_data['business_description']}")
+                    if _bk_data.get("products_services"):
+                        _bk_parts.append(f"Products/Services: {_bk_data['products_services']}")
+                    if _bk_data.get("pricing_info"):
+                        _bk_parts.append(f"Pricing/Payment notes: {_bk_data['pricing_info']}")
+                    if _bk_data.get("business_hours"):
+                        _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                    if _bk_data.get("delivery_info"):
+                        _bk_parts.append(f"Delivery: {_bk_data['delivery_info']}")
+                    if _bk_data.get("special_offers"):
+                        _bk_parts.append(f"Offers: {_bk_data['special_offers']}")
+                    if _bk_data.get("faqs"):
+                        _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                # Inject structured payment methods from user doc
+                _raw_pm = user.get("payment_methods", [])
+                if _raw_pm:
+                    _pm_lines = []
+                    for _pm in _raw_pm:
+                        if isinstance(_pm, dict):
+                            _line = _pm.get("name", "")
+                            if _pm.get("details"):
+                                _line += f": {_pm['details']}"
+                        else:
+                            _line = str(_pm)
+                        if _line.strip():
+                            _pm_lines.append(f"  - {_line}")
+                    if _pm_lines:
+                        _bk_parts.append("Payment methods accepted:\n" + "\n".join(_pm_lines))
+                _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
+
+                currency = _user_settings.get("currency", "USD")
                 agent_context = {
                     "currency": currency,
-                    "previous_context": last_context,
                     "customer_id": customer_id,
+                    "customer_name": customer_name,
                     "is_personal": is_personal,
-                    "history": history
+                    "history": history,
+                    "business_knowledge": _business_knowledge,
+                    "business_name": user.get("business_name", ""),
+                    "ai_model": _user_settings.get("ai_model", "standard"),
                 }
-                
+
                 agent_result = await router.route_and_process(
                     user_id=user["_id"],
                     message=body,
                     context=agent_context
                 )
-                
+
                 if agent_result and agent_result.get("handled"):
+                    # If escalated — no message sent, human will handle
+                    if agent_result.get("escalated"):
+                        logging.info(
+                            f"[Webhook] Escalated for {from_number}: "
+                            f"{agent_result.get('escalation_reason', '')}"
+                        )
+                        return {"status": "ok", "handled_by": "escalation"}
+
                     ws = get_whatsapp_service(db)
-                    
-                    # 1. Send messages returned by agent
+
+                    # Send all messages returned by agent
                     for msg in agent_result.get("messages", []):
+                        if not msg.get("text"):
+                            continue
                         await ws.send_message(
                             user_id=user["_id"],
                             to_number=from_number,
-                            message=msg.get("text", ""),
+                            message=msg["text"],
                             customer_name=customer_name,
                             media_url=msg.get("media_url"),
                             send_context="auto_reply"
                         )
-                    
-                    # 2. Update Context
-                    updates = agent_result.get("context_update", {})
-                    if updates:
-                        db_updates = {}
-                        if "last_discussed_product_id" in updates:
-                            db_updates["last_discussed_product_id"] = updates["last_discussed_product_id"]
-                        
-                        if db_updates:
-                            await db.customers.update_one(
-                                {"_id": customer_id},
-                                {"$set": db_updates}
-                            )
-                        
+
+                    import time as _t_stamp
+                    _last_auto_reply_sent[f"{user['_id']}:{from_number}"] = _t_stamp.time()
                     return {"status": "ok", "handled_by": "agent"}
 
                 # Handle order button taps: "order_<product_id>"
@@ -6017,6 +6209,8 @@ async def evolution_webhook(request: Request):
                                     except Exception as img_err:
                                         logging.error(f"Failed to send product button/image {pid}: {img_err}")
                             
+                            import time as _t_stamp2
+                            _last_auto_reply_sent[f"{user['_id']}:{from_number}"] = _t_stamp2.time()
                             logging.info(f"Auto-replied to {c_name} ({from_number}), images_sent={len(images_sent)}")
                         
                     except Exception as e:
@@ -6104,7 +6298,7 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
 @api_router.get("/stats")
 async def get_stats(user = Depends(get_current_user)):
     """Get dashboard stats"""
-    customers_count = await db.customers.count_documents({"user_id": user["_id"]})
+    customers_count = await db.customers.count_documents({"user_id": user["_id"], "is_customer": True})
     pending_followups = await db.followups.count_documents({"user_id": user["_id"], "status": "pending"})
     
     # Sales this month
@@ -6346,7 +6540,12 @@ async def add_customer_message(customer_id: str, message: MessageCreate, user = 
 async def get_business_knowledge(user = Depends(get_current_user)):
     """Get business knowledge for AI context"""
     knowledge = user.get('business_knowledge', {})
-    
+    # Normalize payment_methods — legacy may be plain strings
+    raw_pm = user.get('payment_methods', [])
+    payment_methods = [
+        m if isinstance(m, dict) else {"name": m, "details": ""}
+        for m in raw_pm
+    ]
     return {
         "products_services": knowledge.get('products_services', ''),
         "pricing_info": knowledge.get('pricing_info', ''),
@@ -6355,41 +6554,40 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         "faqs": knowledge.get('faqs', ''),
         "special_offers": knowledge.get('special_offers', ''),
         "business_description": knowledge.get('business_description', ''),
+        "business_type": knowledge.get('business_type', 'general'),
+        "creator_niche": knowledge.get('creator_niche', ''),
+        "creator_platforms": knowledge.get('creator_platforms', ''),
+        "creator_audience_size": knowledge.get('creator_audience_size', ''),
+        "creator_collab_types": knowledge.get('creator_collab_types', ''),
+        "creator_rate_card": knowledge.get('creator_rate_card', ''),
+        "creator_whats_included": knowledge.get('creator_whats_included', ''),
+        "creator_turnaround": knowledge.get('creator_turnaround', ''),
+        "creator_booking_process": knowledge.get('creator_booking_process', ''),
+        "creator_min_budget": knowledge.get('creator_min_budget', ''),
+        "creator_blacklisted_niches": knowledge.get('creator_blacklisted_niches', ''),
+        "creator_fan_dm_response": knowledge.get('creator_fan_dm_response', ''),
+        "creator_media_kit_link": knowledge.get('creator_media_kit_link', ''),
+        "payment_methods": payment_methods,
     }
 
 @api_router.put("/business-knowledge")
 async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends(get_current_user)):
     """Update business knowledge for AI to use in conversations"""
-    
     update_data = {}
-    
-    if knowledge.products_services is not None:
-        update_data['business_knowledge.products_services'] = knowledge.products_services
-    
-    if knowledge.pricing_info is not None:
-        update_data['business_knowledge.pricing_info'] = knowledge.pricing_info
-    
-    if knowledge.business_hours is not None:
-        update_data['business_knowledge.business_hours'] = knowledge.business_hours
-    
-    if knowledge.delivery_info is not None:
-        update_data['business_knowledge.delivery_info'] = knowledge.delivery_info
-    
-    if knowledge.faqs is not None:
-        update_data['business_knowledge.faqs'] = knowledge.faqs
-    
-    if knowledge.special_offers is not None:
-        update_data['business_knowledge.special_offers'] = knowledge.special_offers
-    
-    if knowledge.business_description is not None:
-        update_data['business_knowledge.business_description'] = knowledge.business_description
-    
+    fields = [
+        'products_services', 'pricing_info', 'business_hours', 'delivery_info',
+        'faqs', 'special_offers', 'business_description', 'business_type',
+        'creator_niche', 'creator_platforms', 'creator_audience_size',
+        'creator_collab_types', 'creator_rate_card', 'creator_whats_included',
+        'creator_turnaround', 'creator_booking_process', 'creator_min_budget',
+        'creator_blacklisted_niches', 'creator_fan_dm_response', 'creator_media_kit_link',
+    ]
+    for field in fields:
+        val = getattr(knowledge, field, None)
+        if val is not None:
+            update_data[f'business_knowledge.{field}'] = val
     if update_data:
-        await db.users.update_one(
-            {"_id": user["_id"]},
-            {"$set": update_data}
-        )
-    
+        await db.users.update_one({"_id": user["_id"]}, {"$set": update_data})
     return {"status": "success", "message": "Business knowledge updated"}
 
 @api_router.post("/ai/draft-message")
@@ -6398,139 +6596,242 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
     logging.info(f"DEBUG: draft_ai_message called for customer_id={request.customer_id}")
     try:
         business_id = user.get("business_id", user["_id"])
-        # Get customer
         customer = await db.customers.find_one({"_id": request.customer_id, "user_id": business_id})
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
-        
-        # Get message history
-        messages = await db.messages.find({
+
+        # Get last 20 messages for rich context
+        raw_messages = await db.messages.find({
             "customer_id": request.customer_id,
             "user_id": business_id
-        }).sort("created_at", 1).limit(10).to_list(10)
-        
-        # Get business name
-        business_name = user.get('business_name', 'Your Business')
-        
-        # Get user's preferred tone or use request tone
+        }).sort("created_at", 1).limit(20).to_list(20)
+
         user_settings = user.get('settings', {})
-        tone = user_settings.get('message_tone', request.tone)
-        
-        # Build business knowledge context
-        business_knowledge_data = user.get('business_knowledge', {})
-        business_knowledge = None
-        
-        if business_knowledge_data:
-            # Format business knowledge for AI
-            knowledge_parts = []
-            
-            if business_knowledge_data.get('business_description'):
-                knowledge_parts.append(f"About us: {business_knowledge_data['business_description']}")
-            
-            if business_knowledge_data.get('products_services'):
-                knowledge_parts.append(f"Products/Services: {business_knowledge_data['products_services']}")
-            
-            if business_knowledge_data.get('pricing_info'):
-                knowledge_parts.append(f"Pricing: {business_knowledge_data['pricing_info']}")
-            
-            if business_knowledge_data.get('business_hours'):
-                knowledge_parts.append(f"Hours: {business_knowledge_data['business_hours']}")
-            
-            if business_knowledge_data.get('delivery_info'):
-                knowledge_parts.append(f"Delivery: {business_knowledge_data['delivery_info']}")
-            
-            if business_knowledge_data.get('special_offers'):
-                knowledge_parts.append(f"Current Offers: {business_knowledge_data['special_offers']}")
-            
-            if business_knowledge_data.get('faqs'):
-                knowledge_parts.append(f"FAQs: {business_knowledge_data['faqs']}")
-            
-            if knowledge_parts:
-                business_knowledge = "\n".join(knowledge_parts)
-        
+        business_name = user.get('business_name', 'Your Business')
+        currency = user_settings.get('currency', 'USD')
+        model_pref = user_settings.get('ai_model', 'standard')
+        customer_name = customer.get('name', 'Customer')
+        custom_direction = request.custom_instructions or ""
+        regenerate_count = request.regenerate_count or 0
+
+        # Build business knowledge string
+        bk_data = user.get('business_knowledge', {})
+        business_type = bk_data.get('business_type', 'general')
+        bk_parts = []
+        if bk_data.get('business_description'):
+            bk_parts.append(f"About: {bk_data['business_description']}")
+
+        if business_type == 'creator':
+            # Creator-specific fields injected with clear labels for the AI
+            if bk_data.get('creator_niche'):
+                bk_parts.append(f"Content niche: {bk_data['creator_niche']}")
+            if bk_data.get('creator_platforms'):
+                bk_parts.append(f"Platforms: {bk_data['creator_platforms']}")
+            if bk_data.get('creator_audience_size'):
+                bk_parts.append(f"Audience size: {bk_data['creator_audience_size']}")
+            if bk_data.get('creator_collab_types'):
+                bk_parts.append(f"Collaboration types offered: {bk_data['creator_collab_types']}")
+            if bk_data.get('creator_rate_card'):
+                bk_parts.append(f"Rate card: {bk_data['creator_rate_card']}")
+            if bk_data.get('creator_whats_included'):
+                bk_parts.append(f"What's included: {bk_data['creator_whats_included']}")
+            if bk_data.get('creator_turnaround'):
+                bk_parts.append(f"Turnaround time: {bk_data['creator_turnaround']}")
+            if bk_data.get('creator_booking_process'):
+                bk_parts.append(f"Booking process: {bk_data['creator_booking_process']}")
+            if bk_data.get('creator_min_budget'):
+                bk_parts.append(f"Minimum budget: {bk_data['creator_min_budget']}")
+            if bk_data.get('creator_blacklisted_niches'):
+                bk_parts.append(f"Brands I don't work with: {bk_data['creator_blacklisted_niches']}")
+            if bk_data.get('creator_media_kit_link'):
+                bk_parts.append(f"Media kit: {bk_data['creator_media_kit_link']}")
+            if bk_data.get('creator_fan_dm_response'):
+                bk_parts.append(f"Fan DM response template: {bk_data['creator_fan_dm_response']}")
+        else:
+            if bk_data.get('products_services'):
+                bk_parts.append(f"Products/Services: {bk_data['products_services']}")
+            if bk_data.get('delivery_info'):
+                bk_parts.append(f"Delivery: {bk_data['delivery_info']}")
+
+        if bk_data.get('pricing_info'):
+            bk_parts.append(f"Payment notes: {bk_data['pricing_info']}")
+        if bk_data.get('business_hours'):
+            bk_parts.append(f"Hours: {bk_data['business_hours']}")
+        if bk_data.get('special_offers'):
+            bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        if bk_data.get('faqs'):
+            bk_parts.append(f"FAQs: {bk_data['faqs']}")
+        # Inject structured payment methods
+        raw_pm = user.get('payment_methods', [])
+        if raw_pm:
+            pm_lines = []
+            for pm in raw_pm:
+                if isinstance(pm, dict):
+                    line = pm.get('name', '')
+                    if pm.get('details'):
+                        line += f": {pm['details']}"
+                else:
+                    line = str(pm)
+                if line.strip():
+                    pm_lines.append(f"  - {line}")
+            if pm_lines:
+                bk_parts.append("Payment methods accepted:\n" + "\n".join(pm_lines))
+
         # Inject product catalog
         user_products = await db.products.find({"user_id": business_id}).to_list(50)
         if user_products:
-            currency = user_settings.get("currency", "USD")
-            catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
+            catalog_lines = ["\nProducts available:"]
             for p in user_products:
-                stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
-                desc = f' - {p["description"]}' if p.get("description") else ""
-                price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "Price not set"
-                
-                # Get product image
-                product_id = str(p['_id'])
-                image_url = p.get("image_url") or (p.get("images", [])[0] if p.get("images") else None)
-                image_marker = " [HAS IMAGE]" if image_url else ""
-                
-                catalog_lines.append(f"  • {p['name']} (ID: {product_id}): {price_str} [{stock}] ({p.get('category', 'Other')}){desc}{image_marker}")
-            
-            catalog_lines.append("\nWhen customers ask about products, use this catalog for accurate answers. Do NOT make up prices.")
-            catalog_lines.append("When customers ask to see products, suggest them by name. The user will manually select and send product images from their catalog.")
-            business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
-        
-        # Get user country for language awareness
-        user_country_code = user_settings.get("country_code", "")
-        
-        # Prepare history for agent context
-        history = [{"direction": m["direction"], "content": m["content"]} for m in messages]
-        
-        # Determine current message (trigger) for routing
-        # If last message is incoming, we are replying to it. 
-        # Otherwise, we are just drafting a general follow-up.
-        trigger_message = ""
-        if history:
-            last_msg = history[-1]
-            if last_msg["direction"] == "incoming":
-                trigger_message = last_msg["content"]
-            else:
-                trigger_message = "draft follow-up" # Generic intent
+                if not p.get("in_stock", True):
+                    continue
+                price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "price on request"
+                desc = f" — {p['description'][:80]}" if p.get("description") else ""
+                catalog_lines.append(f"  • {p['name']}: {price_str}{desc}")
+            bk_parts.append("\n".join(catalog_lines))
 
-        # Check if is personal
-        is_personal = customer.get("is_personal", False)
-        
-        # Build agent context
-        currency = user_settings.get('currency', 'USD')
-        agent_context = {
-            "currency": currency,
-            "customer_id": request.customer_id,
-            "customer_name": customer['name'],
-            "is_personal": is_personal,
-            "history": history,
-            "business_name": business_name,
-            "tone": tone,
-            "business_knowledge": business_knowledge,
-            "custom_instructions": request.custom_instructions,
-            "ai_model": user_settings.get('ai_model', 'standard')
-        }
-        
-        # Process via Router
-        agent_result = await router.route_and_process(
-            user_id=user["_id"],
-            message=trigger_message,
-            context=agent_context
+        business_knowledge = "\n".join(bk_parts) if bk_parts else ""
+
+        # Build conversation log
+        history = [{"direction": m["direction"], "content": m["content"]} for m in raw_messages]
+        conv_lines = []
+        for m in history:
+            role = "Customer" if m["direction"] == "incoming" else "You"
+            conv_lines.append(f"{role}: {m['content']}")
+        conversation_log = "\n".join(conv_lines) if conv_lines else ""
+
+        # Determine scenario
+        last_message = history[-1] if history else None
+        days_since = customer.get("days_since_contact")
+        last_contacted = customer.get("last_contacted")
+        if not days_since and last_contacted:
+            try:
+                from datetime import timezone as _tz
+                lc = last_contacted if isinstance(last_contacted, datetime) else datetime.fromisoformat(str(last_contacted).replace("Z", "+00:00"))
+                days_since = (datetime.utcnow() - lc.replace(tzinfo=None)).days
+            except Exception:
+                days_since = None
+
+        is_first_contact = not last_message and not last_contacted
+        is_replying_to_incoming = last_message and last_message["direction"] == "incoming"
+
+        # Anti-repetition: block same opener as last outgoing message
+        last_outgoing = next((m["content"] for m in reversed(history) if m["direction"] == "outgoing"), None)
+        repetition_block = ""
+        if last_outgoing:
+            first_words = " ".join(last_outgoing.split()[:4])
+            repetition_block = f'\nCRITICAL: Your last message to them started with "{first_words}" — do NOT open with those words or any variation. Completely different opener.'
+
+        # Build scenario-specific writing goal
+        has_bk = bool(business_knowledge.strip()) if business_knowledge else False
+
+        if is_first_contact:
+            bk_instruction = (
+                "USE the business info below — name at least one specific product or service by its actual name and price. "
+                "Don't say 'we have great products' — say what they actually are."
+            ) if has_bk else "Introduce yourself and your business briefly."
+
+            scenario_block = f"""SCENARIO: First-ever message to {customer_name}. They don't know you yet.
+
+GOAL: Write an opener that feels like it came from a real person — not a sales pitch, not a template.
+- {bk_instruction}
+- Introduce in ONE casual sentence — like telling a friend what you do
+- End with a light question or open door — make it easy for them to reply
+- DO NOT start with: "Hi, I'm reaching out", "I wanted to introduce", "Hope this finds you well", "I'm excited to share" — dead giveaways of a mass message"""
+
+        elif is_replying_to_incoming:
+            last_in = last_message["content"]
+            bk_instruction = (
+                "The business info below has real product names and prices — USE them directly in your answer. "
+                "Never say 'let me check' or 'I'll get back to you' when the answer is right there."
+            ) if has_bk else ""
+
+            scenario_block = f"""SCENARIO: {customer_name} just messaged you: "{last_in}"
+
+GOAL: Reply directly and naturally to what they said.
+- Answer their actual question — don't dance around it
+- {bk_instruction}
+- Skip the greeting if the conversation is already going
+- Match their energy: casual stays casual, direct stays direct"""
+
+        else:
+            days_label = f"{days_since} days" if days_since else "a while"
+            last_preview = last_message["content"][:120] if last_message else "(no prior message on record)"
+            bk_instruction = (
+                "Use the business info below as your hook — reference a specific product, price, offer, or update by name. "
+                "That's a real reason to reply. Vague 'just checking in' gives them nothing to respond to."
+            ) if has_bk else "Give them a real reason to reply — a question, an update, something useful."
+
+            scenario_block = f"""SCENARIO: You haven't spoken to {customer_name} in {days_label}. Last thing said: "{last_preview}"
+
+GOAL: Re-engage them with one short, genuine message.
+- {bk_instruction}
+- Reference the last topic only if it's still naturally relevant
+- Sound like you're texting someone you actually know, not sending a follow-up email
+- BANNED openers: "Just checking in", "I wanted to follow up", "Hope you're doing well", "It's been a while" — customers tune these out immediately"""
+
+        # Custom direction — clean injection for regenerate
+        direction_block = ""
+        if custom_direction.strip():
+            direction_block = f"\n\nDIRECTION FOR THIS VERSION: {custom_direction.strip()}\nApply this while keeping the message natural and WhatsApp-appropriate."
+
+        # Variety directive — rotates angle each regenerate so every draft is meaningfully different
+        variety_angles = [
+            "Try a direct question opener — ask them something specific about a product or their needs.",
+            "Lead with a specific product name and price from the business info as the hook.",
+            "Open with a reference to the last conversation topic, then connect it to something in your catalog.",
+            "Try a very short punchy opener — under 8 words, name a specific product or offer.",
+            "Open with a benefit — what does your best product do for them? Name it specifically.",
+            "Be warm and personal — reference something from the conversation history, then offer to help.",
+            "Be ultra-direct — one sentence naming a specific product/price, straight to the point.",
+        ]
+        angle = variety_angles[regenerate_count % len(variety_angles)]
+        variety_block = f"\n\nVARIETY NOTE (draft attempt #{regenerate_count + 1}): {angle} Make this version feel distinctly different from any previous draft."
+
+        # Business context — label it clearly as the source of truth
+        bk_block = (
+            f"\n\nYOUR BUSINESS INFO — use specific names and prices from this, do not speak generically:\n{business_knowledge}"
+            if has_bk else f"\n\nBusiness name: {business_name}"
         )
-        
-        # Extract response from agent result
-        msg_text = ""
-        if agent_result and agent_result.get("handled"):
-            # Combine all messages from agent into one draft
-            msg_text = "\n\n".join([m.get("text", "") for m in agent_result.get("messages", [])])
-            
-        if not msg_text:
-            msg_text = "Hi! Just checking in—can I help with anything?"
-            
-        result = {"message": msg_text, "reason": "Drafted by agent", "confidence": 0.9}
-        
-        # Support both legacy and new AI service response keys
-        msg_text = result.get('message') or result.get('drafted_message') or "Hi! Just checking in—can I help with anything?"
-        reason_text = result.get('reason') or result.get('ai_reason') or "Due for follow-up"
-        confidence_val = result.get('confidence', 0.5)
+
+        # Conversation history
+        history_block = f"\n\nConversation history (most recent at bottom):\n{conversation_log}" if conversation_log else "\n\n(No prior conversation with this customer)"
+
+        # Full prompt
+        prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
+
+You are a real person — not a bot, not a marketing tool. You write the way real business owners text their customers: direct, warm, brief.
+
+{scenario_block}{bk_block}{history_block}{repetition_block}{direction_block}{variety_block}
+
+WRITING RULES (non-negotiable):
+1. Output ONLY the message text. No labels, no "Message:", no quotes around it, no explanation.
+2. 1-3 sentences. Short is better. WhatsApp messages are not emails.
+3. USE REAL SPECIFICS: If business info is provided above, name actual products, actual prices, actual offers. Never say "we have great options" when you know exactly what they are.
+4. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
+5. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix — never translate the same thing twice.
+6. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
+7. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
+
+Message:"""
+
+        # Call LLM directly
+        from ai_service import get_drafter
+        ai_service = get_drafter()
+        drafted = await ai_service._call_llm(prompt, model_pref=model_pref)
+        drafted = drafted.strip().strip('"').strip("'")
+
+        # Build reason string
+        if is_first_contact:
+            reason = "First message — introduce your business"
+        elif is_replying_to_incoming:
+            reason = f"Replying to: {last_message['content'][:60]}..."
+        else:
+            reason = f"No contact in {days_label}" if days_since else "Follow-up opportunity"
 
         return DraftMessageResponse(
-            message=msg_text,
-            confidence=confidence_val,
-            reason=reason_text
+            message=drafted or f"Hi {customer_name}, just checking in — anything I can help you with?",
+            confidence=0.9,
+            reason=reason
         )
     except HTTPException:
         raise
@@ -7067,7 +7368,9 @@ async def get_user_settings(user = Depends(get_current_user)):
         "daily_pulse_time": settings.get('daily_pulse_time', '20:00'),
         "ai_model": settings.get('ai_model', 'standard'),
         "currency": currency,
-        "country_code": country_code
+        "country_code": country_code,
+        "plan_limits": get_plan_limits(user),
+        "subscription_plan": user.get("subscription_plan", "free"),
     }
 
 @api_router.put("/settings")
@@ -7236,11 +7539,17 @@ async def upload_products(
     
     # Check product limit
     business_id = user.get("business_id", user["_id"])
+    limits = get_plan_limits(user)
     count = await db.products.count_documents({"user_id": business_id})
-    if count >= MAX_PRODUCTS:
-        raise HTTPException(status_code=400, detail=f"Product limit reached. Maximum {MAX_PRODUCTS} products allowed.")
-    if count + len(files) > MAX_PRODUCTS:
-        raise HTTPException(status_code=400, detail=f"Can only add {MAX_PRODUCTS - count} more product(s). You have {count}/{MAX_PRODUCTS}.")
+    if limits["products"] is not None and count >= limits["products"]:
+        raise HTTPException(status_code=400, detail=f"Product limit reached ({limits['products']} on your plan). Upgrade for more.")
+    if limits["products"] is not None and count + len(files) > limits["products"]:
+        raise HTTPException(status_code=400, detail=f"Can only add {limits['products'] - count} more product(s). You have {count}/{limits['products']}. Upgrade for more.")
+    # Check total image limit (each bulk upload file = 1 image per product)
+    if limits["images"] is not None:
+        current_images = await count_total_images(db, business_id)
+        if current_images + len(files) > limits["images"]:
+            raise HTTPException(status_code=400, detail=f"Image limit reached ({limits['images']} total on your plan). Upgrade for more.")
     
     # Save images
     upload_handler = ImageUploadHandler()
@@ -7781,6 +8090,10 @@ async def broadcast_catalog(
 
 # ============ MAIN APP SETUP ============
 
+@api_router.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
 app.include_router(api_router)
 
 # Serve static files (product images)
@@ -7845,6 +8158,9 @@ async def startup_tasks():
         # Transactions (IAP)
         await db.transactions.create_index("user_id")
         await db.transactions.create_index("purchase_token", unique=True, sparse=True)
+
+        # WhatsApp auth sessions (TTL: auto-delete after 10 minutes)
+        await db.wa_auth_sessions.create_index("expires", expireAfterSeconds=600)
 
         # Pending catalogs
         await db.pending_catalogs.create_index([("customer_id", 1), ("user_id", 1)])

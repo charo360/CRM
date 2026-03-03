@@ -1,0 +1,14 @@
+.env
+.env.local
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.log
+trace.log
+uploads/
+.git
+.gitignore
+*.bat
+*.ps1
