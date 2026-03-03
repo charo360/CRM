@@ -1,0 +1,12 @@
+backend/.env
+backend/.env.local
+backend/__pycache__/
+backend/*.pyc
+backend/*.log
+backend/trace.log
+backend/uploads/
+frontend/
+tests/
+.git
+.gitignore
+*.md
