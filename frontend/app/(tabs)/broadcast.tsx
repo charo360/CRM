@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { apiClient, productsAPI, settingsAPI } from '../../context/api';
+import { useRouter } from 'expo-router';
 
 interface Customer {
   id: string;
@@ -117,6 +118,7 @@ interface Product {
 }
 
 export default function BroadcastScreen() {
+  const router = useRouter();
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [templates, setTemplates] = useState<BroadcastTemplate[]>([]);
@@ -694,7 +696,18 @@ export default function BroadcastScreen() {
                 startPolling(response.data.id);
               }
             } catch (error: any) {
-              Alert.alert('Error', error.response?.data?.detail || 'Failed to send broadcast');
+              if (error?.response?.status === 429) {
+                Alert.alert(
+                  "You've reached your message limit",
+                  'Upgrade your plan to send broadcasts and unlock more features.',
+                  [
+                    { text: 'Later', style: 'cancel' },
+                    { text: 'Upgrade Now', onPress: () => router.push('/(tabs)/account') },
+                  ]
+                );
+              } else {
+                Alert.alert('Error', error.response?.data?.detail || 'Failed to send broadcast');
+              }
             } finally {
               setSending(false);
             }

@@ -70,14 +70,19 @@ export default function ProductCatalogModal({
     const [addingPhotos, setAddingPhotos] = useState(false);
     const [aiFailedBanner, setAiFailedBanner] = useState(false);
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
+    const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
+    const [subscriptionPlan, setSubscriptionPlan] = useState('free');
 
-    const MAX_PRODUCTS = 20;
+    const maxProducts = planLimits.products;
+    const maxImages = planLimits.images;
 
     useEffect(() => {
         const loadCurrency = async () => {
             try {
                 const settings = await settingsAPI.getSettings();
                 if (settings.currency) setCurrency(settings.currency);
+                if (settings.plan_limits) setPlanLimits(settings.plan_limits);
+                if (settings.subscription_plan) setSubscriptionPlan(settings.subscription_plan);
             } catch (e) { }
         };
         loadCurrency();
@@ -130,8 +135,8 @@ export default function ProductCatalogModal({
     const outOfStockCount = useMemo(() => products.filter(p => p.in_stock === false).length, [products]);
 
     const handleUploadProducts = async (source: 'library' | 'camera' = 'library') => {
-        if (products.length >= MAX_PRODUCTS) {
-            Alert.alert('Limit Reached', `You can have a maximum of ${MAX_PRODUCTS} products. Delete some to add new ones.`);
+        if (maxProducts !== null && products.length >= maxProducts) {
+            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} products. Upgrade to add more.`);
             return;
         }
         try {
@@ -267,8 +272,8 @@ export default function ProductCatalogModal({
     };
 
     const startAddProduct = () => {
-        if (products.length >= MAX_PRODUCTS) {
-            Alert.alert('Limit Reached', `You can have a maximum of ${MAX_PRODUCTS} products. Delete some to add new ones.`);
+        if (maxProducts !== null && products.length >= maxProducts) {
+            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} products. Upgrade to add more.`);
             return;
         }
         setEditName('');
@@ -879,7 +884,9 @@ export default function ProductCatalogModal({
                 {/* Stats Bar */}
                 <View style={styles.statsBar}>
                     <View style={styles.statItem}>
-                        <Text style={[styles.statNumber, products.length >= MAX_PRODUCTS && { color: '#FF6B6B' }]}>{products.length}/{MAX_PRODUCTS}</Text>
+                        <Text style={[styles.statNumber, maxProducts !== null && products.length >= maxProducts && { color: '#FF6B6B' }]}>
+                            {products.length}{maxProducts !== null ? `/${maxProducts}` : ''}
+                        </Text>
                         <Text style={styles.statLabel}>Products</Text>
                     </View>
                     <View style={styles.statDivider} />

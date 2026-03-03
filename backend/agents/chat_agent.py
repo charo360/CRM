@@ -1,75 +1,106 @@
 from .base_agent import BaseAgent
 from typing import List, Dict, Any
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# Topics that should silently escalate — ChatAgent never handles these
+MONEY_BUSINESS_PATTERNS = [
+    r'\bprice\b', r'\bcost\b', r'\bhow\s+much\b', r'\bpay\b', r'\bpaid\b',
+    r'\bpayment\b', r'\border\b', r'\bdeliver\b', r'\brefund\b', r'\bdiscount\b',
+    r'\boffer\b', r'\bdeal\b', r'\bpromot\b', r'\bfree\b', r'\bcharg\b',
+    r'\binvoice\b', r'\breceipt\b', r'\bstock\b', r'\bavailab\b',
+]
 
 class ChatAgent(BaseAgent):
     async def process(self, user_id: str, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Handles general conversation and casual chat.
-        This is typically the fallback agent.
+        Handles general conversation, personal chat, and off-topic messages.
+        Acts as a smart personal assistant — can help with drafts, general questions, life topics.
+
+        NEVER handles money, pricing, payments, or business commitments.
+        Silently escalates if those topics appear.
         """
-        # For now, we'll use a simple keyword check to see if it's "just a chat"
-        # Or we can just have it always handle the message if others failed.
-        # Given the Chain of Responsibility, being the last agent means it handles everything left.
-        
-        # We'll use the ai_service to generate a friendly response.
-        # We need to import it here to avoid circular dependencies if any.
+        is_personal = context.get("is_personal", False)
+        intent = context.get("intent", "GENERAL_CHAT")
+        language = context.get("language", "English")
+
+        # Silent escalate if message contains money/business topics and this is a business chat
+        if not is_personal and self._contains_money_topic(message):
+            return {
+                "handled": True,
+                "escalate": True,
+                "escalate_reason": "ChatAgent detected business/money topic — escalating to human",
+                "messages": [],
+            }
+
         try:
             from ai_service import get_drafter
             ai_service = get_drafter()
-            
-            # Prepare context for AI
-            # In a real scenario, we'd fetch recent messages from DB.
-            # For now, we'll pass the current message and some basic context.
-            
-            customer_name = context.get("customer_name", "Customer")
-            business_name = context.get("business_name", "Our Business")
-            tone = context.get("tone", "friendly")
-            
-            # If the user just said "hello" or "hi", we can have a fast path, 
-            # but let's see if the AI can do it better.
-            
-            instructions = (
-                f"You are a friendly and helpful assistant. "
-                "The customer/person is just chatting with you. Be natural, polite, and human-like. "
-                "MATCH THE USER'S LANGUAGE AND STYLE. If they use a mix of languages (e.g. Sheng, Spanglish), reply using a similar mix to sound natural and relatable. "
-                "Do NOT mention 'the store', 'products', or 'buying' UNLESS those topics are already present in the recent conversation history. "
-                "If the user is praising something just sent (like 'they look beautiful'), acknowledge it warmly based on what was just discussed. "
-                "Keep the conversation simple and respond directly to what they said."
-            )
-            
-            custom_req = context.get("custom_instructions")
-            if custom_req:
-                instructions += f"\n\nUSER'S SPECIFIC REQUEST: {custom_req}\nFollow this request strictly while maintaining your persona."
-            
-            # Get history from context or fall back to just the current message
+
+            customer_name = context.get("customer_name", "there")
+            business_name = context.get("business_name", "")
             history = context.get("history", [])
             if not history:
                 history = [{"direction": "incoming", "content": message}]
-            
+
+            # Build persona instructions
+            if is_personal:
+                instructions = (
+                    f"You're texting {customer_name} who is a friend or family of the business owner — NOT a customer. "
+                    "Write exactly how a real person texts a close friend: casual, warm, sometimes informal. "
+                    "MATCH THEIR LANGUAGE AND ENERGY — if they write in Sheng, Pidgin, Swahili, mixed, you match it exactly. "
+                    "No corporate tone, no formality, no 'I hope this message finds you well'. "
+                    "Help with whatever they ask — drafting something, answering a question, just chatting. "
+                    "Keep it real, keep it short. Sound like a person, not a product."
+                )
+            else:
+                instructions = (
+                    "The customer is making small talk or asking something off-topic. "
+                    "Reply like a real business owner would — friendly, natural, briefly. "
+                    "MATCH THEIR LANGUAGE EXACTLY: English stays English, Swahili stays Swahili, mixed stays mixed. "
+                    "Do NOT drag in products or pricing unless they bring it up first. "
+                    "If they ask for help drafting something, do it well and directly. "
+                    "If they ask a general question you can answer, answer it straight. "
+                    "Never promise anything financial or make business commitments. "
+                    "1-2 sentences max. No filler. No corporate phrases. Sound human."
+                )
+
+            custom_req = context.get("custom_instructions")
+            if custom_req:
+                instructions += f"\n\nExtra direction for this reply: {custom_req}"
+
             result = await ai_service.draft_followup_message(
                 customer_name=customer_name,
                 customer_data={},
                 messages=history,
-                business_name=business_name,
-                tone=tone,
-                business_knowledge=context.get("business_knowledge"),
+                business_name=business_name or "Personal",
+                tone="casual",
+                business_knowledge=context.get("business_knowledge") if is_personal else None,
                 custom_instructions=instructions,
                 user_id=user_id,
                 model_pref=context.get("ai_model", "standard")
             )
-            
+
             reply_text = result.get("drafted_message", "")
-            
+
             if reply_text:
                 return {
                     "messages": [{"text": reply_text}],
-                    "handled": True
+                    "handled": True,
+                    "escalate": False,
+                    "context_update": {"state": "ongoing", "last_intent": intent},
                 }
-                
+
         except Exception as e:
-            logger.error(f"ChatAgent error: {e}")
-            
+            logger.error(f"[ChatAgent] error: {e}")
+
         return {"handled": False}
+
+    def _contains_money_topic(self, message: str) -> bool:
+        msg_lower = message.lower()
+        for pattern in MONEY_BUSINESS_PATTERNS:
+            if re.search(pattern, msg_lower):
+                return True
+        return False

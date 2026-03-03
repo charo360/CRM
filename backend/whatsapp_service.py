@@ -20,11 +20,29 @@ EVOLUTION_API_KEY = os.environ.get('EVOLUTION_API_KEY', '')
 
 # Message limits per subscription plan (monthly)
 PLAN_MESSAGE_LIMITS = {
-    "free": 50,
-    "starter": 500,
-    "standard": 2000,
+    "free": 250,
+    "starter": 2500,
+    "standard": 5000,
     "pro": 10000,
 }
+
+# Credit cost per AI model (deducted from monthly quota per message sent)
+# DeepSeek=1x, GPT-4o mini=1.6x, Grok=1.7x, GPT-4o=15x, GPT-5=12x
+MODEL_MESSAGE_CREDITS = {
+    "standard":   1.6,   # GPT-4o mini (default)
+    "gpt4o-mini": 1.6,   # GPT-4o mini
+    "deepseek":   1.0,   # DeepSeek V3
+    "grok":       1.7,   # Grok 4.1
+    "premium":    15.0,  # GPT-4o
+    "gpt4o":      15.0,  # GPT-4o
+    "gpt5":       12.0,  # GPT-5
+    "claude":     12.0,  # Claude
+    "claude-3.5": 12.0,  # Claude 3.5
+}
+
+def get_model_credits(ai_model: str) -> float:
+    """Return credit cost for a given AI model slug."""
+    return MODEL_MESSAGE_CREDITS.get(ai_model or "standard", 1.6)
 
 # Rate limiting
 DAILY_MESSAGE_LIMIT = 500  # Max messages per user per day (WhatsApp safety)
@@ -274,25 +292,31 @@ class WhatsAppService:
     # ============ RATE LIMITING (MongoDB) ============
 
     async def check_message_limit(self, user_id: str) -> Dict:
-        """Check monthly plan limit and daily safety limit"""
+        """Check monthly plan limit (credit-weighted) and daily safety limit"""
         user = await self.db.users.find_one({"_id": user_id})
         if not user:
             return {"allowed": False, "reason": "User not found"}
 
         plan = user.get("subscription_plan", "free")
-        monthly_limit = PLAN_MESSAGE_LIMITS.get(plan, PLAN_MESSAGE_LIMITS["free"])
+        monthly_limit = PLAN_MESSAGE_LIMITS.get(plan, PLAN_MESSAGE_LIMITS["free"]) + user.get("extra_credits", 0)
 
         now = datetime.utcnow()
         month_start = datetime(now.year, now.month, 1)
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        monthly_count = await self.db.messages.count_documents({
-            "user_id": user_id,
-            "direction": "outgoing",
-            "created_at": {"$gte": month_start},
-            "synced_from_history": {"$ne": True},
-        })
+        # Sum credits spent this month (falls back to 1.6 per message if no credits field)
+        monthly_agg = await self.db.messages.aggregate([
+            {"$match": {
+                "user_id": user_id,
+                "direction": "outgoing",
+                "created_at": {"$gte": month_start},
+                "synced_from_history": {"$ne": True},
+            }},
+            {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$message_credits", 1.6]}}}}
+        ]).to_list(1)
+        monthly_credits = monthly_agg[0]["total"] if monthly_agg else 0.0
 
+        # Daily count (raw, for anti-ban safety limit)
         daily_count = await self.db.messages.count_documents({
             "user_id": user_id,
             "direction": "outgoing",
@@ -304,25 +328,25 @@ class WhatsAppService:
             return {
                 "allowed": False,
                 "reason": f"Daily safety limit reached ({DAILY_MESSAGE_LIMIT}). Try again tomorrow.",
-                "sent": monthly_count,
+                "sent": round(monthly_credits),
                 "limit": monthly_limit,
                 "daily_sent": daily_count,
                 "daily_limit": DAILY_MESSAGE_LIMIT,
             }
 
-        if monthly_count >= monthly_limit:
+        if monthly_credits >= monthly_limit:
             return {
                 "allowed": False,
-                "reason": f"Monthly limit reached ({monthly_limit}). Upgrade your plan for more messages.",
-                "sent": monthly_count,
+                "reason": f"Monthly credit limit reached ({monthly_limit}). Upgrade your plan for more messages.",
+                "sent": round(monthly_credits),
                 "limit": monthly_limit,
             }
 
         return {
             "allowed": True,
-            "sent": monthly_count,
+            "sent": round(monthly_credits),
             "limit": monthly_limit,
-            "remaining": monthly_limit - monthly_count,
+            "remaining": max(0, monthly_limit - monthly_credits),
             "daily_sent": daily_count,
             "daily_limit": DAILY_MESSAGE_LIMIT,
             "plan": plan,
@@ -433,6 +457,7 @@ class WhatsAppService:
         media_type: str = "image",
         media_filename: Optional[str] = None,
         send_context: str = "manual",
+        ai_model: Optional[str] = None,
     ) -> Dict:
         """
         Send a WhatsApp message via Evolution API.
@@ -448,9 +473,17 @@ class WhatsAppService:
             if not limit_check["allowed"]:
                 return {"status": "limit_reached", "message": limit_check["reason"]}
 
-            # Get user's WhatsApp config
-            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+            # Get user's WhatsApp config and AI model
+            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
             wa = user.get("whatsapp") if user else None
+            # Manual sends always cost 1 credit flat (no AI used)
+            # AI-assisted sends (auto_reply, broadcast, order_confirm) use the model multiplier
+            if send_context == "manual":
+                _ai_model = "manual"
+                _credits = 1.0
+            else:
+                _ai_model = ai_model or (user.get("settings", {}).get("ai_model", "standard") if user else "standard")
+                _credits = get_model_credits(_ai_model)
 
             if not wa or wa.get("status") != "connected":
                 return {"status": "error", "message": "WhatsApp not connected. Please link your number first."}
@@ -528,6 +561,8 @@ class WhatsAppService:
                 "content": message,
                 "message_type": (media_type or "image") if media_url else "text",
                 "from_number": from_number,
+                "ai_model": _ai_model,
+                "message_credits": _credits,
                 "to_number": to_number,
                 "status": "pending",
                 "created_at": datetime.utcnow(),

@@ -11,8 +11,9 @@ import {
   ActivityIndicator,
   RefreshControl,
   ScrollView,
-  Share,
 } from 'react-native';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -74,7 +75,7 @@ export default function SalesScreen() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [paymentMethods, setPaymentMethods] = useState<string[]>(['Cash', 'Mobile Money']);
+  const [paymentMethods, setPaymentMethods] = useState<{name:string;details:string}[]>([{name:'Cash',details:''},{name:'Mobile Money',details:''}]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -91,13 +92,15 @@ export default function SalesScreen() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [item, setItem] = useState('');
   const [amount, setAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('M-Pesa');
+  const [paymentMethod, setPaymentMethod] = useState('Cash');
   const [sendReceipt, setSendReceipt] = useState(true);
   const [receiptMessage, setReceiptMessage] = useState('');
   const [editingReceipt, setEditingReceipt] = useState(false);
   const [paymentSettingsVisible, setPaymentSettingsVisible] = useState(false);
-  const [newPaymentMethod, setNewPaymentMethod] = useState('');
   const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
+  const [newMethodName, setNewMethodName] = useState('');
+  const [newMethodDetails, setNewMethodDetails] = useState('');
+  const [customMethodName, setCustomMethodName] = useState('');
 
   // Customer selection state
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
@@ -150,8 +153,12 @@ export default function SalesScreen() {
       setOrders(ordersRes.data);
       setCustomers(customersRes.data);
       if (userRes.data.payment_methods && userRes.data.payment_methods.length > 0) {
-        setPaymentMethods(userRes.data.payment_methods);
-        setPaymentMethod(userRes.data.payment_methods[0]);
+        // Normalize: legacy data may be plain strings, new format is {name, details}
+        const normalized = userRes.data.payment_methods.map((m: any) =>
+          typeof m === 'string' ? { name: m, details: '' } : m
+        );
+        setPaymentMethods(normalized);
+        setPaymentMethod(normalized[0]?.name || 'Cash');
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -346,11 +353,30 @@ export default function SalesScreen() {
     setEditingReceipt(true);
   };
 
+  // Shared date filter helper — compares UTC calendar dates (backend stores UTC)
+  const passesDateFilter = (isoString: string): boolean => {
+    if (dateFilter === 'All Time') return true;
+    const d = new Date(isoString);
+    // Use UTC components to match what the backend stored
+    const itemDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const now = new Date();
+    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    if (dateFilter === 'Today') return itemDay.getTime() === todayUTC.getTime();
+    if (dateFilter === 'This Week') {
+      const weekAgo = new Date(todayUTC);
+      weekAgo.setUTCDate(weekAgo.getUTCDate() - 6);
+      return itemDay >= weekAgo;
+    }
+    if (dateFilter === 'This Month') {
+      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      return itemDay >= monthStart;
+    }
+    return true;
+  };
+
   // Filter sales based on search and date
   const filteredSales = useMemo(() => {
     let filtered = sales;
-
-    // Apply search filter
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(
@@ -359,53 +385,18 @@ export default function SalesScreen() {
           s.item.toLowerCase().includes(query)
       );
     }
-
-    // Apply date filter
-    if (dateFilter !== 'All Time') {
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-      filtered = filtered.filter((s) => {
-        const saleDate = new Date(s.created_at);
-
-        if (dateFilter === 'Today') {
-          return saleDate >= today;
-        } else if (dateFilter === 'This Week') {
-          const weekAgo = new Date(today);
-          weekAgo.setDate(weekAgo.getDate() - 7);
-          return saleDate >= weekAgo;
-        } else if (dateFilter === 'This Month') {
-          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-          return saleDate >= monthStart;
-        }
-        return true;
-      });
-    }
-
-    return filtered;
+    return filtered.filter((s) => passesDateFilter(s.created_at));
   }, [sales, searchQuery, dateFilter]);
 
   // Filter expenses based on date
   const filteredExpenses = useMemo(() => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    return expenses.filter((e) => {
-      const expenseDate = new Date(e.created_at);
-
-      if (dateFilter === 'Today') {
-        return expenseDate >= today;
-      } else if (dateFilter === 'This Week') {
-        const weekAgo = new Date(today);
-        weekAgo.setDate(weekAgo.getDate() - 7);
-        return expenseDate >= weekAgo;
-      } else if (dateFilter === 'This Month') {
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        return expenseDate >= monthStart;
-      }
-      return true;
-    });
+    return expenses.filter((e) => passesDateFilter(e.created_at));
   }, [expenses, dateFilter]);
+
+  // Filter orders based on date
+  const filteredOrders = useMemo(() => {
+    return orders.filter((o) => passesDateFilter(o.created_at));
+  }, [orders, dateFilter]);
 
   // Calculate analytics
   const analytics = useMemo(() => {
@@ -415,12 +406,12 @@ export default function SalesScreen() {
     const salesCount = filteredSales.length;
     const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
 
-    // Order analytics
-    const totalOrders = orders.length;
-    const pendingPayment = orders
+    // Order analytics — filtered by date
+    const totalOrders = filteredOrders.length;
+    const pendingPayment = filteredOrders
       .filter(o => o.payment_status === 'Pending' || o.payment_status === 'Partial')
       .reduce((sum, o) => sum + o.total_amount, 0);
-    const ordersToDeliver = orders.filter(
+    const ordersToDeliver = filteredOrders.filter(
       o => o.delivery_status === 'Processing' || o.delivery_status === 'Shipped'
     ).length;
 
@@ -446,7 +437,7 @@ export default function SalesScreen() {
       pendingPayment,
       ordersToDeliver
     };
-  }, [filteredSales, filteredExpenses, orders]);
+  }, [filteredSales, filteredExpenses, filteredOrders]);
 
   const handleExportSales = async () => {
     if (filteredSales.length === 0) {
@@ -454,21 +445,155 @@ export default function SalesScreen() {
       return;
     }
 
-    const csvHeader = 'Date,Customer,Phone,Item,Amount,Payment Method,Receipt Sent\n';
-    const csvRows = filteredSales.map((s) => {
-      const date = new Date(s.created_at).toLocaleDateString('en-KE');
-      return `${date},${s.customer_name},${s.customer_phone},${s.item},${s.amount},${s.payment_method},${s.receipt_sent ? 'Yes' : 'No'}`;
-    }).join('\n');
-
-    const csvContent = csvHeader + csvRows;
-
     try {
-      await Share.share({
-        message: csvContent,
-        title: `Sales Report - ${dateFilter}`,
-      });
+      const now = new Date();
+      const reportDate = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      const totalRevenue = filteredSales.reduce((sum, s) => sum + s.amount, 0);
+      const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+      const netProfit = totalRevenue - totalExpenses;
+
+      const salesRows = filteredSales.map((s, i) => {
+        const date = new Date(s.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        const rowBg = i % 2 === 0 ? '#ffffff' : '#f8f9ff';
+        const amountFormatted = Number(s.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const creditBadge = s.is_credit ? `<span style="background:#FF9500;color:#fff;padding:1px 6px;border-radius:4px;font-size:10px;margin-left:4px;">Credit</span>` : '';
+        return `
+          <tr style="background:${rowBg};">
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;">${date}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;">${s.customer_name}${creditBadge}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;color:#666;">${s.customer_phone || '-'}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;">${s.item}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:600;color:#1a472a;">${currency} ${amountFormatted}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;">${s.payment_method || '-'}</td>
+          </tr>`;
+      }).join('');
+
+      const expenseRows = filteredExpenses.length > 0 ? filteredExpenses.map((e, i) => {
+        const date = new Date(e.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        const rowBg = i % 2 === 0 ? '#ffffff' : '#fff8f8';
+        const amountFormatted = Number(e.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `
+          <tr style="background:${rowBg};">
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;">${date}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;">${e.category}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;color:#666;">${e.description || '-'}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:600;color:#8B0000;">${currency} ${amountFormatted}</td>
+          </tr>`;
+      }).join('') : `<tr><td colspan="4" style="padding:16px;text-align:center;color:#999;">No expenses for this period</td></tr>`;
+
+      const profitColor = netProfit >= 0 ? '#1a472a' : '#8B0000';
+      const profitFormatted = Number(Math.abs(netProfit)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const profitLabel = netProfit >= 0 ? 'Net Profit' : 'Net Loss';
+
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #222; background: #fff; padding: 32px; }
+            .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; padding-bottom: 20px; border-bottom: 3px solid #25D366; }
+            .brand { font-size: 26px; font-weight: 800; color: #25D366; letter-spacing: -0.5px; }
+            .report-meta { text-align: right; }
+            .report-meta h2 { font-size: 18px; font-weight: 700; color: #0A1628; }
+            .report-meta p { font-size: 12px; color: #666; margin-top: 4px; }
+            .summary { display: flex; gap: 16px; margin-bottom: 32px; }
+            .summary-card { flex: 1; background: #f8f9ff; border-radius: 10px; padding: 16px; border-left: 4px solid #ccc; }
+            .summary-card.green { border-left-color: #25D366; background: #f0fff4; }
+            .summary-card.red { border-left-color: #FF4444; background: #fff5f5; }
+            .summary-card.blue { border-left-color: #4A90D9; background: #f0f8ff; }
+            .summary-card.profit { border-left-color: ${profitColor}; }
+            .card-label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+            .card-value { font-size: 20px; font-weight: 800; color: #0A1628; }
+            .card-count { font-size: 12px; color: #666; margin-top: 4px; }
+            h3 { font-size: 15px; font-weight: 700; color: #0A1628; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 2px solid #f0f0f0; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 32px; font-size: 13px; }
+            thead th { background: #0A1628; color: #fff; padding: 10px; text-align: left; font-weight: 600; font-size: 12px; }
+            thead th:last-child { text-align: right; }
+            .footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; display: flex; justify-content: space-between; font-size: 11px; color: #aaa; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="brand">CRM</div>
+            <div class="report-meta">
+              <h2>Sales Report</h2>
+              <p>Period: ${dateFilter}</p>
+              <p>Generated: ${reportDate}</p>
+            </div>
+          </div>
+
+          <div class="summary">
+            <div class="summary-card green">
+              <div class="card-label">Total Revenue</div>
+              <div class="card-value">${currency} ${Number(totalRevenue).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+              <div class="card-count">${filteredSales.length} sale${filteredSales.length !== 1 ? 's' : ''}</div>
+            </div>
+            <div class="summary-card red">
+              <div class="card-label">Total Expenses</div>
+              <div class="card-value">${currency} ${Number(totalExpenses).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+              <div class="card-count">${filteredExpenses.length} expense${filteredExpenses.length !== 1 ? 's' : ''}</div>
+            </div>
+            <div class="summary-card profit">
+              <div class="card-label">${profitLabel}</div>
+              <div class="card-value" style="color:${profitColor};">${currency} ${profitFormatted}</div>
+            </div>
+          </div>
+
+          <h3>Sales Transactions</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th><th>Customer</th><th>Phone</th><th>Item</th><th style="text-align:right;">Amount</th><th>Payment</th>
+              </tr>
+            </thead>
+            <tbody>${salesRows}</tbody>
+            <tfoot>
+              <tr style="background:#f0fff4;">
+                <td colspan="4" style="padding:10px;font-weight:700;">Total</td>
+                <td style="padding:10px;text-align:right;font-weight:800;color:#1a472a;">${currency} ${Number(totalRevenue).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <h3>Expenses</h3>
+          <table>
+            <thead>
+              <tr><th>Date</th><th>Category</th><th>Description</th><th style="text-align:right;">Amount</th></tr>
+            </thead>
+            <tbody>${expenseRows}</tbody>
+            ${filteredExpenses.length > 0 ? `
+            <tfoot>
+              <tr style="background:#fff5f5;">
+                <td colspan="3" style="padding:10px;font-weight:700;">Total</td>
+                <td style="padding:10px;text-align:right;font-weight:800;color:#8B0000;">${currency} ${Number(totalExpenses).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              </tr>
+            </tfoot>` : ''}
+          </table>
+
+          <div class="footer">
+            <span>Generated by CRM App</span>
+            <span>${reportDate}</span>
+          </div>
+        </body>
+        </html>`;
+
+      const { uri } = await Print.printToFileAsync({ html, base64: false });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: `Sales Report - ${dateFilter}`,
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        Alert.alert('Saved', `PDF saved to: ${uri}`);
+      }
     } catch (error) {
-      console.error('Error sharing:', error);
+      console.error('Error generating PDF:', error);
+      Alert.alert('Error', 'Failed to generate PDF report');
     }
   };
 
@@ -692,7 +817,7 @@ export default function SalesScreen() {
               ? `${analytics.salesCount} sales`
               : viewMode === 'expenses'
                 ? `${filteredExpenses.length} expenses`
-                : `${orders.length} orders`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
+                : `${filteredOrders.length} orders`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
           </Text>
         </View>
         <View style={styles.headerActions}>
@@ -825,7 +950,7 @@ export default function SalesScreen() {
       </View>
 
       <FlatList
-        data={(viewMode === 'sales' ? filteredSales : viewMode === 'expenses' ? filteredExpenses : orders) as any[]}
+        data={(viewMode === 'sales' ? filteredSales : viewMode === 'expenses' ? filteredExpenses : filteredOrders) as any[]}
         renderItem={(viewMode === 'sales' ? renderSale : viewMode === 'expenses' ? renderExpense : renderOrder) as any}
         keyExtractor={(item: any) => item.id}
         contentContainerStyle={styles.listContent}
@@ -844,7 +969,7 @@ export default function SalesScreen() {
                 ? (searchQuery || dateFilter !== 'All Time' ? 'No sales found' : 'No sales yet')
                 : viewMode === 'expenses'
                   ? (dateFilter !== 'All Time' ? 'No expenses found' : 'No expenses yet')
-                  : 'No orders yet'
+                  : (dateFilter !== 'All Time' ? 'No orders found' : 'No orders yet')
               }
             </Text>
             <Text style={styles.emptySubtext}>
@@ -852,7 +977,7 @@ export default function SalesScreen() {
                 ? (searchQuery || dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first sale')
                 : viewMode === 'expenses'
                   ? (dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Record your first expense')
-                  : 'Create your first order'
+                  : (dateFilter !== 'All Time' ? 'Try adjusting your filters' : 'Create your first order')
               }
             </Text>
           </View>
@@ -1027,32 +1152,60 @@ export default function SalesScreen() {
                 {/* Payment Method - Hidden for Credit Sales */}
                 {!isCreditSale && (
                   <View style={styles.formGroup}>
-                    <Text style={styles.formLabel}>Payment Method</Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <Text style={styles.formLabel}>Payment Method</Text>
+                      <TouchableOpacity onPress={() => setPaymentSettingsVisible(true)}>
+                        <Text style={{ color: '#25D366', fontSize: 12 }}>Manage</Text>
+                      </TouchableOpacity>
+                    </View>
                     <View style={styles.paymentMethods}>
-                      {paymentMethods.map((method) => (
+                      {paymentMethods.slice(0, 3).map((method) => (
                         <TouchableOpacity
-                          key={method}
+                          key={method.name}
                           style={[
                             styles.paymentOption,
-                            paymentMethod === method && styles.paymentOptionSelected,
+                            paymentMethod === method.name && styles.paymentOptionSelected,
                           ]}
-                          onPress={() => setPaymentMethod(method)}
+                          onPress={() => setPaymentMethod(method.name)}
                         >
                           <Ionicons
-                            name={method === 'M-Pesa' ? 'phone-portrait' : 'cash'}
-                            size={20}
-                            color={paymentMethod === method ? '#FFFFFF' : '#666'}
+                            name={method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') || method.name.toLowerCase().includes('stripe') ? 'logo-paypal' : 'cash'}
+                            size={18}
+                            color={paymentMethod === method.name ? '#FFFFFF' : '#666'}
                           />
-                          <Text
-                            style={[
-                              styles.paymentOptionText,
-                              paymentMethod === method && styles.paymentOptionTextSelected,
-                            ]}
-                          >
-                            {method}
-                          </Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.paymentOptionText, paymentMethod === method.name && styles.paymentOptionTextSelected]}>
+                              {method.name}
+                            </Text>
+                            {method.details ? (
+                              <Text style={{ fontSize: 10, color: paymentMethod === method.name ? 'rgba(255,255,255,0.7)' : '#555', marginTop: 1 }}>
+                                {method.details}
+                              </Text>
+                            ) : null}
+                          </View>
                         </TouchableOpacity>
                       ))}
+                      {/* If selected method is beyond slot 3, show it highlighted */}
+                      {paymentMethods.length > 3 && !paymentMethods.slice(0, 3).find(m => m.name === paymentMethod) && (
+                        <TouchableOpacity
+                          style={[styles.paymentOption, styles.paymentOptionSelected]}
+                          onPress={() => setPaymentSettingsVisible(true)}
+                        >
+                          <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                          <Text style={[styles.paymentOptionText, styles.paymentOptionTextSelected]} numberOfLines={1}>
+                            {paymentMethod}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                      {paymentMethods.length > 3 && (
+                        <TouchableOpacity
+                          style={styles.paymentOption}
+                          onPress={() => setPaymentSettingsVisible(true)}
+                        >
+                          <Ionicons name="ellipsis-horizontal" size={18} color="#666" />
+                          <Text style={styles.paymentOptionText}>More</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                   </View>
                 )}
@@ -1794,46 +1947,155 @@ export default function SalesScreen() {
         visible={paymentSettingsVisible}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setPaymentSettingsVisible(false)}
+        onRequestClose={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}
       >
         <SafeAreaView style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setPaymentSettingsVisible(false)}>
+            <TouchableOpacity onPress={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}>
               <Text style={styles.modalCancel}>Close</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle}>Payment Methods</Text>
             <View style={{ width: 60 }} />
           </View>
 
-          <ScrollView style={styles.modalContent}>
+          <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
             <Text style={styles.settingsHint}>
-              Manage the payment methods available when recording sales
+              Add your payment details so customers know exactly how to pay you
             </Text>
 
-            {paymentMethods.map((method, index) => (
-              <View key={index} style={styles.paymentMethodItem}>
-                <Text style={styles.paymentMethodName}>{method}</Text>
-                {paymentMethods.length > 1 && (
+            {/* Existing methods */}
+            {paymentMethods.map((method, index) => {
+              const iconName = method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') || method.name.toLowerCase().includes('mastercard') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') ? 'logo-paypal' : method.name.toLowerCase().includes('stripe') ? 'card' : method.name.toLowerCase().includes('bitcoin') || method.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
+              return (
+                <View key={index} style={styles.pmCard}>
+                  <View style={styles.pmCardIcon}>
+                    <Ionicons name={iconName as any} size={20} color="#25D366" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pmCardName}>{method.name}</Text>
+                    {method.details ? (
+                      <Text style={styles.pmCardDetails}>{method.details}</Text>
+                    ) : (
+                      <Text style={[styles.pmCardDetails, { color: '#444', fontStyle: 'italic' }]}>No details added</Text>
+                    )}
+                  </View>
+                  {paymentMethods.length > 1 && (
+                    <TouchableOpacity
+                      onPress={async () => {
+                        const updated = paymentMethods.filter((_, i) => i !== index);
+                        setPaymentMethods(updated);
+                        if (paymentMethod === method.name) setPaymentMethod(updated[0]?.name || '');
+                        try { await apiClient.put('/settings', { payment_methods: updated }); }
+                        catch (e) { console.error(e); }
+                      }}
+                    >
+                      <Ionicons name="close-circle" size={22} color="#FF6B6B" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })}
+
+            {/* Add form */}
+            {addingPaymentMethod ? (
+              <View style={styles.pmAddForm}>
+                <Text style={styles.pmAddTitle}>Add Payment Method</Text>
+
+                {/* Quick presets */}
+                <Text style={styles.pmPresetLabel}>Quick Add:</Text>
+                <View style={styles.pmPresetGrid}>
+                  {[
+                    { name: 'M-Pesa', placeholder: 'Phone number e.g. 0712 345 678', icon: 'phone-portrait' },
+                    { name: 'PayPal', placeholder: 'PayPal email address', icon: 'logo-paypal' },
+                    { name: 'Bank Transfer', placeholder: 'Account number / bank name', icon: 'business' },
+                    { name: 'Cash', placeholder: '', icon: 'cash' },
+                    { name: 'Visa/Card', placeholder: 'POS terminal or card reference', icon: 'card' },
+                    { name: 'Airtel Money', placeholder: 'Phone number', icon: 'phone-portrait' },
+                    { name: 'Stripe', placeholder: 'Payment link', icon: 'card' },
+                    { name: 'Bitcoin/Crypto', placeholder: 'Wallet address', icon: 'logo-bitcoin' },
+                    { name: 'Other', placeholder: 'Details', icon: 'wallet' },
+                  ].filter(p => !paymentMethods.find(m => m.name === p.name)).map(preset => (
+                    <TouchableOpacity
+                      key={preset.name}
+                      style={[styles.pmPresetChip, newMethodName === preset.name && styles.pmPresetChipActive]}
+                      onPress={() => {
+                        setNewMethodName(preset.name === 'Other' ? '' : preset.name);
+                        setCustomMethodName(preset.name === 'Other' ? '' : '');
+                        setNewMethodDetails('');
+                      }}
+                    >
+                      <Ionicons name={preset.icon as any} size={14} color={newMethodName === preset.name ? '#25D366' : '#6B7D99'} />
+                      <Text style={[styles.pmPresetChipText, newMethodName === preset.name && { color: '#25D366' }]}>{preset.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {/* Custom name if "Other" or typing */}
+                <Text style={styles.pmFieldLabel}>Method Name</Text>
+                <TextInput
+                  style={styles.pmInput}
+                  value={newMethodName || customMethodName}
+                  onChangeText={(t) => { setCustomMethodName(t); setNewMethodName(''); }}
+                  placeholder="e.g. Chipper Cash, Wave, Venmo..."
+                  placeholderTextColor="#555"
+                />
+
+                {/* Details field */}
+                <Text style={styles.pmFieldLabel}>
+                  {newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'Phone Number' :
+                   newMethodName === 'PayPal' ? 'PayPal Email' :
+                   newMethodName === 'Bank Transfer' ? 'Account Number / Bank Name' :
+                   newMethodName === 'Stripe' ? 'Payment Link' :
+                   newMethodName === 'Bitcoin/Crypto' ? 'Wallet Address' :
+                   newMethodName === 'Visa/Card' ? 'POS / Card Reference' :
+                   'Details (optional)'}
+                </Text>
+                <TextInput
+                  style={styles.pmInput}
+                  value={newMethodDetails}
+                  onChangeText={setNewMethodDetails}
+                  placeholder={
+                    newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'e.g. 0712 345 678' :
+                    newMethodName === 'PayPal' ? 'e.g. payments@youremail.com' :
+                    newMethodName === 'Bank Transfer' ? 'e.g. KCB 1234567890' :
+                    newMethodName === 'Stripe' ? 'e.g. https://buy.stripe.com/...' :
+                    newMethodName === 'Bitcoin/Crypto' ? 'e.g. 1A1zP1eP5...' :
+                    'Optional — helps customers know how to pay'
+                  }
+                  placeholderTextColor="#555"
+                  autoCapitalize="none"
+                  keyboardType={newMethodName === 'PayPal' ? 'email-address' : newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'phone-pad' : 'default'}
+                />
+
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                   <TouchableOpacity
+                    style={[styles.cancelAddButton, { flex: 1 }]}
+                    onPress={() => { setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}
+                  >
+                    <Text style={styles.cancelAddText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.saveAddButton, { flex: 1 }]}
                     onPress={async () => {
-                      const updated = paymentMethods.filter((_, i) => i !== index);
-                      setPaymentMethods(updated);
-                      try {
-                        await apiClient.put('/settings', { payment_methods: updated });
-                        Alert.alert('Success', 'Payment method removed');
-                      } catch (error) {
-                        console.error('Error updating payment methods:', error);
-                        Alert.alert('Error', 'Failed to update payment methods');
+                      const finalName = (newMethodName || customMethodName).trim();
+                      if (!finalName) { Alert.alert('Error', 'Please select or enter a payment method name'); return; }
+                      if (paymentMethods.find(m => m.name.toLowerCase() === finalName.toLowerCase())) {
+                        Alert.alert('Error', 'This payment method already exists'); return;
                       }
+                      const newEntry = { name: finalName, details: newMethodDetails.trim() };
+                      const updated = [...paymentMethods, newEntry];
+                      setPaymentMethods(updated);
+                      setAddingPaymentMethod(false);
+                      setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName('');
+                      try { await apiClient.put('/settings', { payment_methods: updated }); }
+                      catch (e) { console.error('Error saving payment methods:', e); Alert.alert('Error', 'Failed to save'); }
                     }}
                   >
-                    <Ionicons name="close-circle" size={24} color="#FF6B6B" />
+                    <Text style={styles.saveAddText}>Add</Text>
                   </TouchableOpacity>
-                )}
+                </View>
               </View>
-            ))}
-
-            {!addingPaymentMethod && paymentMethods.length < 3 && (
+            ) : (
               <TouchableOpacity
                 style={styles.addPaymentButton}
                 onPress={() => setAddingPaymentMethod(true)}
@@ -1841,61 +2103,6 @@ export default function SalesScreen() {
                 <Ionicons name="add-circle-outline" size={24} color="#25D366" />
                 <Text style={styles.addPaymentText}>Add Payment Method</Text>
               </TouchableOpacity>
-            )}
-
-            {paymentMethods.length >= 3 && !addingPaymentMethod && (
-              <View style={styles.maxMethodsNotice}>
-                <Ionicons name="information-circle" size={20} color="#FFD700" />
-                <Text style={styles.maxMethodsText}>
-                  Maximum of 3 payment methods. Remove one to add another.
-                </Text>
-              </View>
-            )}
-
-            {addingPaymentMethod && (
-              <View style={styles.addPaymentForm}>
-                <TextInput
-                  style={styles.formInput}
-                  value={newPaymentMethod}
-                  onChangeText={setNewPaymentMethod}
-                  placeholder="e.g., Credit Card, PayPal"
-                  placeholderTextColor="#666"
-                  autoFocus
-                />
-                <View style={styles.addPaymentActions}>
-                  <TouchableOpacity
-                    style={styles.cancelAddButton}
-                    onPress={() => {
-                      setAddingPaymentMethod(false);
-                      setNewPaymentMethod('');
-                    }}
-                  >
-                    <Text style={styles.cancelAddText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.saveAddButton}
-                    onPress={async () => {
-                      if (!newPaymentMethod.trim()) {
-                        Alert.alert('Error', 'Please enter a payment method name');
-                        return;
-                      }
-                      const updated = [...paymentMethods, newPaymentMethod.trim()];
-                      setPaymentMethods(updated);
-                      try {
-                        await apiClient.put('/settings', { payment_methods: updated });
-                        Alert.alert('Success', 'Payment method added');
-                        setAddingPaymentMethod(false);
-                        setNewPaymentMethod('');
-                      } catch (error) {
-                        console.error('Error updating payment methods:', error);
-                        Alert.alert('Error', 'Failed to add payment method');
-                      }
-                    }}
-                  >
-                    <Text style={styles.saveAddText}>Add</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
             )}
           </ScrollView>
         </SafeAreaView>
@@ -2742,6 +2949,104 @@ const styles = StyleSheet.create({
   convertButtonText: {
     fontSize: 16,
     fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  // Payment method cards in settings modal
+  pmCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+  },
+  pmCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#0F2D1A',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pmCardName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  pmCardDetails: {
+    fontSize: 12,
+    color: '#8B9DC3',
+  },
+  // Add form
+  pmAddForm: {
+    backgroundColor: '#1A2942',
+    borderRadius: 14,
+    padding: 16,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+  },
+  pmAddTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 14,
+  },
+  pmPresetLabel: {
+    fontSize: 12,
+    color: '#6B7D99',
+    fontWeight: '600',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  pmPresetGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  pmPresetChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#2A3952',
+    backgroundColor: '#0F1D32',
+  },
+  pmPresetChipActive: {
+    borderColor: '#25D366',
+    backgroundColor: '#0F2D1A',
+  },
+  pmPresetChipText: {
+    fontSize: 12,
+    color: '#6B7D99',
+    fontWeight: '500',
+  },
+  pmFieldLabel: {
+    fontSize: 12,
+    color: '#6B7D99',
+    fontWeight: '600',
+    marginBottom: 6,
+    marginTop: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  pmInput: {
+    backgroundColor: '#0F1D32',
+    borderWidth: 1,
+    borderColor: '#2A3952',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 14,
     color: '#FFFFFF',
   },
 });

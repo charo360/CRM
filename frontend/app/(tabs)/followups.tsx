@@ -133,6 +133,7 @@ export default function FollowupsScreen() {
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [customDirection, setCustomDirection] = useState('');
+  const [regenerateCount, setRegenerateCount] = useState(0);
   const [recentMessages, setRecentMessages] = useState<Message[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [showRecentMessages, setShowRecentMessages] = useState(false);
@@ -207,7 +208,7 @@ export default function FollowupsScreen() {
 
       const [followupsRes, coldRes, suggestionsRes, customersRes] = await Promise.all([
         apiClient.get('/followups?status=pending'),
-        apiClient.get('/customers/cold-with-reasons?days=14').catch(() => apiClient.get('/customers/cold?days=14')),
+        apiClient.get('/customers/cold-with-reasons?days=7').catch(() => apiClient.get('/customers/cold?days=7')),
         apiClient.get('/stats/followup-suggestions'),
         apiClient.get('/customers'),
       ]);
@@ -216,14 +217,8 @@ export default function FollowupsScreen() {
       setSuggestions(suggestionsRes.data);
       setCustomers(customersRes.data);
 
-      // Only keep analyzing if we have customers but no cold results yet (analysis still running)
-      if (coldRes.data.length === 0 && customersRes.data.length > 0) {
-        setIsAnalyzing(true);
-        setAnalyzeRetries(prev => prev + 1);
-      } else {
-        setIsAnalyzing(false);
-        setAnalyzeRetries(0);
-      }
+      setIsAnalyzing(false);
+      setAnalyzeRetries(0);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -470,17 +465,23 @@ export default function FollowupsScreen() {
     setShowAddModal(true);
   };
 
-  const handleShowDraftMessage = async (customer: ColdCustomer, direction?: string) => {
+  const handleShowDraftMessage = async (customer: ColdCustomer, direction?: string, countOverride?: number) => {
     setDraftCustomer(customer);
     setShowDraftModal(true);
     setLoadingDraft(true);
     setShowRecentMessages(false);
+    // Clear direction and reset count only when opening fresh (not during a regenerate call)
+    if (countOverride === undefined) {
+      setCustomDirection('');
+      setRegenerateCount(0);
+    }
     fetchRecentMessages(customer.id);
 
     try {
       const response = await apiClient.post(`/ai/draft-message`, {
         customer_id: customer.id,
-        custom_instructions: direction || customDirection
+        custom_instructions: direction || '',
+        regenerate_count: countOverride ?? 0
       });
 
       setDraftMessage(response.data.message || response.data.drafted_message || '');
@@ -507,8 +508,9 @@ export default function FollowupsScreen() {
 
   const handleRegenerateWithDirection = () => {
     if (!draftCustomer) return;
-    handleShowDraftMessage(draftCustomer, customDirection);
-    // Don't clear direction yet so user can see what they typed
+    const nextCount = regenerateCount + 1;
+    setRegenerateCount(nextCount);
+    handleShowDraftMessage(draftCustomer, customDirection, nextCount);
   };
 
   const handleSendDraftMessage = () => {

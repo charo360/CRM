@@ -175,6 +175,7 @@ export default function CustomersScreen() {
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [draftCustomer, setDraftCustomer] = useState<Customer | null>(null);
   const [customDirection, setCustomDirection] = useState('');
+  const [regenerateCount, setRegenerateCount] = useState(0);
   const [recentMessages, setRecentMessages] = useState<Message[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [showRecentMessages, setShowRecentMessages] = useState(false);
@@ -783,17 +784,22 @@ export default function CustomersScreen() {
     });
   };
 
-  const handleShowDraftMessage = async (customer: Customer, direction?: string) => {
+  const handleShowDraftMessage = async (customer: Customer, direction?: string, countOverride?: number) => {
     setDraftCustomer(customer);
     setShowDraftModal(true);
     setLoadingDraft(true);
     setShowRecentMessages(false);
+    if (countOverride === undefined) {
+      setCustomDirection('');
+      setRegenerateCount(0);
+    }
     fetchRecentMessages(customer.id);
 
     try {
       const response = await apiClient.post(`/ai/draft-message`, {
         customer_id: customer.id,
-        custom_instructions: direction || customDirection
+        custom_instructions: direction || '',
+        regenerate_count: countOverride ?? 0
       });
 
       setDraftMessage(response.data.message || response.data.drafted_message || '');
@@ -821,8 +827,9 @@ export default function CustomersScreen() {
 
   const handleRegenerateWithDirection = () => {
     if (!draftCustomer) return;
-    handleShowDraftMessage(draftCustomer, customDirection);
-    setCustomDirection('');
+    const nextCount = regenerateCount + 1;
+    setRegenerateCount(nextCount);
+    handleShowDraftMessage(draftCustomer, customDirection, nextCount);
   };
 
   // Product picker handlers

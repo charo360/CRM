@@ -23,6 +23,22 @@ import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/a
 
 import { NotificationHandler } from '../../utils/notification-handler';
 import TeamManagementModal from '../../components/TeamManagementModal';
+// IAP stubs — real react-native-iap is linked only in native production builds
+type ProductPurchase = { purchaseToken?: string; transactionId?: string };
+type PurchaseError = { code?: string; message?: string };
+const initConnection = async () => {};
+const requestPurchase = async (_opts: any) => { throw new Error('IAP not available in this build'); };
+const purchaseUpdatedListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
+const purchaseErrorListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
+const finishTransaction = async (_opts: any) => {};
+
+// Product IDs for credit bundles on each platform
+const CREDIT_PRODUCT_IDS: Record<string, string> = {
+  credits_500:  Platform.OS === 'ios' ? 'com.charo360.credits500'  : 'charo360_credits_500',
+  credits_1000: Platform.OS === 'ios' ? 'com.charo360.credits1000' : 'charo360_credits_1000',
+  credits_2500: Platform.OS === 'ios' ? 'com.charo360.credits2500' : 'charo360_credits_2500',
+  credits_5000: Platform.OS === 'ios' ? 'com.charo360.credits5000' : 'charo360_credits_5000',
+};
 
 interface SubscriptionPlan {
   id: string;
@@ -82,6 +98,11 @@ export default function AccountScreen() {
 
   const [sendingPulse, setSendingPulse] = useState(false);
 
+  // Credit Top-up State
+  const [extraCredits, setExtraCredits] = useState(0);
+  const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [buyingCredits, setBuyingCredits] = useState<string | null>(null);
+
   // AI Model State
   const [aiModel, setAiModel] = useState('standard');
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -97,8 +118,19 @@ export default function AccountScreen() {
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
 
+  // IAP refs for purchase callbacks
+  const pendingBundleIdRef = useRef<string | null>(null);
+  const purchaseListenerRef = useRef<any>(null);
+  const errorListenerRef = useRef<any>(null);
+
   useEffect(() => {
     fetchData();
+    // Init IAP connection
+    initConnection().catch(() => {});
+    return () => {
+      purchaseListenerRef.current?.remove();
+      errorListenerRef.current?.remove();
+    };
   }, []);
 
   const [currency, setCurrency] = useState('USD');
@@ -130,6 +162,12 @@ export default function AccountScreen() {
       } catch (e) {
         console.log('WhatsApp status not available');
       }
+
+      // Load extra credits balance
+      try {
+        const statusRes = await apiClient.get('/subscription/status');
+        setExtraCredits(statusRes.data.extra_credits || 0);
+      } catch (e) { }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -379,12 +417,13 @@ export default function AccountScreen() {
 
   const getModelName = (modelId: string) => {
     switch (modelId) {
-      case 'standard': return 'Standard (GPT-4o Mini)';
-      case 'premium': return 'Premium (GPT-4o)';
-      case 'claude-3.5': return 'Claude 3.5 Sonnet';
-      case 'grok': return 'Grok Beta';
-      case 'deepseek': return 'DeepSeek Chat';
-      default: return 'Standard';
+      case 'deepseek': return 'DeepSeek V3 (1x)';
+      case 'standard': return 'GPT-4o Mini (1.6x)';
+      case 'grok': return 'Grok 4.1 (1.7x)';
+      case 'gpt5': return 'GPT-5 (12x)';
+      case 'premium': return 'GPT-4o (15x)';
+      case 'claude-3.5': return 'Claude 3.5 (12x)';
+      default: return 'GPT-4o Mini (1.6x)';
     }
   };
 
@@ -576,6 +615,34 @@ export default function AccountScreen() {
                 </TouchableOpacity>
               </View>
             )}
+          </View>
+        </View>
+
+        {/* Message Credits */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Message Credits</Text>
+          <View style={styles.settingsCard}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <Text style={{ color: '#8B9DC3', fontSize: 13 }}>Plan quota used</Text>
+              <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>{waMsgSent} / {waMsgLimit}</Text>
+            </View>
+            <View style={{ height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2, marginBottom: 8 }}>
+              <View style={{ height: 4, backgroundColor: waMsgSent / Math.max(waMsgLimit, 1) > 0.9 ? '#FF4444' : '#25D366', borderRadius: 2, width: `${Math.min((waMsgSent / Math.max(waMsgLimit, 1)) * 100, 100)}%` }} />
+            </View>
+            {extraCredits > 0 && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+                <Ionicons name="wallet-outline" size={14} color="#FFC107" />
+                <Text style={{ color: '#FFC107', fontSize: 12, marginLeft: 6 }}>{extraCredits} extra credits in balance</Text>
+              </View>
+            )}
+            <TouchableOpacity
+              style={{ backgroundColor: 'rgba(255,193,7,0.1)', borderRadius: 10, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,193,7,0.3)' }}
+              onPress={() => setShowTopUpModal(true)}
+            >
+              <Ionicons name="add-circle-outline" size={18} color="#FFC107" />
+              <Text style={{ color: '#FFC107', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>Buy Extra Credits</Text>
+            </TouchableOpacity>
+            <Text style={{ color: '#555', fontSize: 11, textAlign: 'center', marginTop: 8 }}>Credits never expire · Stack on top of your plan</Text>
           </View>
         </View>
 
@@ -868,15 +935,15 @@ export default function AccountScreen() {
               </View>
 
               <Text style={{ color: '#8B9DC3', marginBottom: 15, fontSize: 13 }}>
-                Choose the AI model used for drafting replies and detailed responses. Premium models may require a higher subscription.
+                Each model costs a different number of credits per message sent. Higher-capability models use more credits from your monthly quota.
               </Text>
 
               {[
-                { id: 'standard', name: 'Standard (GPT-4o Mini)', desc: 'Fast, reliable, best for general use' },
-                { id: 'premium', name: 'Premium (GPT-4o)', desc: 'Smarter, better reasoning, slightly slower' },
-                { id: 'claude-3.5', name: 'Claude 3.5 Sonnet', desc: 'More natural, human-like tone' },
-                { id: 'grok', name: 'Grok Beta', desc: 'Witty, relaxed style' },
-                { id: 'deepseek', name: 'DeepSeek Chat', desc: 'Open model, good analytical skills' },
+                { id: 'deepseek', name: 'DeepSeek V3', desc: 'Best value — analytical & multilingual', credits: '1x', creditsColor: '#25D366' },
+                { id: 'standard', name: 'GPT-4o Mini', desc: 'Fast, reliable, great for daily use', credits: '1.6x', creditsColor: '#25D366' },
+                { id: 'grok', name: 'Grok 4.1', desc: 'Witty, relaxed conversational style', credits: '1.7x', creditsColor: '#FFA500' },
+                { id: 'gpt5', name: 'GPT-5', desc: 'Most capable reasoning & writing', credits: '12x', creditsColor: '#FF6B6B' },
+                { id: 'premium', name: 'GPT-4o', desc: 'Smarter, better reasoning, slightly slower', credits: '15x', creditsColor: '#FF6B6B' },
               ].map((model) => (
                 <TouchableOpacity
                   key={model.id}
@@ -896,13 +963,139 @@ export default function AccountScreen() {
                     <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 4 }}>{model.name}</Text>
                     <Text style={{ color: '#8B9DC3', fontSize: 12 }}>{model.desc}</Text>
                   </View>
+                  <View style={{ alignItems: 'center', marginLeft: 10 }}>
+                    <Text style={{ color: (model as any).creditsColor || '#8B9DC3', fontSize: 13, fontWeight: '700' }}>{(model as any).credits}</Text>
+                    <Text style={{ color: '#666', fontSize: 10 }}>credits</Text>
+                  </View>
                   {aiModel === model.id && (
-                    <Ionicons name="checkmark-circle" size={24} color="#25D366" />
+                    <Ionicons name="checkmark-circle" size={24} color="#25D366" style={{ marginLeft: 8 }} />
                   )}
                 </TouchableOpacity>
               ))}
 
               <View style={{ height: 20 }} />
+            </View>
+          </View>
+        </Modal>
+
+        {/* Credit Top-Up Modal */}
+        <Modal
+          visible={showTopUpModal}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowTopUpModal(false)}
+        >
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' }}>
+            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>Buy Extra Credits</Text>
+                <TouchableOpacity onPress={() => setShowTopUpModal(false)}>
+                  <Text style={{ color: '#8B9DC3', fontSize: 16 }}>Close</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 16 }}>
+                Credits never expire and stack on top of your monthly plan quota.
+              </Text>
+
+              {extraCredits > 0 && (
+                <View style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 10, padding: 10, marginBottom: 14, flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons name="wallet-outline" size={16} color="#25D366" />
+                  <Text style={{ color: '#25D366', fontSize: 13, marginLeft: 8 }}>Current balance: <Text style={{ fontWeight: '700' }}>{extraCredits} credits</Text></Text>
+                </View>
+              )}
+
+              {[
+                { bundle_id: 'credits_500',  label: '500 Credits',   price: '$2.99',  note: '~500 manual msgs or ~312 GPT-4o mini replies' },
+                { bundle_id: 'credits_1000', label: '1,000 Credits', price: '$4.99',  note: '~1,000 manual msgs or ~625 GPT-4o mini replies' },
+                { bundle_id: 'credits_2500', label: '2,500 Credits', price: '$9.99',  note: '~2,500 manual msgs or ~1,562 GPT-4o mini replies' },
+                { bundle_id: 'credits_5000', label: '5,000 Credits', price: '$17.99', note: 'Best value — ~5,000 manual msgs or ~3,125 GPT-4o mini replies' },
+              ].map((bundle) => (
+                <TouchableOpacity
+                  key={bundle.bundle_id}
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.05)',
+                    borderRadius: 12,
+                    padding: 14,
+                    marginBottom: 10,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    borderWidth: bundle.bundle_id === 'credits_2500' ? 1 : 0,
+                    borderColor: bundle.bundle_id === 'credits_2500' ? '#FFC107' : 'transparent',
+                  }}
+                  disabled={buyingCredits !== null}
+                  onPress={async () => {
+                    const productId = CREDIT_PRODUCT_IDS[bundle.bundle_id];
+                    if (!productId) {
+                      Alert.alert('Error', 'Product not found');
+                      return;
+                    }
+                    setBuyingCredits(bundle.bundle_id);
+                    pendingBundleIdRef.current = bundle.bundle_id;
+
+                    // Set up one-time purchase listener
+                    purchaseListenerRef.current?.remove();
+                    errorListenerRef.current?.remove();
+
+                    purchaseListenerRef.current = purchaseUpdatedListener(async (purchase: ProductPurchase) => {
+                      const token = purchase.purchaseToken || purchase.transactionId || '';
+                      try {
+                        const res = await apiClient.post('/subscription/add-credits', {
+                          bundle_id: pendingBundleIdRef.current,
+                          purchase_token: token,
+                          platform: Platform.OS === 'ios' ? 'ios' : 'android',
+                        });
+                        await finishTransaction({ purchase, isConsumable: true });
+                        setExtraCredits(res.data.total_extra_credits);
+                        setWaMsgLimit(waMsgLimit + res.data.credits_added);
+                        Alert.alert('Credits Added!', res.data.message);
+                        setShowTopUpModal(false);
+                      } catch (e: any) {
+                        Alert.alert('Failed', e.response?.data?.detail || 'Could not verify purchase');
+                      } finally {
+                        setBuyingCredits(null);
+                        pendingBundleIdRef.current = null;
+                      }
+                    });
+
+                    errorListenerRef.current = purchaseErrorListener((error: PurchaseError) => {
+                      if (error.code !== 'E_USER_CANCELLED') {
+                        Alert.alert('Purchase Failed', error.message || 'Could not complete purchase');
+                      }
+                      setBuyingCredits(null);
+                      pendingBundleIdRef.current = null;
+                    });
+
+                    try {
+                      await requestPurchase({ sku: productId });
+                    } catch (e: any) {
+                      if (e.code !== 'E_USER_CANCELLED') {
+                        Alert.alert('Purchase Failed', e.message || 'Could not start purchase');
+                      }
+                      setBuyingCredits(null);
+                      pendingBundleIdRef.current = null;
+                    }
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '700' }}>{bundle.label}</Text>
+                      {bundle.bundle_id === 'credits_2500' && (
+                        <View style={{ backgroundColor: '#FFC107', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, marginLeft: 8 }}>
+                          <Text style={{ color: '#000', fontSize: 10, fontWeight: '700' }}>POPULAR</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={{ color: '#8B9DC3', fontSize: 11, marginTop: 3 }}>{bundle.note}</Text>
+                  </View>
+                  {buyingCredits === bundle.bundle_id ? (
+                    <ActivityIndicator size="small" color="#FFC107" />
+                  ) : (
+                    <Text style={{ color: '#FFC107', fontSize: 16, fontWeight: '700' }}>{bundle.price}</Text>
+                  )}
+                </TouchableOpacity>
+              ))}
+
+              <View style={{ height: 10 }} />
             </View>
           </View>
         </Modal>

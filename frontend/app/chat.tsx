@@ -276,7 +276,14 @@ export default function ChatScreen() {
     } catch (error: any) {
       console.error('Send media error:', error);
       if (error?.response?.status === 429) {
-        Alert.alert('Message Limit', error.response?.data?.detail || 'Message limit reached.');
+        Alert.alert(
+          "You've reached your message limit",
+          'Upgrade your plan to send more messages and unlock more features.',
+          [
+            { text: 'Later', style: 'cancel' },
+            { text: 'Upgrade Now', onPress: () => router.push('/(tabs)/account') },
+          ]
+        );
       } else {
         Alert.alert('Send Failed', 'Could not send file. Please try again.');
       }
@@ -414,14 +421,18 @@ export default function ChatScreen() {
       );
     } catch (error: any) {
       console.error('Send error:', error);
-      // Show friendly error for rate limits
       if (error?.response?.status === 429) {
-        const detail = error.response?.data?.detail || 'Message limit reached. Please upgrade your plan.';
-        Alert.alert('Message Limit', detail);
+        Alert.alert(
+          "You've reached your message limit",
+          'Upgrade your plan to send more messages and unlock more features.',
+          [
+            { text: 'Later', style: 'cancel' },
+            { text: 'Upgrade Now', onPress: () => router.push('/(tabs)/account') },
+          ]
+        );
       } else {
         Alert.alert('Send Failed', 'Could not send message. Please try again.');
       }
-      // Mark as failed
       setMessages(prev =>
         prev.map(m =>
           m.id === tempId ? { ...m, status: 'failed' } : m

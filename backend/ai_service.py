@@ -490,168 +490,118 @@ class AIMessageDrafter:
                 return ""
             
             return "YOUR PAST BUSINESS PATTERNS (stay consistent):\n- " + "\n- ".join(guidelines)
-            
+
         except Exception as e:
             logger.error(f"Error extracting business patterns: {e}")
             return ""
 
     def _create_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None) -> str:
-        """Create prompt for OpenAI — clean, concise, AI-driven intent classification"""
-        
-        # Build context description
-        context_parts = []
-        
-        if context['days_since_contact'] is not None:
-            context_parts.append(f"Last contacted {context['days_since_contact']} days ago")
-        
-        if context['is_vip']:
-            context_parts.append("VIP customer")
-        elif context['is_new']:
-            context_parts.append("New customer")
-        
-        if context['purchase_count'] > 0:
-            context_parts.append(f"{context['purchase_count']} purchases ({context['total_spent']:.0f} total spent)")
-        
-        if context['notes']:
-            context_parts.append(f"Notes: {context['notes'][:100]}")
-        
-        context_str = "\n- ".join(context_parts) if context_parts else "No prior context"
-        
-        # Tone instructions
-        tone_instructions = {
-            'professional': 'professional but warm',
-            'friendly': 'warm and friendly',
-            'casual': 'casual and conversational'
-        }
-        tone_desc = tone_instructions.get(tone, 'friendly')
-        
+        """Create the core auto-reply prompt — engineered for maximum human authenticity."""
+
         # Business knowledge section
         business_context = ""
         if business_knowledge:
-            business_context = f"""
-Business Information:
-{business_knowledge}
-"""
-        
-        # Format conversation history — limit to last 10 to reduce noise
-        conversation_history = "(No previous messages)"
-        if context.get('conversation_log'):
-            conversation_history = "\n".join(context['conversation_log'][-10:])
-        
-        # Format conversation memory (long-term summary — stored in English)
+            business_context = f"\nBusiness info:\n{business_knowledge}\n"
+
+        # Conversation memory (long-term summary)
         memory_section = ""
         if context.get('conversation_memory'):
-            memory_section = f"""
-Past interaction summary: {context['conversation_memory']}
-"""
-        
-        # Add anti-repetition warning if we have a previous outgoing message
-        repetition_warning = ""
-        if context.get('last_outgoing_message'):
-            last_msg = context['last_outgoing_message']
-            first_words = ' '.join(last_msg.split()[:3])
-            repetition_warning = f"\n⚠️ IMPORTANT: Your last reply started with '{first_words}' - DO NOT start with those same words again. Use completely different opening words."
-        
-        # If there are multiple messages, this is mid-conversation — no greetings
-        if context.get('conversation_log') and len(context['conversation_log']) > 2:
-            repetition_warning += "\n⚠️ This is a mid-conversation reply. Do NOT open with any greeting (Hey, Hi, Hello, etc). Get straight to the point."
-        
-        prompt = f"""You are the person behind {business_name}, chatting with {context['name']} on WhatsApp. Write like a real human — not a bot, not a customer service agent. Think of how you'd actually text a customer you know.
+            memory_section = f"\nBackground (previous sessions): {context['conversation_memory']}\n"
 
-Context: {context_str}
-{business_context}{memory_section}
+        # Format conversation history — last 12 messages
+        conversation_history = "(No messages yet — this is the first contact)"
+        if context.get('conversation_log'):
+            conversation_history = "\n".join(context['conversation_log'][-12:])
+
+        # Anti-repetition: block same opener as last outgoing message
+        repetition_block = ""
+        if context.get('last_outgoing_message'):
+            first_words = ' '.join(context['last_outgoing_message'].split()[:4])
+            repetition_block = f'\nDO NOT start your reply with "{first_words}" or any variation of it. Open completely differently.'
+
+        # Mid-conversation: no greetings
+        no_greeting_rule = ""
+        if context.get('conversation_log') and len(context['conversation_log']) > 2:
+            no_greeting_rule = "\nThis conversation is already in progress — do NOT open with any greeting (Hi, Hey, Hello, Habari, etc). Dive straight into the answer."
+
+        # Customer notes hint
+        notes_hint = f"\nCustomer note: {context['notes'][:120]}" if context.get('notes') else ""
+
+        prompt = f"""You are the owner of {business_name}, replying to {context['name']} on WhatsApp right now.
+
+You are NOT a bot. You are NOT a customer service agent. You are a real person who runs this business — you know your products, you know your prices, you talk naturally.
+{business_context}{memory_section}{notes_hint}
 Recent chat:
 {conversation_history}
-{repetition_warning}
 
-STEP 1 — What is the customer talking about RIGHT NOW?
-Read their LAST message carefully. That is what you are replying to. The chat history above is just background — if the customer changed topic, you change with them. Do NOT continue an old topic if they moved on.
-- If they were asking about shoes and now ask about laptops → answer about laptops. Forget the shoes.
-- If they were negotiating a price and now say "hi" → treat it as a fresh greeting.
-- If their message IS a direct follow-up to the previous topic (e.g. "ok send it", "how much?", "yes") → continue that topic naturally.
-- When in doubt, answer exactly what their last message says. Nothing more.
+YOUR TASK: Reply to the customer's LAST message above.
 
-STEP 2 — How to reply:
-- Text like a real person. Short, natural, no filler. No "I'd be happy to help" or "Feel free to ask" type phrases.
-- NEVER start with "Hey", "Hi", "Hello", or any greeting if the conversation already has messages above. Only greet if this is the very first message OR they just greeted you. Mid-conversation, jump straight into your answer.
-- Reply in whatever language the customer used. If they wrote in English, reply in English. If Swahili, reply in Swahili. If they mix (e.g. "niaje, do you have laptops?"), you mix too within the SAME sentence — that's how real people text. NEVER translate: don't say something in English then repeat it in another language below. One message, one natural flow.
-- Only use an emoji when it genuinely adds something (e.g. confirming an order ✅, or something exciting 🔥). Most normal replies do NOT need emojis. If the message is just answering a simple question, skip the emoji entirely. Never force emojis.
-- Keep it 1-3 sentences. Don't over-explain.
-- NEVER repeat the same opening as your last message.
-- Don't use phrases like "Sure thing!", "Absolutely!", "Of course!", "Great choice!" — those sound robotic.
-- Be direct. If they ask a question, answer it. If they say yes, move forward. If they want to see something, show it.
-- If a product catalog or business information is provided above, you ALREADY KNOW your products. Answer product questions directly from that catalog — give the name, price, availability. NEVER say "let me check", "I'll look into it", or "let me get back to you" when the answer is right there in your catalog. If the product isn't in your catalog, just say you don't have it.
-- CRITICAL: ONLY use information from the chat history and business information shown above. NEVER invent facts, names, events, or personal details that are not provided. If you don't know something, say so honestly.
-- If the customer asks something you genuinely CANNOT answer from the business information or chat history (e.g. specific pricing not in catalog, custom requests, complaints, technical questions you have no info on), start your reply with [NEEDS_HUMAN] then give a natural holding reply like "Let me confirm that for you" or "Give me a moment, I'll get back to you on that". Do NOT use [NEEDS_HUMAN] for general greetings, simple questions you CAN answer, or casual chat.
+HOW TO READ THE CONVERSATION:
+- Their LAST message is what you're replying to. History is context only.
+- If they changed topic from what was discussed before, follow THEM — don't drag old topics.
+- If their last message is a direct continuation ("ok", "yes", "how much?", "send it"), continue naturally from context.
+- If they greeted you fresh, greet back briefly then get to the point.
 
-Tone: {tone_desc}
+HOW TO WRITE (this is critical — read every rule):
+1. Sound like a real person texting, not a company. Short. Direct. No corporate filler.
+2. BANNED phrases — never use these ever: "Sure thing", "Absolutely", "Certainly", "Of course", "Great choice", "I'd be happy to", "Feel free to", "Don't hesitate to", "I hope this helps", "Thank you for reaching out", "I understand your concern", "Please be advised", "As per", "Kindly note", "I apologize for any inconvenience". These make you sound like a bot.
+3. LANGUAGE: Reply in EXACTLY the language they used in their last message. If they mixed languages (e.g. Sheng, Pidgin, Kiswahili+English), you mix the same way — in ONE natural sentence. NEVER write the same thing twice in two languages. One message, one natural flow.
+4. EMOJIS: Only when it genuinely fits (✅ for confirmation, 🔥 for excitement). Skip emojis on plain answers. Never use 😊😇🙏 — those are bot emojis.
+5. LENGTH: 1-3 sentences. If they asked a simple question, give a simple answer. Don't pad.
+6. CATALOG ANSWERS: If you have product info above, you already know your stock — answer directly with name, price, availability. NEVER say "let me check" or "I'll get back to you" when the answer is right in front of you.
+7. HONESTY: Only use facts from the conversation and business info above. NEVER invent prices, dates, names, or promises.
+8. ESCALATE SIGNAL: If the customer asks something you genuinely cannot answer (no info in context, custom request, real complaint), start your reply with [NEEDS_HUMAN] then give a natural holding reply like "Let me confirm that for you" or "Give me a sec on that". Do NOT use [NEEDS_HUMAN] for anything you can actually answer.
+{repetition_block}{no_greeting_rule}
 
 Reply:"""
 
         return prompt
-    
+
     def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None, past_answers_context: str = None, language_context: str = None) -> str:
-        """Create personalized prompt using learned user writing style and custom instructions"""
-        
-        # Start with the base prompt
+        """Wrap the base prompt with user style and custom writing instructions."""
+
         base_prompt = self._create_prompt(context, business_name, tone, business_knowledge)
-        
-        # Add language awareness context
+
+        # Language hint (country context only — language rules already in base prompt)
         if language_context:
-            lang_section = f"\n\nCustomer context:{language_context}"
-            lang_section += "\nLANGUAGE RULES:"
-            lang_section += "\n- Reply in the SAME language the customer used. Do NOT translate or repeat in a second language."
-            lang_section += "\n- If they mix languages, you can mix too — but within the SAME sentence, not as separate lines."
-            lang_section += "\n- WRONG: 'It's in Nairobi, we deliver countrywide' then 'Iko Nairobi, tunadeliver countrywide' — this is translating, never do this."
-            lang_section += "\n- RIGHT: 'Iko Nairobi but tunadeliver countrywide' — one natural sentence mixing both."
-            lang_section += "\n- RIGHT: 'It's in Nairobi, we deliver countrywide' — pure English if they asked in English."
-            lang_section += "\n- Match the customer's actual language choice, don't force a language they didn't use."
-            base_prompt = base_prompt + lang_section
-        
-        # Add past similar answers context
+            lang_hint = f"\n\nCustomer location context:{language_context}"
+            lang_hint += "\nUse this to inform your language choice if the conversation history above has no clear language signal."
+            base_prompt = base_prompt + lang_hint
+
+        # Past business patterns (prices, reply style from this owner's own history)
         if past_answers_context:
             base_prompt = base_prompt + f"\n\n{past_answers_context}"
-        
-        # If we have custom instructions, treat them as a writing directive, not something to reply to
+
+        # Custom instructions = a style/tone directive for this specific reply
         if custom_instructions:
             custom_section = (
-                f"\n\nWRITING DIRECTIVE (override default intent):\n"
-                f"Ignore what the last message was about. Instead, write a message that: {custom_instructions}\n"
-                f"Output ONLY the message text to send. Do NOT explain, do NOT answer the directive as a question, do NOT add commentary. Just write the message."
+                f"\n\nSTYLE DIRECTIVE for this reply:\n"
+                f"{custom_instructions}\n"
+                f"Apply this while following all the writing rules above. Output ONLY the message text."
             )
             base_prompt = base_prompt + custom_section
-        
-        # If we have user style information, enhance the prompt
+
+        # Owner writing style patterns (learned from their real messages)
         if user_style and user_style.get("patterns"):
             patterns = user_style["patterns"]
-            
-            # Add style-specific instructions
             style_instructions = []
-            
+
             if patterns.get("uses_emojis"):
-                style_instructions.append("- The business owner sometimes uses emojis — only add one when it genuinely fits (e.g. ✅ for confirmations, 🔥 for something exciting). Skip emojis on plain answers.")
-            
+                style_instructions.append("- Owner uses emojis occasionally — mirror that (only when it fits naturally)")
             if patterns.get("uses_local_language"):
-                style_instructions.append("- Mix languages naturally as the business owner usually does")
-            
+                style_instructions.append("- Owner mixes languages — follow their lead when it feels natural")
             if patterns.get("avg_length", 0) < 10:
-                style_instructions.append("- Keep it very brief (under 10 words if possible)")
-            elif patterns.get("avg_length", 0) > 20:
-                style_instructions.append("- You can be a bit more detailed than usual")
-            
-            # NOTE: common_greetings intentionally NOT injected here.
-            # It was causing the AI to always open with "Hey!" even mid-conversation.
-            # Greetings are handled by the base prompt rule: "Only greet if THEY greeted first."
-            
+                style_instructions.append("- Owner writes very short — keep under 10 words if possible")
+            elif patterns.get("avg_length", 0) > 25:
+                style_instructions.append("- Owner writes in more detail — slightly longer replies are fine")
             if patterns.get("common_closings"):
                 closing_examples = list(set(patterns["common_closings"]))[:2]
-                style_instructions.append(f"- End with closings like: {', '.join(closing_examples)}")
-            
-            # Add style instructions to the prompt
+                style_instructions.append(f"- Owner often ends with: {', '.join(closing_examples)}")
+
             if style_instructions:
-                style_section = "\n\nPERSONALIZED STYLE (match the business owner's usual writing):\n" + "\n".join(style_instructions)
+                style_section = "\n\nOWNER STYLE (mirror this subtly):\n" + "\n".join(style_instructions)
                 base_prompt = base_prompt + style_section
-        
+
         return base_prompt
     
     async def _analyze_user_writing_style(self, user_id: str, db) -> Dict:
@@ -781,16 +731,21 @@ Reply:"""
         """Generic handler for OpenAI-compatible APIs (DeepSeek, Grok, OpenAI)"""
         try:
             import asyncio
-            separator = 'Recent chat:'
-            if separator in prompt:
-                parts = prompt.split(separator, 1)
-                system_msg = parts[0].strip()
-                user_msg = separator + parts[1]
-                messages = [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg}
-                ]
-            else:
+            # Split into system + user parts using the first context separator found
+            # Auto-reply prompts use 'Recent chat:', draft prompts use 'SCENARIO:'
+            split_found = False
+            for separator in ('Recent chat:', 'SCENARIO:'):
+                if separator in prompt:
+                    parts = prompt.split(separator, 1)
+                    system_msg = parts[0].strip()
+                    user_msg = separator + parts[1]
+                    messages = [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": user_msg}
+                    ]
+                    split_found = True
+                    break
+            if not split_found:
                 messages = [{"role": "user", "content": prompt}]
             
             # Grok 4 uses max_completion_tokens (reasoning model)
@@ -808,8 +763,10 @@ Reply:"""
                 # GPT-5: Do NOT send max_tokens or max_completion_tokens
                 pass
             else:
-                kwargs["max_tokens"] = 400
-                kwargs["temperature"] = 0.7
+                kwargs["max_tokens"] = 500
+                kwargs["temperature"] = 0.9
+                kwargs["presence_penalty"] = 0.6   # pushes away from repeating topics
+                kwargs["frequency_penalty"] = 0.4  # pushes away from repeating exact phrases
             
             response = await asyncio.to_thread(
                 client.chat.completions.create,
