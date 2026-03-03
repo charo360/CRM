@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG CACHEBUST=2
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
