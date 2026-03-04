@@ -8094,6 +8094,21 @@ async def broadcast_catalog(
 async def health_check():
     return {"status": "ok"}
 
+@api_router.get("/debug/evolution")
+async def debug_evolution():
+    import os, httpx
+    evo_url = os.environ.get("EVOLUTION_API_URL", "NOT_SET")
+    evo_key = os.environ.get("EVOLUTION_API_KEY", "NOT_SET")
+    result = {"evolution_url": evo_url, "evolution_key_set": evo_key != "NOT_SET" and evo_key != ""}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{evo_url.rstrip('/')}/", headers={"apikey": evo_key})
+            result["ping_status"] = resp.status_code
+            result["ping_body"] = resp.text[:200]
+    except Exception as e:
+        result["ping_error"] = str(e)
+    return result
+
 app.include_router(api_router)
 
 # Serve static files (product images)
