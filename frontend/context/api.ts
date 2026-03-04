@@ -204,7 +204,7 @@ export const whatsappAPI = {
    * Start WhatsApp pairing: returns 8-digit code for Linked Devices
    */
   connect: async (phoneNumber: string) => {
-    const response = await apiClient.post('/whatsapp/connect', { phone_number: phoneNumber });
+    const response = await apiClient.post('/whatsapp/connect', { phone_number: phoneNumber }, { timeout: 180000 });
     return response.data;
   },
 
