@@ -103,7 +103,7 @@ class WhatsAppService:
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
 
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=180) as client:
                 # Step 1: Create instance
                 create_payload = {
                     "instanceName": instance_name,
@@ -199,9 +199,12 @@ class WhatsAppService:
                     "message": "Enter this code in WhatsApp > Linked Devices > Link with phone number",
                 }
 
-        except httpx.ConnectError:
-            logger.error("Cannot connect to Evolution API — is it running?")
-            return {"status": "error", "message": "WhatsApp service is not available. Please try again later."}
+        except httpx.ConnectError as ce:
+            logger.error(f"Cannot connect to Evolution API at {self.base_url}: {ce}")
+            return {"status": "error", "message": f"WhatsApp service connection failed: {str(ce)}"}
+        except httpx.TimeoutException as te:
+            logger.error(f"Timeout connecting to Evolution API at {self.base_url}: {te}")
+            return {"status": "error", "message": "WhatsApp service timed out. Please try again."}
         except Exception as e:
             logger.error(f"Error creating instance: {e}")
             return {"status": "error", "message": str(e)}
