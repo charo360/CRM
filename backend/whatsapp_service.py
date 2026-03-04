@@ -93,6 +93,22 @@ class WhatsAppService:
 
     # ============ INSTANCE MANAGEMENT ============
 
+    async def _wake_up_evolution(self):
+        """Ping Evolution API to wake it up from Render free-tier sleep."""
+        logger.info(f"Waking up Evolution API at {self.base_url} ...")
+        for attempt in range(1, 7):
+            try:
+                async with httpx.AsyncClient(timeout=30) as ping_client:
+                    resp = await ping_client.get(f"{self.base_url}/", headers=self._headers())
+                    if resp.status_code < 500:
+                        logger.info(f"Evolution API awake (attempt {attempt}, status {resp.status_code})")
+                        return True
+            except Exception as e:
+                logger.warning(f"Wake-up ping attempt {attempt} failed: {e}")
+            await asyncio.sleep(10)
+        logger.error("Evolution API did not respond after 6 wake-up attempts")
+        return False
+
     async def create_instance(self, user_id: str, phone_number: str) -> Dict:
         """
         Create an Evolution API instance for a user and request a pairing code.
@@ -101,6 +117,9 @@ class WhatsAppService:
         instance_name = self._instance_name(user_id)
         # Strip + and any non-digit chars for Evolution API
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
+
+        # Wake up Evolution API first (handles Render free-tier cold start)
+        await self._wake_up_evolution()
 
         try:
             async with httpx.AsyncClient(timeout=180) as client:

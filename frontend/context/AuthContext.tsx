@@ -86,7 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const response = await apiClient.post('/auth/whatsapp-start', {
         phone_number: phone,
         country_code: countryCode,
-      });
+      }, { timeout: 300000 });
 
       // If user already has WhatsApp connected, backend returns token directly
       if (response.data.status === 'success' && response.data.token) {
