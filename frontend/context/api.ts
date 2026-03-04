@@ -1,6 +1,7 @@
 import axios from 'axios';
+import Constants from 'expo-constants';
 
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const API_URL = Constants.expoConfig?.extra?.backendUrl || 'https://crm-1-pnfo.onrender.com';
 
 export const apiClient = axios.create({
   baseURL: `${API_URL}/api`,

@@ -1,0 +1,64 @@
+export default {
+  expo: {
+    name: "WhatsApp CRM",
+    slug: "whatsapp-crm",
+    version: "1.0.0",
+    orientation: "portrait",
+    icon: "./assets/images/icon.png",
+    scheme: "whatsappcrm",
+    userInterfaceStyle: "automatic",
+    newArchEnabled: true,
+    ios: {
+      supportsTablet: true,
+      infoPlist: {
+        NSContactsUsageDescription: "Import customers from your contacts"
+      }
+    },
+    android: {
+      adaptiveIcon: {
+        foregroundImage: "./assets/images/adaptive-icon.png",
+        backgroundColor: "#0A1628"
+      },
+      edgeToEdgeEnabled: true,
+      softwareKeyboardLayoutMode: "adjustResize",
+      permissions: ["android.permission.READ_CONTACTS"]
+    },
+    web: {
+      bundler: "metro",
+      output: "static",
+      favicon: "./assets/images/favicon.png"
+    },
+    plugins: [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          image: "./assets/images/splash-icon.png",
+          imageWidth: 200,
+          resizeMode: "contain",
+          backgroundColor: "#0A1628"
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          contactsPermission: "Allow WhatsApp CRM to access your contacts to import customers."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          icon: "./assets/images/icon.png",
+          color: "#25D366",
+          sounds: []
+        }
+      ]
+    ],
+    experiments: {
+      typedRoutes: true
+    },
+    extra: {
+      backendUrl: process.env.EXPO_PUBLIC_BACKEND_URL || "https://crm-1-pnfo.onrender.com"
+    }
+  }
+};
