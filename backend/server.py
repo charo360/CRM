@@ -65,7 +65,7 @@ import asyncio
 
 # Configure logging with rotation (10 MB per file, keep 3 backups) + stdout
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
-log_file = ROOT_DIR.parent / "server.log"
+log_file = Path("/tmp/server.log") if os.environ.get("RENDER") else ROOT_DIR.parent / "server.log"
 _log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 _file_handler = _RotatingFileHandler(str(log_file), maxBytes=10*1024*1024, backupCount=3, encoding='utf-8')
 _file_handler.setFormatter(_log_formatter)

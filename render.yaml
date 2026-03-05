@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: crm-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile.render
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: DB_NAME
+        value: whatsapp_crm
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: AI_PROVIDER
+        value: openai
+      - key: AWS_REGION
+        value: us-east-2
+      - key: AWS_BUCKET_NAME
+        value: crm-images-2025
+      # Secrets — set these manually in the Render Dashboard:
+      # MONGO_URL, OPENAI_API_KEY, JWT_SECRET, IMGBB_API_KEY,
+      # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+      # DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GROK_API_KEY,
+      # EVOLUTION_API_URL, EVOLUTION_API_KEY, PUBLIC_BASE_URL
