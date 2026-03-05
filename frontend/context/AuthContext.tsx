@@ -56,6 +56,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadStoredAuth();
   }, []);
 
+  // Keep Render free-tier services alive (ping every 4 minutes)
+  useEffect(() => {
+    if (!token) return;
+    const keepAlive = setInterval(async () => {
+      try {
+        await apiClient.get('/health', { timeout: 10000 });
+      } catch (_) {}
+    }, 4 * 60 * 1000);
+    return () => clearInterval(keepAlive);
+  }, [token]);
+
   const loadStoredAuth = async () => {
     try {
       const storedToken = await AsyncStorage.getItem('auth_token');
