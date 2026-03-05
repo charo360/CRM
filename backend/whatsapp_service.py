@@ -142,9 +142,28 @@ class WhatsAppService:
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    # Instance might already exist — try to connect anyway
+                    # Instance already exists — delete it and recreate fresh
                     if "already" in error_detail.lower() or "exists" in error_detail.lower():
-                        logger.info(f"Instance {instance_name} already exists, requesting new pairing code")
+                        logger.info(f"Instance {instance_name} already exists — deleting and recreating")
+                        try:
+                            del_resp = await client.delete(
+                                f"{self.base_url}/instance/delete/{instance_name}",
+                                headers=self._headers(),
+                            )
+                            logger.info(f"Deleted old instance {instance_name}: {del_resp.status_code}")
+                        except Exception as del_err:
+                            logger.warning(f"Could not delete old instance: {del_err}")
+                        await asyncio.sleep(3)
+                        # Retry creation
+                        create_payload["token"] = str(uuid.uuid4())
+                        create_resp = await client.post(
+                            f"{self.base_url}/instance/create",
+                            json=create_payload,
+                            headers=self._headers(),
+                        )
+                        if create_resp.status_code not in (200, 201):
+                            logger.error(f"Failed to recreate instance: {create_resp.text}")
+                            return {"status": "error", "message": f"Failed to create WhatsApp instance: {create_resp.text}"}
                     else:
                         logger.error(f"Failed to create instance: {error_detail}")
                         return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}
