@@ -142,19 +142,34 @@ class WhatsAppService:
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    # Instance already exists — delete it and recreate fresh
+                    # Instance already exists — logout, delete, then recreate fresh
                     if "already" in error_detail.lower() or "exists" in error_detail.lower():
-                        logger.info(f"Instance {instance_name} already exists — deleting and recreating")
+                        logger.info(f"Instance {instance_name} already exists — force removing and recreating")
+                        # Step 1: logout (disconnect WA session so delete is allowed)
                         try:
-                            del_resp = await client.delete(
-                                f"{self.base_url}/instance/delete/{instance_name}",
+                            await client.delete(
+                                f"{self.base_url}/instance/logout/{instance_name}",
                                 headers=self._headers(),
                             )
-                            logger.info(f"Deleted old instance {instance_name}: {del_resp.status_code}")
-                        except Exception as del_err:
-                            logger.warning(f"Could not delete old instance: {del_err}")
+                            logger.info(f"Logged out instance {instance_name}")
+                        except Exception:
+                            pass
+                        await asyncio.sleep(2)
+                        # Step 2: delete
+                        for _attempt in range(3):
+                            try:
+                                del_resp = await client.delete(
+                                    f"{self.base_url}/instance/delete/{instance_name}",
+                                    headers=self._headers(),
+                                )
+                                logger.info(f"Deleted instance {instance_name}: {del_resp.status_code}")
+                                if del_resp.status_code in (200, 204):
+                                    break
+                            except Exception as del_err:
+                                logger.warning(f"Delete attempt {_attempt+1} failed: {del_err}")
+                            await asyncio.sleep(2)
                         await asyncio.sleep(3)
-                        # Retry creation
+                        # Step 3: recreate
                         create_payload["token"] = str(uuid.uuid4())
                         create_resp = await client.post(
                             f"{self.base_url}/instance/create",
