@@ -4862,15 +4862,35 @@ async def get_customer_profile_picture(customer_id: str, token: str = Query(defa
     if not customer_full:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    async def _proxy_url(url: str):
-        """Try to fetch an image URL and return Response, or None if it fails."""
+    async def _bg_upload_to_imgbb(content_bytes: bytes, cust_id: str):
+        try:
+            import base64
+            from image_handler import CloudinaryHandler
+            b64 = base64.b64encode(content_bytes).decode('utf-8')
+            res = await CloudinaryHandler.upload_base64_to_cloudinary(b64, "profile.jpg")
+            perm_url = res.get("image_url")
+            if perm_url:
+                await db.customers.update_one({"_id": cust_id}, {"$set": {"profile_picture": perm_url}})
+                logging.info(f"Permanently stored profile pic for {cust_id} at {perm_url}")
+        except Exception as e:
+            logging.error(f"Failed to upload profile pic to ImgBB for {cust_id}: {e}")
+
+    async def _proxy_and_upload(url: str, save_to_db: bool = False):
+        """Try to fetch an image URL, return Response, and optionally upload to ImgBB."""
         try:
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 img_resp = await client.get(url)
                 if img_resp.status_code == 200 and img_resp.headers.get("content-type", "").startswith("image/"):
+                    content_bytes = img_resp.content
+                    media_type = img_resp.headers.get("content-type", "image/jpeg")
+                    
+                    if save_to_db and os.environ.get('IMGBB_API_KEY'):
+                        import asyncio
+                        asyncio.create_task(_bg_upload_to_imgbb(content_bytes, customer_id))
+
                     return FastAPIResponse(
-                        content=img_resp.content,
-                        media_type=img_resp.headers.get("content-type", "image/jpeg"),
+                        content=content_bytes,
+                        media_type=media_type,
                         headers={"Cache-Control": "public, max-age=3600"},
                     )
         except Exception:
@@ -4879,8 +4899,13 @@ async def get_customer_profile_picture(customer_id: str, token: str = Query(defa
 
     # Step 1: Try the stored URL (it may still be valid if fetched recently)
     stored_url = customer_full.get("profile_picture") if customer_full else None
+    
     if stored_url:
-        result = await _proxy_url(stored_url)
+        if "imgbb.com" in stored_url or "cloudinary.com" in stored_url:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(stored_url)
+            
+        result = await _proxy_and_upload(stored_url, save_to_db=True)
         if result:
             return result
 
@@ -4893,7 +4918,7 @@ async def get_customer_profile_picture(customer_id: str, token: str = Query(defa
 
     if pic_url:
         await db.customers.update_one({"_id": customer_id}, {"$set": {"profile_picture": pic_url}})
-        result = await _proxy_url(pic_url)
+        result = await _proxy_and_upload(pic_url, save_to_db=True)
         if result:
             return result
 
