@@ -8282,6 +8282,28 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"Failed to start digest scheduler: {e}")
 
+    # Keep Evolution API alive (Render free-tier sleeps after 15 min inactivity)
+    async def _evolution_keepalive():
+        import httpx, os
+        evo_url = os.environ.get("EVOLUTION_API_URL", "").rstrip("/")
+        evo_key = os.environ.get("EVOLUTION_API_KEY", "")
+        if not evo_url:
+            return
+        while True:
+            await asyncio.sleep(4 * 60)  # every 4 minutes
+            try:
+                async with httpx.AsyncClient(timeout=15) as c:
+                    await c.get(f"{evo_url}/", headers={"apikey": evo_key})
+                    logging.debug("Evolution API keep-alive ping sent")
+            except Exception as e:
+                logging.debug(f"Evolution API keep-alive ping failed: {e}")
+
+    try:
+        asyncio.create_task(_evolution_keepalive())
+        logging.info("Evolution API keep-alive task started")
+    except Exception as e:
+        logging.error(f"Failed to start Evolution API keep-alive: {e}")
+
 logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
