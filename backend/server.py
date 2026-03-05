@@ -4772,60 +4772,65 @@ async def whatsapp_sync(user = Depends(get_current_user)):
     """
     Manually trigger WhatsApp contact + chat history sync.
     Pulls all contacts and recent conversations from WhatsApp into the CRM.
+    Runs in background to avoid Render's 30s idle timeout.
     """
     logging.info(f"WhatsApp sync requested by user {user['_id']}")
     whatsapp_service = get_whatsapp_service(db)
     status = await whatsapp_service.get_instance_status(user["_id"])
     if not status.get("connected"):
-        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+        raise HTTPException(status_code=400, detail="WhatsApp not connected. Please make sure WhatsApp is linked first.")
 
-    contacts_result = await whatsapp_service.fetch_contacts(user["_id"])
-    logging.info(f"Contact sync result: {contacts_result}")
-    history_result = await whatsapp_service.fetch_chat_history(user["_id"])
-    logging.info(f"History sync result: {history_result}")
+    uid = user["_id"]
 
-    # Get current DB totals so user sees actual state
-    total_customers = await db.customers.count_documents({"user_id": user["_id"]})
-    total_messages = await db.messages.count_documents({"user_id": user["_id"]})
-    synced_messages = await db.messages.count_documents({"user_id": user["_id"], "synced_from_history": True})
-
-    # Run AI classification in background to avoid blocking the sync response
-    async def _classify_after_sync(uid):
-        classified = 0
-        try:
-            classifier = get_classifier(db)
-            customers = await db.customers.find({"user_id": uid}).to_list(None)
-            for c in customers:
-                msg_count = await db.messages.count_documents({"customer_id": c["_id"], "user_id": uid})
-                if msg_count >= 2:
-                    await classifier.classify_contact(uid, c["_id"])
-                    classified += 1
-        except Exception as e:
-            logging.error(f"Post-sync classification error: {e}")
-        logging.info(f"Post-sync classification done: {classified} contacts classified for user {uid}")
-
-    asyncio.create_task(_classify_after_sync(user["_id"]))
-
-    # Fetch profile pictures in background
-    async def _fetch_pics(uid):
+    async def _do_full_sync(uid):
         try:
             ws = get_whatsapp_service(db)
-            result = await ws.fetch_profile_pictures_bulk(uid)
-            logging.info(f"Profile pictures: {result}")
+            contacts_result = await ws.fetch_contacts(uid)
+            logging.info(f"Contact sync result for {uid}: {contacts_result}")
+            history_result = await ws.fetch_chat_history(uid)
+            logging.info(f"History sync result for {uid}: {history_result}")
+
+            # AI classification
+            try:
+                classifier = get_classifier(db)
+                customers = await db.customers.find({"user_id": uid}).to_list(None)
+                for c in customers:
+                    msg_count = await db.messages.count_documents({"customer_id": c["_id"], "user_id": uid})
+                    if msg_count >= 2:
+                        await classifier.classify_contact(uid, c["_id"])
+            except Exception as e:
+                logging.error(f"Post-sync classification error: {e}")
+
+            # Profile pictures
+            try:
+                pic_result = await ws.fetch_profile_pictures_bulk(uid)
+                logging.info(f"Profile pictures after sync: {pic_result}")
+            except Exception as e:
+                logging.error(f"Profile picture fetch error after sync: {e}")
+
+            logging.info(f"Full sync complete for user {uid}")
         except Exception as e:
-            logging.error(f"Profile picture fetch error: {e}")
-    asyncio.create_task(_fetch_pics(user["_id"]))
+            logging.error(f"Background sync error for {uid}: {e}")
+
+    asyncio.create_task(_do_full_sync(uid))
+
+    # Get current DB totals as a quick snapshot
+    total_customers = await db.customers.count_documents({"user_id": uid})
+    total_messages = await db.messages.count_documents({"user_id": uid})
+    synced_messages = await db.messages.count_documents({"user_id": uid, "synced_from_history": True})
 
     return {
-        "status": "success",
-        "contacts": contacts_result,
-        "history": history_result,
+        "status": "started",
+        "message": "Sync started in background. Contacts and chat history will appear in 1-3 minutes.",
+        "contacts": {"created": 0, "updated": 0},
+        "history": {"chats_synced": 0, "messages_synced": 0},
         "totals": {
             "customers": total_customers,
             "messages": total_messages,
             "synced_messages": synced_messages,
         }
     }
+
 
 @api_router.get("/customers/{customer_id}/profile-picture")
 async def get_customer_profile_picture(customer_id: str, token: str = Query(default=None), request: Request = None):

@@ -26,15 +26,15 @@ import TeamManagementModal from '../../components/TeamManagementModal';
 // IAP stubs — real react-native-iap is linked only in native production builds
 type ProductPurchase = { purchaseToken?: string; transactionId?: string };
 type PurchaseError = { code?: string; message?: string };
-const initConnection = async () => {};
+const initConnection = async () => { };
 const requestPurchase = async (_opts: any) => { throw new Error('IAP not available in this build'); };
-const purchaseUpdatedListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
-const purchaseErrorListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
-const finishTransaction = async (_opts: any) => {};
+const purchaseUpdatedListener = (_cb: any): { remove: () => void } => ({ remove: () => { } });
+const purchaseErrorListener = (_cb: any): { remove: () => void } => ({ remove: () => { } });
+const finishTransaction = async (_opts: any) => { };
 
 // Product IDs for credit bundles on each platform
 const CREDIT_PRODUCT_IDS: Record<string, string> = {
-  credits_500:  Platform.OS === 'ios' ? 'com.charo360.credits500'  : 'charo360_credits_500',
+  credits_500: Platform.OS === 'ios' ? 'com.charo360.credits500' : 'charo360_credits_500',
   credits_1000: Platform.OS === 'ios' ? 'com.charo360.credits1000' : 'charo360_credits_1000',
   credits_2500: Platform.OS === 'ios' ? 'com.charo360.credits2500' : 'charo360_credits_2500',
   credits_5000: Platform.OS === 'ios' ? 'com.charo360.credits5000' : 'charo360_credits_5000',
@@ -126,7 +126,7 @@ export default function AccountScreen() {
   useEffect(() => {
     fetchData();
     // Init IAP connection
-    initConnection().catch(() => {});
+    initConnection().catch(() => { });
     return () => {
       purchaseListenerRef.current?.remove();
       errorListenerRef.current?.remove();
@@ -512,12 +512,10 @@ export default function AccountScreen() {
                     try {
                       Alert.alert('Syncing...', 'Pulling contacts and chat history from WhatsApp. This may take a few minutes...');
                       const result = await whatsappAPI.sync();
-                      const c = result.contacts || {};
-                      const h = result.history || {};
                       const t = result.totals || {};
                       Alert.alert(
-                        'Sync Complete',
-                        `This sync: ${c.created || 0} new contacts, ${c.updated || 0} updated, ${h.chats_synced || 0} chats synced, ${h.messages_synced || 0} messages pulled\n\nTotal in app: ${t.customers || 0} contacts, ${t.messages || 0} messages (${t.synced_messages || 0} from WhatsApp history)\n\nAI classification running in background. Go to Customers tab to see your contacts and tap any to view chat history.`
+                        'Sync Started ✅',
+                        `Syncing contacts and chat history in the background.\n\nCurrently in app: ${t.customers || 0} contacts, ${t.messages || 0} messages.\n\nRefresh your Contacts tab in 1-3 minutes to see your WhatsApp contacts and chats appear.`
                       );
                     } catch (e: any) {
                       Alert.alert('Sync Failed', e.response?.data?.detail || e.message || 'Could not sync WhatsApp data. Try again.');
@@ -745,10 +743,10 @@ export default function AccountScreen() {
               style={styles.settingItem}
               onPress={() => setShowTeamModal(true)}
             >
-              <Ionicons 
-                name={user?.team_members_count && user.team_members_count > 1 ? "people" : "person-add-outline"} 
-                size={24} 
-                color={user?.team_members_count && user.team_members_count > 1 ? "#4A90D9" : "#25D366"} 
+              <Ionicons
+                name={user?.team_members_count && user.team_members_count > 1 ? "people" : "person-add-outline"}
+                size={24}
+                color={user?.team_members_count && user.team_members_count > 1 ? "#4A90D9" : "#25D366"}
               />
               <Text style={styles.settingText}>
                 {user?.team_members_count && user.team_members_count > 1 ? "Team Management" : "Add Team Members"}
@@ -793,8 +791,8 @@ export default function AccountScreen() {
                 {autoReplyEnabled && (
                   <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
                     {autoReplyAudience === 'everyone' ? 'Replying to everyone' :
-                     autoReplyAudience === 'customers_only' ? 'Customers only' :
-                     'New contacts only'}
+                      autoReplyAudience === 'customers_only' ? 'Customers only' :
+                        'New contacts only'}
                   </Text>
                 )}
               </View>
@@ -822,8 +820,8 @@ export default function AccountScreen() {
                   <Text style={styles.settingText}>Reply Audience</Text>
                   <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
                     {autoReplyAudience === 'everyone' ? 'Everyone who messages' :
-                     autoReplyAudience === 'customers_only' ? 'Only saved customers' :
-                     'Only new / first-time contacts'}
+                      autoReplyAudience === 'customers_only' ? 'Only saved customers' :
+                        'Only new / first-time contacts'}
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#666" />
@@ -1005,9 +1003,9 @@ export default function AccountScreen() {
               )}
 
               {[
-                { bundle_id: 'credits_500',  label: '500 Credits',   price: '$2.99',  note: '~500 manual msgs or ~312 GPT-4o mini replies' },
-                { bundle_id: 'credits_1000', label: '1,000 Credits', price: '$4.99',  note: '~1,000 manual msgs or ~625 GPT-4o mini replies' },
-                { bundle_id: 'credits_2500', label: '2,500 Credits', price: '$9.99',  note: '~2,500 manual msgs or ~1,562 GPT-4o mini replies' },
+                { bundle_id: 'credits_500', label: '500 Credits', price: '$2.99', note: '~500 manual msgs or ~312 GPT-4o mini replies' },
+                { bundle_id: 'credits_1000', label: '1,000 Credits', price: '$4.99', note: '~1,000 manual msgs or ~625 GPT-4o mini replies' },
+                { bundle_id: 'credits_2500', label: '2,500 Credits', price: '$9.99', note: '~2,500 manual msgs or ~1,562 GPT-4o mini replies' },
                 { bundle_id: 'credits_5000', label: '5,000 Credits', price: '$17.99', note: 'Best value — ~5,000 manual msgs or ~3,125 GPT-4o mini replies' },
               ].map((bundle) => (
                 <TouchableOpacity
@@ -1219,7 +1217,7 @@ export default function AccountScreen() {
                   setShowAudiencePicker(false);
                   try {
                     await settingsAPI.updateSettings({ auto_reply_audience: opt.value });
-                  } catch (e) {}
+                  } catch (e) { }
                 }}
               >
                 <View style={{ flex: 1 }}>
