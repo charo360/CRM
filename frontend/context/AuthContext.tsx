@@ -171,7 +171,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const response = await apiClient.post('/auth/whatsapp-refresh', {
         session_token: sessionToken,
-      });
+      }, { timeout: 300000 });
       return {
         success: true,
         pairingCode: response.data.pairing_code,

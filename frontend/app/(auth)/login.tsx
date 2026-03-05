@@ -16,6 +16,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../../context/AuthContext';
+import { apiClient } from '../../context/api';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
 export default function LoginScreen() {
@@ -35,6 +36,7 @@ export default function LoginScreen() {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const refreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const router = useRouter();
   const { startWhatsAppAuth, checkWhatsAppAuth, refreshPairingCode } = useAuth();
@@ -45,6 +47,7 @@ export default function LoginScreen() {
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
     if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     if (refreshRef.current) { clearTimeout(refreshRef.current); refreshRef.current = null; }
+    if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
   }, []);
 
   useEffect(() => {
@@ -56,6 +59,13 @@ export default function LoginScreen() {
     setPairingCode(code);
     setCountdown(60);
     setCopied(false);
+
+    // Keep backend alive during pairing (before user is authenticated)
+    if (!keepAliveRef.current) {
+      keepAliveRef.current = setInterval(async () => {
+        try { await apiClient.get('/health', { timeout: 8000 }); } catch (_) {}
+      }, 4 * 60 * 1000);
+    }
 
     // Copy to clipboard immediately
     Clipboard.setStringAsync(code).then(() => {
