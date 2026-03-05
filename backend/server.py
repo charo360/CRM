@@ -1394,12 +1394,16 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
 
     # Start WhatsApp pairing (new user or existing user not connected)
     whatsapp_service = get_whatsapp_service(db)
-    # Check if we need to force a new instance name (e.g., after 401 logout)
-    force_new = user.get("whatsapp", {}).get("force_new", False) if user else False
+    # Force a fresh instance if: explicitly flagged (401 logout) OR if WhatsApp status was
+    # anything other than "connected" (handles Evolution API restart/sleep causing stuck instances)
+    wa_status = (user.get("whatsapp") or {}).get("status", "") if user else ""
+    explicit_force_new = (user.get("whatsapp") or {}).get("force_new", False) if user else False
+    force_new = explicit_force_new or (not is_new_user and wa_status not in ("connected", "pairing", ""))
+    logging.info(f"whatsapp-start: user={user_id}, wa_status={wa_status!r}, force_new={force_new}")
     result = await whatsapp_service.create_instance(user_id, phone, force_new=force_new)
-    
+
     # Clear force_new flag after use
-    if force_new:
+    if explicit_force_new:
         await db.users.update_one({"_id": user_id}, {"$unset": {"whatsapp.force_new": ""}})
 
     if result.get("status") == "error":
