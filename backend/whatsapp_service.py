@@ -250,6 +250,29 @@ class WhatsAppService:
                     state = data.get("instance", {}).get("state", "close")
                     is_open = state == "open"
 
+                    # Auto-reconnect: if instance exists but is closed, try to reconnect it
+                    if not is_open and wa.get("status") == "connected":
+                        logger.info(f"Instance {instance_name} was connected but is now closed — attempting auto-reconnect")
+                        try:
+                            reconnect_resp = await client.get(
+                                f"{self.base_url}/instance/connect/{instance_name}",
+                                headers=self._headers(),
+                            )
+                            if reconnect_resp.status_code == 200:
+                                logger.info(f"Auto-reconnect triggered for {instance_name}")
+                                # Give it a moment to reconnect
+                                await asyncio.sleep(3)
+                                # Re-check state
+                                recheck = await client.get(
+                                    f"{self.base_url}/instance/connectionState/{instance_name}",
+                                    headers=self._headers(),
+                                )
+                                if recheck.status_code == 200:
+                                    new_state = recheck.json().get("instance", {}).get("state", "close")
+                                    is_open = new_state == "open"
+                        except Exception as re_err:
+                            logger.warning(f"Auto-reconnect failed for {instance_name}: {re_err}")
+
                     # Update DB if status changed
                     new_status = "connected" if is_open else "disconnected"
                     if wa.get("status") != new_status:
