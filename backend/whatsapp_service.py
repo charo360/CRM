@@ -109,12 +109,17 @@ class WhatsAppService:
         logger.error("Evolution API did not respond after 6 wake-up attempts")
         return False
 
-    async def create_instance(self, user_id: str, phone_number: str) -> Dict:
+    async def create_instance(self, user_id: str, phone_number: str, force_new: bool = False) -> Dict:
         """
         Create an Evolution API instance for a user and request a pairing code.
         Returns the 8-digit pairing code for the user to enter in WhatsApp.
+        If force_new=True, generates a new instance name with timestamp to bypass stuck instances.
         """
-        instance_name = self._instance_name(user_id)
+        if force_new:
+            import time
+            instance_name = f"{self._instance_name(user_id)}_{int(time.time())}"
+        else:
+            instance_name = self._instance_name(user_id)
         # Strip + and any non-digit chars for Evolution API
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
 
@@ -285,12 +290,12 @@ class WhatsAppService:
                         for inst in instances:
                             if inst.get("name") == instance_name:
                                 if inst.get("disconnectionReasonCode") == 401:
-                                    logger.warning(f"Instance {instance_name} was logged out by WhatsApp (401) — marking as disconnected")
+                                    logger.warning(f"Instance {instance_name} was logged out by WhatsApp (401) — marking as disconnected, needs force_new")
                                     await self.db.users.update_one(
                                         {"_id": user_id},
-                                        {"$set": {"whatsapp.status": "disconnected"}}
+                                        {"$set": {"whatsapp.status": "disconnected", "whatsapp.force_new": True}}
                                     )
-                                    return {"connected": False, "status": "disconnected", "number": wa.get("number"), "instance_name": instance_name}
+                                    return {"connected": False, "status": "disconnected", "number": wa.get("number"), "instance_name": instance_name, "force_new": True}
                 except Exception as fi_err:
                     logger.debug(f"fetchInstances check failed: {fi_err}")
 

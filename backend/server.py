@@ -1394,7 +1394,13 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
 
     # Start WhatsApp pairing (new user or existing user not connected)
     whatsapp_service = get_whatsapp_service(db)
-    result = await whatsapp_service.create_instance(user_id, phone)
+    # Check if we need to force a new instance name (e.g., after 401 logout)
+    force_new = user.get("whatsapp", {}).get("force_new", False) if user else False
+    result = await whatsapp_service.create_instance(user_id, phone, force_new=force_new)
+    
+    # Clear force_new flag after use
+    if force_new:
+        await db.users.update_one({"_id": user_id}, {"$unset": {"whatsapp.force_new": ""}})
 
     if result.get("status") == "error":
         err_msg = result.get("message", "Failed to start WhatsApp pairing")
