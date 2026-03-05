@@ -147,20 +147,60 @@ class WhatsAppService:
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    # Instance already exists — logout, delete, then recreate fresh
-                    if "already" in error_detail.lower() or "exists" in error_detail.lower():
-                        logger.info(f"Instance {instance_name} already exists — force removing and recreating")
-                        # Step 1: logout (disconnect WA session so delete is allowed)
-                        try:
-                            await client.delete(
-                                f"{self.base_url}/instance/logout/{instance_name}",
-                                headers=self._headers(),
+                    # Instance already exists — try to get a fresh pairing code from it directly
+                    if "already" in error_detail.lower() or "exists" in error_detail.lower() or create_resp.status_code == 403:
+                        logger.info(f"Instance {instance_name} already exists — requesting fresh pairing code directly")
+                        # Try to get a pairing code from the existing instance (no delete/recreate needed)
+                        await asyncio.sleep(3)
+                        pairing_attempt = await client.get(
+                            f"{self.base_url}/instance/connect/{instance_name}",
+                            params={"number": clean_number},
+                            headers=self._headers(),
+                        )
+                        if pairing_attempt.status_code == 200:
+                            code_data = pairing_attempt.json()
+                            pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
+                            logger.info(f"Got fresh pairing code for existing instance {instance_name}: {pairing_code}")
+                            # Update webhook on existing instance too
+                            webhook_base = os.environ.get('WEBHOOK_BASE_URL', 'http://host.docker.internal:8000')
+                            try:
+                                await client.post(
+                                    f"{self.base_url}/webhook/set/{instance_name}",
+                                    json={"webhook": {
+                                        "enabled": True,
+                                        "url": f"{webhook_base}/api/webhooks/evolution",
+                                        "webhookByEvents": False,
+                                        "webhookBase64": False,
+                                        "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CHATS_UPDATE", "CONNECTION_UPDATE"],
+                                    }},
+                                    headers=self._headers(),
+                                )
+                            except Exception:
+                                pass
+                            await self.db.users.update_one(
+                                {"_id": user_id},
+                                {"$set": {
+                                    "whatsapp.number": phone_number,
+                                    "whatsapp.instance_name": instance_name,
+                                    "whatsapp.status": "pairing",
+                                    "whatsapp.pairing_code": pairing_code,
+                                    "whatsapp.created_at": datetime.utcnow(),
+                                }}
                             )
-                            logger.info(f"Logged out instance {instance_name}")
+                            return {
+                                "status": "pairing",
+                                "pairing_code": pairing_code,
+                                "instance_name": instance_name,
+                                "message": "Enter this code in WhatsApp > Linked Devices > Link with phone number",
+                            }
+
+                        # Pairing code request failed — fall back to delete + recreate
+                        logger.warning(f"Fresh pairing failed ({pairing_attempt.status_code}), trying delete+recreate for {instance_name}")
+                        try:
+                            await client.delete(f"{self.base_url}/instance/logout/{instance_name}", headers=self._headers())
                         except Exception:
                             pass
                         await asyncio.sleep(2)
-                        # Step 2: delete
                         for _attempt in range(3):
                             try:
                                 del_resp = await client.delete(
@@ -174,7 +214,7 @@ class WhatsAppService:
                                 logger.warning(f"Delete attempt {_attempt+1} failed: {del_err}")
                             await asyncio.sleep(2)
                         await asyncio.sleep(3)
-                        # Step 3: recreate
+                        # Recreate
                         create_payload["token"] = str(uuid.uuid4())
                         create_resp = await client.post(
                             f"{self.base_url}/instance/create",
