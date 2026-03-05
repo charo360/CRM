@@ -233,6 +233,16 @@ export const whatsappAPI = {
   },
 
   /**
+   * Trigger background fetch of profile pictures for all customers
+   */
+  refreshProfilePictures: async () => {
+    try {
+      const response = await apiClient.post('/customers/refresh-profile-pictures');
+      return response.data;
+    } catch (_) {}
+  },
+
+  /**
    * Send a WhatsApp message to a customer
    */
   sendMessage: async (toNumber: string, message: string, customerName?: string) => {

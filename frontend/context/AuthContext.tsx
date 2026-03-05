@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apiClient } from './api';
+import { apiClient, whatsappAPI } from './api';
 
 interface User {
   id: string;
@@ -78,6 +78,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           const response = await apiClient.get('/auth/me');
           setUser(response.data);
+          // Trigger background profile picture refresh (fire-and-forget)
+          whatsappAPI.refreshProfilePictures();
         } catch (error) {
           // Token invalid, clear it
           await AsyncStorage.removeItem('auth_token');
