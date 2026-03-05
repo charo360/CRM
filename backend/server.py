@@ -1397,10 +1397,12 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     result = await whatsapp_service.create_instance(user_id, phone)
 
     if result.get("status") == "error":
+        err_msg = result.get("message", "Failed to start WhatsApp pairing")
+        logging.error(f"whatsapp-start create_instance error for {phone}: {err_msg}")
         # If new user was just created and pairing failed, clean up
         if is_new_user:
             await db.users.delete_one({"_id": user_id})
-        raise HTTPException(status_code=500, detail=result.get("message", "Failed to start WhatsApp pairing"))
+        raise HTTPException(status_code=500, detail=err_msg)
 
     # Create a session token to track this auth attempt
     import secrets

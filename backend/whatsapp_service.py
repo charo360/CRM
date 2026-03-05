@@ -274,6 +274,26 @@ class WhatsAppService:
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
+                # First check fetchInstances for 401 logout — connectionState alone is unreliable
+                try:
+                    fi_resp = await client.get(
+                        f"{self.base_url}/instance/fetchInstances",
+                        headers=self._headers(),
+                    )
+                    if fi_resp.status_code == 200:
+                        instances = fi_resp.json()
+                        for inst in instances:
+                            if inst.get("name") == instance_name:
+                                if inst.get("disconnectionReasonCode") == 401:
+                                    logger.warning(f"Instance {instance_name} was logged out by WhatsApp (401) — marking as disconnected")
+                                    await self.db.users.update_one(
+                                        {"_id": user_id},
+                                        {"$set": {"whatsapp.status": "disconnected"}}
+                                    )
+                                    return {"connected": False, "status": "disconnected", "number": wa.get("number"), "instance_name": instance_name}
+                except Exception as fi_err:
+                    logger.debug(f"fetchInstances check failed: {fi_err}")
+
                 resp = await client.get(
                     f"{self.base_url}/instance/connectionState/{instance_name}",
                     headers=self._headers(),
