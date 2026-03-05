@@ -994,9 +994,9 @@ export default function CustomersScreen() {
 
   const CustomerAvatar = ({ customer }: { customer: Customer }) => {
     const [imgError, setImgError] = React.useState(false);
-    // Use backend endpoint which fetches fresh from Evolution API and proxies the image.
-    // Token passed as query param because React Native Image can't set custom headers.
-    const picUrl = customer.profile_picture && token
+    // Always use proxy — it fetches fresh from Evolution API even if profile_picture is null in DB.
+    // On 404 (no picture exists), onError fires and shows letter avatar.
+    const picUrl = token
       ? `${BACKEND_URL}/api/customers/${customer.id}/profile-picture?token=${encodeURIComponent(token)}`
       : null;
     if (picUrl && !imgError) {
@@ -1390,7 +1390,7 @@ export default function CustomersScreen() {
               />
             </View>
             <TouchableOpacity
-              onPress={async () => { setScanningContacts(true); try { await apiClient.post('/contacts/scan-suggestions'); await fetchAllContacts(contactSearch2); } catch(e){} finally { setScanningContacts(false); } }}
+              onPress={async () => { setScanningContacts(true); try { await apiClient.post('/contacts/scan-suggestions'); await fetchAllContacts(contactSearch2); } catch (e) { } finally { setScanningContacts(false); } }}
               disabled={scanningContacts}
               style={{ backgroundColor: '#1A2942', borderRadius: 8, padding: 8 }}
             >
@@ -1763,7 +1763,7 @@ export default function CustomersScreen() {
           {/* Dashboard Summary Card */}
           {dashboardSummary && (
             <View style={styles.dashboardCard}>
-              <TouchableOpacity style={styles.dashboardItem} onPress={() => {}}>
+              <TouchableOpacity style={styles.dashboardItem} onPress={() => { }}>
                 <View style={[styles.dashboardIcon, { backgroundColor: '#25D36620' }]}>
                   <Ionicons name="chatbubble-ellipses" size={14} color="#25D366" />
                 </View>
