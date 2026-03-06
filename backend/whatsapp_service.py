@@ -753,9 +753,14 @@ class WhatsAppService:
                         )
                     else:
                         # Send text message
+                        # Append invisible AI signature to auto-replies (zero-width space \u200B)
+                        # This lets the receiving end detect AI-generated messages and skip auto-reply
+                        _msg_text = message
+                        if send_context == "auto_reply":
+                            _msg_text = message + "\u200B"
                         payload = {
                             "number": clean_to,
-                            "text": message,
+                            "text": _msg_text,
                         }
                         resp = await client.post(
                             f"{self.base_url}/message/sendText/{instance_name}",

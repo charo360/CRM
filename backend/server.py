@@ -5760,21 +5760,16 @@ async def evolution_webhook(request: Request):
                 )
                 
                 # ============================================================
-                # PING-PONG LOOP GUARD
-                # Only block auto-reply if the sender is ANOTHER app user
-                # (i.e. their phone number is registered in our users collection).
-                # Real customers are never blocked regardless of timing.
+                # PING-PONG LOOP GUARD — AI signature detection
+                # Every AI auto-reply has an invisible zero-width space (\u200B)
+                # appended. If the incoming message contains it, it was generated
+                # by another AI — skip auto-reply to prevent AI↔AI loops.
+                # Human-typed messages never contain this character.
                 # ============================================================
-                _sender_clean = from_number.replace("+", "").replace(" ", "").lstrip("0")
-                _is_other_app_user = await db.users.find_one({
-                    "$or": [
-                        {"phone_number": {"$regex": _sender_clean + "$"}},
-                        {"whatsapp_number": {"$regex": _sender_clean + "$"}},
-                    ]
-                })
-                if _is_other_app_user and not _is_business_info_request(body):
-                    logging.info(f"Auto-reply BLOCKED: sender {from_number} is another app user and message is not a business inquiry")
-                    return {"status": "ok", "message": "loop guard: sender is app user"}
+                _AI_SIGNATURE = "\u200B"
+                if _AI_SIGNATURE in (body or ""):
+                    logging.info(f"Auto-reply BLOCKED: AI signature detected in message from {from_number} — AI↔AI loop prevented")
+                    return {"status": "ok", "message": "loop guard: AI signature detected"}
 
                 # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
