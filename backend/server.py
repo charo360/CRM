@@ -253,16 +253,6 @@ async def fix_team_members_index():
     except Exception as e:
         logging.warning(f"[Migration] is_customer backfill failed: {e}")
     
-    # Migrate: Set auto_reply=False for all customers without explicit setting (new default)
-    try:
-        r3 = await db.customers.update_many(
-            {"auto_reply": {"$exists": False}},
-            {"$set": {"auto_reply": False}}
-        )
-        logging.info(f"[Migration] auto_reply disabled by default: {r3.modified_count} customers updated")
-    except Exception as e:
-        logging.warning(f"[Migration] auto_reply migration failed: {e}")
-    
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
@@ -2341,7 +2331,6 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "last_contacted": None,
         "created_at": datetime.utcnow(),
         "is_customer": True,
-        "auto_reply": False,
     }
     
     await db.customers.insert_one(customer_doc)
@@ -2725,7 +2714,7 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         last_message=customer.get("last_message"),
         last_contacted=customer.get("last_contacted"),
         profile_picture=customer.get("profile_picture"),
-        auto_reply=customer.get("auto_reply", False),
+        auto_reply=customer.get("auto_reply"),
         is_personal=customer.get("is_personal", False),
         created_at=customer["created_at"]
     )
@@ -2780,7 +2769,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         phone_number=updated["phone_number"],
         notes=updated.get("notes"),
         tags=updated.get("tags", []),
-        auto_reply=updated.get("auto_reply", False),
+        auto_reply=updated.get("auto_reply"),
         is_personal=updated.get("is_personal", False),
         stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
@@ -5549,7 +5538,6 @@ async def evolution_webhook(request: Request):
                     "auto_created": True,
                     "is_customer": False,
                     "customer_initiated": not from_me,
-                    "auto_reply": False,
                 })
                 logging.info(f"Auto-created contact from WhatsApp: {customer_name} ({from_number})")
                 

@@ -9,12 +9,14 @@ export default {
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     ios: {
+      bundleIdentifier: "com.charo360.whatsappcrm",
       supportsTablet: true,
       infoPlist: {
         NSContactsUsageDescription: "Import customers from your contacts"
       }
     },
     android: {
+      package: "com.charo360.whatsappcrm",
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#0A1628"

@@ -24,3 +24,22 @@ services:
       # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
       # DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GROK_API_KEY,
       # EVOLUTION_API_URL, EVOLUTION_API_KEY, PUBLIC_BASE_URL
+
+  - type: web
+    name: crm-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npx expo export --platform web
+    staticPublishPath: dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: EXPO_PUBLIC_BACKEND_URL
+        value: https://crm-1-pnfo.onrender.com
+
