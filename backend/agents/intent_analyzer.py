@@ -21,7 +21,7 @@ CHAT_INTENTS = {"GENERAL_CHAT", "PERSONAL_CHAT", "GREETING", "SMALL_TALK", "OFF_
 # Intents that must always escalate — AI should never handle alone
 ALWAYS_ESCALATE_INTENTS = {"LEGAL_THREAT", "FRAUD_CLAIM", "ESCALATION"}
 
-ESCALATE_THRESHOLD = 0.55  # confidence below this → escalate
+ESCALATE_THRESHOLD = 0.40  # confidence below this → escalate (raised from 0.55 to avoid escalating short follow-ups)
 
 
 async def analyze_intent(
@@ -117,7 +117,8 @@ GENERAL_CHAT, PERSONAL_CHAT, GREETING, SMALL_TALK, OFF_TOPIC,
 LEGAL_THREAT, FRAUD_CLAIM, ESCALATION, UNKNOWN
 
 Rules:
-- If you are not sure what the customer wants, use UNKNOWN and set needs_escalation=true
+- If the message is a short follow-up or agreement ("ok", "sure", "yes please", "can i see") — look at conversation history to determine intent, prefer CATALOG_REQUEST or PRODUCT_INQUIRY over UNKNOWN
+- If you are not sure what the customer wants even after checking history, use GENERAL_CHAT (not UNKNOWN) for messages under 10 words
 - If sentiment is angry AND confidence < 0.7, set needs_escalation=true
 - LEGAL_THREAT always needs_escalation=true
 - For personal contacts, prefer PERSONAL_CHAT or GENERAL_CHAT unless clearly business
@@ -147,6 +148,15 @@ JSON only, no markdown:"""
             result["needs_escalation"] = True
             if not result.get("escalation_reason"):
                 result["escalation_reason"] = f"Low confidence ({confidence:.2f}) — human review needed"
+
+        # UNKNOWN intent on short messages = conversational follow-up, not escalation
+        # e.g. "sure can i see", "ok", "yes please", "go ahead" — treat as GENERAL_CHAT
+        if intent == "UNKNOWN" and len(message.split()) <= 8:
+            result["intent"] = "GENERAL_CHAT"
+            result["needs_escalation"] = False
+            result["escalation_reason"] = None
+            result["confidence"] = 0.7
+            logger.info(f"[IntentAnalyzer] Short UNKNOWN message reclassified as GENERAL_CHAT: '{message}'")
 
         logger.info(
             f"[IntentAnalyzer] intent={result.get('intent')} sentiment={result.get('sentiment')} "

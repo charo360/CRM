@@ -115,7 +115,7 @@ _AUTO_REPLY_DEDUP_TTL = 120  # seconds
 # Ping-pong loop guard: tracks last auto-reply sent time per (user_id, phone)
 # key: "user_id:phone" -> timestamp of last auto-reply sent
 _last_auto_reply_sent: dict = {}
-_PING_PONG_TTL = 30  # seconds — if we sent an auto-reply within this window, skip the next one
+_PING_PONG_TTL = 5  # seconds — only block instant AI echoes (real humans take >5s to type follow-ups)
 
 # Keywords that indicate a genuine business information request — these bypass the loop guard
 _BUSINESS_INFO_KEYWORDS = [
