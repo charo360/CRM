@@ -657,6 +657,7 @@ class CustomerResponse(BaseModel):
     tags: List[str] = []
     auto_reply: Optional[bool] = None
     is_personal: bool = False
+    is_customer: bool = False
     stage: str = "lead"
     purchase_count: int = 0
     total_spent: float = 0.0
@@ -2727,6 +2728,7 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         profile_picture=customer.get("profile_picture"),
         auto_reply=customer.get("auto_reply"),
         is_personal=customer.get("is_personal", False),
+        is_customer=customer.get("is_customer", False),
         created_at=customer["created_at"]
     )
 
@@ -2782,6 +2784,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         tags=updated.get("tags", []),
         auto_reply=updated.get("auto_reply"),
         is_personal=updated.get("is_personal", False),
+        is_customer=updated.get("is_customer", False),
         stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
         last_contacted=updated.get("last_contacted"),
