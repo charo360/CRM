@@ -108,31 +108,25 @@ export default function ChatScreen() {
         
         // customer.auto_reply:
         //   true  → explicitly enabled (individual override ON)
-        //   false → could be default or explicitly disabled; check against global
-        //   null  → not set; respect global + audience
+        //   false → explicitly disabled (individual override OFF)
+        //   null/undefined → respect global toggle + audience filter
         let shouldEnable = false;
         if (custVal === true) {
-          // Explicitly enabled for this customer - always ON
           shouldEnable = true;
-          console.log('✅ Customer explicit ON');
+        } else if (custVal === false) {
+          shouldEnable = false;
         } else {
-          // null, undefined, or false — respect global + audience filter
+          // null or undefined — respect global + audience
           if (globalVal) {
             if (audience === 'customers_only') {
               shouldEnable = isCustomer;
-              console.log('🔍 Global ON + customers_only, isCustomer=' + isCustomer + ' →', shouldEnable);
             } else if (audience === 'new_contacts_only') {
               shouldEnable = !hasContacted;
-              console.log('🔍 Global ON + new_contacts_only, hasContacted=' + !!hasContacted + ' →', shouldEnable);
             } else {
               shouldEnable = true;
-              console.log('🔍 Global ON + everyone → true');
             }
-          } else {
-            console.log('❌ Global OFF → false');
           }
         }
-        console.log('🎯 Final:', shouldEnable);
         setAutoReplyEnabled(shouldEnable);
         setIsPersonal(cRes.data.is_personal || false);
         if (sRes.data?.currency) setCurrency(sRes.data.currency);
