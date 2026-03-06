@@ -5758,7 +5758,13 @@ async def evolution_webhook(request: Request):
                 asyncio.create_task(
                     _notify_assigned_employee(user["_id"], customer_id, customer_name, body)
                 )
-                
+
+                # AI↔AI loop guard: our auto-replies carry an invisible \u200B marker.
+                # If an incoming message contains it, it was sent by another AI — skip.
+                if "\u200B" in (body or ""):
+                    logging.info(f"Auto-reply BLOCKED: AI signature detected from {from_number}")
+                    return {"status": "ok", "message": "loop guard: AI signature"}
+
                 # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
                 # Rules:
