@@ -96,8 +96,24 @@ export default function ChatScreen() {
         ]);
         const custVal = cRes.data.auto_reply;
         const globalVal = sRes.data.auto_reply_enabled || false;
-        // If customer has explicit setting, use it. Otherwise respect global setting.
-        setAutoReplyEnabled(custVal !== null && custVal !== undefined ? custVal : globalVal);
+        const audience = sRes.data.auto_reply_audience || 'everyone';
+        const isCustomer = cRes.data.is_customer || false;
+        const hasContacted = cRes.data.last_contacted;
+        
+        // If customer has explicit setting, use it. Otherwise respect global + audience filter.
+        let shouldEnable = false;
+        if (custVal !== null && custVal !== undefined) {
+          shouldEnable = custVal;
+        } else if (globalVal) {
+          if (audience === 'customers_only') {
+            shouldEnable = isCustomer;
+          } else if (audience === 'new_contacts_only') {
+            shouldEnable = !hasContacted;
+          } else {
+            shouldEnable = true; // everyone
+          }
+        }
+        setAutoReplyEnabled(shouldEnable);
         setIsPersonal(cRes.data.is_personal || false);
         if (sRes.data?.currency) setCurrency(sRes.data.currency);
         setProducts(prodsRes.data || []);
