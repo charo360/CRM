@@ -182,19 +182,32 @@ from agents.router import Router
 # ====================
 
 def normalize_url(u):
-    """Normalize media URLs for Docker/local access."""
+    """Normalize media URLs so Evolution API (external) can fetch them."""
     import re as _re
     if not u:
         return u
+    # Always prefer PUBLIC_BASE_URL (set on Render) for relative paths
+    _public_base = os.environ.get('PUBLIC_BASE_URL') or os.environ.get('WEBHOOK_BASE_URL') or ''
     if u.startswith('/'):
-        base = os.environ.get('PUBLIC_BASE_URL') or os.environ.get('WEBHOOK_BASE_URL') or 'http://host.docker.internal:8000'
-        return f"{base.rstrip('/')}{u}"
+        if _public_base:
+            return f"{_public_base.rstrip('/')}{u}"
+        return f"http://host.docker.internal:8000{u}"
+    # If running on Render (PUBLIC_BASE_URL set), replace any localhost/docker URLs
+    if _public_base:
+        if u.startswith('http://localhost:') or u.startswith('http://127.0.0.1:'):
+            # Strip port, replace with public base + path
+            path = '/' + u.split('/', 3)[-1] if u.count('/') >= 3 else ''
+            return f"{_public_base.rstrip('/')}{path}"
+        if u.startswith('http://host.docker.internal:'):
+            path = '/' + u.split('/', 3)[-1] if u.count('/') >= 3 else ''
+            return f"{_public_base.rstrip('/')}{path}"
+    # Local Docker fallback
     if u.startswith('http://localhost:'):
         return u.replace('http://localhost:', 'http://host.docker.internal:')
     if u.startswith('http://127.0.0.1:'):
         return u.replace('http://127.0.0.1:', 'http://host.docker.internal:')
-    # Replace any LAN/private IP (10.x, 192.168.x, 172.x) with host.docker.internal
-    u = _re.sub(r'http://(10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.\d+\.\d+\.\d+):(\d+)', 
+    # Replace any LAN/private IP with host.docker.internal
+    u = _re.sub(r'http://(10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.\d+\.\d+\.\d+):(\d+)',
                 lambda m: f'http://host.docker.internal:{m.group(2)}', u)
     return u
 
