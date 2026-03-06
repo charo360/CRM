@@ -252,7 +252,18 @@ async def fix_team_members_index():
         logging.info(f"[Migration] is_customer backfill: {r1.modified_count} contacts, {r2.modified_count} customers")
     except Exception as e:
         logging.warning(f"[Migration] is_customer backfill failed: {e}")
-    
+
+    # Migration: remove auto_reply=False from all records so they respect global settings
+    # (was incorrectly set to False in a previous migration - unset it so global toggle works)
+    try:
+        r3 = await db.customers.update_many(
+            {"auto_reply": False},
+            {"$unset": {"auto_reply": ""}}
+        )
+        logging.info(f"[Migration] Cleared auto_reply override from {r3.modified_count} records")
+    except Exception as e:
+        logging.warning(f"[Migration] auto_reply clear failed: {e}")
+
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
