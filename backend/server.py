@@ -5760,22 +5760,21 @@ async def evolution_webhook(request: Request):
                 )
                 
                 # ============================================================
-                # PING-PONG LOOP GUARD (in-memory, zero DB cost)
-                # If we sent an auto-reply to this number in the last 30s,
-                # we're in an AI↔AI loop — stop immediately.
-                # Real customers get normal replies; loops are cut after 1 reply.
+                # PING-PONG LOOP GUARD
+                # Only block auto-reply if the sender is ANOTHER app user
+                # (i.e. their phone number is registered in our users collection).
+                # Real customers are never blocked regardless of timing.
                 # ============================================================
-                import time as _t_loop
-                _loop_key = f"{user['_id']}:{from_number}"
-                _now_loop = _t_loop.time()
-                _last_sent = _last_auto_reply_sent.get(_loop_key, 0)
-                if _now_loop - _last_sent < _PING_PONG_TTL:
-                    # Allow through if it's a genuine business info request (product/price/location etc.)
-                    if _is_business_info_request(body):
-                        logging.info(f"Loop guard BYPASSED for {from_number}: business info request detected: {body[:60]}")
-                    else:
-                        logging.info(f"Auto-reply BLOCKED: ping-pong loop detected for {from_number} (last reply {_now_loop - _last_sent:.1f}s ago)")
-                        return {"status": "ok", "message": "loop guard: recent auto-reply detected"}
+                _sender_clean = from_number.replace("+", "").replace(" ", "").lstrip("0")
+                _is_other_app_user = await db.users.find_one({
+                    "$or": [
+                        {"phone_number": {"$regex": _sender_clean + "$"}},
+                        {"whatsapp_number": {"$regex": _sender_clean + "$"}},
+                    ]
+                })
+                if _is_other_app_user and not _is_business_info_request(body):
+                    logging.info(f"Auto-reply BLOCKED: sender {from_number} is another app user and message is not a business inquiry")
+                    return {"status": "ok", "message": "loop guard: sender is app user"}
 
                 # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
