@@ -58,7 +58,7 @@ class ImageUploadHandler:
     @staticmethod
     async def save_image(file: UploadFile) -> Dict[str, str]:
         """
-        Save uploaded image to disk
+        Save uploaded image - uses cloud storage (ImgBB/S3) if configured, otherwise local disk
         
         Args:
             file: Uploaded file
@@ -71,11 +71,6 @@ class ImageUploadHandler:
             if not ImageUploadHandler.is_allowed_file(file.filename):
                 raise ValueError(f"File type not allowed. Allowed: {ALLOWED_EXTENSIONS}")
             
-            # Generate unique filename
-            ext = Path(file.filename).suffix.lower()
-            unique_filename = f"{uuid.uuid4()}{ext}"
-            file_path = UPLOAD_DIR / unique_filename
-            
             # Read file content
             content = await file.read()
             
@@ -83,14 +78,43 @@ class ImageUploadHandler:
             if len(content) > MAX_FILE_SIZE:
                 raise ValueError(f"File too large. Max size: {MAX_FILE_SIZE / 1024 / 1024}MB")
             
-            # Save file
+            # Try cloud storage first (for Render deployment)
+            # Check AWS S3
+            aws_key = os.environ.get('AWS_ACCESS_KEY_ID')
+            aws_secret = os.environ.get('AWS_SECRET_ACCESS_KEY')
+            aws_bucket = os.environ.get('AWS_BUCKET_NAME')
+            
+            if aws_key and aws_secret and aws_bucket:
+                logger.info("Using AWS S3 for product image")
+                base64_data = base64.b64encode(content).decode('utf-8')
+                s3_url = await S3Handler.upload_file(base64_data, file.filename)
+                return {
+                    "image_url": s3_url,
+                    "filename": file.filename
+                }
+            
+            # Check ImgBB
+            imgbb_key = os.environ.get('IMGBB_API_KEY')
+            if imgbb_key:
+                logger.info("Using ImgBB for product image")
+                base64_data = base64.b64encode(content).decode('utf-8')
+                result = await ImageUploadHandler.upload_base64_to_cloudinary(base64_data, file.filename)
+                return {
+                    "image_url": result["image_url"],
+                    "filename": file.filename
+                }
+            
+            # Fallback: Save locally (for local development)
+            logger.warning("No cloud storage configured, saving locally")
+            ext = Path(file.filename).suffix.lower()
+            unique_filename = f"{uuid.uuid4()}{ext}"
+            file_path = UPLOAD_DIR / unique_filename
+            
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(content)
             
-            # Return URL (relative path)
             image_url = f"/uploads/products/{unique_filename}"
-            
-            logger.info(f"Saved image: {unique_filename}")
+            logger.info(f"Saved image locally: {unique_filename}")
             
             return {
                 "image_url": image_url,
@@ -201,6 +225,10 @@ class ImageUploadHandler:
                 }
 
             # Check if Cloudinary is configured
+            cloud_name = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
+            api_key = os.environ.get('CLOUDINARY_API_KEY', '').strip()
+            api_secret = os.environ.get('CLOUDINARY_API_SECRET', '').strip()
+            
             if not cloud_name or not api_key or not api_secret:
                 # Check for ImgBB Fallback
                 imgbb_key = os.environ.get('IMGBB_API_KEY')
