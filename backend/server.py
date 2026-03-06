@@ -117,6 +117,24 @@ _AUTO_REPLY_DEDUP_TTL = 120  # seconds
 _last_auto_reply_sent: dict = {}
 _PING_PONG_TTL = 30  # seconds — if we sent an auto-reply within this window, skip the next one
 
+# Keywords that indicate a genuine business information request — these bypass the loop guard
+_BUSINESS_INFO_KEYWORDS = [
+    "price", "cost", "how much", "pric", "bei", "bei gani", "ngapi",
+    "product", "item", "stock", "available", "catalog", "catalogue", "menu",
+    "order", "buy", "purchase", "delivery", "deliver", "shipping", "ship",
+    "location", "address", "where are you", "directions", "open", "hours", "working hours",
+    "payment", "pay", "mpesa", "m-pesa", "bank", "transfer", "cash",
+    "contact", "phone", "email", "whatsapp", "reach",
+    "offer", "discount", "sale", "promo", "promotion", "deal",
+    "service", "repair", "fix", "install", "maintain",
+    "hello", "hi ", "hii", "habari", "mambo", "sema", "niaje",
+]
+
+def _is_business_info_request(message: str) -> bool:
+    """Returns True if the message looks like a genuine business inquiry, not an AI echo."""
+    msg_lower = message.lower().strip()
+    return any(kw in msg_lower for kw in _BUSINESS_INFO_KEYWORDS)
+
 def serialize_doc(doc):
     """Recursively convert MongoDB ObjectId fields to strings for JSON serialization."""
     if isinstance(doc, dict):
@@ -5740,8 +5758,12 @@ async def evolution_webhook(request: Request):
                 _now_loop = _t_loop.time()
                 _last_sent = _last_auto_reply_sent.get(_loop_key, 0)
                 if _now_loop - _last_sent < _PING_PONG_TTL:
-                    logging.info(f"Auto-reply BLOCKED: ping-pong loop detected for {from_number} (last reply {_now_loop - _last_sent:.1f}s ago)")
-                    return {"status": "ok", "message": "loop guard: recent auto-reply detected"}
+                    # Allow through if it's a genuine business info request (product/price/location etc.)
+                    if _is_business_info_request(body):
+                        logging.info(f"Loop guard BYPASSED for {from_number}: business info request detected: {body[:60]}")
+                    else:
+                        logging.info(f"Auto-reply BLOCKED: ping-pong loop detected for {from_number} (last reply {_now_loop - _last_sent:.1f}s ago)")
+                        return {"status": "ok", "message": "loop guard: recent auto-reply detected"}
 
                 # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
