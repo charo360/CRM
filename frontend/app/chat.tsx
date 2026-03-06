@@ -95,8 +95,8 @@ export default function ChatScreen() {
           apiClient.get('/products'),
         ]);
         const custVal = cRes.data.auto_reply;
-        const globalVal = sRes.data.auto_reply_enabled || false;
-        setAutoReplyEnabled(custVal !== null && custVal !== undefined ? custVal : globalVal);
+        // Default to false - auto-reply must be explicitly enabled per customer
+        setAutoReplyEnabled(custVal === true);
         setIsPersonal(cRes.data.is_personal || false);
         if (sRes.data?.currency) setCurrency(sRes.data.currency);
         setProducts(prodsRes.data || []);
