@@ -119,8 +119,9 @@ Check the proposed reply against ALL these rules:
 2. Does it match the customer's language (or at least partially)?
 3. Is the tone appropriate for the customer's sentiment? (e.g. angry customer needs empathy first)
 4. Does it invent facts not present in the business context or conversation?
-5. For non-chat agents: does it avoid vague promises like "we'll handle it soon"?
+5. For non-chat agents: does it avoid specific false promises like invented prices or guaranteed delivery dates?
 6. Is the length appropriate? (not a novel, not a one-word answer for a real question)
+7. If the business catalog doesn't have color/size/variant info, a reply saying "we don't have that info" or redirecting is VALID and should be APPROVED.
 
 Return ONLY valid JSON:
 {{
@@ -129,9 +130,12 @@ Return ONLY valid JSON:
   "suggestion": "<improvement hint if REJECT, else null>"
 }}
 
-Use ESCALATE only if the reply could cause real harm or makes false commitments.
-Use REJECT if the reply is wrong/irrelevant but fixable.
-Use APPROVE if the reply is good enough to send.
+IMPORTANT RULES FOR YOUR DECISION:
+- APPROVE if the reply is helpful and honest, even if it cannot fully answer due to missing product/catalog information.
+- APPROVE if the reply politely says it doesn't have the specific info (e.g. color/size not in catalog) — that IS a valid answer.
+- REJECT only if the reply is completely off-topic, rude, or makes up false specific facts (invented prices, fake promises).
+- ESCALATE ONLY if the reply makes dangerous commitments, legal promises, or is actively harmful. Missing product info is NOT an escalation reason.
+- When in doubt, APPROVE. It is always better to send a polite partial answer than to escalate.
 
 JSON only:"""
 

@@ -154,14 +154,18 @@ class Router:
                         business_knowledge=business_knowledge,
                         history=history,
                     )
-                    if retry_validation["result"] == RESULT_APPROVE:
-                        agent_result = retry_result
-                        messages_out = retry_messages
-                    else:
+                    if retry_validation["result"] == RESULT_ESCALATE:
                         reason = retry_validation.get("reason", "Reply failed validation after retry")
-                        logger.warning(f"[Router] Retry also failed validation — escalating: {reason}")
+                        logger.warning(f"[Router] Retry ESCALATE — escalating: {reason}")
                         await self._do_escalate(user_id, customer_id, reason)
                         return {"handled": True, "escalated": True, "messages": [], "escalation_reason": reason}
+                    else:
+                        # APPROVE or REJECT on retry — send the retry reply anyway
+                        # Better to send a best-effort answer than silence the customer
+                        reason = retry_validation.get("reason", "")
+                        logger.info(f"[Router] Retry result={retry_validation['result']} — sending best-effort reply. Reason: {reason}")
+                        agent_result = retry_result
+                        messages_out = retry_messages
                 else:
                     await self._do_escalate(user_id, customer_id, "Retry agent failed")
                     return {"handled": True, "escalated": True, "messages": [], "escalation_reason": "Retry agent failed"}

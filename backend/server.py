@@ -5788,6 +5788,7 @@ async def evolution_webhook(request: Request):
                 _global_auto_reply = _user_settings.get('auto_reply_enabled', False)
                 # customer.auto_reply: True=force ON, False=force OFF, None/missing=respect global
                 _customer_auto_reply = customer.get('auto_reply') if customer else None
+                logging.info(f"[AutoReply-Debug] customer={customer_name}, db_auto_reply={repr(customer.get('auto_reply') if customer else 'NO_CUSTOMER')}, type={type(customer.get('auto_reply') if customer else None).__name__}")
 
                 if _customer_auto_reply is True:
                     _should_auto_reply = True
