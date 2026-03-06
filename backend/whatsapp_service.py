@@ -679,6 +679,7 @@ class WhatsAppService:
                     "created_at": datetime.utcnow(),
                     "auto_created": False,
                     "business_initiated": True,
+                    "auto_reply": False,
                 })
                 created_new = True
                 # Fetch profile picture in background for new contact
@@ -1561,6 +1562,7 @@ class WhatsAppService:
                         "auto_created": True,
                         "synced_from_whatsapp": True,
                         "is_customer": False,
+                        "auto_reply": False,
                     })
                     created += 1
 
