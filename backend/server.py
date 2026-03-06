@@ -119,20 +119,32 @@ _PING_PONG_TTL = 30  # seconds — if we sent an auto-reply within this window, 
 
 # Keywords that indicate a genuine business information request — these bypass the loop guard
 _BUSINESS_INFO_KEYWORDS = [
-    "price", "cost", "how much", "pric", "bei", "bei gani", "ngapi",
+    "price", "cost", "how much", "pric", "bei", "bei gani", "ngapi", "charges", "fee",
     "product", "item", "stock", "available", "catalog", "catalogue", "menu",
+    "dress", "shoe", "bag", "cloth", "fabric", "trouser", "shirt", "skirt", "jean",
+    "food", "drink", "meal", "juice", "water", "coffee", "tea",
+    "phone", "laptop", "computer", "tv", "appliance", "electronic",
     "order", "buy", "purchase", "delivery", "deliver", "shipping", "ship",
     "location", "address", "where are you", "directions", "open", "hours", "working hours",
     "payment", "pay", "mpesa", "m-pesa", "bank", "transfer", "cash",
-    "contact", "phone", "email", "whatsapp", "reach",
+    "contact", "email", "whatsapp", "reach",
     "offer", "discount", "sale", "promo", "promotion", "deal",
     "service", "repair", "fix", "install", "maintain",
-    "hello", "hi ", "hii", "habari", "mambo", "sema", "niaje",
+    "hello", "hi ", "hii", "habari", "mambo", "sema", "niaje", "hey",
+    "do you have", "do you sell", "can i", "is it", "are you", "what is", "what are",
+    "i want", "i need", "looking for", "nataka", "nahitaji",
 ]
 
 def _is_business_info_request(message: str) -> bool:
     """Returns True if the message looks like a genuine business inquiry, not an AI echo."""
     msg_lower = message.lower().strip()
+    # A message ending with ? is almost always a genuine question
+    if msg_lower.endswith("?"):
+        return True
+    # Short messages (under 15 words) that aren't clearly automated
+    word_count = len(msg_lower.split())
+    if word_count <= 8:
+        return True
     return any(kw in msg_lower for kw in _BUSINESS_INFO_KEYWORDS)
 
 def serialize_doc(doc):
