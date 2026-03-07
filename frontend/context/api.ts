@@ -472,22 +472,27 @@ export const productsAPI = {
   },
 
   /**
-   * Send product to customer via WhatsApp API (with image)
+   * Send product to customer via WhatsApp API (with interactive buttons)
    */
-  sendProductToCustomer: async (productId: string, customerId: string) => {
+  sendProductToCustomer: async (productId: string, customerId: string, useButtons: boolean = true) => {
     const response = await apiClient.post(`/products/${productId}/send`, null, {
-      params: { customer_id: customerId }
+      params: { 
+        customer_id: customerId,
+        use_buttons: useButtons
+      }
     });
     return response.data;
   },
 
   /**
-   * Send multiple products as a catalog to customer via WhatsApp
+   * Send multiple products as a catalog to customer via WhatsApp (with interactive list)
    */
-  sendCatalog: async (customerId: string, productIds: string[]) => {
+  sendCatalog: async (customerId: string, productIds: string[], useList: boolean = true) => {
     const response = await apiClient.post('/products/send-catalog', {
       customer_id: customerId,
       product_ids: productIds,
+    }, {
+      params: { use_list: useList }
     });
     return response.data;
   },
