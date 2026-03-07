@@ -8797,6 +8797,103 @@ async def debug_evolution():
         result["ping_error"] = str(e)
     return result
 
+@api_router.post("/debug/test-buttons")
+async def debug_test_buttons(
+    phone: str = Query(..., description="Phone number to send test buttons to"),
+    user = Depends(get_current_user)
+):
+    """
+    Diagnostic: fire sendButtons with 3 different payload formats + sendPoll + sendList.
+    Returns raw Evolution API status code + response body for each attempt.
+    """
+    import httpx as _httpx
+    ws = get_whatsapp_service(db)
+    user_doc = await db.users.find_one({"_id": user["_id"]})
+    instance = user_doc.get("whatsapp", {}).get("instance_name", "")
+    base = ws.base_url.rstrip("/")
+    hdrs = ws._headers()
+    num = phone.strip().lstrip("+")
+    if not num.startswith("+"):
+        num = f"+{num}"
+
+    results = {}
+    async with _httpx.AsyncClient(timeout=15) as c:
+
+        # Format A — nested buttonMessage wrapper (user-suggested format)
+        r = await c.post(f"{base}/message/sendButtons/{instance}", headers=hdrs, json={
+            "number": num,
+            "buttonMessage": {
+                "title": "Test A",
+                "description": "Format A: nested buttonMessage",
+                "footerText": "tap a button",
+                "buttons": [
+                    {"type": "reply", "displayText": "Button 1", "id": "btn_1"},
+                    {"type": "reply", "displayText": "Button 2", "id": "btn_2"},
+                ],
+            },
+        })
+        results["A_nested_buttonMessage"] = {"status": r.status_code, "body": r.text[:400]}
+
+        await asyncio.sleep(0.5)
+
+        # Format B — flat (Evolution API v1 style)
+        r = await c.post(f"{base}/message/sendButtons/{instance}", headers=hdrs, json={
+            "number": num,
+            "title": "Test B",
+            "description": "Format B: flat v1 style",
+            "footerText": "tap a button",
+            "buttons": [
+                {"buttonId": "btn_1", "buttonText": {"displayText": "Button 1"}, "type": 1},
+                {"buttonId": "btn_2", "buttonText": {"displayText": "Button 2"}, "type": 1},
+            ],
+        })
+        results["B_flat_v1"] = {"status": r.status_code, "body": r.text[:400]}
+
+        await asyncio.sleep(0.5)
+
+        # Format C — flat v2 style (id/displayText/title)
+        r = await c.post(f"{base}/message/sendButtons/{instance}", headers=hdrs, json={
+            "number": num,
+            "title": "Test C",
+            "description": "Format C: flat v2 style",
+            "footer": "tap a button",
+            "buttons": [
+                {"id": "btn_1", "displayText": "Button 1", "title": "Button 1"},
+                {"id": "btn_2", "displayText": "Button 2", "title": "Button 2"},
+            ],
+        })
+        results["C_flat_v2"] = {"status": r.status_code, "body": r.text[:400]}
+
+        await asyncio.sleep(0.5)
+
+        # sendPoll — for comparison
+        r = await c.post(f"{base}/message/sendPoll/{instance}", headers=hdrs, json={
+            "number": num,
+            "name": "Test Poll",
+            "selectableCount": 1,
+            "values": ["Option 1", "Option 2", "Option 3"],
+        })
+        results["D_sendPoll"] = {"status": r.status_code, "body": r.text[:400]}
+
+        await asyncio.sleep(0.5)
+
+        # sendList — for comparison
+        r = await c.post(f"{base}/message/sendList/{instance}", headers=hdrs, json={
+            "number": num,
+            "title": "Test List",
+            "description": "Format E: sendList",
+            "buttonText": "View Options",
+            "footer": "pick one",
+            "values": [{"title": "Section 1", "rows": [
+                {"title": "Item 1", "description": "desc 1", "rowId": "item_1"},
+                {"title": "Item 2", "description": "desc 2", "rowId": "item_2"},
+            ]}],
+        })
+        results["E_sendList"] = {"status": r.status_code, "body": r.text[:400]}
+
+    return {"instance": instance, "base_url": base, "results": results}
+
+
 app.include_router(api_router)
 
 # Serve static files (product images)
