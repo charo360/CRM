@@ -873,12 +873,13 @@ class WhatsAppService:
         instance_name = user["whatsapp"]["instance_name"]
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
+        # Evolution API v2 button format
         formatted_buttons = []
         for btn in buttons[:3]:
             formatted_buttons.append({
-                "type": "replyButton",
-                "buttonId": btn.get("buttonId", "btn"),
-                "buttonText": btn.get("buttonText", {"displayText": "Button"}),
+                "title": btn.get("title", btn.get("buttonId", "Button")),
+                "displayText": btn.get("displayText", btn.get("buttonId", "Button")),
+                "id": btn.get("id", btn.get("buttonId", "btn")),
             })
 
         payload = {
@@ -886,14 +887,12 @@ class WhatsAppService:
             "title": title,
             "description": description,
             "buttons": formatted_buttons,
-            "footerText": footer_text or "",
+            "footer": footer_text or "",
         }
 
         if media_url:
-            payload["mediaMessage"] = {
-                "mediatype": "image",
-                "media": media_url,
-            }
+            payload["media"] = media_url
+            payload["mediatype"] = "image"
 
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -968,14 +967,14 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send buttons if in stock
+            # Step 2: send buttons if in stock (Evolution API v2 format)
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
                 product_id = str(product.get('_id', product.get('id', '')))
                 buttons = [
-                    {"type": "replyButton", "buttonId": f"order_{product_id}", "buttonText": {"displayText": "🛒 Order Now"}},
-                    {"type": "replyButton", "buttonId": f"ask_{product_id}",   "buttonText": {"displayText": "💬 Ask Question"}},
-                    {"type": "replyButton", "buttonId": f"share_{product_id}", "buttonText": {"displayText": "📱 Share"}},
+                    {"title": "Order Now", "displayText": "🛒 Order Now", "id": f"order_{product_id}"},
+                    {"title": "Ask Question", "displayText": "💬 Ask Question", "id": f"ask_{product_id}"},
+                    {"title": "Share", "displayText": "📱 Share", "id": f"share_{product_id}"},
                 ]
                 btn_resp = await client.post(
                     f"{self.base_url}/message/sendButtons/{instance_name}",
@@ -983,7 +982,7 @@ class WhatsAppService:
                         "number": clean_to,
                         "title": "What would you like to do?",
                         "description": "",
-                        "footerText": "Tap a button to continue",
+                        "footer": "Tap a button to continue",
                         "buttons": buttons,
                     },
                     headers=self._headers(),
@@ -1027,8 +1026,8 @@ class WhatsAppService:
             "title": f"🛍️ {title}",
             "description": f"Browse our {len(rows)} product(s). Tap to view details and order:",
             "buttonText": "View Products",
-            "footerText": "Tap any product to see full details",
-            "sections": [{"title": category or "Available Products", "rows": rows}]
+            "footer": "Tap any product to see full details",
+            "values": [{"title": category or "Available Products", "rows": rows}]
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -1070,10 +1069,10 @@ class WhatsAppService:
 
         buttons = []
         if in_stock:
-            buttons.append({"type": "replyButton", "buttonId": f"order_{product_id}", "buttonText": {"displayText": "🛒 Order Now"}})
-        buttons.append({"type": "replyButton", "buttonId": f"details_{product_id}", "buttonText": {"displayText": "📋 More Info"}})
+            buttons.append({"title": "Order Now", "displayText": "🛒 Order Now", "id": f"order_{product_id}"})
+        buttons.append({"title": "More Info", "displayText": "📋 More Info", "id": f"details_{product_id}"})
         if include_share:
-            buttons.append({"type": "replyButton", "buttonId": f"share_{product_id}", "buttonText": {"displayText": "📱 Share"}})
+            buttons.append({"title": "Share", "displayText": "📱 Share", "id": f"share_{product_id}"})
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
@@ -1082,7 +1081,7 @@ class WhatsAppService:
                     "number": clean_to,
                     "title": f"✨ {product['name']}",
                     "description": description,
-                    "footerText": "Tap a button below",
+                    "footer": "Tap a button below",
                     "buttons": buttons[:3],
                 },
                 headers=self._headers(),
