@@ -31,8 +31,9 @@ class SalesAgent(BaseAgent):
 
         # --- CATALOG REQUEST: send full catalog ---
         if intent == "CATALOG_REQUEST":
+            relationship = context.get("_relationship", "new_conversation")
             return await self._handle_catalog_request(
-                products, currency, customer_name, language, business_knowledge, history
+                products, currency, customer_name, language, business_knowledge, history, relationship
             )
 
         # --- NEGOTIATION: customer is negotiating on a previously discussed product ---
@@ -124,7 +125,7 @@ class SalesAgent(BaseAgent):
         }
 
     async def _handle_catalog_request(
-        self, products, currency, customer_name, language, business_knowledge, history
+        self, products, currency, customer_name, language, business_knowledge, history, relationship="new_conversation"
     ) -> Dict[str, Any]:
         """Send a concise catalog overview."""
         if not products:
@@ -143,22 +144,30 @@ class SalesAgent(BaseAgent):
             ai = get_drafter()
             catalog_text = format_product_catalog(display, currency)
             bk = (business_knowledge or "")[:300]
-            prompt = f"""You are a sales assistant. A customer asked to see the catalog.
+
+            # Adjust tone based on whether this is mid-conversation or a fresh start
+            if relationship in ("follow_up", "continuation"):
+                tone_instruction = "This is mid-conversation — NO greetings, NO 'Hey there!', NO 'Great to have you!'. Just send the catalog naturally as if continuing the chat. 1 short line intro max."
+            else:
+                tone_instruction = "Brief, natural intro — 1 sentence only. No corporate enthusiasm, no emojis overload."
+
+            prompt = f"""You are a business owner replying on WhatsApp. A customer asked to see your catalog.
 
 Business info: {bk}
 Customer: {customer_name}
 Language: {language}
 
+{tone_instruction}
+
 Product catalog:
 {catalog_text}
 
-Write a short, enthusiastic intro message in {language} (1-2 sentences) then list the products above.
-Keep it WhatsApp-natural. Reply:"""
+Write the intro line then list the products. Keep it WhatsApp-natural. No fake enthusiasm. Reply:"""
             intro = await ai._call_llm(prompt, model_pref="standard")
             messages_out.append({"text": intro})
         except Exception as e:
             logger.error(f"[SalesAgent] catalog intro error: {e}")
-            messages_out.append({"text": f"Here's what we have available:"})
+            messages_out.append({"text": "Here's what we have available:"})
 
         # Send product cards for top 5
         for p in display[:5]:
