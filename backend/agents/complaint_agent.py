@@ -123,15 +123,18 @@ Write a reply in {language} that:
 5. Does NOT be defensive or dismissive
 6. Is warm, human, and brief (3-5 sentences max)
 7. Matches a natural WhatsApp tone
+8. CRITICAL: ONLY use facts from the business info and conversation. NEVER invent details or timelines.
 
 Reply only:"""
 
         return await ai._call_llm(prompt, model_pref="standard")
 
-    def _format_history(self, history: list) -> str:
+    def _format_history(self, history: list, context: dict = None) -> str:
+        if context and context.get("_threaded_history_text"):
+            return context["_threaded_history_text"]
         if not history:
             return "(no prior history)"
-        recent = history[-4:]
+        recent = history[-6:]
         lines = [
             f"{'Customer' if m.get('direction')=='incoming' else 'Business'}: {m.get('content','')}"
             for m in recent

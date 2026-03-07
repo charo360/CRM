@@ -157,6 +157,7 @@ Write a clear, friendly reply in {language} that:
 3. Includes any payment details (account numbers, M-Pesa till, etc.) from the business info
 4. Only states payment info that is explicitly in the business info — never invent details
 5. Is concise and WhatsApp-natural (use line breaks for lists)
+6. CRITICAL: ONLY mention payment methods from the business info above. NEVER invent account numbers, till numbers, or payment details.
 
 Reply only:"""
 
@@ -197,10 +198,12 @@ Reply only:"""
                     methods.append(display.group(0).strip())
         return list(dict.fromkeys(methods))  # deduplicate preserving order
 
-    def _format_history(self, history: list) -> str:
+    def _format_history(self, history: list, context: dict = None) -> str:
+        if context and context.get("_threaded_history_text"):
+            return context["_threaded_history_text"]
         if not history:
             return "(no prior history)"
-        recent = history[-4:]
+        recent = history[-6:]
         lines = [
             f"{'Customer' if m.get('direction')=='incoming' else 'Business'}: {m.get('content','')}"
             for m in recent

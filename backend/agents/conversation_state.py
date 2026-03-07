@@ -13,10 +13,14 @@ logger = logging.getLogger(__name__)
 COLLECTION = "conversation_states"
 
 
+STALE_HOURS = 24  # Reset state if last update was more than 24h ago
+
+
 async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
     """
     Load the current conversation state for a customer.
     Returns a default state dict if none found.
+    Auto-resets stale state (>24h old) to prevent wrong context carryover.
     """
     if db is None or not customer_id:
         return _default_state()
@@ -26,6 +30,20 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
             "customer_id": str(customer_id)
         })
         if doc:
+            # Check if state is stale — reset if last update > 24h ago
+            updated_at = doc.get("updated_at")
+            if updated_at:
+                if isinstance(updated_at, datetime):
+                    if updated_at.tzinfo is None:
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    age_hours = (datetime.now(timezone.utc) - updated_at).total_seconds() / 3600.0
+                    if age_hours > STALE_HOURS:
+                        logger.info(
+                            f"[ConversationState] Resetting stale state for customer {customer_id} "
+                            f"(last update {age_hours:.1f}h ago)"
+                        )
+                        return _default_state()
+
             return {
                 "state": doc.get("state", "new"),
                 "last_discussed_product": doc.get("last_discussed_product"),

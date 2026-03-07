@@ -227,6 +227,7 @@ Write a polite reply in {language} that:
 3. NEVER invents a lower price or discount not in the business info
 4. If no flexibility exists, suggest value (quality, service, etc.)
 5. Is conversational and WhatsApp-natural (2-3 sentences)
+6. CRITICAL: ONLY use facts from the business info and conversation above. NEVER invent details.
 
 Reply only:"""
 
@@ -282,6 +283,7 @@ Write a helpful reply in {language} that:
 3. Does NOT invent products or prices
 4. Offers to help further
 5. Is brief and WhatsApp-natural
+6. CRITICAL: ONLY mention products from the catalog above. NEVER invent products, prices or details.
 
 Reply only:"""
             else:
@@ -312,10 +314,13 @@ Write a short, apologetic reply in {language} saying we'll get back to them shor
         except Exception:
             return "Here's what we have for you:"
 
-    def _format_history(self, history: list) -> str:
+    def _format_history(self, history: list, context: dict = None) -> str:
+        # Use threaded history if available (more accurate context)
+        if context and context.get("_threaded_history_text"):
+            return context["_threaded_history_text"]
         if not history:
             return "(no prior history)"
-        recent = history[-4:]
+        recent = history[-6:]
         lines = [
             f"{'Customer' if m.get('direction')=='incoming' else 'Business'}: {m.get('content','')}"
             for m in recent

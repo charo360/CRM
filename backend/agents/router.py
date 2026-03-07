@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any, Optional
 
-from .intent_analyzer import analyze_intent, route_intent_to_agent
+from .intent_analyzer import analyze_intent, route_intent_to_agent, build_threaded_context, format_threaded_history
 from .conversation_state import load_state, save_state, mark_escalated
 from .reply_validator import validate_reply, RESULT_APPROVE, RESULT_REJECT, RESULT_ESCALATE
 from .sales_agent import SalesAgent
@@ -24,11 +24,12 @@ class Router:
     ) -> Optional[Dict[str, Any]]:
         """
         Full pipeline:
-          1. Load conversation state
-          2. Analyze intent (1 AI call)
-          3. Dispatch to correct agent
-          4. Validate reply (1 AI call)
-          5. Handle escalation or send
+          1. Build threaded context (relationship detection)
+          2. Load conversation state (auto-resets if stale)
+          3. Analyze intent (1 AI call, threaded context)
+          4. Dispatch to correct agent
+          5. Validate reply (fast rules, no LLM)
+          6. Save state + flag for human if needed
         """
         customer_id = context.get("customer_id")
         is_personal = context.get("is_personal", False)
@@ -36,11 +37,17 @@ class Router:
         business_knowledge = context.get("business_knowledge", "")
         customer_name = context.get("customer_name", "Customer")
 
-        # ── 1. Load conversation state ─────────────────────────────────────
+        # ── 1. Build threaded context ─────────────────────────────────────
+        threaded = build_threaded_context(history)
+        context["_threaded"] = threaded
+        context["_relationship"] = threaded.get("relationship", "new_conversation")
+        context["_threaded_history_text"] = format_threaded_history(threaded)
+
+        # ── 2. Load conversation state ────────────────────────────────────
         conv_state = await load_state(self.db, user_id, str(customer_id) if customer_id else "")
         context["conversation_state_data"] = conv_state
 
-        # ── 2. Analyze intent ──────────────────────────────────────────────
+        # ── 3. Analyze intent ──────────────────────────────────────────────
         classification = await analyze_intent(
             message=message,
             history=history,
@@ -56,6 +63,7 @@ class Router:
         confidence = float(classification.get("confidence", 0.5))
         needs_escalation = classification.get("needs_escalation", False)
         escalation_reason = classification.get("escalation_reason", "")
+        relationship = classification.get("_relationship", "new_conversation")
 
         # Enrich context with classification results
         context.update({
@@ -70,10 +78,11 @@ class Router:
         logger.info(
             f"[Router] user={user_id} customer={customer_id} "
             f"intent={intent} sentiment={sentiment} lang={language} "
-            f"conf={confidence:.2f} escalate={needs_escalation}"
+            f"conf={confidence:.2f} escalate={needs_escalation} "
+            f"relationship={relationship}"
         )
 
-        # ── 3. Immediate escalation if analyzer says so ────────────────────
+        # ── 4. Immediate escalation if analyzer says so ────────────────────
         if needs_escalation:
             await self._do_escalate(user_id, customer_id, escalation_reason or f"Intent {intent} flagged for escalation")
             return {
@@ -83,7 +92,7 @@ class Router:
                 "escalation_reason": escalation_reason,
             }
 
-        # ── 4. Dispatch to agent ───────────────────────────────────────────
+        # ── 5. Dispatch to agent ───────────────────────────────────────────
         agent_name = route_intent_to_agent(intent)
         if is_personal:
             agent_name = "chat"
@@ -112,7 +121,7 @@ class Router:
                 await self._do_escalate(user_id, customer_id, f"No agent handled intent={intent}")
                 return {"handled": True, "escalated": True, "messages": [], "escalation_reason": f"Unhandled intent: {intent}"}
 
-        # ── 5. Reply validation ────────────────────────────────────────────
+        # ── 6. Reply validation (fast rules, no LLM) ─────────────────────
         messages_out = agent_result.get("messages", [])
         if messages_out:
             reply_text = " ".join(m.get("text", "") for m in messages_out if m.get("text"))
@@ -142,41 +151,19 @@ class Router:
 
                 retry_result = await self._dispatch(agent_name, user_id, message, context)
                 if retry_result and retry_result.get("handled") and not retry_result.get("escalate"):
-                    retry_messages = retry_result.get("messages", [])
-                    retry_text = " ".join(m.get("text", "") for m in retry_messages if m.get("text"))
-                    retry_validation = await validate_reply(
-                        reply_text=retry_text,
-                        original_message=message,
-                        intent=intent,
-                        sentiment=sentiment,
-                        language=language,
-                        agent_name=agent_name,
-                        business_knowledge=business_knowledge,
-                        history=history,
-                    )
-                    if retry_validation["result"] == RESULT_ESCALATE:
-                        reason = retry_validation.get("reason", "Reply failed validation after retry")
-                        logger.warning(f"[Router] Retry ESCALATE — escalating: {reason}")
-                        await self._do_escalate(user_id, customer_id, reason)
-                        return {"handled": True, "escalated": True, "messages": [], "escalation_reason": reason}
-                    else:
-                        # APPROVE or REJECT on retry — send the retry reply anyway
-                        # Better to send a best-effort answer than silence the customer
-                        reason = retry_validation.get("reason", "")
-                        logger.info(f"[Router] Retry result={retry_validation['result']} — sending best-effort reply. Reason: {reason}")
-                        agent_result = retry_result
-                        messages_out = retry_messages
+                    messages_out = retry_result.get("messages", [])
+                    agent_result = retry_result
                 else:
                     await self._do_escalate(user_id, customer_id, "Retry agent failed")
                     return {"handled": True, "escalated": True, "messages": [], "escalation_reason": "Retry agent failed"}
 
-        # ── 6. Save conversation state ────────────────────────────────────
+        # ── 7. Save conversation state ────────────────────────────────────
         state_updates = agent_result.get("context_update", {})
         state_updates["last_intent"] = intent
         if customer_id:
             await save_state(self.db, user_id, str(customer_id), state_updates)
 
-        # ── 7. Flag for human if agent requested soft flag ────────────────
+        # ── 8. Flag for human if agent requested soft flag ────────────────
         if agent_result.get("flag_for_human") and customer_id:
             try:
                 from datetime import datetime, timezone

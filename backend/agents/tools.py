@@ -18,57 +18,72 @@ def normalize_url(u: str) -> Optional[str]:
 
 def find_product_matches(query: str, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Find products matching the user's query using exact, plural, and fuzzy logic.
-    Returns a list of matching product objects.
+    Find products matching the user's query using exact, plural, fuzzy, and
+    description/category matching. Searches name + description + category so
+    "shirt" finds "Polo Tee" if description says "casual shirt".
     """
     body_lower = query.lower()
     matched_products = []
     
-    # 1. EXACT / SUBSTRING MATCH (Product Name contains Query or Query contains Product Name)
-    # A. Product name in query? (e.g. user says "I want Red Dress")
+    # 1. EXACT / SUBSTRING MATCH on name
     for p in products:
         if p.get("name", "").lower() in body_lower:
             matched_products.append(p)
-            
-    # B. Query in product name? (e.g. user says "dresses" -> matches "Red Dress")
-    # Only if we haven't found exact matches yet? Or maybe allow both?
-    # Let's collect candidates based on keywords.
     
+    # 2. Keyword search across name + description + category
     if not matched_products and len(body_lower) > 2:
         keywords = body_lower.split()
-        stop_words = {"want", "need", "price", "how", "much", "is", "the", "a", "an", "send", "pic", "picture", "image", "photo", "show", "me", "all", "to", "in", "of", "for", "with", "at", "on", "and", "or"}
+        stop_words = {
+            "want", "need", "price", "how", "much", "is", "the", "a", "an",
+            "send", "pic", "picture", "image", "photo", "show", "me", "all",
+            "to", "in", "of", "for", "with", "at", "on", "and", "or", "do",
+            "you", "have", "any", "can", "i", "get", "please", "this", "that",
+            "what", "your", "some", "like", "about", "got",
+        }
         keywords = [k for k in keywords if k not in stop_words and len(k) > 2]
         
         candidates = []
         if keywords:
             for p in products:
+                # Build searchable text from name + description + category
                 p_name_lower = p.get("name", "").lower()
-                match_count = 0
+                p_desc_lower = (p.get("description", "") or "").lower()
+                p_cat_lower = (p.get("category", "") or "").lower()
+                searchable = f"{p_name_lower} {p_desc_lower} {p_cat_lower}"
+                
+                match_score = 0
                 
                 for k in keywords:
-                    # 1. Exact keyword match
+                    # Exact keyword match (in name = 3 points, desc/cat = 1 point)
                     if k in p_name_lower:
-                        match_count += 1
+                        match_score += 3
+                        continue
+                    if k in searchable:
+                        match_score += 1
                         continue
                     
-                    # 2. Plural/Suffix checks
+                    # Plural/Suffix checks
                     base_forms = []
                     if k.endswith('ies'): base_forms.append(k[:-3] + 'y')
                     if k.endswith('es'): base_forms.append(k[:-2])
                     if k.endswith('s'): base_forms.append(k[:-1])
-                    if k == 'dresses': base_forms.append('dress') # redundancy safety
                     
-                    found_variant = False
                     for base in base_forms:
-                        if len(base) > 2 and base in p_name_lower:
-                            match_count += 1
-                            found_variant = True
+                        if len(base) > 2 and base in searchable:
+                            match_score += 2 if base in p_name_lower else 1
                             break
-                
-                if match_count > 0:
-                    candidates.append((match_count, p))
                     
-            # Sort by match count (descending)
+                    # Fuzzy match — use difflib for close matches on product name words
+                    if match_score == 0:
+                        p_words = p_name_lower.split()
+                        close = difflib.get_close_matches(k, p_words, n=1, cutoff=0.75)
+                        if close:
+                            match_score += 1
+                
+                if match_score > 0:
+                    candidates.append((match_score, p))
+                    
+            # Sort by match score (descending)
             candidates.sort(key=lambda x: x[0], reverse=True)
             matched_products = [c[1] for c in candidates]
 

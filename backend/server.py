@@ -5821,14 +5821,21 @@ async def evolution_webhook(request: Request):
                 is_personal = customer.get("is_personal", False) if customer else False
 
                 # Fetch recent message history (last 20) for full conversation context
+                # EXCLUDE the current message (already stored above) so the AI
+                # doesn't see the same message twice (once in history, once as input)
                 history = []
                 if customer_id:
                     recent_msgs = await db.messages.find({
                         "user_id": user["_id"],
-                        "customer_id": customer_id
+                        "customer_id": customer_id,
+                        "_id": {"$ne": message_id},  # exclude current msg
                     }).sort("created_at", -1).limit(20).to_list(20)
                     history = [
-                        {"direction": m["direction"], "content": m["content"]}
+                        {
+                            "direction": m["direction"],
+                            "content": m["content"],
+                            "created_at": m.get("created_at"),  # timestamp for gap detection
+                        }
                         for m in reversed(recent_msgs)
                     ]
 
@@ -5868,10 +5875,24 @@ async def evolution_webhook(request: Request):
                 _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
 
                 currency = _user_settings.get("currency", "USD")
+                # Build customer data dict for agents that need it
+                _customer_data = {}
+                if customer:
+                    _customer_data = {
+                        "_id": customer.get("_id"),
+                        "name": customer.get("name", ""),
+                        "phone": customer.get("phone_number", ""),
+                        "tags": customer.get("tags", []),
+                        "notes": customer.get("notes", ""),
+                        "purchase_count": customer.get("purchase_count", 0),
+                        "total_spent": customer.get("total_spent", 0),
+                        "last_contacted": customer.get("last_contacted"),
+                    }
                 agent_context = {
                     "currency": currency,
                     "customer_id": customer_id,
                     "customer_name": customer_name,
+                    "customer_data": _customer_data,
                     "is_personal": is_personal,
                     "history": history,
                     "business_knowledge": _business_knowledge,

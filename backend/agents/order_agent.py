@@ -135,6 +135,7 @@ Write a clear, friendly reply in {language} that:
 4. Does NOT invent delivery dates or promises
 5. Is brief (2-4 sentences max)
 6. Matches a natural WhatsApp tone
+7. CRITICAL: ONLY state facts from the order data above. NEVER invent delivery dates, tracking numbers, or order details.
 
 Reply only, no labels:"""
 
