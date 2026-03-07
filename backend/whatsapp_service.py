@@ -967,23 +967,30 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send poll if in stock (Evolution API v2 — sendPoll is the correct interactive endpoint)
+            # Step 2: send reply buttons if in stock (type="reply" required by Evolution API)
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
+                product_id = str(product.get('_id', product.get('id', '')))
                 btn_resp = await client.post(
-                    f"{self.base_url}/message/sendPoll/{instance_name}",
+                    f"{self.base_url}/message/sendButtons/{instance_name}",
                     json={
                         "number": clean_to,
-                        "name": "What would you like to do?",
-                        "selectableCount": 1,
-                        "values": ["🛒 Order Now", "💬 Ask Question", "📱 Share"],
+                        "buttonMessage": {
+                            "title": "What would you like to do?",
+                            "footerText": "Tap a button above ⬆️",
+                            "buttons": [
+                                {"type": "reply", "displayText": "🛒 Add to Cart", "id": f"cart_{product_id}"},
+                                {"type": "reply", "displayText": "✅ Order Now", "id": f"order_{product_id}"},
+                                {"type": "reply", "displayText": "💬 Ask Question", "id": f"question_{product_id}"},
+                            ],
+                        },
                     },
                     headers=self._headers(),
                 )
                 if btn_resp.status_code not in (200, 201):
-                    logger.warning(f"sendPoll failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+                    logger.warning(f"sendButtons failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
                 else:
-                    logger.info(f"sendPoll sent OK: {btn_resp.text[:150]}")
+                    logger.info(f"sendButtons sent OK: {btn_resp.text[:150]}")
 
         return result or {"status": "sent"}
 

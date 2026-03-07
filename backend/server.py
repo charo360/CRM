@@ -5795,10 +5795,12 @@ async def evolution_webhook(request: Request):
                 button_patterns = {
                     "order_": "order",
                     "buy_": "order",
+                    "cart_": "add_to_cart",
                     "details_": "details",
                     "select_": "select",
                     "ask_": "ask",
-                    "share_": "share"
+                    "question_": "ask",
+                    "share_": "share",
                 }
                 
                 button_action = None
@@ -5815,11 +5817,12 @@ async def evolution_webhook(request: Request):
                 if not button_action and not from_me and body:
                     _body_lower = body.strip().lower()
                     _poll_option_map = {
-                        "🛒 order now": "order",
+                        "🛒 add to cart": "add_to_cart",
+                        "add to cart": "add_to_cart",
+                        "✅ order now": "order",
                         "order now": "order",
                         "💬 ask question": "ask",
                         "ask question": "ask",
-                        "📱 share": "share",
                     }
                     _poll_matched = _poll_option_map.get(_body_lower)
                     if _poll_matched:
@@ -5929,6 +5932,47 @@ async def evolution_webhook(request: Request):
                             logging.info(f"Share instructions sent for button click: {button_product_id}")
                             return {"status": "ok", "handled_by": "button_share"}
                         
+                        elif button_action == "add_to_cart":
+                            # Customer selected "Add to Cart" from poll
+                            product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
+                            if product:
+                                currency = user.get("settings", {}).get("currency", "USD")
+                                await db.carts.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"], "status": "active"},
+                                    {
+                                        "$push": {"items": {
+                                            "product_id": product["_id"],
+                                            "product_name": product["name"],
+                                            "price": product.get("price", 0),
+                                            "quantity": 1,
+                                        }},
+                                        "$set": {"updated_at": datetime.utcnow()},
+                                        "$setOnInsert": {
+                                            "_id": str(uuid.uuid4()),
+                                            "created_at": datetime.utcnow(),
+                                        },
+                                    },
+                                    upsert=True,
+                                )
+                                cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
+                                cart_items = cart.get("items", []) if cart else []
+                                cart_total = sum(i.get("price", 0) * i.get("quantity", 1) for i in cart_items)
+                                added_msg = (
+                                    f"✅ *{product['name']}* added to cart!\n\n"
+                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}\n\n"
+                                    f"Keep browsing or reply *CHECKOUT* to place your order."
+                                )
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message=added_msg,
+                                    customer_name=customer_name,
+                                    send_context="order_confirm",
+                                )
+                                logging.info(f"Added to cart: product={button_product_id}, cart_size={len(cart_items)}")
+                                return {"status": "ok", "handled_by": "add_to_cart"}
+
                         elif button_action == "ask":
                             # Customer clicked "Ask Question" - let AI handle it naturally
                             # Don't return here, let it fall through to normal AI pipeline
@@ -5937,6 +5981,85 @@ async def evolution_webhook(request: Request):
                     except Exception as btn_err:
                         logging.error(f"Button handler error: {btn_err}")
                         # Fall through to normal AI handling on error
+
+                # ============================================================
+                # CART KEYWORD HANDLER — "checkout" / "cart" text commands
+                # ============================================================
+                if not button_action and not from_me and body:
+                    _ck = body.strip().lower()
+                    _is_checkout = _ck in ("checkout", "check out", "✅ checkout")
+                    _is_view_cart = _ck in ("cart", "view cart", "my cart")
+                    if _is_checkout or _is_view_cart:
+                        _cart = await db.carts.find_one(
+                            {"customer_id": customer_id, "user_id": user["_id"], "status": "active"}
+                        )
+                        ws = get_whatsapp_service(db)
+                        _currency = user.get("settings", {}).get("currency", "USD")
+                        if not _cart or not _cart.get("items"):
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message="🛒 Your cart is empty. Browse our products and tap *Add to Cart* to get started!",
+                                customer_name=customer_name,
+                                send_context="auto_reply",
+                            )
+                            return {"status": "ok", "handled_by": "cart_empty"}
+                        _items = _cart["items"]
+                        _total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _items)
+                        if _is_view_cart:
+                            _lines = [f"🛒 *Your Cart ({len(_items)} item(s))*\n"]
+                            for _idx, _it in enumerate(_items, 1):
+                                _lines.append(f"{_idx}. {_it['product_name']} — {_currency} {_it.get('price', 0):,.0f}")
+                            _lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
+                            _lines.append("\nReply *CHECKOUT* to place your order or keep browsing!")
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message="\n".join(_lines),
+                                customer_name=customer_name,
+                                send_context="auto_reply",
+                            )
+                            return {"status": "ok", "handled_by": "view_cart"}
+                        if _is_checkout:
+                            _order_id = str(uuid.uuid4())
+                            await db.orders.insert_one({
+                                "_id": _order_id,
+                                "user_id": user["_id"],
+                                "customer_id": customer_id,
+                                "customer_name": customer_name,
+                                "customer_phone": from_number,
+                                "items": [
+                                    {
+                                        "product_id": _it["product_id"],
+                                        "product_name": _it["product_name"],
+                                        "quantity": _it.get("quantity", 1),
+                                        "price": _it.get("price", 0),
+                                    }
+                                    for _it in _items
+                                ],
+                                "total": _total,
+                                "status": "pending",
+                                "created_at": datetime.utcnow(),
+                                "source": "whatsapp_cart",
+                            })
+                            await db.carts.update_one(
+                                {"_id": _cart["_id"]},
+                                {"$set": {"status": "checked_out", "order_id": _order_id, "checked_out_at": datetime.utcnow()}},
+                            )
+                            _conf_lines = ["✅ *Order Confirmed!*\n"]
+                            for _it in _items:
+                                _conf_lines.append(f"• {_it['product_name']} x{_it.get('quantity', 1)} — {_currency} {_it.get('price', 0):,.0f}")
+                            _conf_lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
+                            _conf_lines.append("\nWe'll contact you shortly to confirm delivery details. Thank you! 🙏")
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message="\n".join(_conf_lines),
+                                customer_name=customer_name,
+                                send_context="order_confirm",
+                            )
+                            logging.info(f"Multi-item order {_order_id} created from cart ({len(_items)} items, total={_total})")
+                            return {"status": "ok", "handled_by": "cart_checkout"}
 
                 # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
