@@ -5986,6 +5986,28 @@ async def evolution_webhook(request: Request):
                             except Exception as notif_err:
                                 logging.error(f"[Escalation] Notification failed: {notif_err}")
 
+                        # Send a natural hold message to the customer — sounds like owner, not AI
+                        try:
+                            import random as _random
+                            _hold_messages = [
+                                "Hang on, let me check on that for you.",
+                                "One sec, let me look into that.",
+                                "Sure, give me a moment on that.",
+                                "Let me check and get back to you shortly.",
+                                "On it — give me a moment.",
+                            ]
+                            _hold_msg = _random.choice(_hold_messages)
+                            _ws_hold = get_whatsapp_service(db)
+                            await _ws_hold.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message=_hold_msg,
+                                customer_name=customer_name,
+                                send_context="auto_reply"
+                            )
+                        except Exception as _hold_err:
+                            logging.error(f"[Escalation] Hold message failed: {_hold_err}")
+
                         asyncio.create_task(
                             _notify_escalation(user, customer_name, from_number, body, escalation_reason, customer_id)
                         )
@@ -5997,10 +6019,14 @@ async def evolution_webhook(request: Request):
                     for msg in agent_result.get("messages", []):
                         if not msg.get("text"):
                             continue
+                        # Strip any [NEEDS_HUMAN] tag that leaked into message text
+                        _msg_text = msg["text"].replace("[NEEDS_HUMAN]", "").strip()
+                        if not _msg_text:
+                            continue
                         await ws.send_message(
                             user_id=user["_id"],
                             to_number=from_number,
-                            message=msg["text"],
+                            message=_msg_text,
                             customer_name=customer_name,
                             media_url=msg.get("media_url"),
                             send_context="auto_reply"
