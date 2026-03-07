@@ -5861,10 +5861,8 @@ async def evolution_webhook(request: Request):
                             # Customer clicked "More Info" button
                             product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
                             if product:
-                                catalog_service = get_whatsapp_service(db).get_catalog_service(user["_id"])
-                                detailed_msg = catalog_service.format_product_message(product)
-                                
                                 ws = get_whatsapp_service(db)
+                                detailed_msg = ws.format_product_message(product)
                                 await ws.send_message(
                                     user_id=user["_id"],
                                     to_number=from_number,

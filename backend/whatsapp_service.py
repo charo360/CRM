@@ -11,7 +11,6 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any
 import uuid
-from whatsapp_catalog import WhatsAppCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +80,6 @@ class WhatsAppService:
         self.api_key = EVOLUTION_API_KEY
         self._broadcast_queues: Dict[str, asyncio.Queue] = {}
         self._broadcast_tasks: Dict[str, asyncio.Task] = {}
-        self._catalog_services: Dict[str, WhatsAppCatalog] = {}  # Cache catalog services per instance
 
     def _headers(self) -> Dict:
         return {
@@ -93,12 +91,6 @@ class WhatsAppService:
         """Generate a unique instance name for a user"""
         return f"user_{user_id.replace('-', '_')}"
     
-    def get_catalog_service(self, user_id: str) -> WhatsAppCatalog:
-        """Get or create catalog service for a user's instance"""
-        instance = self._instance_name(user_id)
-        if instance not in self._catalog_services:
-            self._catalog_services[instance] = WhatsAppCatalog(self.base_url, instance)
-        return self._catalog_services[instance]
 
     # ============ INSTANCE MANAGEMENT ============
 
@@ -922,18 +914,85 @@ class WhatsAppService:
             return {"status": "error", "message": str(e)}
 
     # ============ PRODUCT CATALOG MESSAGES ============
-    
-    async def send_product_with_buttons(
+
+    async def send_product_showcase(
         self,
         user_id: str,
         to_number: str,
         product: Dict[str, Any],
-        include_share: bool = True
+        send_buttons: bool = True
     ) -> Dict:
-        """Send a single product with interactive buttons"""
-        catalog = self.get_catalog_service(user_id)
-        return await catalog.send_product_with_buttons(to_number, product, include_share)
-    
+        """Send product image with caption then interactive buttons using authenticated client"""
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        if not user or not user.get("whatsapp", {}).get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = user["whatsapp"]["instance_name"]
+        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+
+        price = product.get('price', 0)
+        currency = product.get('currency', 'KES')
+        price_str = f"{currency} {price:,.0f}" if price else "Price on request"
+        in_stock = product.get('in_stock', True)
+        stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
+        desc = product.get('description', '')
+
+        caption = f"🌟 *{product['name']}*\n💰 {price_str}\n{stock_label}"
+        if desc:
+            caption += f"\n\n{desc}"
+
+        # Get image URL
+        images = product.get('images', [])
+        image_url = product.get('image_url')
+        media_url = images[0] if images else image_url
+
+        result = None
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Step 1: send image with caption (or text if no image)
+            if media_url:
+                resp = await client.post(
+                    f"{self.base_url}/message/sendMedia/{instance_name}",
+                    json={
+                        "number": clean_to,
+                        "mediatype": "image",
+                        "media": media_url,
+                        "caption": caption,
+                    },
+                    headers=self._headers(),
+                )
+            else:
+                resp = await client.post(
+                    f"{self.base_url}/message/sendText/{instance_name}",
+                    json={"number": clean_to, "text": caption},
+                    headers=self._headers(),
+                )
+            result = resp.json() if resp.status_code in (200, 201) else {}
+
+            # Step 2: send buttons if in stock
+            if send_buttons and in_stock:
+                await asyncio.sleep(1)
+                product_id = str(product.get('_id', product.get('id', '')))
+                buttons = [
+                    {"type": "replyButton", "buttonId": f"order_{product_id}", "buttonText": {"displayText": "🛒 Order Now"}},
+                    {"type": "replyButton", "buttonId": f"ask_{product_id}",   "buttonText": {"displayText": "💬 Ask Question"}},
+                    {"type": "replyButton", "buttonId": f"share_{product_id}", "buttonText": {"displayText": "📱 Share"}},
+                ]
+                btn_resp = await client.post(
+                    f"{self.base_url}/message/sendButtons/{instance_name}",
+                    json={
+                        "number": clean_to,
+                        "title": "What would you like to do?",
+                        "description": "",
+                        "footerText": "Tap a button to continue",
+                        "buttons": buttons,
+                    },
+                    headers=self._headers(),
+                )
+                if btn_resp.status_code not in (200, 201):
+                    logger.warning(f"sendButtons failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+
+        return result or {"status": "sent"}
+
     async def send_product_list(
         self,
         user_id: str,
@@ -942,31 +1001,113 @@ class WhatsAppService:
         products: List[Dict[str, Any]],
         category: Optional[str] = None
     ) -> Dict:
-        """Send multiple products as an interactive list"""
-        catalog = self.get_catalog_service(user_id)
-        return await catalog.send_product_list(to_number, title, products, category)
-    
-    async def send_product_showcase(
+        """Send multiple products as an interactive list using authenticated client"""
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        if not user or not user.get("whatsapp", {}).get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = user["whatsapp"]["instance_name"]
+        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+
+        rows = []
+        for p in products[:10]:
+            product_id = str(p.get('_id', p.get('id', '')))
+            price = p.get('price', 0)
+            currency = p.get('currency', 'KES')
+            price_str = f"{currency} {price:,.0f}" if price else "POA"
+            stock_emoji = "✅" if p.get('in_stock', True) else "❌"
+            rows.append({
+                "title": p['name'][:24],
+                "description": f"{stock_emoji} {price_str}",
+                "rowId": f"select_{product_id}"
+            })
+
+        payload = {
+            "number": clean_to,
+            "title": f"🛍️ {title}",
+            "description": f"Browse our {len(rows)} product(s). Tap to view details and order:",
+            "buttonText": "View Products",
+            "footerText": "Tap any product to see full details",
+            "sections": [{"title": category or "Available Products", "rows": rows}]
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{self.base_url}/message/sendList/{instance_name}",
+                json=payload,
+                headers=self._headers(),
+            )
+            if resp.status_code in (200, 201):
+                return {"status": "success", "data": resp.json()}
+            else:
+                logger.warning(f"sendList failed ({resp.status_code}): {resp.text[:300]}")
+                raise Exception(f"sendList error: {resp.status_code} {resp.text[:200]}")
+
+    async def send_product_with_buttons(
         self,
         user_id: str,
         to_number: str,
         product: Dict[str, Any],
-        send_buttons: bool = True
+        include_share: bool = True
     ) -> Dict:
-        """Send product with image and rich caption, optionally with buttons"""
-        catalog = self.get_catalog_service(user_id)
-        return await catalog.send_product_showcase(to_number, product, send_buttons)
-    
-    async def send_product_carousel(
-        self,
-        user_id: str,
-        to_number: str,
-        products: List[Dict[str, Any]],
-        max_items: int = 3
-    ) -> Dict:
-        """Send multiple product images in sequence (carousel effect)"""
-        catalog = self.get_catalog_service(user_id)
-        return await catalog.send_product_carousel(to_number, products, max_items)
+        """Send a single product with interactive buttons (no image)"""
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        if not user or not user.get("whatsapp", {}).get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = user["whatsapp"]["instance_name"]
+        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
+
+        price = product.get('price', 0)
+        currency = product.get('currency', 'KES')
+        price_str = f"{currency} {price:,.0f}" if price else "Price on request"
+        in_stock = product.get('in_stock', True)
+        product_id = str(product.get('_id', product.get('id', '')))
+
+        description = f"💰 {price_str}"
+        if product.get('description'):
+            description += f"\n{product['description'][:200]}"
+
+        buttons = []
+        if in_stock:
+            buttons.append({"type": "replyButton", "buttonId": f"order_{product_id}", "buttonText": {"displayText": "🛒 Order Now"}})
+        buttons.append({"type": "replyButton", "buttonId": f"details_{product_id}", "buttonText": {"displayText": "📋 More Info"}})
+        if include_share:
+            buttons.append({"type": "replyButton", "buttonId": f"share_{product_id}", "buttonText": {"displayText": "📱 Share"}})
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{self.base_url}/message/sendButtons/{instance_name}",
+                json={
+                    "number": clean_to,
+                    "title": f"✨ {product['name']}",
+                    "description": description,
+                    "footerText": "Tap a button below",
+                    "buttons": buttons[:3],
+                },
+                headers=self._headers(),
+            )
+            if resp.status_code in (200, 201):
+                return {"status": "success", "data": resp.json()}
+            else:
+                raise Exception(f"sendButtons error: {resp.status_code} {resp.text[:200]}")
+
+    def format_product_message(self, product: Dict[str, Any]) -> str:
+        """Format a product into a rich text message"""
+        price = product.get('price', 0)
+        currency = product.get('currency', 'KES')
+        price_str = f"{currency} {price:,.0f}" if price else "Price on request"
+        in_stock = product.get('in_stock', True)
+        stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
+        parts = [
+            f"🛍️ *{product['name'].upper()}*",
+            "",
+            f"💰 *Price:* {price_str}",
+            stock_label,
+        ]
+        if product.get('description'):
+            parts.extend(["", "📝 *Description:*", product['description']])
+        return "\n".join(parts)
 
     # ============ BROADCAST (asyncio queue) ============
 
