@@ -799,7 +799,8 @@ export default function CustomersScreen() {
       const response = await apiClient.post(`/ai/draft-message`, {
         customer_id: customer.id,
         custom_instructions: direction || '',
-        regenerate_count: countOverride ?? 0
+        regenerate_count: countOverride ?? 0,
+        mode: customer.is_personal ? 'personal' : 'auto'
       });
 
       setDraftMessage(response.data.message || response.data.drafted_message || '');

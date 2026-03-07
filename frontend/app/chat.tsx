@@ -224,6 +224,7 @@ export default function ChatScreen() {
       const res = await apiClient.post('/ai/draft-message', {
         customer_id: customerId,
         ...(direction ? { custom_instructions: direction } : {}),
+        mode: isPersonal ? 'personal' : 'auto',
       });
       const msg = res.data.message || res.data.drafted_message || '';
       if (msg) setInputText(msg);
