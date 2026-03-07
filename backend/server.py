@@ -5811,6 +5811,26 @@ async def evolution_webhook(request: Request):
                         logging.info(f"Button click detected: action={action}, product_id={button_product_id}")
                         break
                 
+                # POLL RESPONSE HANDLER — match poll option text, look up pending_catalogs for product
+                if not button_action and not from_me and body:
+                    _body_lower = body.strip().lower()
+                    _poll_option_map = {
+                        "🛒 order now": "order",
+                        "order now": "order",
+                        "💬 ask question": "ask",
+                        "ask question": "ask",
+                        "📱 share": "share",
+                    }
+                    _poll_matched = _poll_option_map.get(_body_lower)
+                    if _poll_matched:
+                        _pending_cat = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"]
+                        })
+                        if _pending_cat and _pending_cat.get("products"):
+                            button_action = _poll_matched
+                            button_product_id = _pending_cat["products"][0].get("id")
+                            logging.info(f"Poll response matched: action={_poll_matched}, product={button_product_id}")
+                
                 # Handle button actions
                 if button_action and button_product_id:
                     try:
@@ -8262,6 +8282,32 @@ async def send_product_to_customer(
                 product=product_data,
                 send_buttons=True
             )
+            # Save to db.messages so it appears in CRM chat history
+            try:
+                _images = product.get("images", [])
+                _img_url = product.get("image_url")
+                _media = _images[0] if _images else _img_url
+                _price = product.get('price') or 0
+                _caption = f"🌟 *{product['name']}*\n💰 {currency} {_price:,.0f}"
+                _msg_id = str(uuid.uuid4())
+                await db.messages.insert_one({
+                    "_id": _msg_id,
+                    "customer_id": customer_id,
+                    "user_id": business_id,
+                    "direction": "outgoing",
+                    "content": _caption,
+                    "message_type": "image" if _media else "text",
+                    "image_url": _media,
+                    "status": "sent",
+                    "created_at": datetime.utcnow(),
+                    "send_context": "product_send",
+                })
+                await db.customers.update_one(
+                    {"_id": customer_id},
+                    {"$set": {"last_message": _caption[:200], "last_contacted": datetime.utcnow()}}
+                )
+            except Exception as _save_err:
+                logger.error(f"Failed to save product message to DB: {_save_err}")
         except Exception as e:
             logger.error(f"Error sending product with buttons: {e}")
             # Fallback to legacy method

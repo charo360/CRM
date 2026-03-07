@@ -967,28 +967,23 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send buttons if in stock (Evolution API v2 format)
+            # Step 2: send poll if in stock (Evolution API v2 — sendPoll is the correct interactive endpoint)
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
-                product_id = str(product.get('_id', product.get('id', '')))
-                buttons = [
-                    {"title": "Order Now", "displayText": "🛒 Order Now", "id": f"order_{product_id}"},
-                    {"title": "Ask Question", "displayText": "💬 Ask Question", "id": f"ask_{product_id}"},
-                    {"title": "Share", "displayText": "📱 Share", "id": f"share_{product_id}"},
-                ]
                 btn_resp = await client.post(
-                    f"{self.base_url}/message/sendButtons/{instance_name}",
+                    f"{self.base_url}/message/sendPoll/{instance_name}",
                     json={
                         "number": clean_to,
-                        "title": "What would you like to do?",
-                        "description": "",
-                        "footer": "Tap a button to continue",
-                        "buttons": buttons,
+                        "name": "What would you like to do?",
+                        "selectableCount": 1,
+                        "values": ["🛒 Order Now", "💬 Ask Question", "📱 Share"],
                     },
                     headers=self._headers(),
                 )
                 if btn_resp.status_code not in (200, 201):
-                    logger.warning(f"sendButtons failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+                    logger.warning(f"sendPoll failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+                else:
+                    logger.info(f"sendPoll sent OK: {btn_resp.text[:150]}")
 
         return result or {"status": "sent"}
 
@@ -1275,12 +1270,32 @@ class WhatsAppService:
 
         # Get message content
         message_data = msg.get("message", {})
+
+        # Extract poll vote if present (Evolution API v2 poll responses)
+        _poll_vote = ""
+        _poll_raw = message_data.get("pollUpdateMessage", {})
+        if _poll_raw:
+            _vote = _poll_raw.get("vote", {})
+            for _opt in _vote.get("selectedOptions", []):
+                if isinstance(_opt, str):
+                    _poll_vote = _opt
+                    break
+                if isinstance(_opt, dict):
+                    _poll_vote = _opt.get("name") or _opt.get("optionName") or _opt.get("text") or ""
+                    if _poll_vote:
+                        break
+            if _poll_vote:
+                logger.info(f"Poll vote captured: {_poll_vote!r}")
+            else:
+                logger.info(f"Poll update (no vote extracted). Raw: {str(_poll_raw)[:300]}")
+
         body = (
             message_data.get("conversation")
             or message_data.get("extendedTextMessage", {}).get("text")
             or message_data.get("imageMessage", {}).get("caption")
             or message_data.get("buttonsResponseMessage", {}).get("selectedButtonId")
             or message_data.get("listResponseMessage", {}).get("singleSelectReply", {}).get("selectedRowId")
+            or _poll_vote
             or ""
         )
 
@@ -1317,6 +1332,8 @@ class WhatsAppService:
         push_name = msg.get("pushName", "")
 
         if not contact_number or not body:
+            if _poll_raw:
+                logger.info(f"Poll update dropped (empty body after extraction). Full raw: {str(_poll_raw)[:500]}")
             return
 
         evo_msg_id = key.get("id", "")
