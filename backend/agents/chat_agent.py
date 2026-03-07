@@ -57,45 +57,79 @@ class ChatAgent(BaseAgent):
             if not history:
                 history = [{"direction": "incoming", "content": message}]
 
-            # Build persona instructions
-            if is_personal:
+            # Detect simple greeting — greet back naturally, no old context injected
+            _GREETING_WORDS = {"hi", "hello", "hey", "hii", "habari", "mambo", "niaje", "sasa",
+                               "good morning", "good afternoon", "good evening", "morning", "evening",
+                               "howdy", "sup", "wassup", "salamu", "hola"}
+            _msg_clean = message.lower().strip().rstrip("!?.,")
+            _msg_words = _msg_clean.split()
+            _is_greeting = (
+                len(_msg_words) <= 5 and
+                (any(_msg_clean.startswith(g) for g in _GREETING_WORDS) or _msg_clean in _GREETING_WORDS)
+            )
+
+            if _is_greeting:
+                # Just greet back — no history, no memory, no products, clean slate
                 instructions = (
-                    f"You're texting {customer_name} who is a friend or family of the business owner — NOT a customer. "
-                    "Write exactly how a real person texts a close friend: casual, warm, sometimes informal. "
-                    "MATCH THEIR LANGUAGE AND ENERGY — if they write in Sheng, Pidgin, Swahili, mixed, you match it exactly. "
-                    "No corporate tone, no formality, no 'I hope this message finds you well'. "
-                    "Help with whatever they ask — drafting something, answering a question, just chatting. "
-                    "Keep it real, keep it short. Sound like a person, not a product. "
-                    "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details."
+                    f"The customer just said: \"{message}\"\n"
+                    f"Reply with a natural, warm greeting back to {customer_name}. "
+                    "MATCH THEIR LANGUAGE AND ENERGY exactly. "
+                    "Just greet them back — 1 short sentence. "
+                    "Do NOT mention any past conversations, products, orders, or topics. "
+                    "Do NOT ask multiple questions. Just say hello back naturally. "
+                    "Sound like a real person, not a bot."
+                )
+                result = await ai_service.draft_followup_message(
+                    customer_name=customer_name,
+                    customer_data={},
+                    messages=[{"direction": "incoming", "content": message}],
+                    business_name=business_name or "Personal",
+                    tone="casual",
+                    business_knowledge=None,
+                    custom_instructions=instructions,
+                    user_id=user_id,
+                    model_pref=context.get("ai_model", "standard")
                 )
             else:
-                instructions = (
-                    "The customer is making small talk or asking something off-topic. "
-                    "Reply like a real business owner would — friendly, natural, briefly. "
-                    "MATCH THEIR LANGUAGE EXACTLY: English stays English, Swahili stays Swahili, mixed stays mixed. "
-                    "Do NOT drag in products or pricing unless they bring it up first. "
-                    "If they ask for help drafting something, do it well and directly. "
-                    "If they ask a general question you can answer, answer it straight. "
-                    "Never promise anything financial or make business commitments. "
-                    "1-2 sentences max. No filler. No corporate phrases. Sound human. "
-                    "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details."
+                # Build persona instructions
+                if is_personal:
+                    instructions = (
+                        f"You're texting {customer_name} who is a friend or family of the business owner — NOT a customer. "
+                        "Write exactly how a real person texts a close friend: casual, warm, sometimes informal. "
+                        "MATCH THEIR LANGUAGE AND ENERGY — if they write in Sheng, Pidgin, Swahili, mixed, you match it exactly. "
+                        "No corporate tone, no formality, no 'I hope this message finds you well'. "
+                        "Help with whatever they ask — drafting something, answering a question, just chatting. "
+                        "Keep it real, keep it short. Sound like a person, not a product. "
+                        "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details."
+                    )
+                else:
+                    instructions = (
+                        "The customer is making small talk or asking something off-topic. "
+                        "Reply like a real business owner would — friendly, natural, briefly. "
+                        "MATCH THEIR LANGUAGE EXACTLY: English stays English, Swahili stays Swahili, mixed stays mixed. "
+                        "Do NOT drag in products or pricing unless they bring it up first. "
+                        "If they ask for help drafting something, do it well and directly. "
+                        "If they ask a general question you can answer, answer it straight. "
+                        "Never promise anything financial or make business commitments. "
+                        "1-2 sentences max. No filler. No corporate phrases. Sound human. "
+                        "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details."
+                    )
+
+                custom_req = context.get("custom_instructions")
+                if custom_req:
+                    instructions += f"\n\nExtra direction for this reply: {custom_req}"
+
+                result = await ai_service.draft_followup_message(
+                    customer_name=customer_name,
+                    customer_data=context.get("customer_data", {}),
+                    messages=history,
+                    business_name=business_name or "Personal",
+                    tone="casual",
+                    business_knowledge=business_knowledge if business_knowledge else None,
+                    custom_instructions=instructions,
+                    user_id=user_id,
+                    model_pref=context.get("ai_model", "standard")
                 )
-
-            custom_req = context.get("custom_instructions")
-            if custom_req:
-                instructions += f"\n\nExtra direction for this reply: {custom_req}"
-
-            result = await ai_service.draft_followup_message(
-                customer_name=customer_name,
-                customer_data=context.get("customer_data", {}),
-                messages=history,
-                business_name=business_name or "Personal",
-                tone="casual",
-                business_knowledge=business_knowledge if business_knowledge else None,
-                custom_instructions=instructions,
-                user_id=user_id,
-                model_pref=context.get("ai_model", "standard")
-            )
 
             reply_text = result.get("drafted_message", "")
 
