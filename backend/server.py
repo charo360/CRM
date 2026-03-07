@@ -6714,7 +6714,7 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # Get last 20 messages for rich context
+        # Get last 20 messages for rich context (oldest first)
         raw_messages = await db.messages.find({
             "customer_id": request.customer_id,
             "user_id": business_id
@@ -6805,28 +6805,46 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
 
         business_knowledge = "\n".join(bk_parts) if bk_parts else ""
 
-        # Build conversation log
-        history = [{"direction": m["direction"], "content": m["content"]} for m in raw_messages]
+        # Build conversation log with timestamps for threaded context
+        history = [
+            {"direction": m["direction"], "content": m["content"], "created_at": m.get("created_at")}
+            for m in raw_messages
+        ]
+
+        # Use threaded context — same logic as the agent pipeline
+        from agents.intent_analyzer import build_threaded_context, format_threaded_history, _parse_ts
+        threaded = build_threaded_context(history)
+        relationship = threaded.get("relationship", "new_conversation")
+        hours_since = threaded.get("hours_since_last")
+        threaded_history_text = format_threaded_history(threaded)
+
         conv_lines = []
         for m in history:
             role = "Customer" if m["direction"] == "incoming" else "You"
             conv_lines.append(f"{role}: {m['content']}")
         conversation_log = "\n".join(conv_lines) if conv_lines else ""
 
-        # Determine scenario
+        # Determine scenario — use threaded relationship signal
         last_message = history[-1] if history else None
         days_since = customer.get("days_since_contact")
         last_contacted = customer.get("last_contacted")
         if not days_since and last_contacted:
             try:
-                from datetime import timezone as _tz
                 lc = last_contacted if isinstance(last_contacted, datetime) else datetime.fromisoformat(str(last_contacted).replace("Z", "+00:00"))
                 days_since = (datetime.utcnow() - lc.replace(tzinfo=None)).days
             except Exception:
                 days_since = None
 
         is_first_contact = not last_message and not last_contacted
-        is_replying_to_incoming = last_message and last_message["direction"] == "incoming"
+        # Find the most recent INCOMING message regardless of position
+        last_incoming = next((m for m in reversed(history) if m["direction"] == "incoming"), None)
+        # Replying to customer if: they sent something recently (within 24h) OR last message is theirs
+        is_replying_to_incoming = (
+            last_incoming is not None and (
+                relationship in ("follow_up", "continuation") or
+                (last_message and last_message["direction"] == "incoming")
+            )
+        )
 
         # Anti-repetition: block same opener as last outgoing message
         last_outgoing = next((m["content"] for m in reversed(history) if m["direction"] == "outgoing"), None)
@@ -6853,19 +6871,27 @@ GOAL: Write an opener that feels like it came from a real person — not a sales
 - DO NOT start with: "Hi, I'm reaching out", "I wanted to introduce", "Hope this finds you well", "I'm excited to share" — dead giveaways of a mass message"""
 
         elif is_replying_to_incoming:
-            last_in = last_message["content"]
+            last_in = last_incoming["content"]
+            # Add time context for the AI
+            if relationship == "follow_up":
+                time_note = f"They replied just now (within the last 30 minutes)."
+            elif hours_since and hours_since < 24:
+                time_note = f"They replied {int(hours_since)} hours ago."
+            else:
+                time_note = ""
             bk_instruction = (
                 "The business info below has real product names and prices — USE them directly in your answer. "
                 "Never say 'let me check' or 'I'll get back to you' when the answer is right there."
             ) if has_bk else ""
 
-            scenario_block = f"""SCENARIO: {customer_name} just messaged you: "{last_in}"
+            scenario_block = f"""SCENARIO: {customer_name} messaged you: "{last_in}" {time_note}
 
-GOAL: Reply directly and naturally to what they said.
+GOAL: Reply directly and naturally to THEIR message (above), not to older parts of the conversation.
 - Answer their actual question — don't dance around it
 - {bk_instruction}
 - Skip the greeting if the conversation is already going
-- Match their energy: casual stays casual, direct stays direct"""
+- Match their energy: casual stays casual, direct stays direct
+- If this is a short follow-up like "ok" or "yes" — look at the conversation thread below to understand what they're agreeing to"""
 
         else:
             days_label = f"{days_since} days" if days_since else "a while"
@@ -6907,15 +6933,27 @@ GOAL: Re-engage them with one short, genuine message.
             if has_bk else f"\n\nBusiness name: {business_name}"
         )
 
-        # Conversation history
-        history_block = f"\n\nConversation history (most recent at bottom):\n{conversation_log}" if conversation_log else "\n\n(No prior conversation with this customer)"
+        # Use threaded history if available — shows immediate thread + older context separately
+        if threaded_history_text and threaded_history_text != "(no prior history)":
+            history_block = f"\n\nConversation context:\n{threaded_history_text}"
+        elif conversation_log:
+            history_block = f"\n\nConversation history (most recent at bottom):\n{conversation_log}"
+        else:
+            history_block = "\n\n(No prior conversation with this customer)"
+
+        # Relationship context note for prompt
+        relationship_note = ""
+        if relationship == "new_conversation":
+            relationship_note = "\n\n⚡ NOTE: This customer hasn't messaged in over 24 hours — treat this as a FRESH conversation. Do NOT reference old topics unless directly relevant."
+        elif relationship == "follow_up":
+            relationship_note = "\n\n⚡ NOTE: This is an ACTIVE conversation — the customer just replied recently. Keep the flow natural, no re-introductions."
 
         # Full prompt
         prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
 
 You are a real person — not a bot, not a marketing tool. You write the way real business owners text their customers: direct, warm, brief.
 
-{scenario_block}{bk_block}{history_block}{repetition_block}{direction_block}{variety_block}
+{scenario_block}{bk_block}{history_block}{relationship_note}{repetition_block}{direction_block}{variety_block}
 
 WRITING RULES (non-negotiable):
 1. Output ONLY the message text. No labels, no "Message:", no quotes around it, no explanation.
