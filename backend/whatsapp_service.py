@@ -9,7 +9,7 @@ import asyncio
 import httpx
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import uuid
 from whatsapp_catalog import WhatsAppCatalog
 
