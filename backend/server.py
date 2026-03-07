@@ -8797,6 +8797,7 @@ async def debug_evolution():
         result["ping_error"] = str(e)
     return result
 
+@api_router.get("/debug/test-buttons")
 @api_router.post("/debug/test-buttons")
 async def debug_test_buttons(
     phone: str = Query(..., description="Phone number to send test buttons to"),
