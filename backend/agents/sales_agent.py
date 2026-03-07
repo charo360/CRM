@@ -67,8 +67,9 @@ class SalesAgent(BaseAgent):
 
         if not matches:
             # We know it's a sales intent but couldn't find a product match
+            relationship = context.get("_relationship", "new_conversation")
             return await self._handle_no_match(
-                message, intent, customer_name, language, business_knowledge, history, products
+                message, intent, customer_name, language, business_knowledge, history, products, relationship
             )
 
         # Limit to 5 matches
@@ -263,7 +264,7 @@ Reply only:"""
             }
 
     async def _handle_no_match(
-        self, message, intent, customer_name, language, business_knowledge, history, products
+        self, message, intent, customer_name, language, business_knowledge, history, products, relationship="new_conversation"
     ) -> Dict[str, Any]:
         """No products found matching the query — honest reply, no hallucination."""
         has_products = len(products) > 0
@@ -273,32 +274,38 @@ Reply only:"""
             bk = (business_knowledge or "")[:400]
             history_snippet = self._format_history(history)
 
+            # Mid-conversation tone: no greeting
+            if relationship in ("follow_up", "continuation"):
+                tone_rule = "NO greeting (no 'Hi there', 'Hey', etc) — conversation is already going. Jump straight to the answer."
+            else:
+                tone_rule = "Keep it short. No corporate opener."
+
             if has_products:
                 catalog_hint = format_product_catalog(products[:5], "")
-                prompt = f"""You are a sales assistant. A customer asked about a product but we couldn't find an exact match.
+                prompt = f"""You are a business owner replying on WhatsApp. A customer asked about something you don't have.
 
 Business info: {bk}
-Customer: {customer_name}
 Customer asked: "{message}"
-Available products (sample):
+Available products:
 {catalog_hint}
 
 Recent conversation:
 {history_snippet}
 
-Write a helpful reply in {language} that:
-1. Honestly says we don't have that specific item (if it's not in the catalog)
-2. Suggests the closest available products if any are relevant
-3. Does NOT invent products or prices
-4. Offers to help further
-5. Is brief and WhatsApp-natural
-6. CRITICAL: ONLY mention products from the catalog above. NEVER invent products, prices or details.
+Rules:
+- {tone_rule}
+- If you don't carry it, say so simply in 1 sentence — like a real person would
+- If something in your catalog is close, mention it naturally (name it specifically)
+- NEVER say "I don't have specific details" — if info is missing, just say what you DO have
+- NEVER invent products or prices not in the catalog
+- Max 2 sentences. WhatsApp tone — not a help desk ticket.
+- Language: {language}
 
 Reply only:"""
             else:
-                prompt = f"""A customer asked about a product but the business has no catalog set up yet.
-Customer: {customer_name}, asked: "{message}"
-Write a short, apologetic reply in {language} saying we'll get back to them shortly. 1-2 sentences."""
+                prompt = f"""You are a business owner on WhatsApp. Customer asked: "{message}"
+You don't have a product catalog set up yet.
+Write 1 short sentence in {language} saying you'll get back to them — sound like a real person, not a bot."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
             return {
