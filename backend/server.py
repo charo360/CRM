@@ -6010,6 +6010,11 @@ async def evolution_webhook(request: Request):
                     _last_auto_reply_sent[f"{user['_id']}:{from_number}"] = _t_stamp.time()
                     return {"status": "ok", "handled_by": "agent"}
 
+                # Agent pipeline ran but returned unhandled — stop here, do NOT fall through to legacy AI handler
+                if agent_result is not None:
+                    logging.info(f"[Webhook] Agent returned unhandled for {from_number} — stopping (no legacy fallback)")
+                    return {"status": "ok", "handled_by": "agent_unhandled"}
+
                 # Handle order button taps: "order_<product_id>"
                 body_lower = body.lower().strip()
                 import re as _re
