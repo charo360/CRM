@@ -7014,13 +7014,14 @@ GOAL: Reply directly and naturally to THEIR message (above), not to older parts 
 
         else:
             days_label = f"{days_since} days" if days_since else "a while"
-            last_preview = last_message["content"][:120] if last_message else "(no prior message on record)"
+            # Show last incoming if exists — more relevant than last outgoing
+            last_preview = last_incoming["content"][:120] if last_incoming else (last_message["content"][:120] if last_message else "(no prior message on record)")
             bk_instruction = (
                 "Use the business info below as your hook — reference a specific product, price, offer, or update by name. "
                 "That's a real reason to reply. Vague 'just checking in' gives them nothing to respond to."
             ) if has_bk else "Give them a real reason to reply — a question, an update, something useful."
 
-            scenario_block = f"""SCENARIO: You haven't spoken to {customer_name} in {days_label}. Last thing said: "{last_preview}"
+            scenario_block = f"""SCENARIO: Following up with {customer_name} after {days_label}. Last thing from them: "{last_preview}"
 
 GOAL: Re-engage them with one short, genuine message.
 - {bk_instruction}
@@ -7033,18 +7034,21 @@ GOAL: Re-engage them with one short, genuine message.
         if custom_direction.strip():
             direction_block = f"\n\nDIRECTION FOR THIS VERSION: {custom_direction.strip()}\nApply this while keeping the message natural and WhatsApp-appropriate."
 
-        # Variety directive — rotates angle each regenerate so every draft is meaningfully different
-        variety_angles = [
-            "Try a direct question opener — ask them something specific about a product or their needs.",
-            "Lead with a specific product name and price from the business info as the hook.",
-            "Open with a reference to the last conversation topic, then connect it to something in your catalog.",
-            "Try a very short punchy opener — under 8 words, name a specific product or offer.",
-            "Open with a benefit — what does your best product do for them? Name it specifically.",
-            "Be warm and personal — reference something from the conversation history, then offer to help.",
-            "Be ultra-direct — one sentence naming a specific product/price, straight to the point.",
-        ]
-        angle = variety_angles[regenerate_count % len(variety_angles)]
-        variety_block = f"\n\nVARIETY NOTE (draft attempt #{regenerate_count + 1}): {angle} Make this version feel distinctly different from any previous draft."
+        # Variety directive — only for outbound/re-engage drafts, NOT when replying to a specific incoming message
+        # When replying, variety would derail the AI away from the customer's actual question
+        variety_block = ""
+        if not is_replying_to_incoming:
+            variety_angles = [
+                "Try a direct question opener — ask them something specific about a product or their needs.",
+                "Lead with a specific product name and price from the business info as the hook.",
+                "Open with a reference to the last conversation topic, then connect it to something in your catalog.",
+                "Try a very short punchy opener — under 8 words, name a specific product or offer.",
+                "Open with a benefit — what does your best product do for them? Name it specifically.",
+                "Be warm and personal — reference something from the conversation history, then offer to help.",
+                "Be ultra-direct — one sentence naming a specific product/price, straight to the point.",
+            ]
+            angle = variety_angles[regenerate_count % len(variety_angles)]
+            variety_block = f"\n\nVARIETY NOTE (draft attempt #{regenerate_count + 1}): {angle} Make this version feel distinctly different from any previous draft."
 
         # Business context — label it clearly as the source of truth
         bk_block = (
@@ -7067,21 +7071,31 @@ GOAL: Re-engage them with one short, genuine message.
         elif relationship == "follow_up":
             relationship_note = "\n\n⚡ NOTE: This is an ACTIVE conversation — the customer just replied recently. Keep the flow natural, no re-introductions."
 
+        # Anchor block — always shows the last few messages right before the instruction
+        # This is the most important context for the AI — what was JUST said
+        recent_lines = []
+        for m in history[-6:]:
+            role = "Customer" if m["direction"] == "incoming" else "You"
+            recent_lines.append(f"{role}: {m['content']}")
+        recent_exchange = "\n".join(recent_lines) if recent_lines else ""
+        anchor_block = f"\n\nMOST RECENT EXCHANGE (reply is based on THIS):\n{recent_exchange}" if recent_exchange else ""
+
         # Full prompt
         prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
 
 You are a real person — not a bot, not a marketing tool. You write the way real business owners text their customers: direct, warm, brief.
 
-{scenario_block}{bk_block}{history_block}{relationship_note}{repetition_block}{direction_block}{variety_block}
+{scenario_block}{bk_block}{history_block}{anchor_block}{relationship_note}{repetition_block}{direction_block}{variety_block}
 
 WRITING RULES (non-negotiable):
 1. Output ONLY the message text. No labels, no "Message:", no quotes around it, no explanation.
 2. 1-3 sentences. Short is better. WhatsApp messages are not emails.
-3. USE REAL SPECIFICS: If business info is provided above, name actual products, actual prices, actual offers. Never say "we have great options" when you know exactly what they are.
-4. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
-5. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix — never translate the same thing twice.
-6. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
-7. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
+3. YOUR REPLY MUST DIRECTLY ADDRESS the most recent exchange shown above — do NOT ignore it and talk about something else.
+4. USE REAL SPECIFICS: If business info is provided above, name actual products, actual prices, actual offers. Never say "we have great options" when you know exactly what they are.
+5. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
+6. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix — never translate the same thing twice.
+7. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
+8. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
 
 Message:"""
 
