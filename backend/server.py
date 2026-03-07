@@ -6848,6 +6848,9 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         customer_name = customer.get('name', 'Customer')
         custom_direction = request.custom_instructions or ""
         regenerate_count = request.regenerate_count or 0
+        requested_mode = (request.mode or "auto").strip().lower()
+        if requested_mode not in ("auto", "business", "personal"):
+            requested_mode = "auto"
 
         # Build business knowledge string
         bk_data = user.get('business_knowledge', {})
@@ -6959,6 +6962,21 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         is_first_contact = not last_message and not last_contacted
         # Find the most recent INCOMING message regardless of position
         last_incoming = next((m for m in reversed(history) if m["direction"] == "incoming"), None)
+        last_incoming_text = (last_incoming["content"] if last_incoming else "").strip()
+        last_incoming_lower = last_incoming_text.lower()
+        customer_is_personal = bool(customer.get("is_personal", False))
+        effective_personal_mode = requested_mode == "personal" or (requested_mode == "auto" and customer_is_personal)
+        greeting_starts = ("hi", "hello", "hey", "good morning", "good afternoon", "good evening", "morning", "evening", "habari", "mambo", "niaje", "sasa", "how are you", "how r u", "umeamkaje", "za asubuhi")
+        business_keywords = ("price", "cost", "how much", "buy", "order", "pay", "catalog", "product", "stock", "available", "delivery", "cars", "car", "parts", "accessories")
+        incoming_words = [w for w in re.findall(r"\b\w+\b", last_incoming_lower) if w]
+        starts_like_greeting = any(last_incoming_lower.startswith(g) for g in greeting_starts)
+        has_business_signal = any(k in last_incoming_lower for k in business_keywords)
+        is_simple_greeting = bool(last_incoming_text) and starts_like_greeting and not has_business_signal and len(incoming_words) <= 8
+        social_markers = ("😂", "🤣", "🥰", "😘", "😍", "❤️", "♥", "haha", "lol", "lmao")
+        is_casual_social = bool(last_incoming_text) and not has_business_signal and (is_simple_greeting or any(marker in last_incoming_text or marker in last_incoming_lower for marker in social_markers))
+        suppress_business_context = effective_personal_mode or is_casual_social
+        if suppress_business_context:
+            business_knowledge = ""
         # Replying to customer if: they sent something recently (within 24h) OR last message is theirs
         is_replying_to_incoming = (
             last_incoming is not None and (
@@ -6977,7 +6995,27 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         # Build scenario-specific writing goal
         has_bk = bool(business_knowledge.strip()) if business_knowledge else False
 
-        if is_first_contact:
+        if effective_personal_mode and last_incoming_text:
+            scenario_block = f"""SCENARIO: This is a PERSONAL chat with {customer_name}, not a business customer.
+
+LATEST MESSAGE: "{last_incoming_text}"
+
+GOAL: Reply like a real person texting normally.
+- Keep it casual, warm, and natural
+- No sales language, no product mentions, no business pitch
+- If it's just a greeting or playful message, reply to that energy only
+- Short WhatsApp style — not polished, not formal"""
+
+        elif is_casual_social and last_incoming_text:
+            scenario_block = f"""SCENARIO: {customer_name} sent a casual message: "{last_incoming_text}"
+
+GOAL: Reply naturally to their latest message only.
+- Treat this like normal WhatsApp conversation, not a sales opportunity
+- Do NOT force products, offers, catalog, or business info into the reply
+- Match their vibe and keep it short
+- If they just greeted you, greet back naturally and stop there"""
+
+        elif is_first_contact:
             bk_instruction = (
                 "USE the business info below — name at least one specific product or service by its actual name and price. "
                 "Don't say 'we have great products' — say what they actually are."
@@ -7057,9 +7095,13 @@ GOAL: Re-engage them with one short, genuine message.
             f"\n\nYOUR BUSINESS INFO — use specific names and prices from this, do not speak generically:\n{business_knowledge}"
             if has_bk else f"\n\nBusiness name: {business_name}"
         )
+        if suppress_business_context:
+            bk_block = ""
 
         # Use threaded history if available — shows immediate thread + older context separately
-        if threaded_history_text and threaded_history_text != "(no prior history)":
+        if relationship == "new_conversation" and last_incoming_text:
+            history_block = f"\n\nLatest message from {customer_name}:\nCustomer: {last_incoming_text}"
+        elif threaded_history_text and threaded_history_text != "(no prior history)":
             history_block = f"\n\nConversation context:\n{threaded_history_text}"
         elif conversation_log:
             history_block = f"\n\nConversation history (most recent at bottom):\n{conversation_log}"
@@ -7110,6 +7152,10 @@ Message:"""
         # Build reason string
         if is_first_contact:
             reason = "First message — introduce your business"
+        elif effective_personal_mode:
+            reason = f"Personal reply to: {last_incoming_text[:60]}..." if last_incoming_text else "Personal conversation reply"
+        elif is_casual_social:
+            reason = f"Replying naturally to: {last_incoming_text[:60]}..." if last_incoming_text else "Casual conversation reply"
         elif is_replying_to_incoming:
             reason = f"Replying to: {last_message['content'][:60]}..."
         else:
