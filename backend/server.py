@@ -5716,6 +5716,14 @@ async def evolution_webhook(request: Request):
                         {"user_id": user["_id"], "customer_id": customer_id, "direction": "incoming", "read": {"$ne": True}},
                         {"$set": {"read": True}}
                     )
+                    # Clear needs_human flag — business owner just replied manually,
+                    # so AI can resume auto-replying on the next incoming message
+                    if customer and customer.get("needs_human"):
+                        await db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$set": {"needs_human": False, "needs_human_reason": "", "needs_human_cleared_at": datetime.utcnow()}}
+                        )
+                        logging.info(f"needs_human cleared for {customer_name} ({from_number}) — owner replied manually")
                     return {"status": "ok"}
                 
                 # Auto-classify contact in background (customer vs supplier)
@@ -5812,6 +5820,15 @@ async def evolution_webhook(request: Request):
                 if not _should_auto_reply:
                     logging.info(f"Auto-reply BLOCKED for {from_number} (customer_override={_customer_auto_reply}, global={_global_auto_reply})")
                     return {"status": "ok", "message": "auto-reply disabled for this contact"}
+
+                # needs_human gate: if the customer was escalated to a human, don't auto-reply
+                # until the business owner clears the flag (replies manually in the app)
+                if customer and customer.get("needs_human"):
+                    logging.info(
+                        f"Auto-reply BLOCKED for {customer_name} ({from_number}): "
+                        f"needs_human=True reason={customer.get('needs_human_reason','')[:80]}"
+                    )
+                    return {"status": "ok", "message": "waiting for human — needs_human flag set"}
 
                 # ============================================================
                 # AGENT-BASED PIPELINE
@@ -6498,6 +6515,18 @@ async def get_customer_ai_analysis(customer_id: str, user = Depends(get_current_
         "customer_id": customer_id,
         **analysis
     }
+
+@api_router.post("/customers/{customer_id}/clear-needs-human")
+async def clear_needs_human(customer_id: str, user = Depends(get_current_user)):
+    """Clear the needs_human flag so AI resumes auto-replying for this customer"""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$set": {"needs_human": False, "needs_human_reason": "", "needs_human_cleared_at": datetime.utcnow()}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"status": "success", "message": "AI auto-reply resumed for this customer"}
 
 @api_router.post("/customers/{customer_id}/generate-notes")
 async def generate_customer_notes(customer_id: str, user = Depends(get_current_user)):
