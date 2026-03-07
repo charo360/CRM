@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import re
 from dotenv import load_dotenv
 
 # Load env before ANY other imports
@@ -547,7 +548,7 @@ def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
     # Check last message for context
     if last_message:
         lower_msg = last_message.lower()
-        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
+        if any(word in lower_msg for word in ["price", "cost", "how much", "pric", "bei"]):
             return "Asked about pricing - follow up on quote"
         if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
             return "Was considering purchase - check decision"
@@ -584,7 +585,7 @@ async def generate_quick_reason(customer: dict, messages: list) -> str:
     # Check last message for context
     if last_message:
         lower_msg = last_message.lower()
-        if any(word in lower_msg for word in ["price", "cost", "how much", "bei"]):
+        if any(word in lower_msg for word in ["price", "cost", "how much", "pric", "bei"]):
             return "Asked about pricing - follow up on quote"
         if any(word in lower_msg for word in ["think", "consider", "later", "tomorrow"]):
             return "Was considering purchase - check decision"
@@ -1228,6 +1229,7 @@ class DraftMessageRequest(BaseModel):
     tone: Optional[str] = "friendly"  # professional, friendly, casual
     custom_instructions: Optional[str] = None
     regenerate_count: Optional[int] = 0  # increments each regenerate to force variety
+    mode: Optional[str] = "auto"  # auto, business, personal
 
 class DraftMessageResponse(BaseModel):
     message: str
