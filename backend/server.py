@@ -8909,9 +8909,16 @@ async def diag_test_buttons(
     user_phone: str = Query(...)
 ):
     import httpx as _httpx
-    user_doc = await db.users.find_one({"phone_number": user_phone.strip()})
+    _up = user_phone.strip().lstrip("+")
+    user_doc = (
+        await db.users.find_one({"phone_number": user_phone.strip()}) or
+        await db.users.find_one({"phone_number": f"+{_up}"}) or
+        await db.users.find_one({"phone_number": _up})
+    )
     if not user_doc:
-        return {"error": f"No user found with phone_number={user_phone}"}
+        # Return all stored phone numbers to help diagnose the mismatch
+        all_phones = await db.users.distinct("phone_number")
+        return {"error": f"No user found with phone_number={user_phone}", "stored_phone_numbers": all_phones}
     ws = get_whatsapp_service(db)
     instance = user_doc.get("whatsapp", {}).get("instance_name", "")
     base = ws.base_url.rstrip("/")
