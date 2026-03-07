@@ -6835,11 +6835,12 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # Get last 20 messages for rich context (oldest first)
+        # Get last 20 messages — sort DESC to get most recent, then reverse for chronological order
         raw_messages = await db.messages.find({
             "customer_id": request.customer_id,
             "user_id": business_id
-        }).sort("created_at", 1).limit(20).to_list(20)
+        }).sort("created_at", -1).limit(20).to_list(20)
+        raw_messages = list(reversed(raw_messages))
 
         user_settings = user.get('settings', {})
         business_name = user.get('business_name', 'Your Business')
