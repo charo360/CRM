@@ -8801,15 +8801,20 @@ async def debug_evolution():
 @api_router.post("/debug/test-buttons")
 async def debug_test_buttons(
     phone: str = Query(..., description="Phone number to send test buttons to"),
-    user = Depends(get_current_user)
+    user_phone: str = Query(..., description="Your registered phone number (for lookup)")
 ):
     """
     Diagnostic: fire sendButtons with 3 different payload formats + sendPoll + sendList.
     Returns raw Evolution API status code + response body for each attempt.
     """
     import httpx as _httpx
+    
+    # Find user by their registered phone number
+    user_doc = await db.users.find_one({"phone_number": user_phone.strip()})
+    if not user_doc:
+        return {"error": f"No user found with phone number {user_phone}. Use your registered business phone."}
+    
     ws = get_whatsapp_service(db)
-    user_doc = await db.users.find_one({"_id": user["_id"]})
     instance = user_doc.get("whatsapp", {}).get("instance_name", "")
     base = ws.base_url.rstrip("/")
     hdrs = ws._headers()
