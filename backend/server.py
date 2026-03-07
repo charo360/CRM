@@ -7045,12 +7045,14 @@ GOAL: Write an opener that feels like it came from a real person — not a sales
 
             scenario_block = f"""SCENARIO: {customer_name} messaged you: "{last_in}" {time_note}
 
-GOAL: Reply directly and naturally to THEIR message (above), not to older parts of the conversation.
+GOAL: Reply directly and naturally to THEIR LATEST MESSAGE ONLY.
+- CRITICAL: Ignore any old topics from days/weeks ago — reply to what they JUST said: "{last_in}"
 - Answer their actual question — don't dance around it
 - {bk_instruction}
 - Skip the greeting if the conversation is already going
 - Match their energy: casual stays casual, direct stays direct
-- If this is a short follow-up like "ok" or "yes" — look at the conversation thread below to understand what they're agreeing to"""
+- If this is a short follow-up like "ok" or "yes" — look at the recent thread below to understand what they're agreeing to
+- DO NOT reference old conversation topics unless the customer explicitly brought them up in their latest message"""
 
         else:
             days_label = f"{days_since} days" if days_since else "a while"
@@ -7101,6 +7103,13 @@ GOAL: Re-engage them with one short, genuine message.
         # Use threaded history if available — shows immediate thread + older context separately
         if relationship == "new_conversation" and last_incoming_text:
             history_block = f"\n\nLatest message from {customer_name}:\nCustomer: {last_incoming_text}"
+        elif is_replying_to_incoming and last_incoming_text:
+            # When replying to a specific incoming message, ONLY show recent thread, not old context
+            recent_only = []
+            for m in history[-4:]:
+                role = "Customer" if m["direction"] == "incoming" else "You"
+                recent_only.append(f"{role}: {m['content']}")
+            history_block = f"\n\nRecent thread (FOCUS ON THIS):\n" + "\n".join(recent_only)
         elif threaded_history_text and threaded_history_text != "(no prior history)":
             history_block = f"\n\nConversation context:\n{threaded_history_text}"
         elif conversation_log:
@@ -7114,6 +7123,8 @@ GOAL: Re-engage them with one short, genuine message.
             relationship_note = "\n\n⚡ NOTE: This customer hasn't messaged in over 24 hours — treat this as a FRESH conversation. Do NOT reference old topics unless directly relevant."
         elif relationship == "follow_up":
             relationship_note = "\n\n⚡ NOTE: This is an ACTIVE conversation — the customer just replied recently. Keep the flow natural, no re-introductions."
+        elif is_replying_to_incoming:
+            relationship_note = f"\n\n⚡ CRITICAL: Reply to their LATEST message: \"{last_incoming_text[:100]}\" — ignore any old topics from earlier in the conversation history."
 
         # Anchor block — always shows the last few messages right before the instruction
         # This is the most important context for the AI — what was JUST said
