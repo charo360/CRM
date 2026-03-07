@@ -5789,6 +5789,138 @@ async def evolution_webhook(request: Request):
                     return {"status": "ok", "message": "loop guard: AI signature"}
 
                 # ============================================================
+                # BUTTON RESPONSE HANDLER — detect and process button clicks
+                # ============================================================
+                # Check if this is a button response (button IDs follow pattern: action_productid)
+                button_patterns = {
+                    "order_": "order",
+                    "buy_": "order",
+                    "details_": "details",
+                    "select_": "select",
+                    "ask_": "ask",
+                    "share_": "share"
+                }
+                
+                button_action = None
+                button_product_id = None
+                
+                for prefix, action in button_patterns.items():
+                    if body and body.startswith(prefix):
+                        button_action = action
+                        button_product_id = body.replace(prefix, "")
+                        logging.info(f"Button click detected: action={action}, product_id={button_product_id}")
+                        break
+                
+                # Handle button actions
+                if button_action and button_product_id:
+                    try:
+                        if button_action == "order":
+                            # Customer clicked "Order Now" or "Buy" button
+                            product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
+                            if product:
+                                # Create order automatically
+                                order_id = str(uuid.uuid4())
+                                await db.orders.insert_one({
+                                    "_id": order_id,
+                                    "user_id": user["_id"],
+                                    "customer_id": customer_id,
+                                    "customer_name": customer_name,
+                                    "customer_phone": from_number,
+                                    "items": [{
+                                        "product_id": product["_id"],
+                                        "product_name": product["name"],
+                                        "quantity": 1,
+                                        "price": product.get("price", 0)
+                                    }],
+                                    "total": product.get("price", 0),
+                                    "status": "pending",
+                                    "created_at": datetime.utcnow(),
+                                    "source": "button_click"
+                                })
+                                
+                                currency = user.get("settings", {}).get("currency", "USD")
+                                confirmation = (
+                                    f"✅ Order confirmed!\n\n"
+                                    f"*{product['name']}*\n"
+                                    f"💰 {currency} {product.get('price', 0):,.0f}\n\n"
+                                    f"We'll contact you shortly to confirm delivery details. Thank you! 🙏"
+                                )
+                                
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message=confirmation,
+                                    customer_name=customer_name,
+                                    send_context="order_confirm"
+                                )
+                                logging.info(f"Order created from button click: {order_id}")
+                                return {"status": "ok", "handled_by": "button_order"}
+                        
+                        elif button_action == "details":
+                            # Customer clicked "More Info" button
+                            product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
+                            if product:
+                                catalog_service = get_whatsapp_service(db).get_catalog_service(user["_id"])
+                                detailed_msg = catalog_service.format_product_message(product)
+                                
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message=detailed_msg,
+                                    customer_name=customer_name,
+                                    send_context="product_send"
+                                )
+                                logging.info(f"Product details sent for button click: {button_product_id}")
+                                return {"status": "ok", "handled_by": "button_details"}
+                        
+                        elif button_action == "select":
+                            # Customer selected product from list
+                            product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
+                            if product:
+                                # Send full product showcase with buttons
+                                currency = user.get("settings", {}).get("currency", "USD")
+                                product_data = {"currency": currency, **product}
+                                
+                                ws = get_whatsapp_service(db)
+                                await ws.send_product_showcase(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    product=product_data,
+                                    send_buttons=True
+                                )
+                                logging.info(f"Product showcase sent for list selection: {button_product_id}")
+                                return {"status": "ok", "handled_by": "button_select"}
+                        
+                        elif button_action == "share":
+                            # Customer clicked "Share" button
+                            share_msg = (
+                                "📱 To share this product with a friend, simply forward this message to them!\n\n"
+                                "They can also visit our store to see our full catalog. 🛍️"
+                            )
+                            
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message=share_msg,
+                                customer_name=customer_name,
+                                send_context="auto_reply"
+                            )
+                            logging.info(f"Share instructions sent for button click: {button_product_id}")
+                            return {"status": "ok", "handled_by": "button_share"}
+                        
+                        elif button_action == "ask":
+                            # Customer clicked "Ask Question" - let AI handle it naturally
+                            # Don't return here, let it fall through to normal AI pipeline
+                            logging.info(f"Ask button clicked for product {button_product_id}, passing to AI")
+                    
+                    except Exception as btn_err:
+                        logging.error(f"Button handler error: {btn_err}")
+                        # Fall through to normal AI handling on error
+
+                # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
                 # Rules:
                 #   1. Global OFF + customer individual ON  → SEND (individual overrides)
@@ -8097,9 +8229,10 @@ async def delete_product(product_id: str, user = Depends(get_current_user)):
 async def send_product_to_customer(
     product_id: str,
     customer_id: str = Query(...),
+    use_buttons: bool = Query(True, description="Use interactive buttons (default: true)"),
     user = Depends(get_current_user)
 ):
-    """Send a single product with image to customer via WhatsApp"""
+    """Send a single product with image to customer via WhatsApp with interactive buttons"""
     
     business_id = user.get("business_id", user["_id"])
     product = await db.products.find_one({"_id": product_id, "user_id": business_id})
@@ -8111,62 +8244,81 @@ async def send_product_to_customer(
         raise HTTPException(status_code=404, detail="Customer not found")
     
     currency = user.get("settings", {}).get("currency", "USD")
-    stock_label = "✅ In Stock" if product.get("in_stock", True) else "❌ Out of Stock"
-    desc = f"\n_{product.get('description', '')}_" if product.get("description") else ""
-    price = product.get('price') or 0
-    message_text = (
-        f"*{product['name']}*\n"
-        f"💰 {currency} {price:,.0f}\n"
-        f"{stock_label}{desc}\n\n"
-        f"👉 Reply *Yes* or *Order* to buy!"
-    )
     
-    # Collect all product images (deduplicated, preserving order)
-    server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-    all_images = []
-    seen = set()
-    for img in list(product.get("images", [])):
-        if img and img not in seen:
-            seen.add(img)
-            full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-            if full:
-                all_images.append(full)
-    # Fallback: if images array was empty, try image_url
-    if not all_images:
-        img = product.get("image_url")
-        if img:
-            full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-            if full:
-                all_images.append(full)
+    # Prepare product data with currency
+    product_data = {
+        **product,
+        "currency": currency
+    }
     
     # Send via WhatsApp API
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
     
-    # Send extra images first (no caption), then last image with product details
-    result = None
-    if len(all_images) > 1:
-        for extra_img in all_images[:-1]:
-            await whatsapp_service.send_message(
+    # Use interactive buttons by default for better UX
+    if use_buttons:
+        try:
+            result = await whatsapp_service.send_product_showcase(
                 user_id=business_id,
                 to_number=customer["phone_number"],
-                message="",
-                customer_name=customer.get("name"),
-                media_url=extra_img,
-                send_context="product_send",
+                product=product_data,
+                send_buttons=True
             )
+        except Exception as e:
+            logger.error(f"Error sending product with buttons: {e}")
+            # Fallback to legacy method
+            use_buttons = False
     
-    # Send last image (or only image) with the product details caption
-    result = await whatsapp_service.send_message(
-        user_id=business_id,
-        to_number=customer["phone_number"],
-        message=message_text,
-        customer_name=customer.get("name"),
-        media_url=all_images[-1] if all_images else None,
-        send_context="product_send",
-    )
+    # Legacy method (plain message with image)
+    if not use_buttons:
+        server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+        all_images = []
+        seen = set()
+        for img in list(product.get("images", [])):
+            if img and img not in seen:
+                seen.add(img)
+                full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
+                if full:
+                    all_images.append(full)
+        if not all_images:
+            img = product.get("image_url")
+            if img:
+                full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
+                if full:
+                    all_images.append(full)
+        
+        stock_label = "✅ In Stock" if product.get("in_stock", True) else "❌ Out of Stock"
+        desc = f"\n_{product.get('description', '')}_" if product.get("description") else ""
+        price = product.get('price') or 0
+        message_text = (
+            f"*{product['name']}*\n"
+            f"💰 {currency} {price:,.0f}\n"
+            f"{stock_label}{desc}\n\n"
+            f"👉 Reply *Yes* or *Order* to buy!"
+        )
+        
+        result = None
+        if len(all_images) > 1:
+            for extra_img in all_images[:-1]:
+                await whatsapp_service.send_message(
+                    user_id=business_id,
+                    to_number=customer["phone_number"],
+                    message="",
+                    customer_name=customer.get("name"),
+                    media_url=extra_img,
+                    send_context="product_send",
+                )
+        
+        result = await whatsapp_service.send_message(
+            user_id=business_id,
+            to_number=customer["phone_number"],
+            message=message_text,
+            customer_name=customer.get("name"),
+            media_url=all_images[-1] if all_images else None,
+            send_context="product_send",
+        )
     
-    # Store as pending catalog so "Yes"/"Order" auto-creates the order
+    # Store as pending catalog so button clicks or "Yes"/"Order" auto-creates the order
     await db.pending_catalogs.update_one(
         {"customer_id": customer_id, "user_id": business_id},
         {"$set": {
@@ -8179,8 +8331,9 @@ async def send_product_to_customer(
     
     return {
         "status": "success",
-        "message_id": result.get("message_id"),
-        "customer_name": result.get("customer_name")
+        "message_id": result.get("message_id") if isinstance(result, dict) else None,
+        "customer_name": customer.get("name"),
+        "method": "interactive_buttons" if use_buttons else "legacy"
     }
 
 class SendCatalogRequest(BaseModel):
@@ -8195,6 +8348,7 @@ class BroadcastCatalogRequest(BaseModel):
 @api_router.post("/products/send-catalog")
 async def send_catalog_to_customer(
     request: SendCatalogRequest,
+    use_list: bool = Query(True, description="Use interactive list (default: true)"),
     user = Depends(get_current_user)
 ):
     """Send multiple products as a catalog message to customer via WhatsApp"""
@@ -8218,57 +8372,78 @@ async def send_catalog_to_customer(
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
     
-    # Send each product: extra images first, then last image with details
-    server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+    # Add currency to products
+    products_with_currency = [{"currency": currency, **p} for p in products]
+    
+    # Try interactive list first
     result = None
-    for i, p in enumerate(products):
-        stock_label = "✅ In Stock" if p.get("in_stock", True) else "❌ Out of Stock"
-        desc = f"\n_{p.get('description', '')}_" if p.get("description") else ""
-        price = p.get('price') or 0
-        message_text = (
-            f"*{p['name']}*\n"
-            f"💰 {currency} {price:,.0f}\n"
-            f"{stock_label}{desc}\n\n"
-            f"👉 Reply *{i+1}* to order!"
-        )
-        
-        # Collect all product images (deduplicated, preserving order)
-        all_images = []
-        seen = set()
-        for img in list(p.get("images", [])):
-            if img and img not in seen:
-                seen.add(img)
-                full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-                if full:
-                    all_images.append(full)
-        if not all_images:
-            img = p.get("image_url")
-            if img:
-                full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-                if full:
-                    all_images.append(full)
-        
-        # Send extra images first (no caption)
-        if len(all_images) > 1:
-            for extra_img in all_images[:-1]:
-                await whatsapp_service.send_message(
-                    user_id=business_id,
-                    to_number=customer["phone_number"],
-                    message="",
-                    customer_name=customer.get("name"),
-                    media_url=extra_img,
-                    send_context="product_send",
-                )
-        
-        # Send last image with product details caption
-        result = await whatsapp_service.send_message(
-            user_id=business_id,
-            to_number=customer["phone_number"],
-            message=message_text,
-            customer_name=customer.get("name"),
-            media_url=all_images[-1] if all_images else None,
-            send_context="product_send",
-        )
+    if use_list and len(products) > 1:
+        try:
+            result = await whatsapp_service.send_product_list(
+                user_id=business_id,
+                to_number=customer["phone_number"],
+                title="Our Products",
+                products=products_with_currency,
+                category="Catalog"
+            )
+            use_list = True
+        except Exception as e:
+            logger.error(f"Error sending product list: {e}")
+            use_list = False
+    else:
+        use_list = False
+    
+    # Fallback to legacy method (send each product separately)
+    if not use_list:
+        server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+        for i, p in enumerate(products):
+            stock_label = "✅ In Stock" if p.get("in_stock", True) else "❌ Out of Stock"
+            desc = f"\n_{p.get('description', '')}_" if p.get("description") else ""
+            price = p.get('price') or 0
+            message_text = (
+                f"*{p['name']}*\n"
+                f"💰 {currency} {price:,.0f}\n"
+                f"{stock_label}{desc}\n\n"
+                f"👉 Reply *{i+1}* to order!"
+            )
+            
+            # Collect all product images (deduplicated, preserving order)
+            all_images = []
+            seen = set()
+            for img in list(p.get("images", [])):
+                if img and img not in seen:
+                    seen.add(img)
+                    full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
+                    if full:
+                        all_images.append(full)
+            if not all_images:
+                img = p.get("image_url")
+                if img:
+                    full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
+                    if full:
+                        all_images.append(full)
+            
+            # Send extra images first (no caption)
+            if len(all_images) > 1:
+                for extra_img in all_images[:-1]:
+                    await whatsapp_service.send_message(
+                        user_id=business_id,
+                        to_number=customer["phone_number"],
+                        message="",
+                        customer_name=customer.get("name"),
+                        media_url=extra_img,
+                        send_context="product_send",
+                    )
+            
+            # Send last image with product details caption
+            result = await whatsapp_service.send_message(
+                user_id=business_id,
+                to_number=customer["phone_number"],
+                message=message_text,
+                customer_name=customer.get("name"),
+                media_url=all_images[-1] if all_images else None,
+                send_context="product_send",
+            )
     
     # Store product IDs in a pending catalog for this customer (for order matching)
     await db.pending_catalogs.update_one(
@@ -8283,7 +8458,8 @@ async def send_catalog_to_customer(
     return {
         "status": "success",
         "products_sent": len(products),
-        "message_id": result.get("message_id")
+        "message_id": result.get("message_id") if isinstance(result, dict) else None,
+        "method": "interactive_list" if use_list else "legacy"
     }
 
 @api_router.post("/products/broadcast-catalog")

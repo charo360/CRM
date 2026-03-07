@@ -11,6 +11,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 import uuid
+from whatsapp_catalog import WhatsAppCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ class WhatsAppService:
         self.api_key = EVOLUTION_API_KEY
         self._broadcast_queues: Dict[str, asyncio.Queue] = {}
         self._broadcast_tasks: Dict[str, asyncio.Task] = {}
+        self._catalog_services: Dict[str, WhatsAppCatalog] = {}  # Cache catalog services per instance
 
     def _headers(self) -> Dict:
         return {
@@ -90,6 +92,13 @@ class WhatsAppService:
     def _instance_name(self, user_id: str) -> str:
         """Generate a unique instance name for a user"""
         return f"user_{user_id.replace('-', '_')}"
+    
+    def get_catalog_service(self, user_id: str) -> WhatsAppCatalog:
+        """Get or create catalog service for a user's instance"""
+        instance = self._instance_name(user_id)
+        if instance not in self._catalog_services:
+            self._catalog_services[instance] = WhatsAppCatalog(self.base_url, instance)
+        return self._catalog_services[instance]
 
     # ============ INSTANCE MANAGEMENT ============
 
@@ -911,6 +920,53 @@ class WhatsAppService:
         except Exception as e:
             logger.error(f"Error sending button message: {e}")
             return {"status": "error", "message": str(e)}
+
+    # ============ PRODUCT CATALOG MESSAGES ============
+    
+    async def send_product_with_buttons(
+        self,
+        user_id: str,
+        to_number: str,
+        product: Dict[str, Any],
+        include_share: bool = True
+    ) -> Dict:
+        """Send a single product with interactive buttons"""
+        catalog = self.get_catalog_service(user_id)
+        return await catalog.send_product_with_buttons(to_number, product, include_share)
+    
+    async def send_product_list(
+        self,
+        user_id: str,
+        to_number: str,
+        title: str,
+        products: List[Dict[str, Any]],
+        category: Optional[str] = None
+    ) -> Dict:
+        """Send multiple products as an interactive list"""
+        catalog = self.get_catalog_service(user_id)
+        return await catalog.send_product_list(to_number, title, products, category)
+    
+    async def send_product_showcase(
+        self,
+        user_id: str,
+        to_number: str,
+        product: Dict[str, Any],
+        send_buttons: bool = True
+    ) -> Dict:
+        """Send product with image and rich caption, optionally with buttons"""
+        catalog = self.get_catalog_service(user_id)
+        return await catalog.send_product_showcase(to_number, product, send_buttons)
+    
+    async def send_product_carousel(
+        self,
+        user_id: str,
+        to_number: str,
+        products: List[Dict[str, Any]],
+        max_items: int = 3
+    ) -> Dict:
+        """Send multiple product images in sequence (carousel effect)"""
+        catalog = self.get_catalog_service(user_id)
+        return await catalog.send_product_carousel(to_number, products, max_items)
 
     # ============ BROADCAST (asyncio queue) ============
 
