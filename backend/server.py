@@ -5924,11 +5924,70 @@ async def evolution_webhook(request: Request):
                 )
 
                 if agent_result and agent_result.get("handled"):
-                    # If escalated — no message sent, human will handle
+                    # If escalated — notify owner/employee, then stop (human will handle)
                     if agent_result.get("escalated"):
+                        escalation_reason = agent_result.get('escalation_reason', '')
                         logging.info(
-                            f"[Webhook] Escalated for {from_number}: "
-                            f"{agent_result.get('escalation_reason', '')}"
+                            f"[Webhook] Escalated for {from_number}: {escalation_reason}"
+                        )
+
+                        async def _notify_escalation(owner_user, cust_name, cust_phone, msg_body, reason, cust_id):
+                            try:
+                                ws_notif = get_whatsapp_service(db)
+                                owner_phone = owner_user.get("phone_number") or owner_user.get("whatsapp", {}).get("phone_number")
+
+                                # Check if there's an assigned employee for this customer
+                                notify_phone = None
+                                notify_name = "Business Owner"
+                                assignment = await db.conversation_assignments.find_one({
+                                    "business_id": owner_user["_id"],
+                                    "customer_id": cust_id
+                                })
+                                if assignment:
+                                    member = await db.team_members.find_one({
+                                        "business_id": owner_user["_id"],
+                                        "user_id": assignment.get("assigned_to"),
+                                        "status": "active"
+                                    })
+                                    if member and member.get("phone_number"):
+                                        notify_phone = member["phone_number"]
+                                        notify_name = member.get("name", "Team Member")
+
+                                # Fall back to owner if no assigned employee
+                                if not notify_phone:
+                                    notify_phone = owner_phone
+
+                                if notify_phone and notify_phone != cust_phone:
+                                    preview = msg_body[:120] + ("..." if len(msg_body) > 120 else "")
+                                    notification_msg = (
+                                        f"🔔 *Customer needs your help!*\n\n"
+                                        f"👤 *{cust_name}* ({cust_phone})\n"
+                                        f"💬 _{preview}_\n\n"
+                                        f"The AI couldn't handle this — please reply to them directly."
+                                    )
+                                    await ws_notif.send_message(
+                                        user_id=owner_user["_id"],
+                                        to_number=notify_phone,
+                                        message=notification_msg,
+                                        send_context="auto_reply"
+                                    )
+                                    logging.info(f"[Escalation] Notified {notify_name} ({notify_phone}) about {cust_name}")
+
+                                # Also send Expo push notification to owner's device
+                                try:
+                                    await send_push_notification(
+                                        user_id=owner_user["_id"],
+                                        title=f"🔔 {cust_name} needs your help",
+                                        body=f"{msg_body[:100]}",
+                                        data={"type": "escalation", "customer_id": cust_id, "customer_name": cust_name}
+                                    )
+                                except Exception:
+                                    pass
+                            except Exception as notif_err:
+                                logging.error(f"[Escalation] Notification failed: {notif_err}")
+
+                        asyncio.create_task(
+                            _notify_escalation(user, customer_name, from_number, body, escalation_reason, customer_id)
                         )
                         return {"status": "ok", "handled_by": "escalation"}
 
