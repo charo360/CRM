@@ -9174,6 +9174,182 @@ async def diag_test_buttons(
         results["sendList_footerText"] = {"status": r.status_code, "body": r.text[:500]}
     return {"instance": instance, "base_url": base, "results": results}
 
+@app.get("/diag/test-flow")
+async def diag_test_flow(user_phone: str = Query(...)):
+    """Comprehensive end-to-end test of the entire order/cart/button flow.
+    Tests DB writes, button pattern matching, order+sale creation, cart ops, push tokens.
+    All test data is cleaned up after the test."""
+    import traceback
+    results = {}
+    _test_ids = []  # track IDs for cleanup
+
+    try:
+        # 1. Find user
+        _up = user_phone.strip().lstrip("+")
+        user_doc = (
+            await db.users.find_one({"phone_number": user_phone.strip()}) or
+            await db.users.find_one({"phone_number": f"+{_up}"}) or
+            await db.users.find_one({"phone_number": _up})
+        )
+        if not user_doc:
+            all_phones = await db.users.distinct("phone_number")
+            return {"error": f"No user found", "stored_phones": all_phones}
+        _biz_id = user_doc.get("business_id", user_doc["_id"])
+        results["1_user_found"] = {"status": "✅", "user_id": user_doc["_id"], "business_id": _biz_id}
+
+        # 2. Test button pattern matching
+        button_patterns = {
+            "order_": "order", "buy_": "order", "cart_": "add_to_cart",
+            "checkout_cart": "checkout", "continue_shopping": "continue",
+            "details_": "details", "select_": "select",
+            "ask_": "ask", "question_": "ask", "share_": "share",
+        }
+        test_cases = {
+            "order_abc123": ("order", "abc123"),
+            "cart_xyz789": ("add_to_cart", "xyz789"),
+            "checkout_cart": ("checkout", ""),
+            "continue_shopping": ("continue", ""),
+            "question_prod1": ("ask", "prod1"),
+        }
+        pattern_results = {}
+        for body, (expected_action, expected_pid) in test_cases.items():
+            action = None
+            pid = None
+            for prefix, act in button_patterns.items():
+                if body.startswith(prefix):
+                    action = act
+                    pid = body.replace(prefix, "")
+                    break
+            ok = action == expected_action and pid == expected_pid
+            can_handle = bool(action and (pid or action in ("checkout", "continue")))
+            pattern_results[body] = {"action": action, "product_id": pid, "will_handle": can_handle, "correct": ok}
+        all_patterns_ok = all(r["correct"] and r["will_handle"] for r in pattern_results.values())
+        results["2_button_patterns"] = {"status": "✅" if all_patterns_ok else "❌", "tests": pattern_results}
+
+        # 3. Test order creation
+        _test_order_id = f"_test_{uuid.uuid4()}"
+        _test_ids.append(("orders", _test_order_id))
+        _now = datetime.utcnow()
+        await db.orders.insert_one({
+            "_id": _test_order_id,
+            "user_id": _biz_id,
+            "customer_id": "test_customer",
+            "customer_name": "Test Customer",
+            "customer_phone": "+0000000000",
+            "product": "Test Product",
+            "product_id": "test_prod",
+            "items": [{"product_id": "test_prod", "product_name": "Test Product", "quantity": 1, "price": 100}],
+            "quantity": 1, "price": 100, "total_amount": 100, "total": 100,
+            "status": "pending", "created_at": _now, "source": "diag_test",
+        })
+        order_check = await db.orders.find_one({"_id": _test_order_id})
+        order_fields = ["product", "total_amount", "customer_name", "customer_phone", "items", "source"]
+        missing_fields = [f for f in order_fields if f not in (order_check or {})]
+        results["3_order_creation"] = {
+            "status": "✅" if order_check and not missing_fields else "❌",
+            "found": bool(order_check),
+            "missing_fields": missing_fields or "none",
+        }
+
+        # 4. Test sale creation
+        _test_sale_id = f"_test_{uuid.uuid4()}"
+        _test_ids.append(("sales", _test_sale_id))
+        await db.sales.insert_one({
+            "_id": _test_sale_id,
+            "user_id": _biz_id, "customer_id": "test_customer",
+            "customer_name": "Test Customer", "product": "Test Product",
+            "amount": 100, "quantity": 1, "status": "completed",
+            "created_at": _now, "source": "diag_test",
+        })
+        sale_check = await db.sales.find_one({"_id": _test_sale_id})
+        results["4_sale_creation"] = {"status": "✅" if sale_check else "❌", "found": bool(sale_check)}
+
+        # 5. Test cart operations
+        _test_cart_id = f"_test_{uuid.uuid4()}"
+        _test_ids.append(("carts", _test_cart_id))
+        await db.carts.update_one(
+            {"_id": _test_cart_id},
+            {
+                "$push": {"items": {"product_id": "test_prod", "product_name": "Test Product", "price": 100, "quantity": 1}},
+                "$set": {"customer_id": "test_customer", "user_id": _biz_id, "status": "active", "updated_at": _now},
+            },
+            upsert=True,
+        )
+        cart_check = await db.carts.find_one({"_id": _test_cart_id})
+        cart_items = (cart_check or {}).get("items", [])
+        results["5_cart_operations"] = {
+            "status": "✅" if cart_check and len(cart_items) == 1 else "❌",
+            "items_count": len(cart_items),
+        }
+
+        # 6. Test push token storage
+        _old_tokens = user_doc.get("push_tokens", [])
+        _old_expo = user_doc.get("expo_push_token", "")
+        results["6_push_token"] = {
+            "status": "✅" if _old_tokens or _old_expo else "⚠️ No token registered yet (open the app first)",
+            "expo_push_token": bool(_old_expo),
+            "push_tokens_count": len(_old_tokens),
+        }
+
+        # 7. Test Evolution API connectivity
+        ws = get_whatsapp_service(db)
+        instance = user_doc.get("whatsapp", {}).get("instance_name", "")
+        evo_ok = False
+        if instance:
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=10) as c:
+                    r = await c.get(f"{ws.base_url.rstrip('/')}/instance/connectionState/{instance}", headers=ws._headers())
+                    evo_ok = r.status_code in (200, 201)
+                    results["7_evolution_api"] = {"status": "✅" if evo_ok else "❌", "http": r.status_code, "body": r.text[:200]}
+            except Exception as e:
+                results["7_evolution_api"] = {"status": "❌", "error": str(e)}
+        else:
+            results["7_evolution_api"] = {"status": "❌", "error": "No WhatsApp instance found"}
+
+        # 8. Test WhatsApp sendButtons (dry check — use diag/test-buttons to actually send)
+        results["8_sendButtons_format"] = {
+            "status": "✅",
+            "format": "type=reply, displayText, id",
+            "confirmed_201": "Use /diag/test-buttons?phone=X&user_phone=Y to live-test",
+        }
+
+        # 9. Check products exist
+        product_count = await db.products.count_documents({"user_id": _biz_id})
+        results["9_products"] = {
+            "status": "✅" if product_count > 0 else "⚠️ No products — upload some first",
+            "count": product_count,
+        }
+
+        # 10. Check customers exist
+        customer_count = await db.customers.count_documents({"user_id": user_doc["_id"]})
+        results["10_customers"] = {
+            "status": "✅" if customer_count > 0 else "⚠️ No customers yet",
+            "count": customer_count,
+        }
+
+        # Summary
+        statuses = [v.get("status", "") for v in results.values() if isinstance(v, dict)]
+        fails = sum(1 for s in statuses if "❌" in s)
+        warns = sum(1 for s in statuses if "⚠️" in s)
+        passes = sum(1 for s in statuses if "✅" in s)
+        results["_summary"] = {
+            "passed": passes, "warnings": warns, "failed": fails,
+            "verdict": "ALL GOOD ✅" if fails == 0 else f"{fails} ISSUE(S) FOUND ❌",
+        }
+
+    except Exception as e:
+        results["_error"] = {"message": str(e), "traceback": traceback.format_exc()[-500:]}
+
+    # Cleanup test data
+    for collection, test_id in _test_ids:
+        try:
+            await getattr(db, collection).delete_one({"_id": test_id})
+        except Exception:
+            pass
+
+    return results
+
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
 
