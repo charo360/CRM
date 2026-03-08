@@ -5843,46 +5843,67 @@ async def evolution_webhook(request: Request):
                 if button_action and button_product_id:
                     try:
                         if button_action == "order":
-                            # Customer clicked "Order Now" or "Buy" button
-                            product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
+                            # Customer clicked "Order Now" button
+                            _biz_id = user.get("business_id", user["_id"])
+                            product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id})
                             if product:
-                                # Create order automatically
+                                currency = user.get("settings", {}).get("currency", "USD")
                                 order_id = str(uuid.uuid4())
+                                _price = product.get("price", 0)
+                                _now = datetime.utcnow()
+                                # Insert order — includes all fields the CRM orders page expects
                                 await db.orders.insert_one({
                                     "_id": order_id,
-                                    "user_id": user["_id"],
+                                    "user_id": _biz_id,
                                     "customer_id": customer_id,
                                     "customer_name": customer_name,
                                     "customer_phone": from_number,
-                                    "items": [{
-                                        "product_id": product["_id"],
-                                        "product_name": product["name"],
-                                        "quantity": 1,
-                                        "price": product.get("price", 0)
-                                    }],
-                                    "total": product.get("price", 0),
+                                    "product": product["name"],
+                                    "product_id": product["_id"],
+                                    "items": [{"product_id": product["_id"], "product_name": product["name"], "quantity": 1, "price": _price}],
+                                    "quantity": 1,
+                                    "price": _price,
+                                    "total_amount": _price,
+                                    "total": _price,
                                     "status": "pending",
-                                    "created_at": datetime.utcnow(),
+                                    "created_at": _now,
                                     "source": "button_click"
                                 })
-                                
-                                currency = user.get("settings", {}).get("currency", "USD")
-                                confirmation = (
-                                    f"✅ Order confirmed!\n\n"
-                                    f"*{product['name']}*\n"
-                                    f"💰 {currency} {product.get('price', 0):,.0f}\n\n"
-                                    f"We'll contact you shortly to confirm delivery details. Thank you! 🙏"
+                                # Also create a sale record so revenue dashboard updates
+                                await db.sales.insert_one({
+                                    "_id": str(uuid.uuid4()),
+                                    "user_id": _biz_id,
+                                    "customer_id": customer_id,
+                                    "customer_name": customer_name,
+                                    "product": product["name"],
+                                    "product_id": product["_id"],
+                                    "amount": _price,
+                                    "quantity": 1,
+                                    "status": "completed",
+                                    "created_at": _now,
+                                    "source": "button_click"
+                                })
+                                # Update customer total_spent and purchase_count
+                                await db.customers.update_one(
+                                    {"_id": customer_id},
+                                    {"$inc": {"total_spent": _price, "purchase_count": 1},
+                                     "$set": {"last_contacted": _now}}
                                 )
-                                
+                                confirmation = (
+                                    f"✅ *Order Confirmed!*\n\n"
+                                    f"📦 *{product['name']}*\n"
+                                    f"💰 {currency} {_price:,.0f}\n\n"
+                                    f"We'll contact you shortly to confirm delivery. Thank you! 🙏"
+                                )
                                 ws = get_whatsapp_service(db)
                                 await ws.send_message(
-                                    user_id=user["_id"],
+                                    user_id=_biz_id,
                                     to_number=from_number,
                                     message=confirmation,
                                     customer_name=customer_name,
                                     send_context="order_confirm"
                                 )
-                                logging.info(f"Order created from button click: {order_id}")
+                                logging.info(f"Order + sale created from button click: {order_id}")
                                 return {"status": "ok", "handled_by": "button_order"}
                         
                         elif button_action == "details":
@@ -5938,12 +5959,13 @@ async def evolution_webhook(request: Request):
                             return {"status": "ok", "handled_by": "button_share"}
                         
                         elif button_action == "add_to_cart":
-                            # Customer selected "Add to Cart" from poll
-                            product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
+                            # Customer selected "Add to Cart" from button
+                            _biz_id = user.get("business_id", user["_id"])
+                            product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id})
                             if product:
                                 currency = user.get("settings", {}).get("currency", "USD")
                                 await db.carts.update_one(
-                                    {"customer_id": customer_id, "user_id": user["_id"], "status": "active"},
+                                    {"customer_id": customer_id, "user_id": _biz_id, "status": "active"},
                                     {
                                         "$push": {"items": {
                                             "product_id": product["_id"],
@@ -5998,29 +6020,62 @@ async def evolution_webhook(request: Request):
 
                         elif button_action == "checkout":
                             # Customer clicked "Checkout Now" button
-                            _cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
+                            _biz_id = user.get("business_id", user["_id"])
+                            _cart = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id, "status": "active"})
                             if _cart and _cart.get("items"):
                                 _items = _cart["items"]
                                 _total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _items)
+                                _now = datetime.utcnow()
+                                _currency = user.get("settings", {}).get("currency", "USD")
                                 _order_id = str(uuid.uuid4())
+                                # Build item summary for order name
+                                _item_names = ", ".join(i["product_name"] for i in _items[:3])
+                                if len(_items) > 3:
+                                    _item_names += f" +{len(_items)-3} more"
                                 await db.orders.insert_one({
                                     "_id": _order_id,
-                                    "user_id": user["_id"],
+                                    "user_id": _biz_id,
                                     "customer_id": customer_id,
                                     "customer_name": customer_name,
                                     "customer_phone": from_number,
+                                    "product": _item_names,
                                     "items": _items,
+                                    "quantity": len(_items),
+                                    "total_amount": _total,
                                     "total": _total,
                                     "status": "pending",
-                                    "created_at": datetime.utcnow(),
+                                    "created_at": _now,
                                     "source": "cart_checkout"
                                 })
+                                # Create sale record for revenue tracking
+                                await db.sales.insert_one({
+                                    "_id": str(uuid.uuid4()),
+                                    "user_id": _biz_id,
+                                    "customer_id": customer_id,
+                                    "customer_name": customer_name,
+                                    "product": _item_names,
+                                    "amount": _total,
+                                    "quantity": len(_items),
+                                    "status": "completed",
+                                    "created_at": _now,
+                                    "source": "cart_checkout"
+                                })
+                                # Update customer totals
+                                await db.customers.update_one(
+                                    {"_id": customer_id},
+                                    {"$inc": {"total_spent": _total, "purchase_count": 1},
+                                     "$set": {"last_contacted": _now}}
+                                )
                                 await db.carts.update_one({"_id": _cart["_id"]}, {"$set": {"status": "completed"}})
-                                _currency = user.get("settings", {}).get("currency", "USD")
-                                _confirm = f"✅ *Order Confirmed!*\n\n📦 {len(_items)} item(s)\n💰 Total: {_currency} {_total:,.0f}\n\nWe'll contact you shortly to confirm delivery details. Thank you!"
+                                # Build cart summary for confirmation
+                                _lines = [f"✅ *Order Confirmed!*\n"]
+                                for _it in _items:
+                                    _lines.append(f"• {_it['product_name']} × {_it.get('quantity',1)} — {_currency} {_it.get('price',0):,.0f}")
+                                _lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
+                                _lines.append("\nWe'll contact you shortly to confirm delivery. Thank you! 🙏")
                                 ws = get_whatsapp_service(db)
-                                await ws.send_message(user_id=user["_id"], to_number=from_number, message=_confirm, customer_name=customer_name, send_context="order_confirm")
-                                logging.info(f"Cart checkout completed: order_id={_order_id}, items={len(_items)}")
+                                await ws.send_message(user_id=_biz_id, to_number=from_number, message="\n".join(_lines), customer_name=customer_name, send_context="order_confirm")
+                                logging.info(f"Cart checkout completed: order_id={_order_id}, items={len(_items)}, total={_total}")
                                 return {"status": "ok", "handled_by": "checkout"}
 
                         elif button_action == "continue":

@@ -1027,8 +1027,8 @@ class WhatsAppService:
             "title": f"🛍️ {title}",
             "description": f"Browse our {len(rows)} product(s). Tap to view details and order:",
             "buttonText": "View Products",
-            "footer": "Tap any product to see full details",
-            "values": [{"title": category or "Available Products", "rows": rows}]
+            "footerText": "Tap any product to see full details",
+            "sections": [{"title": category or "Available Products", "rows": rows}]
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
