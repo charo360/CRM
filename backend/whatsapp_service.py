@@ -979,9 +979,9 @@ class WhatsAppService:
                         "description": product.get("name", ""),
                         "footer": "Tap a button to continue",
                         "buttons": [
-                            {"title": "🛒 Add to Cart", "id": f"cart_{product_id}"},
-                            {"title": "✅ Order Now",   "id": f"order_{product_id}"},
-                            {"title": "💬 Ask Question","id": f"question_{product_id}"},
+                            {"type": "reply", "displayText": "🛒 Add to Cart", "id": f"cart_{product_id}"},
+                            {"type": "reply", "displayText": "✅ Order Now",   "id": f"order_{product_id}"},
+                            {"type": "reply", "displayText": "💬 Ask Question","id": f"question_{product_id}"},
                         ],
                     },
                     headers=self._headers(),

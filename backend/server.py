@@ -8948,34 +8948,34 @@ async def diag_test_buttons(
         num = f"+{num}"
     results = {}
     async with _httpx.AsyncClient(timeout=15) as c:
-        # Correct sendButtons format per official docs: flat, title+id per button
+        # sendButtons: type=reply + displayText + id
         r = await c.post(f"{base}/message/sendButtons/{instance}", headers=hdrs, json={
             "number": num,
             "title": "What would you like to do?",
             "description": "Test product",
             "footer": "Tap a button to continue",
             "buttons": [
-                {"title": "🛒 Add to Cart", "id": "cart_test"},
-                {"title": "✅ Order Now",   "id": "order_test"},
-                {"title": "💬 Ask Question","id": "ask_test"},
+                {"type": "reply", "displayText": "🛒 Add to Cart", "id": "cart_test"},
+                {"type": "reply", "displayText": "✅ Order Now",   "id": "order_test"},
+                {"type": "reply", "displayText": "💬 Ask Question","id": "ask_test"},
             ],
         })
-        results["sendButtons_correct"] = {"status": r.status_code, "body": r.text[:500]}
+        results["sendButtons_reply"] = {"status": r.status_code, "body": r.text[:500]}
         await asyncio.sleep(0.8)
-        # sendList with sections
+        # sendList: footerText (not footer) + buttonText + sections
         r = await c.post(f"{base}/message/sendList/{instance}", headers=hdrs, json={
             "number": num,
             "title": "What would you like to do?",
             "description": "Choose an option",
             "buttonText": "View Options",
-            "footer": "Tap to select",
+            "footerText": "Tap to select",
             "sections": [{"title": "Actions", "rows": [
                 {"title": "🛒 Add to Cart", "description": "Save for later", "rowId": "cart_test"},
                 {"title": "✅ Order Now",   "description": "Buy immediately", "rowId": "order_test"},
                 {"title": "💬 Ask Question","description": "Chat with us",    "rowId": "ask_test"},
             ]}],
         })
-        results["sendList_sections"] = {"status": r.status_code, "body": r.text[:500]}
+        results["sendList_footerText"] = {"status": r.status_code, "body": r.text[:500]}
     return {"instance": instance, "base_url": base, "results": results}
 
 # Serve static files (product images)
