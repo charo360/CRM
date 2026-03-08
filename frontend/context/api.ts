@@ -158,8 +158,8 @@ export const settingsAPI = {
    * Register push notification token
    */
   registerPushToken: async (pushToken: string) => {
-    const response = await apiClient.post('/notifications/register-token', {
-      push_token: pushToken
+    const response = await apiClient.post('/push-token', {
+      token: pushToken
     });
     return response.data;
   },
@@ -597,17 +597,6 @@ export const teamAPI = {
    */
   getActivityLogs: async (params?: { limit?: number; user_id?: string; entity_type?: string }) => {
     const response = await apiClient.get('/activity/logs', { params });
-    return response.data;
-  },
-};
-
-// ============ SETTINGS ============
-export const settingsAPI = {
-  /**
-   * Register Expo push token so the business owner receives order notifications
-   */
-  registerPushToken: async (token: string) => {
-    const response = await apiClient.post('/push-token', { token });
     return response.data;
   },
 };

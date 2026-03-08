@@ -5840,7 +5840,7 @@ async def evolution_webhook(request: Request):
                             logging.info(f"Poll response matched: action={_poll_matched}, product={button_product_id}")
                 
                 # Handle button actions
-                if button_action and button_product_id:
+                if button_action and (button_product_id or button_action in ("checkout", "continue")):
                     try:
                         if button_action == "order":
                             # Customer clicked "Order Now" button
@@ -6122,9 +6122,18 @@ async def evolution_webhook(request: Request):
                             return {"status": "ok", "handled_by": "continue_shopping"}
 
                         elif button_action == "ask":
-                            # Customer clicked "Ask Question" - let AI handle it naturally
-                            # Don't return here, let it fall through to normal AI pipeline
-                            logging.info(f"Ask button clicked for product {button_product_id}, passing to AI")
+                            # Customer clicked "Ask Question" — replace raw button ID with
+                            # a meaningful question so the AI knows what the customer wants
+                            _biz_id_ask = user.get("business_id", user["_id"])
+                            _ask_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_ask})
+                            if _ask_product:
+                                body = f"I have a question about {_ask_product['name']}"
+                                # Update the stored message content too
+                                await db.messages.update_one(
+                                    {"_id": message_id},
+                                    {"$set": {"content": body}}
+                                )
+                            logging.info(f"Ask button clicked for product {button_product_id}, passing to AI with body={body!r}")
                     
                     except Exception as btn_err:
                         logging.error(f"Button handler error: {btn_err}")
@@ -6138,8 +6147,9 @@ async def evolution_webhook(request: Request):
                     _is_checkout = _ck in ("checkout", "check out", "✅ checkout")
                     _is_view_cart = _ck in ("cart", "view cart", "my cart")
                     if _is_checkout or _is_view_cart:
+                        _biz_id_cart = user.get("business_id", user["_id"])
                         _cart = await db.carts.find_one(
-                            {"customer_id": customer_id, "user_id": user["_id"], "status": "active"}
+                            {"customer_id": customer_id, "user_id": _biz_id_cart, "status": "active"}
                         )
                         ws = get_whatsapp_service(db)
                         _currency = user.get("settings", {}).get("currency", "USD")
@@ -6169,13 +6179,19 @@ async def evolution_webhook(request: Request):
                             )
                             return {"status": "ok", "handled_by": "view_cart"}
                         if _is_checkout:
+                            _biz_id_ck = user.get("business_id", user["_id"])
                             _order_id = str(uuid.uuid4())
+                            _now_ck = datetime.utcnow()
+                            _item_names_ck = ", ".join(_it["product_name"] for _it in _items[:3])
+                            if len(_items) > 3:
+                                _item_names_ck += f" +{len(_items)-3} more"
                             await db.orders.insert_one({
                                 "_id": _order_id,
-                                "user_id": user["_id"],
+                                "user_id": _biz_id_ck,
                                 "customer_id": customer_id,
                                 "customer_name": customer_name,
                                 "customer_phone": from_number,
+                                "product": _item_names_ck,
                                 "items": [
                                     {
                                         "product_id": _it["product_id"],
@@ -6185,14 +6201,33 @@ async def evolution_webhook(request: Request):
                                     }
                                     for _it in _items
                                 ],
+                                "quantity": len(_items),
                                 "total": _total,
+                                "total_amount": _total,
                                 "status": "pending",
-                                "created_at": datetime.utcnow(),
+                                "created_at": _now_ck,
                                 "source": "whatsapp_cart",
                             })
+                            await db.sales.insert_one({
+                                "_id": str(uuid.uuid4()),
+                                "user_id": _biz_id_ck,
+                                "customer_id": customer_id,
+                                "customer_name": customer_name,
+                                "product": _item_names_ck,
+                                "amount": _total,
+                                "quantity": len(_items),
+                                "status": "completed",
+                                "created_at": _now_ck,
+                                "source": "whatsapp_cart",
+                            })
+                            await db.customers.update_one(
+                                {"_id": customer_id},
+                                {"$inc": {"total_spent": _total, "purchase_count": 1},
+                                 "$set": {"last_contacted": _now_ck}}
+                            )
                             await db.carts.update_one(
                                 {"_id": _cart["_id"]},
-                                {"$set": {"status": "checked_out", "order_id": _order_id, "checked_out_at": datetime.utcnow()}},
+                                {"$set": {"status": "checked_out", "order_id": _order_id, "checked_out_at": _now_ck}},
                             )
                             _conf_lines = ["✅ *Order Confirmed!*\n"]
                             for _it in _items:
@@ -6200,12 +6235,22 @@ async def evolution_webhook(request: Request):
                             _conf_lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
                             _conf_lines.append("\nWe'll contact you shortly to confirm delivery details. Thank you! 🙏")
                             await ws.send_message(
-                                user_id=user["_id"],
+                                user_id=_biz_id_ck,
                                 to_number=from_number,
                                 message="\n".join(_conf_lines),
                                 customer_name=customer_name,
                                 send_context="order_confirm",
                             )
+                            # Push notification to business owner
+                            try:
+                                await send_push_notification(
+                                    user_id=_biz_id_ck,
+                                    title="🛒 New Order Received!",
+                                    body=f"{customer_name} checked out {len(_items)} item(s) — {_currency} {_total:,.0f}",
+                                    data={"type": "new_order", "order_id": _order_id, "customer_id": customer_id}
+                                )
+                            except Exception as _pne:
+                                logging.warning(f"Checkout push notification failed: {_pne}")
                             logging.info(f"Multi-item order {_order_id} created from cart ({len(_items)} items, total={_total})")
                             return {"status": "ok", "handled_by": "cart_checkout"}
 
@@ -6464,57 +6509,8 @@ async def evolution_webhook(request: Request):
                     logging.info(f"[Webhook] Agent returned unhandled for {from_number} — stopping (no legacy fallback)")
                     return {"status": "ok", "handled_by": "agent_unhandled"}
 
-                # Handle order button taps: "order_<product_id>"
-                body_lower = body.lower().strip()
-                import re as _re
-                _order_btn_match = _re.match(r'^order_([a-f0-9-]+)$', body_lower)
-                if _order_btn_match:
-                    _ordered_pid = _order_btn_match.group(1)
-                    _ordered_product = await db.products.find_one({"_id": _ordered_pid, "user_id": user["_id"]})
-                    if _ordered_product:
-                        currency = user.get("settings", {}).get("currency", "USD")
-                        order_id = str(uuid.uuid4())
-                        await db.orders.insert_one({
-                            "_id": order_id,
-                            "user_id": user["_id"],
-                            "customer_id": customer_id,
-                            "product": _ordered_product["name"],
-                            "quantity": 1,
-                            "price": _ordered_product.get("price", 0),
-                            "total_amount": _ordered_product.get("price", 0),
-                            "status": "pending",
-                            "created_at": datetime.utcnow()
-                        })
-                        
-                        # Reduce stock if tracked
-                        if _ordered_product.get("stock_quantity") is not None:
-                            await db.products.update_one(
-                                {"_id": _ordered_pid, "stock_quantity": {"$gte": 1}},
-                                {"$inc": {"stock_quantity": -1}}
-                            )
-                        try:
-                            ws = get_whatsapp_service(db)
-                            price_display = f"{currency} {_ordered_product.get('price', 0):,.0f}"
-                            confirm_msg = (
-                                f"✅ *Order Confirmed!*\n\n"
-                                f"*{_ordered_product['name']}*\n"
-                                f"Qty: 1\n"
-                                f"💰 Total: {price_display}\n\n"
-                                f"Thank you! We'll process your order right away. 🚀"
-                            )
-                            await ws.send_message(
-                                user_id=user["_id"],
-                                to_number=from_number,
-                                message=confirm_msg,
-                                customer_name=customer_name,
-                                send_context="order_confirm",
-                            )
-                        except Exception as e:
-                            logging.error(f"Failed to send button order confirmation: {e}")
-                        return {"status": "ok", "handled_by": "button_order"}
-
                 # Check if customer is ordering from a catalog
-                # body_lower is already defined above
+                body_lower = body.lower().strip()
                 pending = await db.pending_catalogs.find_one({
                     "customer_id": customer_id,
                     "user_id": user["_id"]
@@ -6557,24 +6553,50 @@ async def evolution_webhook(request: Request):
                                     break
                     
                     if matched_product:
+                        _biz_id_cat = user.get("business_id", user["_id"])
                         currency = user.get("settings", {}).get("currency", "USD")
+                        _price_cat = matched_product.get("price", 0)
+                        _now_cat = datetime.utcnow()
                         order_id = str(uuid.uuid4())
                         await db.orders.insert_one({
                             "_id": order_id,
-                            "user_id": user["_id"],
+                            "user_id": _biz_id_cat,
                             "customer_id": customer_id,
+                            "customer_name": customer_name,
+                            "customer_phone": from_number,
                             "product": matched_product["name"],
+                            "product_id": matched_product.get("id"),
+                            "items": [{"product_id": matched_product.get("id"), "product_name": matched_product["name"], "quantity": 1, "price": _price_cat}],
                             "quantity": 1,
-                            "price": matched_product["price"],
-                            "total_amount": matched_product["price"],
+                            "price": _price_cat,
+                            "total_amount": _price_cat,
+                            "total": _price_cat,
                             "status": "pending",
-                            "created_at": datetime.utcnow()
+                            "created_at": _now_cat,
+                            "source": "catalog_reply",
                         })
+                        await db.sales.insert_one({
+                            "_id": str(uuid.uuid4()),
+                            "user_id": _biz_id_cat,
+                            "customer_id": customer_id,
+                            "customer_name": customer_name,
+                            "product": matched_product["name"],
+                            "amount": _price_cat,
+                            "quantity": 1,
+                            "status": "completed",
+                            "created_at": _now_cat,
+                            "source": "catalog_reply",
+                        })
+                        await db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$inc": {"total_spent": _price_cat, "purchase_count": 1},
+                             "$set": {"last_contacted": _now_cat}}
+                        )
 
                         # Reduce stock if tracked
                         if matched_product.get("id"):
                             await db.products.update_one(
-                                {"_id": matched_product["id"], "stock_quantity": {"$exists": True, "$ne": None}, "stock_quantity": {"$gte": 1}},
+                                {"_id": matched_product["id"], "stock_quantity": {"$exists": True, "$ne": None, "$gte": 1}},
                                 {"$inc": {"stock_quantity": -1}}
                             )
                         
@@ -6584,11 +6606,11 @@ async def evolution_webhook(request: Request):
                                 f"✅ *Order Confirmed!*\n\n"
                                 f"*{matched_product['name']}*\n"
                                 f"Qty: 1\n"
-                                f"💰 Total: {currency} {matched_product['price']:,.0f}\n\n"
+                                f"💰 Total: {currency} {_price_cat:,.0f}\n\n"
                                 f"Thank you! We'll process your order right away. 🚀"
                             )
                             await ws.send_message(
-                                user_id=user["_id"],
+                                user_id=_biz_id_cat,
                                 to_number=from_number,
                                 message=confirm_msg,
                                 customer_name=customer_name,
@@ -6596,6 +6618,16 @@ async def evolution_webhook(request: Request):
                             )
                         except Exception as e:
                             logging.error(f"Failed to send order confirmation: {e}")
+                        # Push notification to business owner
+                        try:
+                            await send_push_notification(
+                                user_id=_biz_id_cat,
+                                title="🛒 New Order Received!",
+                                body=f"{customer_name} ordered {matched_product['name']} — {currency} {_price_cat:,.0f}",
+                                data={"type": "new_order", "order_id": order_id, "customer_id": customer_id}
+                            )
+                        except Exception:
+                            pass
                         
                         await db.pending_catalogs.delete_one({"_id": pending["_id"]})
                         return {"status": "ok"}
@@ -8939,9 +8971,13 @@ async def register_push_token(
     token = payload.get("token", "").strip()
     if not token:
         raise HTTPException(status_code=400, detail="token is required")
+    # Save to expo_push_token (single) AND push_tokens (array) for compatibility
     await db.users.update_one(
         {"_id": user["_id"]},
-        {"$set": {"expo_push_token": token, "push_token_updated": datetime.utcnow()}}
+        {
+            "$set": {"expo_push_token": token, "push_token_updated": datetime.utcnow()},
+            "$addToSet": {"push_tokens": token},
+        }
     )
     return {"status": "ok"}
 
