@@ -5796,6 +5796,8 @@ async def evolution_webhook(request: Request):
                     "order_": "order",
                     "buy_": "order",
                     "cart_": "add_to_cart",
+                    "checkout_cart": "checkout",
+                    "continue_shopping": "continue",
                     "details_": "details",
                     "select_": "select",
                     "ask_": "ask",
@@ -5962,10 +5964,10 @@ async def evolution_webhook(request: Request):
                                 cart_total = sum(i.get("price", 0) * i.get("quantity", 1) for i in cart_items)
                                 added_msg = (
                                     f"✅ *{product['name']}* added to cart!\n\n"
-                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}\n\n"
-                                    f"Keep browsing or reply *CHECKOUT* to place your order."
+                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}"
                                 )
                                 ws = get_whatsapp_service(db)
+                                # Send confirmation message
                                 await ws.send_message(
                                     user_id=user["_id"],
                                     to_number=from_number,
@@ -5973,8 +5975,66 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name,
                                     send_context="order_confirm",
                                 )
+                                # Send action buttons
+                                import httpx
+                                async with httpx.AsyncClient(timeout=30) as client:
+                                    await asyncio.sleep(0.5)
+                                    await client.post(
+                                        f"{ws.base_url}/message/sendButtons/{ws._instance_name(user['_id'])}",
+                                        json={
+                                            "number": from_number.lstrip("+"),
+                                            "title": "What's next?",
+                                            "description": "Choose an option below",
+                                            "footer": "Your cart is ready",
+                                            "buttons": [
+                                                {"type": "reply", "displayText": "🛍️ Continue Shopping", "id": "continue_shopping"},
+                                                {"type": "reply", "displayText": "✅ Checkout Now", "id": "checkout_cart"},
+                                            ],
+                                        },
+                                        headers=ws._headers(),
+                                    )
                                 logging.info(f"Added to cart: product={button_product_id}, cart_size={len(cart_items)}")
                                 return {"status": "ok", "handled_by": "add_to_cart"}
+
+                        elif button_action == "checkout":
+                            # Customer clicked "Checkout Now" button
+                            _cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
+                            if _cart and _cart.get("items"):
+                                _items = _cart["items"]
+                                _total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _items)
+                                _order_id = str(uuid.uuid4())
+                                await db.orders.insert_one({
+                                    "_id": _order_id,
+                                    "user_id": user["_id"],
+                                    "customer_id": customer_id,
+                                    "customer_name": customer_name,
+                                    "customer_phone": from_number,
+                                    "items": _items,
+                                    "total": _total,
+                                    "status": "pending",
+                                    "created_at": datetime.utcnow(),
+                                    "source": "cart_checkout"
+                                })
+                                await db.carts.update_one({"_id": _cart["_id"]}, {"$set": {"status": "completed"}})
+                                _currency = user.get("settings", {}).get("currency", "USD")
+                                _confirm = f"✅ *Order Confirmed!*\n\n📦 {len(_items)} item(s)\n💰 Total: {_currency} {_total:,.0f}\n\nWe'll contact you shortly to confirm delivery details. Thank you!"
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(user_id=user["_id"], to_number=from_number, message=_confirm, customer_name=customer_name, send_context="order_confirm")
+                                logging.info(f"Cart checkout completed: order_id={_order_id}, items={len(_items)}")
+                                return {"status": "ok", "handled_by": "checkout"}
+
+                        elif button_action == "continue":
+                            # Customer clicked "Continue Shopping" - just acknowledge
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message="🛍️ Great! Keep browsing our products. When you're ready, just tap *Checkout* or reply *CHECKOUT*.",
+                                customer_name=customer_name,
+                                send_context="auto_reply"
+                            )
+                            logging.info("Continue shopping button clicked")
+                            return {"status": "ok", "handled_by": "continue_shopping"}
 
                         elif button_action == "ask":
                             # Customer clicked "Ask Question" - let AI handle it naturally
