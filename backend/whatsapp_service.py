@@ -1295,10 +1295,34 @@ class WhatsAppService:
             else:
                 logger.info(f"Poll update (no vote extracted). Raw: {str(_poll_raw)[:300]}")
 
+        # Extract native flow quick_reply button tap response
+        # Format: interactiveResponseMessage > nativeFlowResponseMessage > paramsJson {"id": "...", "display_text": "..."}
+        _native_btn_id = ""
+        _interactive_resp = message_data.get("interactiveResponseMessage", {})
+        if _interactive_resp:
+            _nfr = _interactive_resp.get("nativeFlowResponseMessage", {})
+            _params_raw = _nfr.get("paramsJson") or _nfr.get("params") or ""
+            if _params_raw:
+                try:
+                    import json as _json
+                    _params = _json.loads(_params_raw) if isinstance(_params_raw, str) else _params_raw
+                    _native_btn_id = _params.get("id") or _params.get("selectedId") or ""
+                except Exception:
+                    pass
+            if not _native_btn_id:
+                # Fallback: try selectedButtonId or body text
+                _native_btn_id = (
+                    _interactive_resp.get("body", {}).get("text", "")
+                    or _interactive_resp.get("selectedButtonId", "")
+                )
+            if _native_btn_id:
+                logger.info(f"Native flow button tap: {_native_btn_id!r}")
+
         body = (
             message_data.get("conversation")
             or message_data.get("extendedTextMessage", {}).get("text")
             or message_data.get("imageMessage", {}).get("caption")
+            or _native_btn_id
             or message_data.get("buttonsResponseMessage", {}).get("selectedButtonId")
             or message_data.get("listResponseMessage", {}).get("singleSelectReply", {}).get("selectedRowId")
             or _poll_vote
