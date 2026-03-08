@@ -5904,6 +5904,21 @@ async def evolution_webhook(request: Request):
                                     send_context="order_confirm"
                                 )
                                 logging.info(f"Order + sale created from button click: {order_id}")
+                                # Notify business owner via push notification
+                                _owner = await db.users.find_one({"_id": _biz_id}, {"expo_push_token": 1})
+                                _push_token = (_owner or {}).get("expo_push_token", "")
+                                if _push_token:
+                                    try:
+                                        from notification_service import get_notification_service
+                                        _ns = get_notification_service()
+                                        await _ns.send_notification(
+                                            push_token=_push_token,
+                                            title="🛒 New Order Received!",
+                                            body=f"{customer_name} ordered {product['name']} — {currency} {_price:,.0f}",
+                                            data={"type": "new_order", "order_id": order_id, "customer_id": customer_id}
+                                        )
+                                    except Exception as _ne:
+                                        logging.warning(f"Order push notification failed: {_ne}")
                                 return {"status": "ok", "handled_by": "button_order"}
                         
                         elif button_action == "details":
@@ -6076,6 +6091,21 @@ async def evolution_webhook(request: Request):
                                 ws = get_whatsapp_service(db)
                                 await ws.send_message(user_id=_biz_id, to_number=from_number, message="\n".join(_lines), customer_name=customer_name, send_context="order_confirm")
                                 logging.info(f"Cart checkout completed: order_id={_order_id}, items={len(_items)}, total={_total}")
+                                # Notify business owner via push notification
+                                _owner2 = await db.users.find_one({"_id": _biz_id}, {"expo_push_token": 1})
+                                _push_token2 = (_owner2 or {}).get("expo_push_token", "")
+                                if _push_token2:
+                                    try:
+                                        from notification_service import get_notification_service
+                                        _ns2 = get_notification_service()
+                                        await _ns2.send_notification(
+                                            push_token=_push_token2,
+                                            title="🛒 New Order Received!",
+                                            body=f"{customer_name} checked out {len(_items)} item(s) — {_currency} {_total:,.0f}",
+                                            data={"type": "new_order", "order_id": _order_id, "customer_id": customer_id}
+                                        )
+                                    except Exception as _ne2:
+                                        logging.warning(f"Checkout push notification failed: {_ne2}")
                                 return {"status": "ok", "handled_by": "checkout"}
 
                         elif button_action == "continue":
@@ -8898,6 +8928,21 @@ async def broadcast_catalog(
 
 @api_router.get("/health")
 async def health_check():
+    return {"status": "ok"}
+
+@api_router.post("/push-token")
+async def register_push_token(
+    payload: dict,
+    user = Depends(get_current_user)
+):
+    """Save Expo push token for the business owner so they receive order notifications"""
+    token = payload.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"expo_push_token": token, "push_token_updated": datetime.utcnow()}}
+    )
     return {"status": "ok"}
 
 @api_router.get("/debug/evolution")

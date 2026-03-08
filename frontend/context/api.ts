@@ -601,6 +601,17 @@ export const teamAPI = {
   },
 };
 
+// ============ SETTINGS ============
+export const settingsAPI = {
+  /**
+   * Register Expo push token so the business owner receives order notifications
+   */
+  registerPushToken: async (token: string) => {
+    const response = await apiClient.post('/push-token', { token });
+    return response.data;
+  },
+};
+
 // ============ ACCOUNT MANAGEMENT ============
 export const accountAPI = {
   /**
