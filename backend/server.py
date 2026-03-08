@@ -5823,6 +5823,9 @@ async def evolution_webhook(request: Request):
                         "order now": "order",
                         "💬 ask question": "ask",
                         "ask question": "ask",
+                        # legacy poll option names (in case old polls are still in flight)
+                        "🛒 order now": "order",
+                        "📱 share": "share",
                     }
                     _poll_matched = _poll_option_map.get(_body_lower)
                     if _poll_matched:
@@ -8883,19 +8886,36 @@ async def debug_test_buttons(
 
         await asyncio.sleep(0.5)
 
-        # sendList — for comparison
+        # sendList E1 — flat with sections (correct v2 format)
         r = await c.post(f"{base}/message/sendList/{instance}", headers=hdrs, json={
             "number": num,
-            "title": "Test List",
-            "description": "Format E: sendList",
+            "title": "Test E1",
+            "description": "Pick an action",
             "buttonText": "View Options",
-            "footer": "pick one",
-            "values": [{"title": "Section 1", "rows": [
-                {"title": "Item 1", "description": "desc 1", "rowId": "item_1"},
-                {"title": "Item 2", "description": "desc 2", "rowId": "item_2"},
+            "footer": "tap to pick",
+            "sections": [{"title": "Actions", "rows": [
+                {"title": "Add to Cart", "description": "Save for later", "rowId": "cart_test"},
+                {"title": "Order Now", "description": "Buy immediately", "rowId": "order_test"},
+                {"title": "Ask Question", "description": "Chat with us", "rowId": "ask_test"},
             ]}],
         })
-        results["E_sendList"] = {"status": r.status_code, "body": r.text[:400]}
+        results["E1_sendList_flat_sections"] = {"status": r.status_code, "body": r.text[:400]}
+        await asyncio.sleep(0.5)
+        # sendList E2 — nested listMessage wrapper
+        r = await c.post(f"{base}/message/sendList/{instance}", headers=hdrs, json={
+            "number": num,
+            "listMessage": {
+                "title": "Test E2",
+                "description": "Pick an action",
+                "buttonText": "View Options",
+                "footerText": "tap to pick",
+                "sections": [{"title": "Actions", "rows": [
+                    {"title": "Add to Cart", "description": "Save for later", "rowId": "cart_test"},
+                    {"title": "Order Now", "description": "Buy immediately", "rowId": "order_test"},
+                ]}],
+            },
+        })
+        results["E2_sendList_nested"] = {"status": r.status_code, "body": r.text[:400]}
 
     return {"instance": instance, "base_url": base, "results": results}
 
@@ -8928,52 +8948,34 @@ async def diag_test_buttons(
         num = f"+{num}"
     results = {}
     async with _httpx.AsyncClient(timeout=15) as c:
-        # A: nested buttonMessage
+        # Correct sendButtons format per official docs: flat, title+id per button
         r = await c.post(f"{base}/message/sendButtons/{instance}", headers=hdrs, json={
             "number": num,
-            "buttonMessage": {
-                "title": "Test A - nested",
-                "footerText": "tap a button",
-                "buttons": [
-                    {"type": "reply", "displayText": "Add to Cart", "id": "cart_test"},
-                    {"type": "reply", "displayText": "Order Now",   "id": "order_test"},
-                ],
-            },
-        })
-        results["A_nested_buttonMessage"] = {"status": r.status_code, "body": r.text[:400]}
-        await asyncio.sleep(0.8)
-        # B: flat v1 style
-        r = await c.post(f"{base}/message/sendButtons/{instance}", headers=hdrs, json={
-            "number": num,
-            "title": "Test B - flat v1",
-            "footerText": "tap a button",
+            "title": "What would you like to do?",
+            "description": "Test product",
+            "footer": "Tap a button to continue",
             "buttons": [
-                {"buttonId": "cart_test", "buttonText": {"displayText": "Add to Cart"}, "type": 1},
-                {"buttonId": "order_test", "buttonText": {"displayText": "Order Now"},  "type": 1},
+                {"title": "🛒 Add to Cart", "id": "cart_test"},
+                {"title": "✅ Order Now",   "id": "order_test"},
+                {"title": "💬 Ask Question","id": "ask_test"},
             ],
         })
-        results["B_flat_v1"] = {"status": r.status_code, "body": r.text[:400]}
+        results["sendButtons_correct"] = {"status": r.status_code, "body": r.text[:500]}
         await asyncio.sleep(0.8)
-        # C: flat v2 style
-        r = await c.post(f"{base}/message/sendButtons/{instance}", headers=hdrs, json={
+        # sendList with sections
+        r = await c.post(f"{base}/message/sendList/{instance}", headers=hdrs, json={
             "number": num,
-            "title": "Test C - flat v2",
-            "footer": "tap a button",
-            "buttons": [
-                {"id": "cart_test",  "displayText": "Add to Cart"},
-                {"id": "order_test", "displayText": "Order Now"},
-            ],
+            "title": "What would you like to do?",
+            "description": "Choose an option",
+            "buttonText": "View Options",
+            "footer": "Tap to select",
+            "sections": [{"title": "Actions", "rows": [
+                {"title": "🛒 Add to Cart", "description": "Save for later", "rowId": "cart_test"},
+                {"title": "✅ Order Now",   "description": "Buy immediately", "rowId": "order_test"},
+                {"title": "💬 Ask Question","description": "Chat with us",    "rowId": "ask_test"},
+            ]}],
         })
-        results["C_flat_v2"] = {"status": r.status_code, "body": r.text[:400]}
-        await asyncio.sleep(0.8)
-        # D: sendPoll
-        r = await c.post(f"{base}/message/sendPoll/{instance}", headers=hdrs, json={
-            "number": num,
-            "name": "Test D - Poll",
-            "selectableCount": 1,
-            "values": ["Add to Cart", "Order Now", "Ask Question"],
-        })
-        results["D_sendPoll"] = {"status": r.status_code, "body": r.text[:400]}
+        results["sendList_sections"] = {"status": r.status_code, "body": r.text[:500]}
     return {"instance": instance, "base_url": base, "results": results}
 
 # Serve static files (product images)

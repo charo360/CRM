@@ -967,7 +967,7 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send reply buttons if in stock (type="reply" required by Evolution API)
+            # Step 2: send action buttons (correct Evolution API v2 format: flat, title+id per button)
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
                 product_id = str(product.get('_id', product.get('id', '')))
@@ -975,15 +975,14 @@ class WhatsAppService:
                     f"{self.base_url}/message/sendButtons/{instance_name}",
                     json={
                         "number": clean_to,
-                        "buttonMessage": {
-                            "title": "What would you like to do?",
-                            "footerText": "Tap a button above ⬆️",
-                            "buttons": [
-                                {"type": "reply", "displayText": "🛒 Add to Cart", "id": f"cart_{product_id}"},
-                                {"type": "reply", "displayText": "✅ Order Now", "id": f"order_{product_id}"},
-                                {"type": "reply", "displayText": "💬 Ask Question", "id": f"question_{product_id}"},
-                            ],
-                        },
+                        "title": "What would you like to do?",
+                        "description": product.get("name", ""),
+                        "footer": "Tap a button to continue",
+                        "buttons": [
+                            {"title": "🛒 Add to Cart", "id": f"cart_{product_id}"},
+                            {"title": "✅ Order Now",   "id": f"order_{product_id}"},
+                            {"title": "💬 Ask Question","id": f"question_{product_id}"},
+                        ],
                     },
                     headers=self._headers(),
                 )
