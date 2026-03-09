@@ -89,7 +89,12 @@ class SalesAgent(BaseAgent):
         for i, p in enumerate(to_send, 1):
             price = p.get("price", 0)
             in_stock = p.get("in_stock", True)
-            caption = f"*{p['name']}*\n💰 {currency} {price:,.0f}"
+            
+            # Add product number for multi-product lists
+            if len(to_send) > 1:
+                caption = f"*{i}. {p['name']}*\n💰 {currency} {price:,.0f}"
+            else:
+                caption = f"*{p['name']}*\n💰 {currency} {price:,.0f}"
 
             if not in_stock:
                 caption += "\n_(Out of stock)_"
@@ -108,6 +113,21 @@ class SalesAgent(BaseAgent):
             if img_url:
                 msg["media_url"] = normalize_url(img_url)
             messages_out.append(msg)
+        
+        # Add instruction text for how to select/order
+        if len(to_send) > 1:
+            instruction = f"\n_Reply with the number (1-{len(to_send)}) to see details and order options_"
+            messages_out.append({"text": instruction})
+        elif len(to_send) == 1:
+            # For single product, send action buttons immediately
+            instruction = (
+                "*What would you like to do?*\n\n"
+                "1️⃣  Order Now\n"
+                "2️⃣  Add to Cart\n"
+                "3️⃣  Ask a Question\n\n"
+                "_Reply with 1, 2 or 3_"
+            )
+            messages_out.append({"text": instruction})
 
         # Store products in pending_catalogs so customer can reply with numbers to select/order
         # This enables the same numbered reply flow as manual catalog sends
