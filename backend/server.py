@@ -3515,33 +3515,41 @@ Thank you for shopping with {business} 🙏"""
 @api_router.get("/sales", response_model=List[SaleResponse])
 async def get_sales(user = Depends(get_current_user)):
     """Get all sales for current user. Employees see only their own; owner/manager see all."""
-    business_id = user.get("business_id", user["_id"])
-    user_role = user.get("role", "owner")
-    query = {"user_id": business_id}
-    if user_role == "employee":
-        query["recorded_by"] = user["_id"]
-    sales = await db.sales.find(query).sort("created_at", -1).to_list(1000)
-    
-    result = []
-    for s in sales:
-        customer = await db.customers.find_one({"_id": s["customer_id"]})
-        result.append(SaleResponse(
-            id=s["_id"],
-            user_id=s["user_id"],
-            customer_id=s["customer_id"],
-            customer_name=customer["name"] if customer else "Unknown",
-            customer_phone=customer["phone_number"] if customer else None,
-            item=s["item"],
-            amount=s["amount"],
-            payment_method=s["payment_method"],
-            receipt_sent=s.get("receipt_sent", False),
-            is_credit=s.get("is_credit", False),
-            due_date=s.get("due_date"),
-            paid_date=s.get("paid_date"),
-            created_at=s["created_at"]
-        ))
-    
-    return result
+    try:
+        business_id = user.get("business_id", user["_id"])
+        user_role = user.get("role", "owner")
+        query = {"user_id": business_id}
+        if user_role == "employee":
+            query["recorded_by"] = user["_id"]
+        sales = await db.sales.find(query).sort("created_at", -1).to_list(1000)
+        
+        result = []
+        for s in sales:
+            try:
+                customer = await db.customers.find_one({"_id": s.get("customer_id")})
+                result.append(SaleResponse(
+                    id=s["_id"],
+                    user_id=s["user_id"],
+                    customer_id=s.get("customer_id", ""),
+                    customer_name=customer.get("name") if customer else "Unknown",
+                    customer_phone=customer.get("phone_number") if customer else None,
+                    item=s.get("item", ""),
+                    amount=s.get("amount", 0),
+                    payment_method=s.get("payment_method", ""),
+                    receipt_sent=s.get("receipt_sent", False),
+                    is_credit=s.get("is_credit", False),
+                    due_date=s.get("due_date"),
+                    paid_date=s.get("paid_date"),
+                    created_at=s.get("created_at")
+                ))
+            except Exception as sale_err:
+                logging.error(f"Error processing sale {s.get('_id')}: {sale_err}")
+                continue
+        
+        return result
+    except Exception as e:
+        logging.error(f"Error in get_sales endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch sales: {str(e)}")
 
 @api_router.get("/sales/by-employee")
 async def get_sales_by_employee(user = Depends(get_current_user)):
