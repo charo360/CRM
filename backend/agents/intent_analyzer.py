@@ -250,6 +250,7 @@ Rules:
 - The CURRENT MESSAGE is what you must classify — not the history
 - If the current message is a short follow-up ("ok", "sure", "yes", "send", "how much") — the intent comes from the RECENT THREAD above, not from the message alone
 - CRITICAL: If the customer says "can I see it/them/that/those/the product" and the RECENT THREAD shows the business JUST mentioned a specific product name, classify as PRODUCT_INQUIRY (NOT CATALOG_REQUEST) and extract that product name in keywords
+- CRITICAL: "Do you have X" where X is a specific product category (shoes, dresses, phones, laptops, etc) = PRODUCT_INQUIRY with X as keyword. CATALOG_REQUEST is ONLY for "show me everything", "what do you sell", "send catalog", "all products" — NOT for specific category requests
 - If this is a NEW CONVERSATION after a long gap, classify based on the current message only — ignore old topics
 - If you are not sure, use GENERAL_CHAT (not UNKNOWN) for messages under 10 words
 - If sentiment is angry AND confidence < 0.7, set needs_escalation=true
