@@ -666,9 +666,13 @@ export default function BroadcastScreen() {
       }
     }
 
+    const BROADCAST_MAX = 200;
+    const cappedCount = Math.min(recipientCount, BROADCAST_MAX);
+    const isCapped = recipientCount > BROADCAST_MAX;
+
     const confirmMessage = scheduledDate
-      ? `Schedule this message for ${new Date(scheduledDate).toLocaleString()} to ${recipientCount} customer${recipientCount > 1 ? 's' : ''}?`
-      : `Send this message to ${recipientCount} customer${recipientCount > 1 ? 's' : ''}?`;
+      ? `Schedule this message for ${new Date(scheduledDate).toLocaleString()} to ${cappedCount} customer${cappedCount > 1 ? 's' : ''}?${isCapped ? `\n\n⚠️ Only the first ${BROADCAST_MAX} recipients will be included to keep your WhatsApp account safe.` : ''}`
+      : `Send this message to ${cappedCount} customer${cappedCount > 1 ? 's' : ''}?${isCapped ? `\n\n⚠️ Only the first ${BROADCAST_MAX} recipients will be included to keep your WhatsApp account safe.` : ''}`;
 
     Alert.alert(
       scheduledDate ? 'Schedule Broadcast' : 'Send Broadcast',

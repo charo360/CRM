@@ -876,7 +876,7 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         query["_id"] = {"$in": broadcast.customer_ids}
     # else filter_type == "all" — no extra filter, send to everyone
 
-    customers = await db.customers.find(query).to_list(None)  # no hard cap
+    customers = await db.customers.find(query).to_list(200)   # Hard cap: 200 max per broadcast for WhatsApp safety
     
     # Handle images: Normalize to image_urls list
     image_urls = broadcast.image_urls or []
