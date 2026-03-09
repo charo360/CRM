@@ -5841,11 +5841,39 @@ async def evolution_webhook(request: Request):
                         logging.info(f"Button click detected: action={action}, product_id={button_product_id}")
                         break
                 
-                # POLL RESPONSE HANDLER — match poll option text, look up pending_catalogs for product
+                # NUMBERED REPLY HANDLER — customer replies "1", "2", "3" to action text
+                if not button_action and not from_me and body:
+                    _body_stripped = body.strip()
+                    # Accept plain digits or emoji keycap digits (1️⃣ etc)
+                    _num_map = {"1": 1, "2": 2, "3": 3, "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3}
+                    _reply_num = _num_map.get(_body_stripped)
+                    if _reply_num is not None:
+                        _pending_cat = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"]
+                        })
+                        if _pending_cat:
+                            _ctx = _pending_cat.get("action_context", "product")
+                            if _ctx == "cart":
+                                # 1 = continue shopping, 2 = checkout
+                                _num_to_action = {1: "continue", 2: "checkout"}
+                                _matched = _num_to_action.get(_reply_num)
+                                if _matched:
+                                    button_action = _matched
+                                    button_product_id = None
+                                    logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
+                            else:
+                                # product context: 1=order, 2=add_to_cart, 3=ask
+                                _num_to_action = {1: "order", 2: "add_to_cart", 3: "ask"}
+                                _matched = _num_to_action.get(_reply_num)
+                                if _matched and _pending_cat.get("products"):
+                                    button_action = _matched
+                                    button_product_id = _pending_cat["products"][0].get("id")
+                                    logging.info(f"Numbered product reply: {_reply_num} → {_matched}, product={button_product_id}")
+
+                # TEXT OPTION HANDLER — match full option text (legacy poll / typed responses)
                 if not button_action and not from_me and body:
                     _body_lower = body.strip().lower()
                     _poll_option_map = {
-                        # sendList / sendPoll display text fallback (rowId is preferred but display text may arrive)
                         "🛒 order now": "order",
                         "order now": "order",
                         "✅ order now": "order",
@@ -5858,12 +5886,10 @@ async def evolution_webhook(request: Request):
                         "ask question": "ask",
                         "📋 more info": "details",
                         "more info": "details",
-                        # cart options
                         "🛍️ continue shopping": "continue",
                         "continue shopping": "continue",
                         "✅ checkout now": "checkout",
                         "checkout now": "checkout",
-                        # legacy
                         "📱 share": "share",
                     }
                     _poll_matched = _poll_option_map.get(_body_lower)
@@ -5874,7 +5900,7 @@ async def evolution_webhook(request: Request):
                         if _pending_cat and _pending_cat.get("products"):
                             button_action = _poll_matched
                             button_product_id = _pending_cat["products"][0].get("id")
-                            logging.info(f"Poll response matched: action={_poll_matched}, product={button_product_id}")
+                            logging.info(f"Text option matched: action={_poll_matched}, product={button_product_id}")
                 
                 # Handle button actions
                 if button_action and (button_product_id or button_action in ("checkout", "continue")):
@@ -6056,16 +6082,22 @@ async def evolution_webhook(request: Request):
                                 if _inst_name:
                                     async with httpx.AsyncClient(timeout=30) as client:
                                         await asyncio.sleep(0.5)
+                                        cart_text = (
+                                            f"*What would you like to do?*\n\n"
+                                            f"1\ufe0f\u20e3  Continue Shopping\n"
+                                            f"2\ufe0f\u20e3  Checkout Now\n\n"
+                                            f"_Reply with 1 or 2_"
+                                        )
                                         await client.post(
-                                            f"{ws.base_url}/message/sendPoll/{_inst_name}",
-                                            json={
-                                                "number": from_number.lstrip("+"),
-                                                "name": f"🛒 Cart: {len(cart_items)} item(s) — {currency} {cart_total:,.0f}",
-                                                "values": ["🛍️ Continue Shopping", "✅ Checkout Now"],
-                                                "selectableCount": 1,
-                                            },
+                                            f"{ws.base_url}/message/sendText/{_inst_name}",
+                                            json={"number": from_number.lstrip("+"), "text": cart_text},
                                             headers=ws._headers(),
                                         )
+                                # Store cart action context so "1"/"2" replies are understood
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "cart", "updated_at": datetime.utcnow()}},
+                                )
                                 logging.info(f"Added to cart: product={button_product_id}, cart_size={len(cart_items)}")
                                 return {"status": "ok", "handled_by": "add_to_cart"}
 
@@ -8717,6 +8749,7 @@ async def send_product_to_customer(
         {"$set": {
             "products": [{"id": product["_id"], "name": product["name"], "price": product.get("price", 0), "index": 1}],
             "single_product": True,
+            "action_context": "product",
             "created_at": datetime.utcnow()
         }},
         upsert=True
@@ -8843,6 +8876,7 @@ async def send_catalog_to_customer(
         {"customer_id": request.customer_id, "user_id": business_id},
         {"$set": {
             "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i} for i, p in enumerate(products, 1)],
+            "action_context": "product",
             "created_at": datetime.utcnow()
         }},
         upsert=True

@@ -967,24 +967,25 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send poll (single-select = compact tap-to-choose, works on all WhatsApp accounts)
+            # Step 2: numbered action text — clean, no survey feel, works on all WhatsApp accounts
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
-                product_id = str(product.get('_id', product.get('id', '')))
+                actions_text = (
+                    "*What would you like to do?*\n\n"
+                    "1\ufe0f\u20e3  Order Now\n"
+                    "2\ufe0f\u20e3  Add to Cart\n"
+                    "3\ufe0f\u20e3  Ask a Question\n\n"
+                    "_Reply with 1, 2 or 3_"
+                )
                 btn_resp = await client.post(
-                    f"{self.base_url}/message/sendPoll/{instance_name}",
-                    json={
-                        "number": clean_to,
-                        "name": f"✨ {product.get('name', 'Product')}",
-                        "values": ["🛒 Order Now", "➕ Add to Cart", "💬 Ask a Question"],
-                        "selectableCount": 1,
-                    },
+                    f"{self.base_url}/message/sendText/{instance_name}",
+                    json={"number": clean_to, "text": actions_text},
                     headers=self._headers(),
                 )
                 if btn_resp.status_code not in (200, 201):
-                    logger.warning(f"sendPoll failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+                    logger.warning(f"sendText actions failed ({btn_resp.status_code}): {btn_resp.text[:200]}")
                 else:
-                    logger.info(f"sendPoll sent OK")
+                    logger.info(f"Product action text sent OK")
 
         return result or {"status": "sent"}
 
@@ -1017,24 +1018,28 @@ class WhatsAppService:
                 "rowId": f"select_{product_id}"
             })
 
-        payload = {
-            "number": clean_to,
-            "name": f"🛍️ {title}",
-            "values": [f"{p.get('name','')[:30]} — {'✅' if p.get('in_stock',True) else '❌'} {p.get('currency','')}{p.get('price',0):,.0f}" for p in products[:10]],
-            "selectableCount": 1,
-        }
+        # Build numbered list text
+        lines = [f"🛍️ *{title}*\n"]
+        for i, p in enumerate(products[:9], 1):
+            price = p.get('price', 0)
+            currency = p.get('currency', '')
+            stock = "✅" if p.get('in_stock', True) else "❌"
+            price_str = f"{currency} {price:,.0f}" if price else "POA"
+            lines.append(f"{i}\ufe0f\u20e3  *{p['name']}* — {price_str} {stock}")
+        lines.append("\n_Reply with a number to select_")
+        payload = {"number": clean_to, "text": "\n".join(lines)}
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{self.base_url}/message/sendPoll/{instance_name}",
+                f"{self.base_url}/message/sendText/{instance_name}",
                 json=payload,
                 headers=self._headers(),
             )
             if resp.status_code in (200, 201):
                 return {"status": "success", "data": resp.json()}
             else:
-                logger.warning(f"sendPoll (catalog) failed ({resp.status_code}): {resp.text[:300]}")
-                raise Exception(f"sendPoll error: {resp.status_code} {resp.text[:200]}")
+                logger.warning(f"sendText catalog failed ({resp.status_code}): {resp.text[:200]}")
+                raise Exception(f"sendText error: {resp.status_code} {resp.text[:200]}")
 
     async def send_product_with_buttons(
         self,
