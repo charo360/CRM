@@ -64,8 +64,10 @@ MANUAL_SEND_READ_DELAY = (0.5, 1.5) # For manual sends from app (user is waiting
 TYPING_PAUSE_CHANCE = 0.3           # 30% chance of a pause per slot
 TYPING_PAUSE_DURATION = (0.5, 1.5)  # How long each pause lasts
 
-# Broadcast delays: time between each broadcast message
-BROADCAST_DELAY = (2, 5)            # Random delay between broadcast sends
+# Broadcast delays: human-like pacing to avoid WhatsApp spam detection
+BROADCAST_DELAY = (45, 180)         # 45s–3min between each message (feels natural)
+BROADCAST_BATCH_SIZE = 10           # Send in batches of 10
+BROADCAST_BATCH_BREAK = (300, 900)  # 5–15 min break between batches
 
 # Max typing indicator duration (WhatsApp resets typing after ~25s)
 MAX_TYPING_DURATION = 22

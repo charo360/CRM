@@ -931,12 +931,50 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         created_at=broadcast_doc["created_at"]
     )
 
+def _humanize_message(message: str, name: str) -> str:
+    """
+    Slightly vary the message text so each send is unique.
+    WhatsApp detects identical bulk messages — variation avoids spam flags.
+    """
+    import random
+    text = message.replace("{{name}}", name or "there")
+
+    # Randomly swap common phrases for equivalents
+    swaps = [
+        ("Hi ", ["Hey ", "Hello ", "Hi there, ", "Hii "]),
+        ("Hello ", ["Hey ", "Hi ", "Heya ", "Hello there, "]),
+        ("Check out", ["Have a look at", "Take a look at", "See our"]),
+        ("Available now", ["In stock now", "Available today", "Ready to order"]),
+        ("Let me know", ["Feel free to ask", "Reach out", "Message us"]),
+        ("Don't miss", ["Don't miss out on", "You don't want to miss", "Check out"]),
+        ("!", ["!", "!", " 😊", " 🙌", ""]),  # Occasionally soften exclamations
+    ]
+    for original, alternatives in swaps:
+        if original.lower() in text.lower():
+            if random.random() < 0.4:  # 40% chance to swap
+                replacement = random.choice(alternatives)
+                # Case-preserving replace
+                idx = text.lower().find(original.lower())
+                if idx != -1:
+                    text = text[:idx] + replacement + text[idx + len(original):]
+                break
+
+    return text
+
+
 async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str, customers: list, image_urls: List[str] = []):
-    """Send broadcast to all recipients"""
-    from whatsapp_service import get_whatsapp_service
+    """
+    Send broadcast to all recipients with human-like pacing.
+    - 45s–3min delay between each message
+    - 5–15 min break every 10 messages (batch pause)
+    - Shuffled send order so it doesn't look sequential
+    - Slight message variation per recipient to avoid spam detection
+    """
+    import random as _rnd
+    from whatsapp_service import get_whatsapp_service, BROADCAST_DELAY, BROADCAST_BATCH_SIZE, BROADCAST_BATCH_BREAK
     whatsapp_service = get_whatsapp_service(db)
 
-    # Normalize relative image URLs to absolute so Evolution API can fetch them
+    # Normalize relative image URLs to absolute
     server_url = os.environ.get("SERVER_URL", "").rstrip("/")
     def _full_url(url: str) -> str:
         if not url:
@@ -947,19 +985,39 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
     resolved_images = [_full_url(u) for u in image_urls if u]
 
+    # Shuffle recipients so sends don't follow a predictable pattern
+    shuffled = list(customers)
+    _rnd.shuffle(shuffled)
+
     sent_count = 0
-    for customer in customers:
+    for i, customer in enumerate(shuffled):
         # Check if broadcast was cancelled before each send
         bc_doc = await db.broadcasts.find_one({"_id": broadcast_id})
         if not bc_doc or bc_doc.get("status") in ("cancelled", "stopped"):
-            logging.info(f"[Broadcast] {broadcast_id} cancelled — stopping at {sent_count} sent")
+            logging.info(f"[Broadcast] {broadcast_id} cancelled — stopped at {sent_count} sent")
             return
 
+        # --- BATCH BREAK: pause after every N messages ---
+        if i > 0 and i % BROADCAST_BATCH_SIZE == 0:
+            batch_break = _rnd.uniform(*BROADCAST_BATCH_BREAK)
+            logging.info(f"[Broadcast] {broadcast_id} — batch break {batch_break/60:.1f} min after {sent_count} sent")
+            await db.broadcasts.update_one(
+                {"_id": broadcast_id},
+                {"$set": {"sent_count": sent_count, "status": "sending", "paused_until": (datetime.utcnow()).isoformat()}}
+            )
+            await asyncio.sleep(batch_break)
+
+            # Re-check cancellation after the long break
+            bc_doc = await db.broadcasts.find_one({"_id": broadcast_id})
+            if not bc_doc or bc_doc.get("status") in ("cancelled", "stopped"):
+                logging.info(f"[Broadcast] {broadcast_id} cancelled during batch break")
+                return
+
         try:
-            personalized_message = message.replace("{{name}}", customer.get("name", "there"))
+            # Humanize the message slightly per recipient
+            personalized_message = _humanize_message(message, customer.get("name", "there"))
 
             if resolved_images:
-                # First image carries the caption
                 await whatsapp_service.send_message(
                     user_id=user_id,
                     to_number=customer["phone_number"],
@@ -968,8 +1026,8 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                     media_url=resolved_images[0],
                     send_context="broadcast",
                 )
-                # Remaining images — no caption (gallery style)
                 for img_url in resolved_images[1:]:
+                    await asyncio.sleep(_rnd.uniform(2, 5))  # Short gap between multi-images
                     await whatsapp_service.send_message(
                         user_id=user_id,
                         to_number=customer["phone_number"],
@@ -979,7 +1037,6 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                         send_context="broadcast",
                     )
             else:
-                # Text-only broadcast
                 await whatsapp_service.send_message(
                     user_id=user_id,
                     to_number=customer["phone_number"],
@@ -989,15 +1046,17 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                 )
 
             sent_count += 1
+            logging.info(f"[Broadcast] {broadcast_id} — sent {sent_count}/{len(shuffled)} to {customer['phone_number']}")
+
         except Exception as e:
-            logging.error(f"Failed to send to {customer['phone_number']}: {e}")
-        
-        # Randomized delay between broadcast recipients
-        from whatsapp_service import BROADCAST_DELAY
-        import random as _rnd
-        await asyncio.sleep(_rnd.uniform(*BROADCAST_DELAY))
-    
-    # Update broadcast status
+            logging.error(f"[Broadcast] Failed to send to {customer['phone_number']}: {e}")
+
+        # Human-like delay between messages (45s–3min)
+        delay = _rnd.uniform(*BROADCAST_DELAY)
+        logging.info(f"[Broadcast] Waiting {delay:.0f}s before next recipient")
+        await asyncio.sleep(delay)
+
+    # Mark complete
     await db.broadcasts.update_one(
         {"_id": broadcast_id},
         {"$set": {"sent_count": sent_count, "status": "completed"}}
