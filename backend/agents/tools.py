@@ -16,49 +16,76 @@ def normalize_url(u: str) -> Optional[str]:
         return u.replace('http://127.0.0.1:', 'http://host.docker.internal:')
     return u
 
+async def find_product_matches_ai(query: str, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    AI-powered semantic product matching. Understands that 'shoes' matches 'sneakers',
+    'phone' matches 'iPhone', etc. without hardcoded lists. Works for ANY product category.
+    """
+    if not products:
+        return []
+    
+    try:
+        from ai_service import get_drafter
+        ai = get_drafter()
+        
+        # Build compact product list for AI
+        product_list = []
+        for i, p in enumerate(products[:50]):  # Limit to 50 to save tokens
+            product_list.append(f"{i}. {p.get('name', '')} - {p.get('category', '')} - {(p.get('description', '') or '')[:60]}")
+        
+        prompt = f"""Customer query: "{query}"
+
+Products available:
+{chr(10).join(product_list)}
+
+Return ONLY the numbers (comma-separated) of products that match the customer's query.
+Use semantic understanding: "shoes" matches sneakers/heels/boots, "phone" matches iPhone/Samsung, etc.
+If NO products match, return "NONE".
+Examples:
+- Query "shoes" → "0,5,12" (if those are footwear)
+- Query "laptop" → "3" (if that's a computer)
+- Query "red dress" → "NONE" (if no red dresses exist)
+
+Numbers only:"""
+        
+        response = await ai._call_llm(prompt, model_pref="standard")
+        response = response.strip().upper()
+        
+        if response == "NONE" or not response:
+            return []
+        
+        # Parse AI response
+        matched_indices = []
+        for part in response.replace(" ", "").split(","):
+            try:
+                idx = int(part)
+                if 0 <= idx < len(products[:50]):
+                    matched_indices.append(idx)
+            except ValueError:
+                continue
+        
+        return [products[i] for i in matched_indices]
+    
+    except Exception as e:
+        import logging
+        logging.error(f"[AI Product Match] Error: {e}, falling back to keyword search")
+        # Fallback to keyword search if AI fails
+        return find_product_matches(query, products)
+
+
 def find_product_matches(query: str, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Find products matching the user's query using exact, plural, fuzzy, and
-    description/category matching. Searches name + description + category so
-    "shirt" finds "Polo Tee" if description says "casual shirt".
+    Fallback keyword-based product matching. Used when AI matching fails or for simple exact matches.
     """
     body_lower = query.lower()
     matched_products = []
-    
-    # Semantic category mapping - broad terms that should match specific product types
-    category_synonyms = {
-        "shoes": ["sneaker", "heel", "boot", "sandal", "loafer", "slipper", "footwear", "nike", "adidas", "jordan"],
-        "phone": ["iphone", "samsung", "galaxy", "pixel", "smartphone", "mobile"],
-        "laptop": ["macbook", "thinkpad", "chromebook", "notebook", "computer"],
-        "bag": ["handbag", "backpack", "purse", "tote", "satchel"],
-        "watch": ["smartwatch", "timepiece", "rolex", "apple watch"],
-        "shirt": ["tee", "polo", "blouse", "top"],
-        "pants": ["jeans", "trousers", "slacks", "chinos"],
-        "dress": ["gown", "frock", "sundress"],
-    }
     
     # 1. EXACT / SUBSTRING MATCH on name
     for p in products:
         if p.get("name", "").lower() in body_lower:
             matched_products.append(p)
     
-    # 2. SEMANTIC CATEGORY MATCH - check if query contains a broad category term
-    if not matched_products:
-        for category_term, synonyms in category_synonyms.items():
-            if category_term in body_lower:
-                for p in products:
-                    p_name_lower = p.get("name", "").lower()
-                    p_desc_lower = (p.get("description", "") or "").lower()
-                    p_cat_lower = (p.get("category", "") or "").lower()
-                    searchable = f"{p_name_lower} {p_desc_lower} {p_cat_lower}"
-                    
-                    # Check if any synonym appears in product data
-                    for syn in synonyms:
-                        if syn in searchable:
-                            matched_products.append(p)
-                            break
-    
-    # 3. Keyword search across name + description + category
+    # 2. Keyword search across name + description + category
     if not matched_products and len(body_lower) > 2:
         keywords = body_lower.split()
         stop_words = {

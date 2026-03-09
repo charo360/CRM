@@ -1,5 +1,5 @@
 from .base_agent import BaseAgent
-from .tools import find_product_matches, normalize_url, format_product_catalog
+from .tools import find_product_matches, find_product_matches_ai, normalize_url, format_product_catalog
 from typing import List, Dict, Any
 import logging
 
@@ -47,13 +47,13 @@ class SalesAgent(BaseAgent):
             )
 
         # --- PRODUCT MATCH: find relevant products ---
-        # Try message text first
-        matches = find_product_matches(message, products)
+        # Use AI-powered semantic matching for superior product discovery
+        matches = await find_product_matches_ai(message, products)
 
-        # Use AI-extracted keywords if no direct match
+        # Fallback to keyword matching if AI returns nothing
         if not matches and keywords:
             kw_str = ", ".join(keywords) if isinstance(keywords, list) else keywords
-            matches = find_product_matches(kw_str, products)
+            matches = await find_product_matches_ai(kw_str, products)
 
         # Use entity product names if still no match
         if not matches:
