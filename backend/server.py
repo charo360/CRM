@@ -6057,20 +6057,12 @@ async def evolution_webhook(request: Request):
                                     async with httpx.AsyncClient(timeout=30) as client:
                                         await asyncio.sleep(0.5)
                                         await client.post(
-                                            f"{ws.base_url}/message/sendList/{_inst_name}",
+                                            f"{ws.base_url}/message/sendPoll/{_inst_name}",
                                             json={
                                                 "number": from_number.lstrip("+"),
-                                                "options": {"delay": 500, "presence": "composing"},
-                                                "listMessage": {
-                                                    "title": "🛒 What's next?",
-                                                    "description": f"You have {len(cart_items)} item(s) in your cart",
-                                                    "buttonText": "Choose an Action",
-                                                    "footerText": f"Total: {currency} {cart_total:,.0f}",
-                                                    "sections": [{"title": "Cart Options", "rows": [
-                                                        {"title": "🛍️ Continue Shopping", "description": "Add more items to your cart", "rowId": "continue_shopping"},
-                                                        {"title": "✅ Checkout Now",       "description": "Place your order",            "rowId": "checkout_cart"},
-                                                    ]}],
-                                                },
+                                                "name": f"🛒 Cart: {len(cart_items)} item(s) — {currency} {cart_total:,.0f}",
+                                                "values": ["🛍️ Continue Shopping", "✅ Checkout Now"],
+                                                "selectableCount": 1,
                                             },
                                             headers=ws._headers(),
                                         )

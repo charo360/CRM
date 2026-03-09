@@ -967,34 +967,24 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send action list (single compact button → opens clean menu, not survey-like)
+            # Step 2: send poll (single-select = compact tap-to-choose, works on all WhatsApp accounts)
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
                 product_id = str(product.get('_id', product.get('id', '')))
-                rows = [
-                    {"title": "🛒 Order Now",       "description": "Place an order for this item", "rowId": f"order_{product_id}"},
-                    {"title": "➕ Add to Cart",      "description": "Add to cart & keep shopping",  "rowId": f"cart_{product_id}"},
-                    {"title": "💬 Ask a Question",   "description": "Send us a message",            "rowId": f"ask_{product_id}"},
-                ]
                 btn_resp = await client.post(
-                    f"{self.base_url}/message/sendList/{instance_name}",
+                    f"{self.base_url}/message/sendPoll/{instance_name}",
                     json={
                         "number": clean_to,
-                        "options": {"delay": 800, "presence": "composing"},
-                        "listMessage": {
-                            "title": "👆 What would you like to do?",
-                            "description": product.get("name", ""),
-                            "buttonText": "Choose an Action",
-                            "footerText": "Tap the button to select",
-                            "sections": [{"title": "Options", "rows": rows}],
-                        },
+                        "name": f"✨ {product.get('name', 'Product')}",
+                        "values": ["🛒 Order Now", "➕ Add to Cart", "💬 Ask a Question"],
+                        "selectableCount": 1,
                     },
                     headers=self._headers(),
                 )
                 if btn_resp.status_code not in (200, 201):
-                    logger.warning(f"sendList failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+                    logger.warning(f"sendPoll failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
                 else:
-                    logger.info(f"sendList sent OK")
+                    logger.info(f"sendPoll sent OK")
 
         return result or {"status": "sent"}
 
@@ -1029,27 +1019,22 @@ class WhatsAppService:
 
         payload = {
             "number": clean_to,
-            "options": {"delay": 1200, "presence": "composing"},
-            "listMessage": {
-                "title": f"🛍️ {title}",
-                "description": f"Browse our {len(rows)} product(s). Tap to view details and order:",
-                "buttonText": "View Products",
-                "footerText": "Tap any product to see full details",
-                "sections": [{"title": category or "Available Products", "rows": rows}],
-            },
+            "name": f"🛍️ {title}",
+            "values": [f"{p.get('name','')[:30]} — {'✅' if p.get('in_stock',True) else '❌'} {p.get('currency','')}{p.get('price',0):,.0f}" for p in products[:10]],
+            "selectableCount": 1,
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{self.base_url}/message/sendList/{instance_name}",
+                f"{self.base_url}/message/sendPoll/{instance_name}",
                 json=payload,
                 headers=self._headers(),
             )
             if resp.status_code in (200, 201):
                 return {"status": "success", "data": resp.json()}
             else:
-                logger.warning(f"sendList failed ({resp.status_code}): {resp.text[:300]}")
-                raise Exception(f"sendList error: {resp.status_code} {resp.text[:200]}")
+                logger.warning(f"sendPoll (catalog) failed ({resp.status_code}): {resp.text[:300]}")
+                raise Exception(f"sendPoll error: {resp.status_code} {resp.text[:200]}")
 
     async def send_product_with_buttons(
         self,
