@@ -980,11 +980,14 @@ class WhatsAppService:
                     f"{self.base_url}/message/sendList/{instance_name}",
                     json={
                         "number": clean_to,
-                        "title": "👆 What would you like to do?",
-                        "description": product.get("name", ""),
-                        "buttonText": "Choose an Action",
-                        "footerText": "Tap the button to select",
-                        "sections": [{"title": "Options", "rows": rows}],
+                        "options": {"delay": 800, "presence": "composing"},
+                        "listMessage": {
+                            "title": "👆 What would you like to do?",
+                            "description": product.get("name", ""),
+                            "buttonText": "Choose an Action",
+                            "footerText": "Tap the button to select",
+                            "sections": [{"title": "Options", "rows": rows}],
+                        },
                     },
                     headers=self._headers(),
                 )
@@ -1026,11 +1029,14 @@ class WhatsAppService:
 
         payload = {
             "number": clean_to,
-            "title": f"🛍️ {title}",
-            "description": f"Browse our {len(rows)} product(s). Tap to view details and order:",
-            "buttonText": "View Products",
-            "footerText": "Tap any product to see full details",
-            "sections": [{"title": category or "Available Products", "rows": rows}]
+            "options": {"delay": 1200, "presence": "composing"},
+            "listMessage": {
+                "title": f"🛍️ {title}",
+                "description": f"Browse our {len(rows)} product(s). Tap to view details and order:",
+                "buttonText": "View Products",
+                "footerText": "Tap any product to see full details",
+                "sections": [{"title": category or "Available Products", "rows": rows}],
+            },
         }
 
         async with httpx.AsyncClient(timeout=30) as client:

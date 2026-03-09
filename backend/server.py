@@ -6060,14 +6060,17 @@ async def evolution_webhook(request: Request):
                                             f"{ws.base_url}/message/sendList/{_inst_name}",
                                             json={
                                                 "number": from_number.lstrip("+"),
-                                                "title": "🛒 What's next?",
-                                                "description": f"You have {len(cart_items)} item(s) in your cart",
-                                                "buttonText": "Choose an Action",
-                                                "footerText": f"Total: {currency} {cart_total:,.0f}",
-                                                "sections": [{"title": "Cart Options", "rows": [
-                                                    {"title": "🛍️ Continue Shopping", "description": "Add more items to your cart", "rowId": "continue_shopping"},
-                                                    {"title": "✅ Checkout Now",       "description": "Place your order",            "rowId": "checkout_cart"},
-                                                ]}],
+                                                "options": {"delay": 500, "presence": "composing"},
+                                                "listMessage": {
+                                                    "title": "🛒 What's next?",
+                                                    "description": f"You have {len(cart_items)} item(s) in your cart",
+                                                    "buttonText": "Choose an Action",
+                                                    "footerText": f"Total: {currency} {cart_total:,.0f}",
+                                                    "sections": [{"title": "Cart Options", "rows": [
+                                                        {"title": "🛍️ Continue Shopping", "description": "Add more items to your cart", "rowId": "continue_shopping"},
+                                                        {"title": "✅ Checkout Now",       "description": "Place your order",            "rowId": "checkout_cart"},
+                                                    ]}],
+                                                },
                                             },
                                             headers=ws._headers(),
                                         )
