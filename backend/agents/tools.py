@@ -25,12 +25,40 @@ def find_product_matches(query: str, products: List[Dict[str, Any]]) -> List[Dic
     body_lower = query.lower()
     matched_products = []
     
+    # Semantic category mapping - broad terms that should match specific product types
+    category_synonyms = {
+        "shoes": ["sneaker", "heel", "boot", "sandal", "loafer", "slipper", "footwear", "nike", "adidas", "jordan"],
+        "phone": ["iphone", "samsung", "galaxy", "pixel", "smartphone", "mobile"],
+        "laptop": ["macbook", "thinkpad", "chromebook", "notebook", "computer"],
+        "bag": ["handbag", "backpack", "purse", "tote", "satchel"],
+        "watch": ["smartwatch", "timepiece", "rolex", "apple watch"],
+        "shirt": ["tee", "polo", "blouse", "top"],
+        "pants": ["jeans", "trousers", "slacks", "chinos"],
+        "dress": ["gown", "frock", "sundress"],
+    }
+    
     # 1. EXACT / SUBSTRING MATCH on name
     for p in products:
         if p.get("name", "").lower() in body_lower:
             matched_products.append(p)
     
-    # 2. Keyword search across name + description + category
+    # 2. SEMANTIC CATEGORY MATCH - check if query contains a broad category term
+    if not matched_products:
+        for category_term, synonyms in category_synonyms.items():
+            if category_term in body_lower:
+                for p in products:
+                    p_name_lower = p.get("name", "").lower()
+                    p_desc_lower = (p.get("description", "") or "").lower()
+                    p_cat_lower = (p.get("category", "") or "").lower()
+                    searchable = f"{p_name_lower} {p_desc_lower} {p_cat_lower}"
+                    
+                    # Check if any synonym appears in product data
+                    for syn in synonyms:
+                        if syn in searchable:
+                            matched_products.append(p)
+                            break
+    
+    # 3. Keyword search across name + description + category
     if not matched_products and len(body_lower) > 2:
         keywords = body_lower.split()
         stop_words = {
