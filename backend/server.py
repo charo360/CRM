@@ -3623,30 +3623,44 @@ async def get_orders(user = Depends(get_current_user)):
     
     result = []
     for order in orders:
-        # Get customer info
-        if order["customer_id"] == "walk-in":
-            customer_name = "Walk-in Customer"
-            customer_phone = "N/A"
-        else:
-            customer = await db.customers.find_one({"_id": order["customer_id"]})
-            customer_name = customer["name"] if customer else "Unknown"
-            customer_phone = customer["phone_number"] if customer else "N/A"
-        
-        result.append(OrderResponse(
-            id=order["_id"],
-            customer_id=order["customer_id"],
-            customer_name=customer_name,
-            customer_phone=customer_phone,
-            product=order["product"],
-            quantity=order["quantity"],
-            price=order["price"],
-            total_amount=order["total_amount"],
-            payment_status=order.get("payment_status", "unpaid"),
-            delivery_status=order.get("delivery_status", "pending"),
-            notes=order.get("notes"),
-            due_date=order.get("due_date"),
-            created_at=order["created_at"].isoformat()
-        ))
+        try:
+            # Get customer info
+            if order.get("customer_id") == "walk-in":
+                customer_name = "Walk-in Customer"
+                customer_phone = "N/A"
+            else:
+                customer = await db.customers.find_one({"_id": order.get("customer_id")})
+                customer_name = customer["name"] if customer else "Unknown"
+                customer_phone = customer.get("phone_number", "N/A") if customer else "N/A"
+            
+            # Handle created_at field safely
+            created_at_value = order.get("created_at")
+            if isinstance(created_at_value, datetime):
+                created_at_str = created_at_value.isoformat()
+            elif isinstance(created_at_value, str):
+                created_at_str = created_at_value
+            else:
+                created_at_str = datetime.utcnow().isoformat()
+            
+            result.append(OrderResponse(
+                id=order["_id"],
+                customer_id=order.get("customer_id", ""),
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                product=order.get("product", ""),
+                quantity=order.get("quantity", 1),
+                price=order.get("price", 0),
+                total_amount=order.get("total_amount", 0),
+                payment_status=order.get("payment_status", "unpaid"),
+                delivery_status=order.get("delivery_status", "pending"),
+                notes=order.get("notes"),
+                due_date=order.get("due_date"),
+                created_at=created_at_str
+            ))
+        except Exception as e:
+            # Log error but continue processing other orders
+            print(f"[ERROR] Failed to process order {order.get('_id', 'unknown')}: {str(e)}")
+            continue
     
     return result
 
@@ -5114,8 +5128,22 @@ async def mark_messages_read(customer_id: str, user = Depends(get_current_user))
 async def get_dashboard_summary(user = Depends(get_current_user)):
     """Get a quick dashboard summary: unread messages, today's follow-ups, today's sales"""
     uid = user.get("business_id", user["_id"])
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = today_start + timedelta(days=1)
+    
+    # Get user's timezone offset (default to UTC+3 for Kenya if not set)
+    user_doc = await db.users.find_one({"_id": uid})
+    tz_offset_hours = 3  # Default to EAT (East Africa Time)
+    if user_doc and user_doc.get("timezone_offset"):
+        tz_offset_hours = user_doc["timezone_offset"]
+    
+    # Calculate "today" in user's local timezone
+    utc_now = datetime.utcnow()
+    local_now = utc_now + timedelta(hours=tz_offset_hours)
+    local_today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_today_end = local_today_start + timedelta(days=1)
+    
+    # Convert back to UTC for database queries
+    today_start_utc = local_today_start - timedelta(hours=tz_offset_hours)
+    today_end_utc = local_today_end - timedelta(hours=tz_offset_hours)
 
     # Total unread messages — only from confirmed customers (is_customer: True)
     customer_ids_for_unread = await db.customers.distinct(
@@ -5127,17 +5155,15 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
         "customer_id": {"$in": customer_ids_for_unread}
     })
 
-    # Today's follow-ups — widen window by ±1 day to cover all timezones (UTC-12 to UTC+14)
-    tz_window_start = today_start - timedelta(hours=14)
-    tz_window_end = today_end + timedelta(hours=14)
+    # Today's follow-ups (using user's local "today")
     followups_today = await db.followups.count_documents({
         "user_id": uid, "status": "pending",
-        "reminder_date": {"$gte": tz_window_start, "$lt": tz_window_end}
+        "reminder_date": {"$gte": today_start_utc, "$lt": today_end_utc}
     })
 
-    # Today's sales total
+    # Today's sales total (using user's local "today")
     sales_pipeline = [
-        {"$match": {"user_id": uid, "created_at": {"$gte": today_start, "$lt": today_end}}},
+        {"$match": {"user_id": uid, "created_at": {"$gte": today_start_utc, "$lt": today_end_utc}}},
         {"$group": {"_id": None, "total": {"$sum": "$amount"}, "count": {"$sum": 1}}}
     ]
     sales_result = await db.sales.aggregate(sales_pipeline).to_list(1)
@@ -6349,7 +6375,16 @@ async def evolution_webhook(request: Request):
                     for _pm in _raw_pm:
                         if isinstance(_pm, dict):
                             _line = _pm.get("name", "")
-                            if _pm.get("details"):
+                            # New multi-field format: fields=[{label, value}, ...]
+                            if _pm.get("fields"):
+                                field_parts = [
+                                    f"{f['label']}: {f['value']}"
+                                    for f in _pm["fields"]
+                                    if f.get("value") and str(f["value"]).strip()
+                                ]
+                                if field_parts:
+                                    _line += " — " + ", ".join(field_parts)
+                            elif _pm.get("details"):
                                 _line += f": {_pm['details']}"
                         else:
                             _line = str(_pm)
@@ -6383,6 +6418,7 @@ async def evolution_webhook(request: Request):
                     "business_knowledge": _business_knowledge,
                     "business_name": user.get("business_name", ""),
                     "ai_model": _user_settings.get("ai_model", "standard"),
+                    "payment_methods": _raw_pm,  # structured array for PaymentAgent
                 }
 
                 agent_result = await router.route_and_process(

@@ -24,8 +24,14 @@ class PaymentAgent:
         entities = context.get("entities", {})
         customer_id = context.get("customer_id")
 
-        # Extract payment methods from business_knowledge
-        payment_methods = self._extract_payment_methods(business_knowledge)
+        # Use structured payment_methods from context (preferred — accurate, no regex guessing)
+        structured_pm = context.get("payment_methods", [])
+        if structured_pm:
+            payment_methods = [pm.get("name", "") for pm in structured_pm if isinstance(pm, dict) and pm.get("name")]
+        else:
+            # Fallback: regex extraction from business_knowledge text
+            payment_methods = self._extract_payment_methods(business_knowledge)
+            structured_pm = []
 
         if intent == "PAYMENT_CONFIRM":
             return await self._handle_payment_confirm(
@@ -35,7 +41,7 @@ class PaymentAgent:
 
         if intent in ("PAYMENT_METHOD", "PAYMENT_ISSUE"):
             return await self._handle_payment_method_question(
-                message, customer_name, language, business_knowledge, payment_methods, history
+                message, customer_name, language, business_knowledge, payment_methods, structured_pm, history
             )
 
         if intent == "REFUND_REQUEST":
@@ -50,7 +56,7 @@ class PaymentAgent:
         # Fallback: explain payment methods if we have them
         if payment_methods:
             return await self._handle_payment_method_question(
-                message, customer_name, language, business_knowledge, payment_methods, history
+                message, customer_name, language, business_knowledge, payment_methods, structured_pm, history
             )
 
         # No payment info in business knowledge
@@ -124,7 +130,7 @@ Reply only:"""
             }
 
     async def _handle_payment_method_question(
-        self, message, customer_name, language, business_knowledge, payment_methods, history
+        self, message, customer_name, language, business_knowledge, payment_methods, structured_pm, history
     ) -> Dict[str, Any]:
         """Customer asks how to pay."""
         if not payment_methods:
@@ -139,25 +145,30 @@ Reply only:"""
             from ai_service import get_drafter
             ai = get_drafter()
 
-            bk = (business_knowledge or "")[:600]
             history_snippet = self._format_history(history)
+            # Build a structured payment methods block for the AI prompt
+            pm_formatted = self._format_payment_methods_for_prompt(structured_pm)
 
-            prompt = f"""You are a payment information assistant for a WhatsApp business.
+            prompt = f"""You are a business owner replying on WhatsApp. A customer asked how to pay.
 
-Business info: {bk}
+Customer: {customer_name}
+Their message: "{message}"
 
-Customer message: "{message}"
+Your payment methods (ONLY share these — NEVER invent details):
+{pm_formatted}
 
 Recent conversation:
 {history_snippet}
 
-Write a clear, friendly reply in {language} that:
-1. Answers their payment question directly
-2. Lists the available payment methods from the business info
-3. Includes any payment details (account numbers, M-Pesa till, etc.) from the business info
-4. Only states payment info that is explicitly in the business info — never invent details
-5. Is concise and WhatsApp-natural (use line breaks for lists)
-6. CRITICAL: ONLY mention payment methods from the business info above. NEVER invent account numbers, till numbers, or payment details.
+Write a clear, natural reply in {language} that:
+1. Gives them exactly what they need to pay — name, number/account/details for each method
+2. For Paybill: say the Business No. and Account No. on separate lines clearly
+3. For Till/Buy Goods: give the Till No.
+4. For phone-based payments (M-Pesa, Airtel Money, etc.): give the number
+5. For bank: give bank name and account number
+6. Format as a WhatsApp message — use line breaks between methods, bold the method name with *asterisks*
+7. 1 short sentence intro, then the payment details, then offer to help if they have questions
+8. CRITICAL: ONLY use the payment details listed above. NEVER invent numbers.
 
 Reply only:"""
 
@@ -176,6 +187,35 @@ Reply only:"""
                 "escalate_reason": f"PaymentAgent failed: {e}",
                 "messages": [],
             }
+
+    def _format_payment_methods_for_prompt(self, structured_pm: list) -> str:
+        """Format structured payment methods clearly for the AI prompt."""
+        if not structured_pm:
+            return "(No payment methods configured)"
+        lines = []
+        for pm in structured_pm:
+            if not isinstance(pm, dict):
+                lines.append(f"- {pm}")
+                continue
+            name = pm.get("name", "")
+            if not name:
+                continue
+            # Multi-field format (e.g. Paybill, Bank Transfer)
+            if pm.get("fields"):
+                field_lines = [
+                    f"  {f['label']}: {f['value']}"
+                    for f in pm["fields"]
+                    if f.get("value") and str(f["value"]).strip()
+                ]
+                if field_lines:
+                    lines.append(f"- {name}:\n" + "\n".join(field_lines))
+                else:
+                    lines.append(f"- {name}")
+            elif pm.get("details") and str(pm["details"]).strip():
+                lines.append(f"- {name}: {pm['details']}")
+            else:
+                lines.append(f"- {name}")
+        return "\n".join(lines) if lines else "(No payment methods configured)"
 
     def _extract_payment_methods(self, business_knowledge: str) -> list:
         """Extract payment method mentions from business knowledge text."""

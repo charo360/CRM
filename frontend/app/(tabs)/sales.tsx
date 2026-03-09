@@ -75,7 +75,7 @@ export default function SalesScreen() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [paymentMethods, setPaymentMethods] = useState<{name:string;details:string}[]>([{name:'Cash',details:''},{name:'Mobile Money',details:''}]);
+  const [paymentMethods, setPaymentMethods] = useState<{name:string;details?:string;fields?:{label:string;value:string}[]}[]>([{name:'Cash'},{name:'Mobile Money',fields:[{label:'Phone Number',value:''}]}]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -99,8 +99,9 @@ export default function SalesScreen() {
   const [paymentSettingsVisible, setPaymentSettingsVisible] = useState(false);
   const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
   const [newMethodName, setNewMethodName] = useState('');
-  const [newMethodDetails, setNewMethodDetails] = useState('');
+  const [newMethodFieldValues, setNewMethodFieldValues] = useState<string[]>([]);
   const [customMethodName, setCustomMethodName] = useState('');
+  const [customFields, setCustomFields] = useState<{label:string;value:string}[]>([]);
 
   // Customer selection state
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
@@ -1965,7 +1966,8 @@ export default function SalesScreen() {
 
             {/* Existing methods */}
             {paymentMethods.map((method, index) => {
-              const iconName = method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') || method.name.toLowerCase().includes('mastercard') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') ? 'logo-paypal' : method.name.toLowerCase().includes('stripe') ? 'card' : method.name.toLowerCase().includes('bitcoin') || method.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
+              const summary = method.fields && method.fields.length > 0 ? method.fields.filter(f => f.value).map(f => `${f.label}: ${f.value}`).join('  ·  ') : (method.details || '');
+              const iconName = method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') || method.name.toLowerCase().includes('mtn') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') || method.name.toLowerCase().includes('mastercard') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') ? 'logo-paypal' : method.name.toLowerCase().includes('stripe') ? 'card' : method.name.toLowerCase().includes('bitcoin') || method.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
               return (
                 <View key={index} style={styles.pmCard}>
                   <View style={styles.pmCardIcon}>
@@ -1973,8 +1975,8 @@ export default function SalesScreen() {
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.pmCardName}>{method.name}</Text>
-                    {method.details ? (
-                      <Text style={styles.pmCardDetails}>{method.details}</Text>
+                    {summary ? (
+                      <Text style={styles.pmCardDetails}>{summary}</Text>
                     ) : (
                       <Text style={[styles.pmCardDetails, { color: '#444', fontStyle: 'italic' }]}>No details added</Text>
                     )}
@@ -2002,26 +2004,29 @@ export default function SalesScreen() {
                 <Text style={styles.pmAddTitle}>Add Payment Method</Text>
 
                 {/* Quick presets */}
-                <Text style={styles.pmPresetLabel}>Quick Add:</Text>
+                <Text style={styles.pmPresetLabel}>Select a method:</Text>
                 <View style={styles.pmPresetGrid}>
                   {[
-                    { name: 'M-Pesa', placeholder: 'Phone number e.g. 0712 345 678', icon: 'phone-portrait' },
-                    { name: 'PayPal', placeholder: 'PayPal email address', icon: 'logo-paypal' },
-                    { name: 'Bank Transfer', placeholder: 'Account number / bank name', icon: 'business' },
-                    { name: 'Cash', placeholder: '', icon: 'cash' },
-                    { name: 'Visa/Card', placeholder: 'POS terminal or card reference', icon: 'card' },
-                    { name: 'Airtel Money', placeholder: 'Phone number', icon: 'phone-portrait' },
-                    { name: 'Stripe', placeholder: 'Payment link', icon: 'card' },
-                    { name: 'Bitcoin/Crypto', placeholder: 'Wallet address', icon: 'logo-bitcoin' },
-                    { name: 'Other', placeholder: 'Details', icon: 'wallet' },
+                    { name: 'M-Pesa (Send Money)', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0712 345 678', kb: 'phone-pad' }] },
+                    { name: 'M-Pesa Paybill', icon: 'phone-portrait', fields: [{ label: 'Business No.', placeholder: 'e.g. 400200', kb: 'number-pad' }, { label: 'Account No.', placeholder: 'e.g. your phone / order ID', kb: 'default' }] },
+                    { name: 'M-Pesa Till (Buy Goods)', icon: 'phone-portrait', fields: [{ label: 'Till No.', placeholder: 'e.g. 123456', kb: 'number-pad' }] },
+                    { name: 'Airtel Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0733 123 456', kb: 'phone-pad' }] },
+                    { name: 'MTN Mobile Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0770 123 456', kb: 'phone-pad' }] },
+                    { name: 'Bank Transfer', icon: 'business', fields: [{ label: 'Bank Name', placeholder: 'e.g. KCB', kb: 'default' }, { label: 'Account No.', placeholder: 'e.g. 1234567890', kb: 'number-pad' }, { label: 'Account Name', placeholder: 'e.g. John Doe / Company', kb: 'default' }] },
+                    { name: 'PayPal', icon: 'logo-paypal', fields: [{ label: 'PayPal Email', placeholder: 'e.g. pay@youremail.com', kb: 'email-address' }] },
+                    { name: 'Cash', icon: 'cash', fields: [] },
+                    { name: 'Visa/Card', icon: 'card', fields: [{ label: 'POS / Reference', placeholder: 'e.g. card machine details', kb: 'default' }] },
+                    { name: 'Stripe', icon: 'card', fields: [{ label: 'Payment Link', placeholder: 'https://buy.stripe.com/...', kb: 'default' }] },
+                    { name: 'Custom', icon: 'add-circle-outline', fields: [] },
                   ].filter(p => !paymentMethods.find(m => m.name === p.name)).map(preset => (
                     <TouchableOpacity
                       key={preset.name}
                       style={[styles.pmPresetChip, newMethodName === preset.name && styles.pmPresetChipActive]}
                       onPress={() => {
-                        setNewMethodName(preset.name === 'Other' ? '' : preset.name);
-                        setCustomMethodName(preset.name === 'Other' ? '' : '');
-                        setNewMethodDetails('');
+                        setNewMethodName(preset.name);
+                        setCustomMethodName('');
+                        setCustomFields([]);
+                        setNewMethodFieldValues(preset.fields.map(() => ''));
                       }}
                     >
                       <Ionicons name={preset.icon as any} size={14} color={newMethodName === preset.name ? '#25D366' : '#6B7D99'} />
@@ -2030,42 +2035,91 @@ export default function SalesScreen() {
                   ))}
                 </View>
 
-                {/* Custom name if "Other" or typing */}
-                <Text style={styles.pmFieldLabel}>Method Name</Text>
-                <TextInput
-                  style={styles.pmInput}
-                  value={newMethodName || customMethodName}
-                  onChangeText={(t) => { setCustomMethodName(t); setNewMethodName(''); }}
-                  placeholder="e.g. Chipper Cash, Wave, Venmo..."
-                  placeholderTextColor="#555"
-                />
+                {/* Custom payment method builder */}
+                {newMethodName === 'Custom' && (
+                  <View style={{ marginTop: 8 }}>
+                    <Text style={styles.pmFieldLabel}>Payment Method Name</Text>
+                    <TextInput
+                      style={styles.pmInput}
+                      value={customMethodName}
+                      onChangeText={setCustomMethodName}
+                      placeholder="e.g. Venmo, GCash, Zelle"
+                      placeholderTextColor="#555"
+                    />
+                    
+                    <Text style={[styles.pmFieldLabel, { marginTop: 12 }]}>Fields (optional):</Text>
+                    {customFields.map((field, fi) => (
+                      <View key={fi} style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                        <TextInput
+                          style={[styles.pmInput, { flex: 1 }]}
+                          value={field.label}
+                          onChangeText={t => {
+                            const updated = [...customFields];
+                            updated[fi].label = t;
+                            setCustomFields(updated);
+                          }}
+                          placeholder="Field name (e.g. Phone, Account No.)"
+                          placeholderTextColor="#555"
+                        />
+                        <TextInput
+                          style={[styles.pmInput, { flex: 1.5 }]}
+                          value={field.value}
+                          onChangeText={t => {
+                            const updated = [...customFields];
+                            updated[fi].value = t;
+                            setCustomFields(updated);
+                          }}
+                          placeholder="Value"
+                          placeholderTextColor="#555"
+                        />
+                        <TouchableOpacity
+                          onPress={() => setCustomFields(customFields.filter((_, i) => i !== fi))}
+                          style={{ justifyContent: 'center' }}
+                        >
+                          <Ionicons name="close-circle" size={22} color="#FF6B6B" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                    <TouchableOpacity
+                      style={[styles.addButton, { marginTop: 4 }]}
+                      onPress={() => setCustomFields([...customFields, { label: '', value: '' }])}
+                    >
+                      <Ionicons name="add" size={16} color="#25D366" />
+                      <Text style={[styles.addButtonText, { fontSize: 13 }]}>Add field</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
 
-                {/* Details field */}
-                <Text style={styles.pmFieldLabel}>
-                  {newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'Phone Number' :
-                   newMethodName === 'PayPal' ? 'PayPal Email' :
-                   newMethodName === 'Bank Transfer' ? 'Account Number / Bank Name' :
-                   newMethodName === 'Stripe' ? 'Payment Link' :
-                   newMethodName === 'Bitcoin/Crypto' ? 'Wallet Address' :
-                   newMethodName === 'Visa/Card' ? 'POS / Card Reference' :
-                   'Details (optional)'}
-                </Text>
-                <TextInput
-                  style={styles.pmInput}
-                  value={newMethodDetails}
-                  onChangeText={setNewMethodDetails}
-                  placeholder={
-                    newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'e.g. 0712 345 678' :
-                    newMethodName === 'PayPal' ? 'e.g. payments@youremail.com' :
-                    newMethodName === 'Bank Transfer' ? 'e.g. KCB 1234567890' :
-                    newMethodName === 'Stripe' ? 'e.g. https://buy.stripe.com/...' :
-                    newMethodName === 'Bitcoin/Crypto' ? 'e.g. 1A1zP1eP5...' :
-                    'Optional — helps customers know how to pay'
-                  }
-                  placeholderTextColor="#555"
-                  autoCapitalize="none"
-                  keyboardType={newMethodName === 'PayPal' ? 'email-address' : newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'phone-pad' : 'default'}
-                />
+                {/* Dynamic fields for selected preset */}
+                {newMethodName && newMethodName !== 'Custom' && [
+                  { name: 'M-Pesa (Send Money)', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0712 345 678', kb: 'phone-pad' }] },
+                  { name: 'M-Pesa Paybill', fields: [{ label: 'Business No.', placeholder: 'e.g. 400200', kb: 'number-pad' }, { label: 'Account No.', placeholder: 'e.g. your phone / order ID', kb: 'default' }] },
+                  { name: 'M-Pesa Till (Buy Goods)', fields: [{ label: 'Till No.', placeholder: 'e.g. 123456', kb: 'number-pad' }] },
+                  { name: 'Airtel Money', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0733 123 456', kb: 'phone-pad' }] },
+                  { name: 'MTN Mobile Money', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0770 123 456', kb: 'phone-pad' }] },
+                  { name: 'Bank Transfer', fields: [{ label: 'Bank Name', placeholder: 'e.g. KCB', kb: 'default' }, { label: 'Account No.', placeholder: 'e.g. 1234567890', kb: 'number-pad' }, { label: 'Account Name', placeholder: 'e.g. John Doe / Company', kb: 'default' }] },
+                  { name: 'PayPal', fields: [{ label: 'PayPal Email', placeholder: 'e.g. pay@youremail.com', kb: 'email-address' }] },
+                  { name: 'Cash', fields: [] },
+                  { name: 'Visa/Card', fields: [{ label: 'POS / Reference', placeholder: 'e.g. card machine details', kb: 'default' }] },
+                  { name: 'Stripe', fields: [{ label: 'Payment Link', placeholder: 'https://buy.stripe.com/...', kb: 'default' }] },
+                ].find(p => p.name === newMethodName)?.fields.map((field, fi) => (
+                  <View key={fi} style={{ marginBottom: 8 }}>
+                    <Text style={styles.pmFieldLabel}>{field.label}</Text>
+                    <TextInput
+                      style={styles.pmInput}
+                      value={newMethodFieldValues[fi] || ''}
+                      onChangeText={t => {
+                        const updated = [...newMethodFieldValues];
+                        updated[fi] = t;
+                        setNewMethodFieldValues(updated);
+                      }}
+                      placeholder={field.placeholder}
+                      placeholderTextColor="#555"
+                      autoCapitalize="none"
+                      keyboardType={(field.kb as any) || 'default'}
+                    />
+                  </View>
+                )) || (newMethodName === 'Cash' && <Text style={[styles.pmCardDetails, { marginTop: 8, color: '#555' }]}>No details needed for cash payments</Text>)}
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                   <TouchableOpacity
@@ -2077,16 +2131,51 @@ export default function SalesScreen() {
                   <TouchableOpacity
                     style={[styles.saveAddButton, { flex: 1 }]}
                     onPress={async () => {
-                      const finalName = (newMethodName || customMethodName).trim();
-                      if (!finalName) { Alert.alert('Error', 'Please select or enter a payment method name'); return; }
-                      if (paymentMethods.find(m => m.name.toLowerCase() === finalName.toLowerCase())) {
-                        Alert.alert('Error', 'This payment method already exists'); return;
+                      let name = '';
+                      let newEntry: {name:string;fields?:{label:string;value:string}[]};
+                      
+                      if (newMethodName === 'Custom') {
+                        name = customMethodName.trim();
+                        if (!name) { Alert.alert('Error', 'Please enter a payment method name'); return; }
+                        if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) {
+                          Alert.alert('Error', 'This payment method already exists'); return;
+                        }
+                        const validFields = customFields.filter(f => f.label.trim() || f.value.trim());
+                        if (validFields.length > 0) {
+                          newEntry = { name, fields: validFields };
+                        } else {
+                          newEntry = { name };
+                        }
+                      } else if (newMethodName) {
+                        name = newMethodName;
+                        if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) {
+                          Alert.alert('Error', 'This payment method already exists'); return;
+                        }
+                        const presetFields = [
+                          { name: 'M-Pesa (Send Money)', fields: [{ label: 'Phone Number', placeholder: '', kb: 'phone-pad' }] },
+                          { name: 'M-Pesa Paybill', fields: [{ label: 'Business No.', placeholder: '', kb: 'number-pad' }, { label: 'Account No.', placeholder: '', kb: 'default' }] },
+                          { name: 'M-Pesa Till (Buy Goods)', fields: [{ label: 'Till No.', placeholder: '', kb: 'number-pad' }] },
+                          { name: 'Airtel Money', fields: [{ label: 'Phone Number', placeholder: '', kb: 'phone-pad' }] },
+                          { name: 'MTN Mobile Money', fields: [{ label: 'Phone Number', placeholder: '', kb: 'phone-pad' }] },
+                          { name: 'Bank Transfer', fields: [{ label: 'Bank Name', placeholder: '', kb: 'default' }, { label: 'Account No.', placeholder: '', kb: 'number-pad' }, { label: 'Account Name', placeholder: '', kb: 'default' }] },
+                          { name: 'PayPal', fields: [{ label: 'PayPal Email', placeholder: '', kb: 'email-address' }] },
+                          { name: 'Cash', fields: [] },
+                          { name: 'Visa/Card', fields: [{ label: 'POS / Reference', placeholder: '', kb: 'default' }] },
+                          { name: 'Stripe', fields: [{ label: 'Payment Link', placeholder: '', kb: 'default' }] },
+                        ].find(p => p.name === newMethodName);
+                        if (presetFields && presetFields.fields.length > 0) {
+                          newEntry = { name, fields: presetFields.fields.map((f, fi) => ({ label: f.label, value: newMethodFieldValues[fi] || '' })) };
+                        } else {
+                          newEntry = { name };
+                        }
+                      } else {
+                        Alert.alert('Error', 'Please select a payment method'); return;
                       }
-                      const newEntry = { name: finalName, details: newMethodDetails.trim() };
+                      
                       const updated = [...paymentMethods, newEntry];
                       setPaymentMethods(updated);
                       setAddingPaymentMethod(false);
-                      setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName('');
+                      setNewMethodName(''); setNewMethodFieldValues([]); setCustomMethodName(''); setCustomFields([]);
                       try { await apiClient.put('/settings', { payment_methods: updated }); }
                       catch (e) { console.error('Error saving payment methods:', e); Alert.alert('Error', 'Failed to save'); }
                     }}

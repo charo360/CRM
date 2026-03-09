@@ -180,11 +180,12 @@ export default function BusinessKnowledgeModal({
     const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
 
     // Payment methods state
-    const [paymentMethods, setPaymentMethods] = useState<{name:string;details:string}[]>([]);
+    const [paymentMethods, setPaymentMethods] = useState<{name:string;details?:string;fields?:{label:string;value:string}[]}[]>([]);
     const [addingPayment, setAddingPayment] = useState(false);
     const [newPmName, setNewPmName] = useState('');
-    const [newPmDetails, setNewPmDetails] = useState('');
+    const [newPmFieldValues, setNewPmFieldValues] = useState<string[]>([]);
     const [customPmName, setCustomPmName] = useState('');
+    const [customFields, setCustomFields] = useState<{label:string;value:string}[]>([]);
 
     // List states (derived from string fields)
     const [productItems, setProductItems] = useState<string[]>([]);
@@ -230,10 +231,10 @@ export default function BusinessKnowledgeModal({
                 setSelectedPlatforms(
                     data.creator_platforms ? data.creator_platforms.split(',').map((s: string) => s.trim()).filter(Boolean) : []
                 );
-                // Load payment methods
+                // Load payment methods (support both legacy {name,details} and new {name,fields})
                 if (data.payment_methods && data.payment_methods.length > 0) {
                     setPaymentMethods(data.payment_methods.map((m: any) =>
-                        typeof m === 'string' ? { name: m, details: '' } : m
+                        typeof m === 'string' ? { name: m } : m
                     ));
                 }
                 setProductItems(stringToItems(data.products_services));
@@ -273,19 +274,39 @@ export default function BusinessKnowledgeModal({
     };
 
     const PM_PRESETS = [
-        { name: 'M-Pesa', icon: 'phone-portrait', detailLabel: 'Phone Number', placeholder: 'e.g. 0712 345 678', kb: 'phone-pad' },
-        { name: 'PayPal', icon: 'logo-paypal', detailLabel: 'PayPal Email', placeholder: 'e.g. pay@youremail.com', kb: 'email-address' },
-        { name: 'Bank Transfer', icon: 'business', detailLabel: 'Account / Bank Name', placeholder: 'e.g. KCB 1234567890', kb: 'default' },
-        { name: 'Cash', icon: 'cash', detailLabel: '', placeholder: '', kb: 'default' },
-        { name: 'Visa/Card', icon: 'card', detailLabel: 'POS / Reference', placeholder: 'e.g. POS terminal', kb: 'default' },
-        { name: 'Airtel Money', icon: 'phone-portrait', detailLabel: 'Phone Number', placeholder: 'e.g. 0733 123 456', kb: 'phone-pad' },
-        { name: 'Stripe', icon: 'card', detailLabel: 'Payment Link', placeholder: 'https://buy.stripe.com/...', kb: 'default' },
-        { name: 'Bitcoin/Crypto', icon: 'logo-bitcoin', detailLabel: 'Wallet Address', placeholder: 'e.g. 1A1zP1eP5...', kb: 'default' },
-        { name: 'Chipper Cash', icon: 'wallet', detailLabel: 'Username / Phone', placeholder: 'e.g. @yourname', kb: 'default' },
-        { name: 'Wave', icon: 'wallet', detailLabel: 'Phone Number', placeholder: 'e.g. +221 77 000 0000', kb: 'phone-pad' },
+        { name: 'M-Pesa (Send Money)', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0712 345 678', kb: 'phone-pad' }] },
+        { name: 'M-Pesa Paybill', icon: 'phone-portrait', fields: [{ label: 'Business No.', placeholder: 'e.g. 400200', kb: 'number-pad' }, { label: 'Account No.', placeholder: 'e.g. your phone / order ID', kb: 'default' }] },
+        { name: 'M-Pesa Till (Buy Goods)', icon: 'phone-portrait', fields: [{ label: 'Till No.', placeholder: 'e.g. 123456', kb: 'number-pad' }] },
+        { name: 'Airtel Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0733 123 456', kb: 'phone-pad' }] },
+        { name: 'MTN Mobile Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0770 123 456', kb: 'phone-pad' }] },
+        { name: 'Bank Transfer', icon: 'business', fields: [{ label: 'Bank Name', placeholder: 'e.g. KCB', kb: 'default' }, { label: 'Account No.', placeholder: 'e.g. 1234567890', kb: 'number-pad' }, { label: 'Account Name', placeholder: 'e.g. John Doe / Company', kb: 'default' }] },
+        { name: 'PayPal', icon: 'logo-paypal', fields: [{ label: 'PayPal Email', placeholder: 'e.g. pay@youremail.com', kb: 'email-address' }] },
+        { name: 'Cash', icon: 'cash', fields: [] },
+        { name: 'Visa/Card', icon: 'card', fields: [{ label: 'POS / Reference', placeholder: 'e.g. card machine details', kb: 'default' }] },
+        { name: 'Stripe', icon: 'card', fields: [{ label: 'Payment Link', placeholder: 'https://buy.stripe.com/...', kb: 'default' }] },
+        { name: 'Wave', icon: 'wallet', fields: [{ label: 'Phone Number', placeholder: 'e.g. +221 77 000 0000', kb: 'phone-pad' }] },
+        { name: 'UPI', icon: 'phone-portrait', fields: [{ label: 'UPI ID', placeholder: 'e.g. yourname@upi', kb: 'default' }] },
+        { name: 'Chipper Cash', icon: 'wallet', fields: [{ label: 'Username / Phone', placeholder: 'e.g. @yourname', kb: 'default' }] },
+        { name: 'Bitcoin/Crypto', icon: 'logo-bitcoin', fields: [{ label: 'Wallet Address', placeholder: 'e.g. 1A1zP1eP5...', kb: 'default' }] },
+        { name: 'Custom', icon: 'add-circle-outline', fields: [] },
     ];
 
     const selectedPreset = PM_PRESETS.find(p => p.name === newPmName);
+
+    const getMethodSummary = (pm: {name:string;details?:string;fields?:{label:string;value:string}[]}) => {
+        if (pm.fields && pm.fields.length > 0) {
+            return pm.fields.filter(f => f.value).map(f => `${f.label}: ${f.value}`).join('  ·  ');
+        }
+        return pm.details || '';
+    };
+
+    const resetAddForm = () => {
+        setAddingPayment(false);
+        setNewPmName('');
+        setNewPmFieldValues([]);
+        setCustomPmName('');
+        setCustomFields([]);
+    };
 
     const handleSave = async () => {
         setSaving(true);
@@ -654,37 +675,45 @@ export default function BusinessKnowledgeModal({
                             <Text style={styles.hint}>Add how customers can pay you — include the actual number, email or account details</Text>
 
                             {/* Existing methods */}
-                            {paymentMethods.map((pm, i) => (
-                                <View key={i} style={styles.pmRow}>
-                                    <View style={styles.pmRowIcon}>
-                                        <Ionicons
-                                            name={pm.name.toLowerCase().includes('mpesa') || pm.name.toLowerCase().includes('m-pesa') || pm.name.toLowerCase().includes('airtel') || pm.name.toLowerCase().includes('wave') || pm.name.toLowerCase().includes('mobile') ? 'phone-portrait' : pm.name.toLowerCase().includes('paypal') ? 'logo-paypal' : pm.name.toLowerCase().includes('bank') ? 'business' : pm.name.toLowerCase().includes('card') || pm.name.toLowerCase().includes('visa') || pm.name.toLowerCase().includes('stripe') ? 'card' : pm.name.toLowerCase().includes('bitcoin') || pm.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash'}
-                                            size={16} color="#25D366"
-                                        />
-                                    </View>
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={styles.pmRowName}>{pm.name}</Text>
-                                        {pm.details ? <Text style={styles.pmRowDetails}>{pm.details}</Text> : <Text style={[styles.pmRowDetails, { color: '#444', fontStyle: 'italic' }]}>No details added</Text>}
-                                    </View>
-                                    {paymentMethods.length > 0 && (
+                            {paymentMethods.map((pm, i) => {
+                                const summary = getMethodSummary(pm);
+                                const iconName = pm.name.toLowerCase().includes('mpesa') || pm.name.toLowerCase().includes('m-pesa') || pm.name.toLowerCase().includes('airtel') || pm.name.toLowerCase().includes('mtn') || pm.name.toLowerCase().includes('wave') || pm.name.toLowerCase().includes('mobile') ? 'phone-portrait' : pm.name.toLowerCase().includes('paypal') ? 'logo-paypal' : pm.name.toLowerCase().includes('bank') ? 'business' : pm.name.toLowerCase().includes('card') || pm.name.toLowerCase().includes('visa') || pm.name.toLowerCase().includes('stripe') ? 'card' : pm.name.toLowerCase().includes('bitcoin') || pm.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
+                                return (
+                                    <View key={i} style={styles.pmRow}>
+                                        <View style={styles.pmRowIcon}>
+                                            <Ionicons name={iconName as any} size={16} color="#25D366" />
+                                        </View>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.pmRowName}>{pm.name}</Text>
+                                            {summary ? (
+                                                <Text style={styles.pmRowDetails}>{summary}</Text>
+                                            ) : (
+                                                <Text style={[styles.pmRowDetails, { color: '#444', fontStyle: 'italic' }]}>No details added</Text>
+                                            )}
+                                        </View>
                                         <TouchableOpacity onPress={() => setPaymentMethods(paymentMethods.filter((_, idx) => idx !== i))}>
                                             <Ionicons name="close-circle" size={20} color="#FF6B6B" />
                                         </TouchableOpacity>
-                                    )}
-                                </View>
-                            ))}
+                                    </View>
+                                );
+                            })}
 
                             {/* Add form */}
                             {addingPayment ? (
                                 <View style={styles.pmAddBox}>
                                     {/* Preset chips */}
-                                    <Text style={styles.pmPresetLabel}>Select or type a method:</Text>
+                                    <Text style={styles.pmPresetLabel}>Select a method:</Text>
                                     <View style={styles.pmChipRow}>
                                         {PM_PRESETS.filter(p => !paymentMethods.find(m => m.name === p.name)).map(p => (
                                             <TouchableOpacity
                                                 key={p.name}
                                                 style={[styles.pmChip, newPmName === p.name && styles.pmChipActive]}
-                                                onPress={() => { setNewPmName(p.name); setCustomPmName(''); setNewPmDetails(''); }}
+                                                onPress={() => {
+                                                    setNewPmName(p.name);
+                                                    setCustomPmName('');
+                                                    setCustomFields([]);
+                                                    setNewPmFieldValues(p.fields.map(() => ''));
+                                                }}
                                             >
                                                 <Ionicons name={p.icon as any} size={13} color={newPmName === p.name ? '#25D366' : '#6B7D99'} />
                                                 <Text style={[styles.pmChipText, newPmName === p.name && { color: '#25D366' }]}>{p.name}</Text>
@@ -692,45 +721,125 @@ export default function BusinessKnowledgeModal({
                                         ))}
                                     </View>
 
-                                    {/* Custom name */}
-                                    <TextInput
-                                        style={styles.pmInput}
-                                        value={newPmName || customPmName}
-                                        onChangeText={t => { setCustomPmName(t); setNewPmName(''); }}
-                                        placeholder="Or type: Venmo, Chipper Cash, Wave..."
-                                        placeholderTextColor="#555"
-                                    />
+                                    {/* Custom payment method builder */}
+                                    {newPmName === 'Custom' && (
+                                        <View style={{ marginTop: 8 }}>
+                                            <TextInput
+                                                style={styles.pmInput}
+                                                value={customPmName}
+                                                onChangeText={setCustomPmName}
+                                                placeholder="Payment method name (e.g. Venmo, GCash, Zelle)"
+                                                placeholderTextColor="#555"
+                                            />
+                                            
+                                            <Text style={[styles.pmFieldLabel, { marginTop: 12, marginBottom: 6 }]}>Fields (optional):</Text>
+                                            {customFields.map((field, fi) => (
+                                                <View key={fi} style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                                                    <TextInput
+                                                        style={[styles.pmInput, { flex: 1 }]}
+                                                        value={field.label}
+                                                        onChangeText={t => {
+                                                            const updated = [...customFields];
+                                                            updated[fi].label = t;
+                                                            setCustomFields(updated);
+                                                        }}
+                                                        placeholder="Field name (e.g. Phone, Account No.)"
+                                                        placeholderTextColor="#555"
+                                                    />
+                                                    <TextInput
+                                                        style={[styles.pmInput, { flex: 1.5 }]}
+                                                        value={field.value}
+                                                        onChangeText={t => {
+                                                            const updated = [...customFields];
+                                                            updated[fi].value = t;
+                                                            setCustomFields(updated);
+                                                        }}
+                                                        placeholder="Value"
+                                                        placeholderTextColor="#555"
+                                                    />
+                                                    <TouchableOpacity
+                                                        onPress={() => setCustomFields(customFields.filter((_, i) => i !== fi))}
+                                                        style={{ justifyContent: 'center' }}
+                                                    >
+                                                        <Ionicons name="close-circle" size={22} color="#FF6B6B" />
+                                                    </TouchableOpacity>
+                                                </View>
+                                            ))}
+                                            <TouchableOpacity
+                                                style={[styles.addButton, { marginTop: 4 }]}
+                                                onPress={() => setCustomFields([...customFields, { label: '', value: '' }])}
+                                            >
+                                                <Ionicons name="add" size={16} color="#25D366" />
+                                                <Text style={[styles.addButtonText, { fontSize: 13 }]}>Add field</Text>
+                                            </TouchableOpacity>
+                                        </View>
+                                    )}
 
-                                    {/* Details */}
-                                    <TextInput
-                                        style={[styles.pmInput, { marginTop: 8 }]}
-                                        value={newPmDetails}
-                                        onChangeText={setNewPmDetails}
-                                        placeholder={
-                                            selectedPreset?.placeholder ||
-                                            'Account / number / email / link'
-                                        }
-                                        placeholderTextColor="#555"
-                                        autoCapitalize="none"
-                                        keyboardType={(selectedPreset?.kb as any) || 'default'}
-                                    />
+                                    {/* Dynamic fields for selected preset */}
+                                    {selectedPreset && selectedPreset.name !== 'Custom' && selectedPreset.fields.length > 0 && (
+                                        <View style={{ marginTop: 8 }}>
+                                            {selectedPreset.fields.map((field, fi) => (
+                                                <View key={fi} style={{ marginBottom: 8 }}>
+                                                    <Text style={styles.pmFieldLabel}>{field.label}</Text>
+                                                    <TextInput
+                                                        style={styles.pmInput}
+                                                        value={newPmFieldValues[fi] || ''}
+                                                        onChangeText={t => {
+                                                            const updated = [...newPmFieldValues];
+                                                            updated[fi] = t;
+                                                            setNewPmFieldValues(updated);
+                                                        }}
+                                                        placeholder={field.placeholder}
+                                                        placeholderTextColor="#555"
+                                                        autoCapitalize="none"
+                                                        keyboardType={(field.kb as any) || 'default'}
+                                                    />
+                                                </View>
+                                            ))}
+                                        </View>
+                                    )}
+
+                                    {/* Cash has no fields */}
+                                    {selectedPreset && selectedPreset.name === 'Cash' && (
+                                        <Text style={[styles.pmRowDetails, { marginTop: 8, color: '#555' }]}>No details needed for cash payments</Text>
+                                    )}
 
                                     <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-                                        <TouchableOpacity
-                                            style={styles.pmCancelBtn}
-                                            onPress={() => { setAddingPayment(false); setNewPmName(''); setNewPmDetails(''); setCustomPmName(''); }}
-                                        >
+                                        <TouchableOpacity style={styles.pmCancelBtn} onPress={resetAddForm}>
                                             <Text style={{ color: '#888', fontSize: 14, fontWeight: '600' }}>Cancel</Text>
                                         </TouchableOpacity>
                                         <TouchableOpacity
                                             style={styles.pmSaveBtn}
                                             onPress={() => {
-                                                const name = (newPmName || customPmName).trim();
-                                                if (!name) return;
-                                                if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) return;
-                                                setPaymentMethods([...paymentMethods, { name, details: newPmDetails.trim() }]);
-                                                setAddingPayment(false);
-                                                setNewPmName(''); setNewPmDetails(''); setCustomPmName('');
+                                                let name = '';
+                                                let newEntry: {name:string;fields?:{label:string;value:string}[]};
+                                                
+                                                if (newPmName === 'Custom') {
+                                                    // Custom payment method
+                                                    name = customPmName.trim();
+                                                    if (!name) return;
+                                                    if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) return;
+                                                    const validFields = customFields.filter(f => f.label.trim() || f.value.trim());
+                                                    if (validFields.length > 0) {
+                                                        newEntry = { name, fields: validFields };
+                                                    } else {
+                                                        newEntry = { name };
+                                                    }
+                                                } else if (selectedPreset) {
+                                                    // Preset payment method
+                                                    name = selectedPreset.name;
+                                                    if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) return;
+                                                    if (selectedPreset.fields.length > 0) {
+                                                        newEntry = { name, fields: selectedPreset.fields.map((f, fi) => ({ label: f.label, value: newPmFieldValues[fi] || '' })) };
+                                                    } else {
+                                                        newEntry = { name };
+                                                    }
+                                                } else {
+                                                    return;
+                                                }
+                                                
+                                                setPaymentMethods([...paymentMethods, newEntry]);
+                                                resetAddForm();
                                             }}
                                         >
                                             <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>Add</Text>
@@ -1051,6 +1160,12 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         fontSize: 14,
         color: '#FFFFFF',
+    },
+    pmFieldLabel: {
+        fontSize: 12,
+        color: '#8B9DC3',
+        fontWeight: '600',
+        marginBottom: 4,
     },
     pmCancelBtn: {
         flex: 1,
