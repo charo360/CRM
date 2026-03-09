@@ -5845,14 +5845,25 @@ async def evolution_webhook(request: Request):
                 if not button_action and not from_me and body:
                     _body_lower = body.strip().lower()
                     _poll_option_map = {
+                        # sendList / sendPoll display text fallback (rowId is preferred but display text may arrive)
+                        "🛒 order now": "order",
+                        "order now": "order",
+                        "✅ order now": "order",
+                        "➕ add to cart": "add_to_cart",
                         "🛒 add to cart": "add_to_cart",
                         "add to cart": "add_to_cart",
-                        "✅ order now": "order",
-                        "order now": "order",
+                        "💬 ask a question": "ask",
                         "💬 ask question": "ask",
+                        "ask a question": "ask",
                         "ask question": "ask",
-                        # legacy poll option names (in case old polls are still in flight)
-                        "🛒 order now": "order",
+                        "📋 more info": "details",
+                        "more info": "details",
+                        # cart options
+                        "🛍️ continue shopping": "continue",
+                        "continue shopping": "continue",
+                        "✅ checkout now": "checkout",
+                        "checkout now": "checkout",
+                        # legacy
                         "📱 share": "share",
                     }
                     _poll_matched = _poll_option_map.get(_body_lower)
@@ -6038,24 +6049,28 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name,
                                     send_context="order_confirm",
                                 )
-                                # Send action buttons
+                                # Send "What's next?" as list (compact single button → opens clean menu)
                                 import httpx
-                                async with httpx.AsyncClient(timeout=30) as client:
-                                    await asyncio.sleep(0.5)
-                                    await client.post(
-                                        f"{ws.base_url}/message/sendButtons/{ws._instance_name(user['_id'])}",
-                                        json={
-                                            "number": from_number.lstrip("+"),
-                                            "title": "What's next?",
-                                            "description": "Choose an option below",
-                                            "footer": "Your cart is ready",
-                                            "buttons": [
-                                                {"type": "reply", "displayText": "🛍️ Continue Shopping", "id": "continue_shopping"},
-                                                {"type": "reply", "displayText": "✅ Checkout Now", "id": "checkout_cart"},
-                                            ],
-                                        },
-                                        headers=ws._headers(),
-                                    )
+                                _instance = await db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1})
+                                _inst_name = (_instance or {}).get("whatsapp", {}).get("instance_name", "")
+                                if _inst_name:
+                                    async with httpx.AsyncClient(timeout=30) as client:
+                                        await asyncio.sleep(0.5)
+                                        await client.post(
+                                            f"{ws.base_url}/message/sendList/{_inst_name}",
+                                            json={
+                                                "number": from_number.lstrip("+"),
+                                                "title": "🛒 What's next?",
+                                                "description": f"You have {len(cart_items)} item(s) in your cart",
+                                                "buttonText": "Choose an Action",
+                                                "footerText": f"Total: {currency} {cart_total:,.0f}",
+                                                "sections": [{"title": "Cart Options", "rows": [
+                                                    {"title": "🛍️ Continue Shopping", "description": "Add more items to your cart", "rowId": "continue_shopping"},
+                                                    {"title": "✅ Checkout Now",       "description": "Place your order",            "rowId": "checkout_cart"},
+                                                ]}],
+                                            },
+                                            headers=ws._headers(),
+                                        )
                                 logging.info(f"Added to cart: product={button_product_id}, cart_size={len(cart_items)}")
                                 return {"status": "ok", "handled_by": "add_to_cart"}
 

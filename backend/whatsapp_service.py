@@ -967,24 +967,31 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send poll as single-select (looks and feels like buttons, works reliably)
+            # Step 2: send action list (single compact button → opens clean menu, not survey-like)
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
-                poll_options = ["🛒 Order Now", "💬 Ask a Question", "📋 More Info"]
+                product_id = str(product.get('_id', product.get('id', '')))
+                rows = [
+                    {"title": "🛒 Order Now",       "description": "Place an order for this item", "rowId": f"order_{product_id}"},
+                    {"title": "➕ Add to Cart",      "description": "Add to cart & keep shopping",  "rowId": f"cart_{product_id}"},
+                    {"title": "💬 Ask a Question",   "description": "Send us a message",            "rowId": f"ask_{product_id}"},
+                ]
                 btn_resp = await client.post(
-                    f"{self.base_url}/message/sendPoll/{instance_name}",
+                    f"{self.base_url}/message/sendList/{instance_name}",
                     json={
                         "number": clean_to,
-                        "name": "What would you like to do?",
-                        "values": poll_options,
-                        "selectableCount": 1,
+                        "title": "👆 What would you like to do?",
+                        "description": product.get("name", ""),
+                        "buttonText": "Choose an Action",
+                        "footerText": "Tap the button to select",
+                        "sections": [{"title": "Options", "rows": rows}],
                     },
                     headers=self._headers(),
                 )
                 if btn_resp.status_code not in (200, 201):
-                    logger.warning(f"sendPoll failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+                    logger.warning(f"sendList failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
                 else:
-                    logger.info(f"sendPoll sent OK")
+                    logger.info(f"sendList sent OK")
 
         return result or {"status": "sent"}
 
