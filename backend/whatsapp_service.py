@@ -967,29 +967,24 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: send action buttons (correct Evolution API v2 format: flat, title+id per button)
+            # Step 2: send poll as single-select (looks and feels like buttons, works reliably)
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
-                product_id = str(product.get('_id', product.get('id', '')))
+                poll_options = ["🛒 Order Now", "💬 Ask a Question", "📋 More Info"]
                 btn_resp = await client.post(
-                    f"{self.base_url}/message/sendButtons/{instance_name}",
+                    f"{self.base_url}/message/sendPoll/{instance_name}",
                     json={
                         "number": clean_to,
-                        "title": "What would you like to do?",
-                        "description": product.get("name", ""),
-                        "footer": "Tap a button to continue",
-                        "buttons": [
-                            {"type": "reply", "displayText": "🛒 Add to Cart", "id": f"cart_{product_id}"},
-                            {"type": "reply", "displayText": "✅ Order Now",   "id": f"order_{product_id}"},
-                            {"type": "reply", "displayText": "💬 Ask Question","id": f"question_{product_id}"},
-                        ],
+                        "name": "What would you like to do?",
+                        "values": poll_options,
+                        "selectableCount": 1,
                     },
                     headers=self._headers(),
                 )
                 if btn_resp.status_code not in (200, 201):
-                    logger.warning(f"sendButtons failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
+                    logger.warning(f"sendPoll failed ({btn_resp.status_code}): {btn_resp.text[:300]}")
                 else:
-                    logger.info(f"sendButtons sent OK: {btn_resp.text[:150]}")
+                    logger.info(f"sendPoll sent OK")
 
         return result or {"status": "sent"}
 
@@ -1076,21 +1071,26 @@ class WhatsAppService:
             buttons.append({"title": "Share", "displayText": "📱 Share", "id": f"share_{product_id}"})
 
         async with httpx.AsyncClient(timeout=30) as client:
+            poll_options = []
+            if in_stock:
+                poll_options.append("🛒 Order Now")
+            poll_options.append("📋 More Info")
+            if include_share:
+                poll_options.append("📱 Share")
             resp = await client.post(
-                f"{self.base_url}/message/sendButtons/{instance_name}",
+                f"{self.base_url}/message/sendPoll/{instance_name}",
                 json={
                     "number": clean_to,
-                    "title": f"✨ {product['name']}",
-                    "description": description,
-                    "footer": "Tap a button below",
-                    "buttons": buttons[:3],
+                    "name": f"✨ {product['name']}",
+                    "values": poll_options[:3],
+                    "selectableCount": 1,
                 },
                 headers=self._headers(),
             )
             if resp.status_code in (200, 201):
                 return {"status": "success", "data": resp.json()}
             else:
-                raise Exception(f"sendButtons error: {resp.status_code} {resp.text[:200]}")
+                raise Exception(f"sendPoll error: {resp.status_code} {resp.text[:200]}")
 
     def format_product_message(self, product: Dict[str, Any]) -> str:
         """Format a product into a rich text message"""
