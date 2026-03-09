@@ -38,13 +38,22 @@ async def find_product_matches_ai(query: str, products: List[Dict[str, Any]]) ->
 Products available:
 {chr(10).join(product_list)}
 
-Return ONLY the numbers (comma-separated) of products that match the customer's query.
-Use semantic understanding: "shoes" matches sneakers/heels/boots, "phone" matches iPhone/Samsung, etc.
+Return ONLY the numbers (comma-separated) of products that DIRECTLY match the customer's query.
+Be STRICT - only return products that are actually what the customer asked for.
+
+Semantic matching rules:
+- "shoes" → sneakers, heels, boots, sandals (footwear only)
+- "dresses" → dresses, gowns (NOT heels, NOT handbags)
+- "phones" → iPhone, Samsung, smartphones (NOT earbuds, NOT accessories)
+- "laptops" → MacBook, ThinkPad, computers (NOT tablets, NOT phones)
+
 If NO products match, return "NONE".
+Do NOT return loosely related items.
+
 Examples:
-- Query "shoes" → "0,5,12" (if those are footwear)
-- Query "laptop" → "3" (if that's a computer)
-- Query "red dress" → "NONE" (if no red dresses exist)
+- Query "shoes" + Products: [Nike Air Max, Red Heels, Handbag] → "0,1" (NOT handbag)
+- Query "dresses" + Products: [Red Dress, Heels, Handbag] → "0" (ONLY the dress)
+- Query "phones" + Products: [iPhone 15, Earbuds, MacBook] → "0" (ONLY the phone)
 
 Numbers only:"""
         

@@ -949,6 +949,12 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
     sent_count = 0
     for customer in customers:
+        # Check if broadcast was cancelled before each send
+        bc_doc = await db.broadcasts.find_one({"_id": broadcast_id})
+        if not bc_doc or bc_doc.get("status") in ("cancelled", "stopped"):
+            logging.info(f"[Broadcast] {broadcast_id} cancelled — stopping at {sent_count} sent")
+            return
+
         try:
             personalized_message = message.replace("{{name}}", customer.get("name", "there"))
 
@@ -1037,10 +1043,27 @@ async def delete_broadcast_automation(automation_id: str, user = Depends(get_cur
         raise HTTPException(status_code=404, detail="Automation not found")
     return {"status": "deleted"}
 
+@api_router.post("/broadcasts/{broadcast_id}/cancel")
+async def cancel_broadcast(broadcast_id: str, user = Depends(get_current_user)):
+    """Cancel an in-progress broadcast immediately"""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.broadcasts.update_one(
+        {"_id": broadcast_id, "user_id": business_id},
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.utcnow()}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+    return {"status": "cancelled", "message": "Broadcast is being stopped"}
+
 @api_router.delete("/broadcasts/{broadcast_id}")
 async def delete_broadcast(broadcast_id: str, user = Depends(get_current_user)):
     """Delete a broadcast"""
     business_id = user.get("business_id", user["_id"])
+    # Also mark as cancelled first to stop any in-progress sending
+    await db.broadcasts.update_one(
+        {"_id": broadcast_id, "user_id": business_id},
+        {"$set": {"status": "cancelled"}}
+    )
     result = await db.broadcasts.delete_one({"_id": broadcast_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Broadcast not found")

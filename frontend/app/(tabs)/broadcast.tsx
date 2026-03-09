@@ -141,6 +141,7 @@ export default function BroadcastScreen() {
   const [recurrence, setRecurrence] = useState<'weekly' | 'monthly'>('weekly');
   const [sendHour, setSendHour] = useState('9');
   const [resending, setResending] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState<string | null>(null);
   const [generatingFollowUpAI, setGeneratingFollowUpAI] = useState(false);
   const [generatingRecurringAI, setGeneratingRecurringAI] = useState(false);
   const [followUpAIDirection, setFollowUpAIDirection] = useState('');
@@ -749,6 +750,32 @@ export default function BroadcastScreen() {
     setTemplateName('');
   };
 
+  const handleCancelBroadcast = async (broadcast: Broadcast) => {
+    Alert.alert(
+      '⛔ Stop Broadcast',
+      `Stop sending "${broadcast.name || 'this broadcast'}"? Messages already sent cannot be recalled.`,
+      [
+        { text: 'Keep Sending', style: 'cancel' },
+        {
+          text: 'Stop Now',
+          style: 'destructive',
+          onPress: async () => {
+            setCancelling(broadcast.id);
+            try {
+              await apiClient.post(`/broadcasts/${broadcast.id}/cancel`);
+              fetchData();
+              Alert.alert('Stopped', 'Broadcast has been stopped. No more messages will be sent.');
+            } catch (e: any) {
+              Alert.alert('Error', e.response?.data?.detail || 'Failed to stop broadcast');
+            } finally {
+              setCancelling(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleResend = async (broadcast: Broadcast) => {
     const audienceLabel = broadcast.filter_type === 'all'
       ? 'all customers'
@@ -944,21 +971,33 @@ export default function BroadcastScreen() {
                     )}
                   </View>
                   <View style={styles.statusRow}>
-                    <View style={[styles.statusBadge, item.status === 'completed' && styles.statusCompleted, item.status === 'sending' && styles.statusSending]}>
-                      <Text style={styles.statusText}>{item.status === 'completed' ? 'Sent' : 'Sending...'}</Text>
+                    <View style={[styles.statusBadge, item.status === 'completed' && styles.statusCompleted, item.status === 'sending' && styles.statusSending, item.status === 'cancelled' && { backgroundColor: '#FF4A4A22' }]}>
+                      <Text style={[styles.statusText, item.status === 'cancelled' && { color: '#FF4A4A' }]}>{item.status === 'completed' ? 'Sent' : item.status === 'cancelled' ? 'Stopped' : 'Sending...'}</Text>
                     </View>
                     <Text style={styles.recipientCount}>{item.sent_count}/{item.recipients_count} delivered</Text>
                   </View>
                 </View>
-                <TouchableOpacity
-                  style={{ backgroundColor: '#1E3A5F', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginLeft: 8 }}
-                  onPress={() => handleResend(item)}
-                  disabled={resending === item.id}
-                >
-                  {resending === item.id
-                    ? <ActivityIndicator size="small" color="#25D366" />
-                    : <Ionicons name="refresh" size={16} color="#25D366" />}
-                </TouchableOpacity>
+                {item.status === 'sending' ? (
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#FF4A4A22', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginLeft: 8, borderWidth: 1, borderColor: '#FF4A4A' }}
+                    onPress={() => handleCancelBroadcast(item)}
+                    disabled={cancelling === item.id}
+                  >
+                    {cancelling === item.id
+                      ? <ActivityIndicator size="small" color="#FF4A4A" />
+                      : <Ionicons name="stop-circle" size={18} color="#FF4A4A" />}
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#1E3A5F', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginLeft: 8 }}
+                    onPress={() => handleResend(item)}
+                    disabled={resending === item.id}
+                  >
+                    {resending === item.id
+                      ? <ActivityIndicator size="small" color="#25D366" />
+                      : <Ionicons name="refresh" size={16} color="#25D366" />}
+                  </TouchableOpacity>
+                )}
               </View>
               <Text style={styles.broadcastMessage} numberOfLines={2}>{item.message}</Text>
             </TouchableOpacity>
