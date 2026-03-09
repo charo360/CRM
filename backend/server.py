@@ -1710,6 +1710,60 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_doc})
     return {"status": "ok"}
 
+# ============ PRODUCT ACTIONS ============
+
+DEFAULT_PRODUCT_ACTIONS = [
+    {"label": "Order Now",       "action_type": "order",       "index": 1, "ai_prompt": ""},
+    {"label": "Add to Cart",     "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
+    {"label": "Ask a Question",  "action_type": "ask",         "index": 3, "ai_prompt": ""},
+]
+
+# All action types supported + what they do
+PRODUCT_ACTION_TYPES = {
+    "order":       "Create order immediately",
+    "add_to_cart": "Add to cart for multi-item checkout",
+    "ask":         "Let customer ask the AI a question",
+    "book":        "Book an appointment / service",
+    "subscribe":   "Subscribe to a plan / service",
+    "quote":       "Request a price quote",
+    "test_drive":  "Schedule a test drive",
+    "info":        "Get more product details via AI",
+    "custom":      "Custom AI response (define your prompt)",
+}
+
+@api_router.get("/settings/product-actions")
+async def get_product_actions(user = Depends(get_current_user)):
+    """Get business's customized WhatsApp product action buttons"""
+    actions = user.get("settings", {}).get("product_actions") or DEFAULT_PRODUCT_ACTIONS
+    return {"actions": actions, "available_types": PRODUCT_ACTION_TYPES}
+
+@api_router.put("/settings/product-actions")
+async def update_product_actions(request: Request, user = Depends(get_current_user)):
+    """Update business's WhatsApp product action buttons (max 3)"""
+    body = await request.json()
+    raw = body.get("actions", [])
+    validated = []
+    for i, a in enumerate(raw[:3], 1):
+        lbl = str(a.get("label", "")).strip()[:30]
+        atype = str(a.get("action_type", "ask")).strip()
+        if not lbl:
+            continue
+        if atype not in PRODUCT_ACTION_TYPES:
+            atype = "ask"
+        validated.append({
+            "label":       lbl,
+            "action_type": atype,
+            "index":       i,
+            "ai_prompt":   str(a.get("ai_prompt", "")).strip()[:200],
+        })
+    if not validated:
+        validated = DEFAULT_PRODUCT_ACTIONS
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"settings.product_actions": validated}}
+    )
+    return {"status": "ok", "actions": validated}
+
 # ============ CONTACT CLASSIFICATION ============
 
 @api_router.post("/contacts/classify")
@@ -5897,13 +5951,28 @@ async def evolution_webhook(request: Request):
                                     logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
 
                             else:
-                                # product context: 1=order, 2=add_to_cart, 3=ask
-                                _num_to_action = {1: "order", 2: "add_to_cart", 3: "ask"}
-                                _matched = _num_to_action.get(_reply_num)
-                                if _matched and _pending_cat.get("products"):
-                                    button_action = _matched
+                                # product context — look up user's custom action buttons
+                                _default_actions = [
+                                    {"label": "Order Now",      "action_type": "order",       "index": 1},
+                                    {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
+                                    {"label": "Ask a Question", "action_type": "ask",         "index": 3},
+                                ]
+                                _user_actions_doc = await db.users.find_one(
+                                    {"_id": user["_id"]}, {"settings.product_actions": 1}
+                                )
+                                _user_actions = (
+                                    (_user_actions_doc or {}).get("settings", {}).get("product_actions")
+                                    or _default_actions
+                                )
+                                _chosen = next(
+                                    (a for a in _user_actions if a.get("index") == _reply_num), None
+                                )
+                                if _chosen and _pending_cat.get("products"):
+                                    button_action = _chosen["action_type"]
                                     button_product_id = _pending_cat["products"][0].get("id")
-                                    logging.info(f"Numbered product reply: {_reply_num} → {_matched}, product={button_product_id}")
+                                    # Store the full action for prompt lookup in the handler
+                                    _chosen_action_meta = _chosen
+                                    logging.info(f"Numbered product reply: {_reply_num} → {button_action}, product={button_product_id}")
 
                 # TEXT OPTION HANDLER — match full option text (legacy poll / typed responses)
                 if not button_action and not from_me and body:
@@ -6259,12 +6328,35 @@ async def evolution_webhook(request: Request):
                             _ask_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_ask})
                             if _ask_product:
                                 body = f"I have a question about {_ask_product['name']}"
-                                # Update the stored message content too
                                 await db.messages.update_one(
                                     {"_id": message_id},
                                     {"$set": {"content": body}}
                                 )
                             logging.info(f"Ask button clicked for product {button_product_id}, passing to AI with body={body!r}")
+
+                        elif button_action in ("book", "subscribe", "quote", "test_drive", "info", "custom"):
+                            # Custom action types — craft intent message and let AI handle naturally
+                            _biz_id_ca = user.get("business_id", user["_id"])
+                            _ca_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_ca})
+                            _pname = _ca_product["name"] if _ca_product else "this product"
+                            _intent_map = {
+                                "book":       f"I want to book an appointment for {_pname}",
+                                "subscribe":  f"I want to subscribe to {_pname}",
+                                "quote":      f"I want to get a quote for {_pname}",
+                                "test_drive": f"I want to schedule a test drive for {_pname}",
+                                "info":       f"Tell me more about {_pname}",
+                                "custom":     f"I'm interested in {_pname}",
+                            }
+                            # Check if user has a custom ai_prompt for this action
+                            _ca_user_doc = await db.users.find_one({"_id": user["_id"]}, {"settings.product_actions": 1})
+                            _ca_actions = (_ca_user_doc or {}).get("settings", {}).get("product_actions", [])
+                            _ca_action_def = next((a for a in _ca_actions if a.get("action_type") == button_action), None)
+                            if _ca_action_def and _ca_action_def.get("ai_prompt"):
+                                body = _ca_action_def["ai_prompt"].replace("{product}", _pname).replace("{name}", customer_name)
+                            else:
+                                body = _intent_map.get(button_action, f"I'm interested in {_pname}")
+                            await db.messages.update_one({"_id": message_id}, {"$set": {"content": body}})
+                            logging.info(f"Custom action '{button_action}' for {_pname}: body={body!r}, passing to AI")
                     
                     except Exception as btn_err:
                         logging.error(f"Button handler error: {btn_err}")

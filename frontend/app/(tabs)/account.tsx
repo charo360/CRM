@@ -23,6 +23,7 @@ import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/a
 
 import { NotificationHandler } from '../../utils/notification-handler';
 import TeamManagementModal from '../../components/TeamManagementModal';
+import ProductActionsModal from '../../components/ProductActionsModal';
 // IAP stubs — real react-native-iap is linked only in native production builds
 type ProductPurchase = { purchaseToken?: string; transactionId?: string };
 type PurchaseError = { code?: string; message?: string };
@@ -114,6 +115,9 @@ export default function AccountScreen() {
 
   // Team Management State
   const [showTeamModal, setShowTeamModal] = useState(false);
+
+  // Product Actions State
+  const [showProductActionsModal, setShowProductActionsModal] = useState(false);
 
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
@@ -773,6 +777,17 @@ export default function AccountScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.settingItem}
+              onPress={() => setShowProductActionsModal(true)}
+            >
+              <Ionicons name="options-outline" size={24} color="#6366f1" />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.settingText}>WhatsApp Product Actions</Text>
+                <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>Customise buttons shown when sending products</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingItem}
               onPress={() => setShowModelPicker(true)}
             >
               <Ionicons name="hardware-chip-outline" size={24} color="#666" />
@@ -915,6 +930,12 @@ export default function AccountScreen() {
         </View>
 
 
+
+        {/* Product Actions Modal */}
+        <ProductActionsModal
+          visible={showProductActionsModal}
+          onClose={() => setShowProductActionsModal(false)}
+        />
 
         {/* AI Model Picker Modal */}
         <Modal

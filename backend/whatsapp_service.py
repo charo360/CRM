@@ -967,16 +967,23 @@ class WhatsAppService:
                 )
             result = resp.json() if resp.status_code in (200, 201) else {}
 
-            # Step 2: numbered action text — clean, no survey feel, works on all WhatsApp accounts
+            # Step 2: numbered action text using business's custom actions
             if send_buttons and in_stock:
                 await asyncio.sleep(1)
-                actions_text = (
-                    "*What would you like to do?*\n\n"
-                    "1\ufe0f\u20e3  Order Now\n"
-                    "2\ufe0f\u20e3  Add to Cart\n"
-                    "3\ufe0f\u20e3  Ask a Question\n\n"
-                    "_Reply with 1, 2 or 3_"
+                # Load user's custom product actions (or fall back to defaults)
+                _user_doc = await self.db.users.find_one({"_id": user_id}, {"settings": 1})
+                _default_actions = [
+                    {"label": "Order Now",      "action_type": "order",       "index": 1},
+                    {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
+                    {"label": "Ask a Question", "action_type": "ask",         "index": 3},
+                ]
+                _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
+                _count = len(_actions)
+                _reply_hint = f"1 or {_count}" if _count == 2 else f"1, 2 or {_count}"
+                action_lines = "\n".join(
+                    f"{a['index']}\ufe0f\u20e3  {a['label']}" for a in _actions
                 )
+                actions_text = f"*What would you like to do?*\n\n{action_lines}\n\n_Reply with {_reply_hint}_"
                 btn_resp = await client.post(
                     f"{self.base_url}/message/sendText/{instance_name}",
                     json={"number": clean_to, "text": actions_text},
@@ -985,7 +992,7 @@ class WhatsAppService:
                 if btn_resp.status_code not in (200, 201):
                     logger.warning(f"sendText actions failed ({btn_resp.status_code}): {btn_resp.text[:200]}")
                 else:
-                    logger.info(f"Product action text sent OK")
+                    logger.info(f"Product action text sent OK ({_count} actions)")
 
         return result or {"status": "sent"}
 
