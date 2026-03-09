@@ -1005,19 +1005,6 @@ class WhatsAppService:
         instance_name = user["whatsapp"]["instance_name"]
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
-        rows = []
-        for p in products[:10]:
-            product_id = str(p.get('_id', p.get('id', '')))
-            price = p.get('price', 0)
-            currency = p.get('currency', 'KES')
-            price_str = f"{currency} {price:,.0f}" if price else "POA"
-            stock_emoji = "✅" if p.get('in_stock', True) else "❌"
-            rows.append({
-                "title": p['name'][:24],
-                "description": f"{stock_emoji} {price_str}",
-                "rowId": f"select_{product_id}"
-            })
-
         # Build numbered list text
         lines = [f"🛍️ *{title}*\n"]
         for i, p in enumerate(products[:9], 1):

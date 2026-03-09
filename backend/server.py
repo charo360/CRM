@@ -5845,7 +5845,10 @@ async def evolution_webhook(request: Request):
                 if not button_action and not from_me and body:
                     _body_stripped = body.strip()
                     # Accept plain digits or emoji keycap digits (1️⃣ etc)
-                    _num_map = {"1": 1, "2": 2, "3": 3, "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3}
+                    _num_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+                                "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
+                                "4\ufe0f\u20e3": 4, "5\ufe0f\u20e3": 5, "6\ufe0f\u20e3": 6,
+                                "7\ufe0f\u20e3": 7, "8\ufe0f\u20e3": 8, "9\ufe0f\u20e3": 9}
                     _reply_num = _num_map.get(_body_stripped)
                     if _reply_num is not None:
                         _pending_cat = await db.pending_catalogs.find_one({
@@ -5853,7 +5856,38 @@ async def evolution_webhook(request: Request):
                         })
                         if _pending_cat:
                             _ctx = _pending_cat.get("action_context", "product")
-                            if _ctx == "cart":
+
+                            if _ctx == "catalog_select":
+                                # Customer picked a product from a numbered list — show it fully
+                                _cat_products = _pending_cat.get("products", [])
+                                _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
+                                if _selected_p:
+                                    _biz_id_cs = user.get("business_id", user["_id"])
+                                    _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
+                                    if _full_p:
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_product_showcase(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            product=_full_p,
+                                            send_buttons=True,
+                                        )
+                                        # Switch context to product actions so next 1/2/3 = order/cart/ask
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {
+                                                "products": [{"id": _full_p["_id"], "name": _full_p["name"],
+                                                              "price": _full_p.get("price", 0), "index": 1}],
+                                                "action_context": "product",
+                                                "updated_at": datetime.utcnow()
+                                            }}
+                                        )
+                                        logging.info(f"Catalog select #{_reply_num}: showed product {_full_p['_id']}")
+                                        return {"status": "ok", "handled_by": "catalog_select"}
+                                # If product not found, fall through to AI
+                                logging.warning(f"Catalog select #{_reply_num}: no product at that index")
+
+                            elif _ctx == "cart":
                                 # 1 = continue shopping, 2 = checkout
                                 _num_to_action = {1: "continue", 2: "checkout"}
                                 _matched = _num_to_action.get(_reply_num)
@@ -5861,6 +5895,7 @@ async def evolution_webhook(request: Request):
                                     button_action = _matched
                                     button_product_id = None
                                     logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
+
                             else:
                                 # product context: 1=order, 2=add_to_cart, 3=ask
                                 _num_to_action = {1: "order", 2: "add_to_cart", 3: "ask"}
@@ -6177,16 +6212,44 @@ async def evolution_webhook(request: Request):
                                 return {"status": "ok", "handled_by": "checkout"}
 
                         elif button_action == "continue":
-                            # Customer clicked "Continue Shopping" - just acknowledge
+                            # Customer chose "Continue Shopping" — re-send product catalog
+                            _biz_id_cont = user.get("business_id", user["_id"])
+                            _cont_products = await db.products.find(
+                                {"user_id": _biz_id_cont, "in_stock": True}
+                            ).sort("name", 1).to_list(9)
                             ws = get_whatsapp_service(db)
-                            await ws.send_message(
-                                user_id=user["_id"],
-                                to_number=from_number,
-                                message="🛍️ Great! Keep browsing our products. When you're ready, just tap *Checkout* or reply *CHECKOUT*.",
-                                customer_name=customer_name,
-                                send_context="auto_reply"
-                            )
-                            logging.info("Continue shopping button clicked")
+                            if _cont_products:
+                                _currency_cont = user.get("settings", {}).get("currency", "KES")
+                                for p in _cont_products:
+                                    if "currency" not in p:
+                                        p["currency"] = _currency_cont
+                                await ws.send_product_list(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    title="Our Products",
+                                    products=_cont_products,
+                                )
+                                # Set catalog_select so next numbered reply picks a product
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "products": [{"id": p["_id"], "name": p["name"],
+                                                      "price": p.get("price", 0), "index": i}
+                                                     for i, p in enumerate(_cont_products, 1)],
+                                        "action_context": "catalog_select",
+                                        "updated_at": datetime.utcnow()
+                                    }},
+                                    upsert=True
+                                )
+                            else:
+                                await ws.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message="😔 No other products in stock right now. Reply *CHECKOUT* whenever you're ready to place your order!",
+                                    customer_name=customer_name,
+                                    send_context="auto_reply"
+                                )
+                            logging.info("Continue shopping: re-sent product catalog")
                             return {"status": "ok", "handled_by": "continue_shopping"}
 
                         elif button_action == "ask":
@@ -8876,7 +8939,7 @@ async def send_catalog_to_customer(
         {"customer_id": request.customer_id, "user_id": business_id},
         {"$set": {
             "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i} for i, p in enumerate(products, 1)],
-            "action_context": "product",
+            "action_context": "catalog_select",
             "created_at": datetime.utcnow()
         }},
         upsert=True
@@ -9011,7 +9074,7 @@ async def broadcast_catalog(
                         )
                 await db.pending_catalogs.update_one(
                     {"customer_id": customer["_id"], "user_id": business_id},
-                    {"$set": {"products": product_index_list, "created_at": datetime.utcnow()}},
+                    {"$set": {"products": product_index_list, "action_context": "catalog_select", "created_at": datetime.utcnow()}},
                     upsert=True
                 )
                 sent_count += 1
