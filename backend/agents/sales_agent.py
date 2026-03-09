@@ -86,7 +86,7 @@ class SalesAgent(BaseAgent):
             )
             messages_out.append({"text": header})
 
-        for p in to_send:
+        for i, p in enumerate(to_send, 1):
             price = p.get("price", 0)
             in_stock = p.get("in_stock", True)
             caption = f"*{p['name']}*\n💰 {currency} {price:,.0f}"
@@ -108,6 +108,33 @@ class SalesAgent(BaseAgent):
             if img_url:
                 msg["media_url"] = normalize_url(img_url)
             messages_out.append(msg)
+
+        # Store products in pending_catalogs so customer can reply with numbers to select/order
+        # This enables the same numbered reply flow as manual catalog sends
+        customer_id = context.get("customer_id")
+        if customer_id and to_send:
+            from datetime import datetime
+            try:
+                await self.db.pending_catalogs.update_one(
+                    {"customer_id": customer_id, "user_id": user_id},
+                    {"$set": {
+                        "products": [
+                            {
+                                "id": str(p["_id"]),
+                                "name": p["name"],
+                                "price": p.get("price", 0),
+                                "index": idx
+                            }
+                            for idx, p in enumerate(to_send, 1)
+                        ],
+                        "action_context": "catalog_select" if len(to_send) > 1 else "product",
+                        "single_product": len(to_send) == 1,
+                        "created_at": datetime.utcnow()
+                    }},
+                    upsert=True
+                )
+            except Exception as e:
+                logger.error(f"[SalesAgent] Failed to create pending_catalogs: {e}")
 
         # Track last discussed product for follow-up conversation
         if len(to_send) == 1:
