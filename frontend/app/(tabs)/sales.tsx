@@ -354,22 +354,24 @@ export default function SalesScreen() {
     setEditingReceipt(true);
   };
 
-  // Shared date filter helper — compares UTC calendar dates (backend stores UTC)
+  // Shared date filter helper — compares local calendar dates
   const passesDateFilter = (isoString: string): boolean => {
     if (dateFilter === 'All Time') return true;
-    const d = new Date(isoString);
-    // Use UTC components to match what the backend stored
-    const itemDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    // Force UTC parsing: backend stores UTC without 'Z', JS would misread as local otherwise
+    const utcString = isoString.endsWith('Z') || isoString.includes('+') ? isoString : isoString + 'Z';
+    const d = new Date(utcString);
+    // Compare using LOCAL date (what the user sees on their clock)
+    const itemDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const now = new Date();
-    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    if (dateFilter === 'Today') return itemDay.getTime() === todayUTC.getTime();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (dateFilter === 'Today') return itemDay.getTime() === today.getTime();
     if (dateFilter === 'This Week') {
-      const weekAgo = new Date(todayUTC);
-      weekAgo.setUTCDate(weekAgo.getUTCDate() - 6);
+      const weekAgo = new Date(today);
+      weekAgo.setDate(weekAgo.getDate() - 6);
       return itemDay >= weekAgo;
     }
     if (dateFilter === 'This Month') {
-      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       return itemDay >= monthStart;
     }
     return true;
