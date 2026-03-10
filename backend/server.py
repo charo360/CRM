@@ -5337,7 +5337,7 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
             {"$or": [{"last_contacted": {"$lt": cutoff_7days}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]}
         ]
     })
-    followups_today = min(pending_reminders + cold_count, 999)  # cap display at 999
+    followups_today = pending_reminders + min(cold_count, 30)  # needs-attention shows max 30
 
     # Today's sales total (using user's local "today")
     sales_pipeline = [
