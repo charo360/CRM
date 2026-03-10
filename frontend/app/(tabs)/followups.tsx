@@ -175,6 +175,7 @@ export default function FollowupsScreen() {
     const doneOutcome = coldSelectedOutcome;
     const doneNote = coldOutcomeNote;
     setColdCustomers(prev => prev.filter(c => c.id !== doneCustomer.id));
+    setSuggestions(prev => prev ? { ...prev, neglected_week: Math.max(0, prev.neglected_week - 1), total_needing_attention: Math.max(0, prev.total_needing_attention - 1) } : prev);
     setColdDoneModalVisible(false);
     setColdDoneCustomer(null);
     setColdSelectedOutcome('');
@@ -739,9 +740,11 @@ export default function FollowupsScreen() {
                         outcome: 'contacted',
                         note: null,
                       });
-                      setColdCustomers(prev => prev.filter(c => c.id !== customer.id));
                     } catch (e) {
+                      console.log('Could not log removal:', e);
+                    } finally {
                       setColdCustomers(prev => prev.filter(c => c.id !== customer.id));
+                      setSuggestions(prev => prev ? { ...prev, neglected_week: Math.max(0, prev.neglected_week - 1), total_needing_attention: Math.max(0, prev.total_needing_attention - 1) } : prev);
                     }
                   },
                 },
@@ -1406,8 +1409,14 @@ export default function FollowupsScreen() {
                 {/* Save Button */}
                 <TouchableOpacity
                   style={[styles.saveButton, (!selectedCustomer || saving) && styles.saveButtonDisabled]}
-                  onPress={handleAddReminder}
-                  disabled={!selectedCustomer || saving}
+                  onPress={() => {
+                    if (!selectedCustomer) {
+                      Alert.alert('Select a Customer', 'Please select a customer before setting a reminder.');
+                      return;
+                    }
+                    handleAddReminder();
+                  }}
+                  disabled={saving}
                 >
                   {saving ? (
                     <ActivityIndicator color="#FFFFFF" />
