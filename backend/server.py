@@ -3849,6 +3849,11 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         customer_name = customer["name"] if customer else "Unknown"
         customer_phone = customer["phone_number"] if customer else "N/A"
     
+    # Handle created_at - could be string or datetime
+    created_at_str = order["created_at"]
+    if isinstance(created_at_str, datetime):
+        created_at_str = created_at_str.isoformat()
+    
     return OrderResponse(
         id=order["_id"],
         customer_id=order["customer_id"],
@@ -3862,7 +3867,7 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         delivery_status=order["delivery_status"],
         notes=order.get("notes"),
         due_date=order.get("due_date"),
-        created_at=order["created_at"].isoformat()
+        created_at=created_at_str
     )
 
 @api_router.delete("/orders/{order_id}")
