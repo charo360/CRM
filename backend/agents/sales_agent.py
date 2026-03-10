@@ -175,7 +175,7 @@ class SalesAgent(BaseAgent):
     async def _handle_catalog_request(
         self, products, currency, customer_name, language, business_knowledge, history, relationship="new_conversation"
     ) -> Dict[str, Any]:
-        """Send a concise catalog overview."""
+        """Send numbered catalog list with pagination (8 products per page, option 9 = more)."""
         if not products:
             return {
                 "handled": True,
@@ -184,57 +184,57 @@ class SalesAgent(BaseAgent):
             }
 
         in_stock = [p for p in products if p.get("in_stock", True)]
-        display = in_stock[:8] if in_stock else products[:8]
+        all_products = in_stock if in_stock else products
+        
+        PAGE_SIZE = 8
+        first_page = all_products[:PAGE_SIZE]
+        has_more = len(all_products) > PAGE_SIZE
+
+        # Add currency to products
+        products_with_currency = [{"currency": currency, **p} for p in first_page]
 
         messages_out = []
+        
+        # Optional AI intro (brief, context-aware)
         try:
             from ai_service import get_drafter
             ai = get_drafter()
-            catalog_text = format_product_catalog(display, currency)
             bk = (business_knowledge or "")[:300]
-
-            # Adjust tone based on whether this is mid-conversation or a fresh start
             if relationship in ("follow_up", "continuation"):
-                tone_instruction = "This is mid-conversation — NO greetings, NO 'Hey there!', NO 'Great to have you!'. Just send the catalog naturally as if continuing the chat. 1 short line intro max."
+                tone_instruction = "Mid-conversation — NO greetings. Just 1 short natural line like 'Sure, here's what we have:' or 'Here you go:'"
             else:
-                tone_instruction = "Brief, natural intro — 1 sentence only. No corporate enthusiasm, no emojis overload."
-
-            prompt = f"""You are a business owner replying on WhatsApp. A customer asked to see your catalog.
-
-Business info: {bk}
-Customer: {customer_name}
-Language: {language}
-
-{tone_instruction}
-
-Product catalog:
-{catalog_text}
-
-Write the intro line then list the products. Keep it WhatsApp-natural. No fake enthusiasm. Reply:"""
+                tone_instruction = "Brief intro — 1 sentence max. Natural WhatsApp tone."
+            prompt = f"""Customer asked for catalog. Business: {bk}. {tone_instruction} Reply:"""
             intro = await ai._call_llm(prompt, model_pref="standard")
-            messages_out.append({"text": intro})
+            if intro and len(intro) < 100:
+                messages_out.append({"text": intro.strip()})
         except Exception as e:
             logger.error(f"[SalesAgent] catalog intro error: {e}")
-            messages_out.append({"text": "Here's what we have available:"})
 
-        # Send product cards for top 5
-        for p in display[:5]:
-            price = p.get("price", 0)
-            caption = f"*{p['name']}*\n💰 {currency} {price:,.0f}"
-            if p.get("description"):
-                desc = p["description"][:100]
-                caption += f"\n{desc}"
-            img_url = p.get("image_url") or (p.get("images") or [None])[0]
-            msg = {"text": caption}
-            if img_url:
-                msg["media_url"] = normalize_url(img_url)
-            messages_out.append(msg)
+        # Build numbered list
+        lines = ["🛍️ *Our Products*\n"]
+        for i, p in enumerate(first_page, 1):
+            price = p.get('price', 0)
+            stock = "✅" if p.get('in_stock', True) else "❌"
+            price_str = f"{currency} {price:,.0f}" if price else "POA"
+            lines.append(f"{i}️⃣  *{p['name']}* — {price_str} {stock}")
+        if has_more:
+            lines.append(f"9️⃣  ➡️ *See more products*")
+        lines.append("\n_Reply with a number to select_")
+        
+        messages_out.append({"text": "\n".join(lines)})
 
         return {
             "handled": True,
             "messages": messages_out,
             "escalate": False,
-            "context_update": {"state": "ongoing", "last_intent": "CATALOG_REQUEST"},
+            "context_update": {
+                "state": "ongoing",
+                "last_intent": "CATALOG_REQUEST",
+                "catalog_all_ids": [str(p["_id"]) for p in all_products],
+                "catalog_page_offset": 0,
+                "catalog_has_more": has_more
+            },
         }
 
     async def _handle_negotiation(

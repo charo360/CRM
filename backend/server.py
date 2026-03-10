@@ -6996,6 +6996,35 @@ async def evolution_webhook(request: Request):
 
                     ws = get_whatsapp_service(db)
 
+                    # If agent returned catalog data, store in pending_catalogs for numbered replies
+                    _ctx_update = agent_result.get("context_update", {})
+                    if _ctx_update.get("catalog_all_ids"):
+                        _all_ids = _ctx_update["catalog_all_ids"]
+                        _page_offset = _ctx_update.get("catalog_page_offset", 0)
+                        _has_more = _ctx_update.get("catalog_has_more", False)
+                        _first_page_ids = _all_ids[_page_offset:_page_offset + 8]
+                        _biz_id_cat = user.get("business_id", user["_id"])
+                        _page_products = []
+                        for _pid in _first_page_ids:
+                            _p = await db.products.find_one({"_id": _pid, "user_id": _biz_id_cat})
+                            if _p:
+                                _page_products.append(_p)
+                        if _page_products:
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "products": [{"id": _p["_id"], "name": _p["name"], "price": _p.get("price", 0), "index": i}
+                                                 for i, _p in enumerate(_page_products, 1)],
+                                    "all_product_ids": _all_ids,
+                                    "page_offset": _page_offset,
+                                    "has_more": _has_more,
+                                    "action_context": "catalog_select",
+                                    "created_at": datetime.utcnow()
+                                }},
+                                upsert=True
+                            )
+                            logging.info(f"[Agent] Stored catalog in pending_catalogs: {len(_page_products)} products, has_more={_has_more}")
+
                     # Send all messages returned by agent
                     for msg in agent_result.get("messages", []):
                         if not msg.get("text"):
