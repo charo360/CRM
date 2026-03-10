@@ -3824,58 +3824,64 @@ async def get_orders(user = Depends(get_current_user)):
 @api_router.put("/orders/{order_id}", response_model=OrderResponse)
 async def update_order(order_id: str, payment_status: Optional[str] = None, delivery_status: Optional[str] = None, notes: Optional[str] = None, user = Depends(get_current_user)):
     """Update order payment status, delivery status, or notes"""
-    business_id = user.get("business_id", user["_id"])
-    # Verify order exists
-    order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    # Build update operations
-    update_ops = {}
-    if payment_status:
-        update_ops["payment_status"] = payment_status
-    if delivery_status:
-        update_ops["delivery_status"] = delivery_status
-    if notes is not None:
-        update_ops["notes"] = notes
-    
-    if update_ops:
-        await db.orders.update_one(
-            {"_id": order_id},
-            {"$set": update_ops}
+    try:
+        business_id = user.get("business_id", user["_id"])
+        # Verify order exists
+        order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Build update operations
+        update_ops = {}
+        if payment_status:
+            update_ops["payment_status"] = payment_status
+        if delivery_status:
+            update_ops["delivery_status"] = delivery_status
+        if notes is not None:
+            update_ops["notes"] = notes
+        
+        if update_ops:
+            await db.orders.update_one(
+                {"_id": order_id},
+                {"$set": update_ops}
+            )
+            # Refresh order data
+            order = await db.orders.find_one({"_id": order_id})
+        
+        # Get customer info
+        if order["customer_id"] == "walk-in":
+            customer_name = "Walk-in Customer"
+            customer_phone = "N/A"
+        else:
+            customer = await db.customers.find_one({"_id": order["customer_id"]})
+            customer_name = customer["name"] if customer else "Unknown"
+            customer_phone = customer["phone_number"] if customer else "N/A"
+        
+        # Handle created_at - could be string or datetime
+        created_at_str = order["created_at"]
+        if isinstance(created_at_str, datetime):
+            created_at_str = created_at_str.isoformat()
+        
+        return OrderResponse(
+            id=order["_id"],
+            customer_id=order["customer_id"],
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            product=order["product"],
+            quantity=order["quantity"],
+            price=order["price"],
+            total_amount=order["total_amount"],
+            payment_status=order["payment_status"],
+            delivery_status=order["delivery_status"],
+            notes=order.get("notes"),
+            due_date=order.get("due_date"),
+            created_at=created_at_str
         )
-        # Refresh order data
-        order = await db.orders.find_one({"_id": order_id})
-    
-    # Get customer info
-    if order["customer_id"] == "walk-in":
-        customer_name = "Walk-in Customer"
-        customer_phone = "N/A"
-    else:
-        customer = await db.customers.find_one({"_id": order["customer_id"]})
-        customer_name = customer["name"] if customer else "Unknown"
-        customer_phone = customer["phone_number"] if customer else "N/A"
-    
-    # Handle created_at - could be string or datetime
-    created_at_str = order["created_at"]
-    if isinstance(created_at_str, datetime):
-        created_at_str = created_at_str.isoformat()
-    
-    return OrderResponse(
-        id=order["_id"],
-        customer_id=order["customer_id"],
-        customer_name=customer_name,
-        customer_phone=customer_phone,
-        product=order["product"],
-        quantity=order["quantity"],
-        price=order["price"],
-        total_amount=order["total_amount"],
-        payment_status=order["payment_status"],
-        delivery_status=order["delivery_status"],
-        notes=order.get("notes"),
-        due_date=order.get("due_date"),
-        created_at=created_at_str
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[UPDATE_ORDER] Error updating order {order_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update order: {str(e)}")
 
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, user = Depends(get_current_user)):
