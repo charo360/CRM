@@ -9,6 +9,7 @@ from .order_agent import OrderAgent
 from .payment_agent import PaymentAgent
 from .complaint_agent import ComplaintAgent
 from .chat_agent import ChatAgent
+from .booking_agent import BookingAgent
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,8 @@ class Router:
                 return await PaymentAgent(self.db).process(user_id, message, context)
             elif agent_name == "complaint":
                 return await ComplaintAgent(self.db).process(user_id, message, context)
+            elif agent_name == "booking":
+                return await BookingAgent("booking", self.db).process(user_id, message, context)
             else:
                 return await ChatAgent("chat", self.db).process(user_id, message, context)
         except Exception as e:

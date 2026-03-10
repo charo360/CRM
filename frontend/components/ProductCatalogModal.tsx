@@ -35,6 +35,8 @@ interface Product {
     in_stock: boolean;
     stock_quantity?: number;
     created_at: string;
+    offering_type?: string;
+    duration?: number;
 }
 
 interface ProductCatalogModalProps {
@@ -65,6 +67,8 @@ export default function ProductCatalogModal({
     const [editDescription, setEditDescription] = useState('');
     const [editInStock, setEditInStock] = useState(true);
     const [editStockQuantity, setEditStockQuantity] = useState('');
+    const [editOfferingType, setEditOfferingType] = useState('product');
+    const [editDuration, setEditDuration] = useState('');
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
     const [addingPhotos, setAddingPhotos] = useState(false);
@@ -265,6 +269,8 @@ export default function ProductCatalogModal({
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
         setEditStockQuantity(product.stock_quantity?.toString() || '');
+        setEditOfferingType(product.offering_type || 'product');
+        setEditDuration(product.duration?.toString() || '');
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -283,6 +289,8 @@ export default function ProductCatalogModal({
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
+        setEditOfferingType('product');
+        setEditDuration('');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -323,6 +331,8 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    offering_type: editOfferingType,
+                    duration: editDuration.trim() ? parseInt(editDuration) : undefined,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -342,6 +352,8 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    offering_type: editOfferingType,
+                    duration: editDuration.trim() ? parseInt(editDuration) : undefined,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -626,6 +638,49 @@ export default function ProductCatalogModal({
                                     thumbColor={editInStock ? '#25D366' : '#666'}
                                 />
                             </View>
+
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Type</Text>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                    {[
+                                        { id: 'product',      label: '📦 Product' },
+                                        { id: 'service',      label: '🔧 Service' },
+                                        { id: 'class',        label: '🎓 Class' },
+                                        { id: 'appointment',  label: '📅 Appt' },
+                                        { id: 'digital',      label: '💾 Digital' },
+                                        { id: 'menu_item',    label: '🍽️ Menu' },
+                                    ].map(ot => (
+                                        <TouchableOpacity
+                                            key={ot.id}
+                                            style={[
+                                                styles.typeChip,
+                                                editOfferingType === ot.id && styles.typeChipActive,
+                                            ]}
+                                            onPress={() => setEditOfferingType(ot.id)}
+                                        >
+                                            <Text style={[
+                                                styles.typeChipText,
+                                                editOfferingType === ot.id && styles.typeChipTextActive,
+                                            ]}>{ot.label}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </ScrollView>
+                            </View>
+
+                            {['service','class','appointment','consultation'].includes(editOfferingType) && (
+                                <View style={styles.formGroup}>
+                                    <Text style={styles.formLabel}>Duration (minutes)</Text>
+                                    <TextInput
+                                        style={styles.formInput}
+                                        value={editDuration}
+                                        onChangeText={setEditDuration}
+                                        placeholder="e.g. 60"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <Text style={styles.stockHint}>Used for booking slot calculation</Text>
+                                </View>
+                            )}
 
                             {(addMode || selectedProduct) && (
                                 <>
@@ -1485,6 +1540,27 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#556',
         marginTop: 2,
+    },
+    typeChip: {
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        borderRadius: 8,
+        backgroundColor: '#0F1E35',
+        borderWidth: 1,
+        borderColor: '#1A2942',
+        marginRight: 6,
+    },
+    typeChipActive: {
+        borderColor: '#25D366',
+        backgroundColor: 'rgba(37,211,102,0.12)',
+    },
+    typeChipText: {
+        color: '#94A3B8',
+        fontSize: 13,
+    },
+    typeChipTextActive: {
+        color: '#25D366',
+        fontWeight: '600',
     },
     uploadImageBtn: {
         flexDirection: 'row',

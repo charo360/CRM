@@ -67,6 +67,22 @@ interface Product {
   in_stock: boolean;
 }
 
+type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+type DayHours = { open: string; close: string; closed: boolean };
+const DEFAULT_HOURS: Record<DayKey, DayHours> = {
+  mon: { open: '08:00', close: '17:00', closed: false },
+  tue: { open: '08:00', close: '17:00', closed: false },
+  wed: { open: '08:00', close: '17:00', closed: false },
+  thu: { open: '08:00', close: '17:00', closed: false },
+  fri: { open: '08:00', close: '17:00', closed: false },
+  sat: { open: '09:00', close: '14:00', closed: true },
+  sun: { open: '09:00', close: '14:00', closed: true },
+};
+const DAY_LABELS: Record<DayKey, string> = {
+  mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday',
+  fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
+};
+
 export default function AccountScreen() {
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -103,6 +119,14 @@ export default function AccountScreen() {
   const [extraCredits, setExtraCredits] = useState(0);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
   const [buyingCredits, setBuyingCredits] = useState<string | null>(null);
+
+  // Business Type State
+  const [businessType, setBusinessType] = useState('retail');
+  const [savingBusinessType, setSavingBusinessType] = useState(false);
+
+  // Business Hours State
+  const [businessHours, setBusinessHours] = useState<Record<DayKey, DayHours>>(DEFAULT_HOURS);
+  const [savingHours, setSavingHours] = useState(false);
 
   // AI Model State
   const [aiModel, setAiModel] = useState('standard');
@@ -154,6 +178,10 @@ export default function AccountScreen() {
       setAiModel(settingsRes.data.ai_model || 'standard');
       setAutoReplyEnabled(settingsRes.data.auto_reply_enabled || false);
       setAutoReplyAudience(settingsRes.data.auto_reply_audience || 'everyone');
+      setBusinessType(settingsRes.data.business_type || 'retail');
+      if (settingsRes.data.business_hours) {
+        setBusinessHours({ ...DEFAULT_HOURS, ...settingsRes.data.business_hours });
+      }
 
       // Fetch WhatsApp status
       try {
@@ -176,6 +204,17 @@ export default function AccountScreen() {
       console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveBusinessHours = async () => {
+    setSavingHours(true);
+    try {
+      await apiClient.put('/settings', { business_hours: businessHours });
+    } catch (e) {
+      Alert.alert('Error', 'Failed to save business hours');
+    } finally {
+      setSavingHours(false);
     }
   };
 
@@ -737,6 +776,106 @@ export default function AccountScreen() {
               )}
             </View>
           ))}
+        </View>
+
+        {/* Business Type */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Business Type</Text>
+          <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>Tells the AI how to handle bookings and products.</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {[
+              { id: 'retail',     label: '🛍️ Retail',      desc: 'Physical/online shop' },
+              { id: 'salon',      label: '✂️ Salon',        desc: 'Beauty & hair' },
+              { id: 'services',   label: '🔧 Services',     desc: 'Freelance & trades' },
+              { id: 'fitness',    label: '🏋️ Fitness',      desc: 'Gym & classes' },
+              { id: 'restaurant', label: '🍽️ Restaurant',   desc: 'Food & dining' },
+              { id: 'healthcare', label: '🏥 Healthcare',   desc: 'Clinic & medical' },
+              { id: 'creator',    label: '🎨 Creator',      desc: 'Digital products' },
+            ].map(bt => (
+              <TouchableOpacity
+                key={bt.id}
+                style={[
+                  styles.btChip,
+                  businessType === bt.id && styles.btChipActive,
+                ]}
+                onPress={async () => {
+                  if (businessType === bt.id) return;
+                  setBusinessType(bt.id);
+                  setSavingBusinessType(true);
+                  try {
+                    await apiClient.put('/settings', { business_type: bt.id });
+                  } catch (e) {
+                    Alert.alert('Error', 'Failed to save business type');
+                  } finally {
+                    setSavingBusinessType(false);
+                  }
+                }}
+              >
+                <Text style={[styles.btChipLabel, businessType === bt.id && styles.btChipLabelActive]}>{bt.label}</Text>
+                <Text style={[styles.btChipDesc, businessType === bt.id && { color: '#25D366' }]}>{bt.desc}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {savingBusinessType && <Text style={{ color: '#64748B', fontSize: 12, marginTop: 8 }}>Saving...</Text>}
+        </View>
+
+        {/* Business Hours */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Business Hours</Text>
+          <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>
+            Sets booking availability — customers can't book outside these times.
+          </Text>
+          <View style={styles.hoursCard}>
+            {(['mon','tue','wed','thu','fri','sat','sun'] as DayKey[]).map((day, idx) => {
+              const h = businessHours[day];
+              return (
+                <View key={day} style={[styles.hoursRow, idx === 6 && { borderBottomWidth: 0 }]}>
+                  <Text style={styles.hoursDay}>{DAY_LABELS[day].slice(0,3)}</Text>
+                  <TouchableOpacity
+                    style={[styles.hoursToggle, !h.closed && styles.hoursToggleActive]}
+                    onPress={() => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], closed: !prev[day].closed } }))}
+                  >
+                    <Text style={[styles.hoursToggleText, !h.closed && styles.hoursToggleTextActive]}>
+                      {h.closed ? 'Closed' : 'Open'}
+                    </Text>
+                  </TouchableOpacity>
+                  {!h.closed ? (
+                    <View style={styles.hoursTimeRow}>
+                      <TextInput
+                        style={styles.hoursTimeInput}
+                        value={h.open}
+                        onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], open: v } }))}
+                        placeholder="08:00"
+                        placeholderTextColor="#475569"
+                        maxLength={5}
+                      />
+                      <Text style={{ color: '#64748B', fontSize: 13 }}>–</Text>
+                      <TextInput
+                        style={styles.hoursTimeInput}
+                        value={h.close}
+                        onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], close: v } }))}
+                        placeholder="17:00"
+                        placeholderTextColor="#475569"
+                        maxLength={5}
+                      />
+                    </View>
+                  ) : (
+                    <View style={{ flex: 1 }} />
+                  )}
+                </View>
+              );
+            })}
+          </View>
+          <TouchableOpacity
+            style={[styles.saveHoursBtn, savingHours && { opacity: 0.6 }]}
+            onPress={saveBusinessHours}
+            disabled={savingHours}
+          >
+            {savingHours
+              ? <ActivityIndicator size="small" color="#FFFFFF" />
+              : <Text style={styles.saveHoursBtnText}>Save Hours</Text>
+            }
+          </TouchableOpacity>
         </View>
 
         {/* Settings */}
@@ -1476,6 +1615,69 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
+  btChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: '#0F1E35',
+    borderWidth: 1,
+    borderColor: '#1A2942',
+    minWidth: '30%',
+    alignItems: 'center',
+  },
+  btChipActive: {
+    borderColor: '#25D366',
+    backgroundColor: 'rgba(37,211,102,0.12)',
+  },
+  btChipLabel: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  btChipLabelActive: {
+    color: '#25D366',
+  },
+  btChipDesc: {
+    color: '#64748B',
+    fontSize: 11,
+    marginTop: 3,
+  },
+  hoursCard: {
+    backgroundColor: '#0F1E35',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1A2942',
+    overflow: 'hidden',
+    marginBottom: 12,
+  },
+  hoursRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
+    gap: 8,
+  },
+  hoursDay: { color: '#FFFFFF', fontSize: 13, fontWeight: '600', width: 34 },
+  hoursToggle: {
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6,
+    backgroundColor: '#0A1628', borderWidth: 1, borderColor: '#334155', width: 58, alignItems: 'center',
+  },
+  hoursToggleActive: { borderColor: '#25D366', backgroundColor: '#25D36615' },
+  hoursToggleText: { color: '#64748B', fontSize: 12, fontWeight: '600' },
+  hoursToggleTextActive: { color: '#25D366' },
+  hoursTimeRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  hoursTimeInput: {
+    backgroundColor: '#0A1628', color: '#FFFFFF', borderRadius: 6,
+    borderWidth: 1, borderColor: '#1A2942', paddingHorizontal: 8, paddingVertical: 4,
+    fontSize: 13, width: 54, textAlign: 'center',
+  },
+  saveHoursBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#25D366', borderRadius: 10, paddingVertical: 12,
+  },
+  saveHoursBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
   settingsCard: {
     backgroundColor: '#1A2942',
     borderRadius: 12,
