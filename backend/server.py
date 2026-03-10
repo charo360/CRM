@@ -5746,6 +5746,8 @@ async def evolution_webhook(request: Request):
             from_me = parsed.get("from_me", False)
             evo_msg_id_log = parsed.get("evo_message_id", "?")
             direction = "outgoing" if from_me else "incoming"
+            parsed_message_type = parsed.get("message_type", "text")
+            parsed_image_url = parsed.get("image_url")
             print(f"DEBUG: Webhook received. Direction={direction}, Body='{body}'")
             logging.info(f"messages.upsert: direction={direction}, from={from_number}, evo_id={evo_msg_id_log}, body={body[:60]}")
 
@@ -5993,6 +5995,46 @@ async def evolution_webhook(request: Request):
                     return {"status": "ok", "message": "loop guard: AI signature"}
 
                 # ============================================================
+                # PAYMENT PROOF IMAGE HANDLER — customer sent photo while awaiting payment
+                # ============================================================
+                if not from_me and parsed_message_type == "image" and parsed_image_url:
+                    _pending_del = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "delivery_pending"
+                    })
+                    if _pending_del:
+                        _proof_order_id = _pending_del.get("order_id")
+                        if _proof_order_id:
+                            await db.orders.update_one(
+                                {"_id": _proof_order_id},
+                                {"$set": {"payment_proof": parsed_image_url, "payment_proof_at": datetime.utcnow()}}
+                            )
+                            _proof_order = await db.orders.find_one({"_id": _proof_order_id}, {"order_number": 1})
+                            _proof_order_num = (_proof_order or {}).get("order_number", _proof_order_id[:8].upper())
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    f"📸 *Payment screenshot received!* Thank you.\n\n"
+                                    f"Order *#{_proof_order_num}* is awaiting verification by our team. "
+                                    f"We will notify you once your payment is confirmed and your order is being processed. 🙏"
+                                ),
+                                customer_name=customer_name, send_context="payment_proof"
+                            )
+                            _biz_id_proof = user.get("business_id", user["_id"])
+                            try:
+                                await send_push_notification(
+                                    user_id=_biz_id_proof,
+                                    title="💳 Payment Proof Received!",
+                                    body=f"{customer_name} sent payment proof for order #{_proof_order_num}",
+                                    data={"type": "payment_proof", "order_id": _proof_order_id}
+                                )
+                            except Exception as _proof_push_err:
+                                logging.warning(f"Payment proof push failed: {_proof_push_err}")
+                            logging.info(f"Payment proof saved for order {_proof_order_id}")
+                            return {"status": "ok", "handled_by": "payment_proof"}
+
+                # ============================================================
                 # BUTTON RESPONSE HANDLER — detect and process button clicks
                 # ============================================================
                 # Check if this is a button response (button IDs follow pattern: action_productid)
@@ -6191,9 +6233,11 @@ async def evolution_webhook(request: Request):
                                     _price_conf = _conf_product.get("price", 0)
                                     _now_conf = datetime.utcnow()
                                     _order_id_conf = str(uuid.uuid4())
+                                    _order_number = "ORD-" + _order_id_conf.replace("-", "").upper()[:6]
                                     # Create ORDER with Unpaid status — sale only created when payment confirmed by owner
                                     await db.orders.insert_one({
                                         "_id": _order_id_conf,
+                                        "order_number": _order_number,
                                         "user_id": _biz_id_conf,
                                         "customer_id": customer_id,
                                         "customer_name": customer_name,
@@ -6226,21 +6270,23 @@ async def evolution_webhook(request: Request):
                                     # Build order confirmation + payment request message
                                     _conf_msg = (
                                         f"✅ *Order Received!*\n\n"
+                                        f"🔖 Order No: *#{_order_number}*\n"
                                         f"📦 *{_conf_product['name']}*\n"
                                         f"💰 {_currency_conf} {_price_conf:,.0f}\n"
                                         f"Status: 🔴 *Unpaid*\n\n"
-                                        f"To complete your order, please make payment using the details below and send us proof of payment.\n\n"
+                                        f"To complete your order, please make payment using the details below.\n\n"
                                     )
                                     if _payment_text:
                                         _conf_msg += f"*💳 Payment Details:*\n{_payment_text}\n\n"
                                     else:
-                                        _conf_msg += "We will send you payment details shortly.\n\n"
+                                        _conf_msg += "We will send you our payment details shortly.\n\n"
                                     _conf_msg += (
-                                        f"Also send us your *delivery details:*\n"
+                                        f"📸 Once you have paid, *send us a screenshot* of your payment confirmation.\n\n"
+                                        f"Also send your *delivery details:*\n"
                                         f"• Full name\n"
                                         f"• Delivery address\n"
                                         f"• Phone number\n\n"
-                                        f"Your order will be processed once payment is confirmed. Thank you! 🙏"
+                                        f"Your order *#{_order_number}* will be processed once payment is confirmed. 🙏"
                                     )
                                     ws = get_whatsapp_service(db)
                                     await ws.send_message(

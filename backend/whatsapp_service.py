@@ -1359,6 +1359,8 @@ class WhatsAppService:
         elif image_url:
             message_type = "image"
             media_url = image_url
+            if not body:
+                body = "📷"  # placeholder so image-only messages pass the guard
         else:
             message_type = "text"
             media_url = None
