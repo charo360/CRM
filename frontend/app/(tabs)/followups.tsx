@@ -707,10 +707,28 @@ export default function FollowupsScreen() {
         <TouchableOpacity
           style={styles.coldActionBtn}
           onPress={() => {
-            setColdDoneCustomer(customer);
-            setColdSelectedOutcome('');
-            setColdOutcomeNote('');
-            setColdDoneModalVisible(true);
+            Alert.alert(
+              'Reached Out?',
+              `Remove ${customer.name} from follow-up list?`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, Remove',
+                  onPress: async () => {
+                    try {
+                      await apiClient.post('/followup-events', {
+                        customer_id: customer.id,
+                        outcome: 'contacted',
+                        note: null,
+                      });
+                      setColdCustomers(prev => prev.filter(c => c.id !== customer.id));
+                    } catch (e) {
+                      Alert.alert('Error', 'Could not remove from list');
+                    }
+                  },
+                },
+              ]
+            );
           }}
         >
           <Ionicons name="checkmark-circle" size={16} color="#A8FF78" />

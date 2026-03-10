@@ -5323,11 +5323,21 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
         "customer_id": {"$in": customer_ids_for_unread}
     })
 
-    # Today's follow-ups (using user's local "today")
-    followups_today = await db.followups.count_documents({
-        "user_id": uid, "status": "pending",
-        "reminder_date": {"$gte": today_start_utc, "$lt": today_end_utc}
+    # All pending follow-up reminders (overdue + today + future)
+    pending_reminders = await db.followups.count_documents({
+        "user_id": uid, "status": "pending"
     })
+
+    # Cold customers needing attention (7+ days no contact)
+    cutoff_7days = utc_now - timedelta(days=7)
+    cold_count = await db.customers.count_documents({
+        "user_id": uid,
+        "$and": [
+            {"$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}]},
+            {"$or": [{"last_contacted": {"$lt": cutoff_7days}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]}
+        ]
+    })
+    followups_today = min(pending_reminders + cold_count, 999)  # cap display at 999
 
     # Today's sales total (using user's local "today")
     sales_pipeline = [
