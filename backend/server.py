@@ -1053,6 +1053,12 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
             sent_count += 1
             logging.info(f"[Broadcast] {broadcast_id} — sent {sent_count}/{len(shuffled)} to {customer['phone_number']}")
+            
+            # Update sent_count in real-time so frontend shows progress
+            await db.broadcasts.update_one(
+                {"_id": broadcast_id},
+                {"$set": {"sent_count": sent_count}}
+            )
 
         except Exception as e:
             logging.error(f"[Broadcast] Failed to send to {customer['phone_number']}: {e}")
