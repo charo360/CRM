@@ -707,13 +707,26 @@ export default function FollowupsScreen() {
         <TouchableOpacity
           style={styles.coldActionBtn}
           onPress={() => {
+            setColdDoneCustomer(customer);
+            setColdSelectedOutcome('');
+            setColdOutcomeNote('');
+            setColdDoneModalVisible(true);
+          }}
+        >
+          <Ionicons name="checkmark-circle" size={16} color="#A8FF78" />
+          <Text style={[styles.coldActionText, { color: '#A8FF78' }]}>Done</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.coldActionBtn}
+          onPress={() => {
             Alert.alert(
-              'Reached Out?',
-              `Remove ${customer.name} from follow-up list?`,
+              'Remove from List',
+              `Remove ${customer.name} without logging outcome?`,
               [
                 { text: 'Cancel', style: 'cancel' },
                 {
-                  text: 'Yes, Remove',
+                  text: 'Remove',
+                  style: 'destructive',
                   onPress: async () => {
                     try {
                       await apiClient.post('/followup-events', {
@@ -723,7 +736,7 @@ export default function FollowupsScreen() {
                       });
                       setColdCustomers(prev => prev.filter(c => c.id !== customer.id));
                     } catch (e) {
-                      Alert.alert('Error', 'Could not remove from list');
+                      setColdCustomers(prev => prev.filter(c => c.id !== customer.id));
                     }
                   },
                 },
@@ -731,8 +744,8 @@ export default function FollowupsScreen() {
             );
           }}
         >
-          <Ionicons name="checkmark-circle" size={16} color="#A8FF78" />
-          <Text style={[styles.coldActionText, { color: '#A8FF78' }]}>Done</Text>
+          <Ionicons name="close-circle-outline" size={16} color="#FF6B6B" />
+          <Text style={[styles.coldActionText, { color: '#FF6B6B' }]}>Remove</Text>
         </TouchableOpacity>
       </View>
     </View>
