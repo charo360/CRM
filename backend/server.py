@@ -985,6 +985,12 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
     resolved_images = [_full_url(u) for u in image_urls if u]
 
+    # Mark as sending immediately so cancel button appears in frontend
+    await db.broadcasts.update_one(
+        {"_id": broadcast_id},
+        {"$set": {"status": "sending"}}
+    )
+
     # Shuffle recipients so sends don't follow a predictable pattern
     shuffled = list(customers)
     _rnd.shuffle(shuffled)

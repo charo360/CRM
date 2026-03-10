@@ -87,6 +87,7 @@ export default function SalesScreen() {
   const [saleDetailsVisible, setSaleDetailsVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderDetailsVisible, setOrderDetailsVisible] = useState(false);
+  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -751,52 +752,134 @@ export default function SalesScreen() {
       }
     };
 
+    const isExpanded = expandedOrders.has(order.id);
+
+    const toggleExpand = () => {
+      const newExpanded = new Set(expandedOrders);
+      if (isExpanded) {
+        newExpanded.delete(order.id);
+      } else {
+        newExpanded.add(order.id);
+      }
+      setExpandedOrders(newExpanded);
+    };
+
     return (
-      <TouchableOpacity
-        style={styles.saleCard}
-        onPress={() => {
-          setSelectedOrder(order);
-          setOrderDetailsVisible(true);
-        }}
-      >
-        <View style={styles.saleHeader}>
-          <View style={styles.saleCustomer}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{order.customer_name.charAt(0)}</Text>
+      <View style={styles.saleCard}>
+        <TouchableOpacity onPress={toggleExpand}>
+          <View style={styles.saleHeader}>
+            <View style={styles.saleCustomer}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{order.customer_name.charAt(0)}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.customerName} numberOfLines={1}>{order.customer_name}</Text>
+                <Text style={styles.saleDate}>
+                  {new Date(order.created_at).toLocaleDateString('en-KE', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </Text>
+              </View>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.customerName} numberOfLines={1}>{order.customer_name}</Text>
-              <Text style={styles.saleDate}>
-                {new Date(order.created_at).toLocaleDateString('en-KE', {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {order.total_amount.toLocaleString()}</Text>
+              <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={20} color="#666" />
             </View>
           </View>
-          <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {order.total_amount.toLocaleString()}</Text>
-        </View>
-        <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-          <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
-            <Text style={styles.statusBadgeText}>{order.payment_status}</Text>
+          <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+            <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
+              <Text style={styles.statusBadgeText}>{order.payment_status}</Text>
+            </View>
+            <View style={[styles.statusBadge, { backgroundColor: getDeliveryStatusColor(order.delivery_status) }]}>
+              <Text style={styles.statusBadgeText}>{order.delivery_status}</Text>
+            </View>
           </View>
-          <View style={[styles.statusBadge, { backgroundColor: getDeliveryStatusColor(order.delivery_status) }]}>
-            <Text style={styles.statusBadgeText}>{order.delivery_status}</Text>
+          <View style={styles.saleDetails}>
+            <Text style={styles.itemText}>{order.product} (x{order.quantity})</Text>
+            <Text style={styles.paymentText}>@ {currency} {order.price.toLocaleString()} each</Text>
           </View>
-        </View>
-        <View style={styles.saleDetails}>
-          <Text style={styles.itemText}>{order.product} (x{order.quantity})</Text>
-          <Text style={styles.paymentText}>@ {currency} {order.price.toLocaleString()} each</Text>
-        </View>
-        {order.payment_status === 'Paid' && (
+        </TouchableOpacity>
+
+        {isExpanded && (
+          <View style={{ marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#2A3F5F' }}>
+            <View style={{ gap: 10 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ color: '#888', fontSize: 13 }}>Customer Phone</Text>
+                <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{order.customer_phone}</Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ color: '#888', fontSize: 13 }}>Unit Price</Text>
+                <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{currency} {order.price.toLocaleString()}</Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ color: '#888', fontSize: 13 }}>Quantity</Text>
+                <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{order.quantity}</Text>
+              </View>
+              {order.notes && (
+                <View style={{ marginTop: 4 }}>
+                  <Text style={{ color: '#888', fontSize: 13, marginBottom: 4 }}>Notes</Text>
+                  <Text style={{ color: '#FFF', fontSize: 13, backgroundColor: '#1A2942', padding: 8, borderRadius: 6 }}>{order.notes}</Text>
+                </View>
+              )}
+              {order.due_date && (
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ color: '#888', fontSize: 13 }}>Due Date</Text>
+                  <Text style={{ color: '#FFD700', fontSize: 13, fontWeight: '600' }}>
+                    {new Date(order.due_date).toLocaleDateString('en-KE', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </Text>
+                </View>
+              )}
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                style={{ flex: 1, backgroundColor: '#1E3A5F', padding: 10, borderRadius: 8, alignItems: 'center' }}
+                onPress={() => {
+                  setSelectedOrder(order);
+                  setOrderDetailsVisible(true);
+                }}
+              >
+                <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>Full Details</Text>
+              </TouchableOpacity>
+              {order.payment_status === 'Paid' && (
+                <TouchableOpacity
+                  style={{ flex: 1, backgroundColor: '#1A3A2A', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#25D366' }}
+                  onPress={() => {
+                    Alert.alert(
+                      'Convert to Sale',
+                      'Choose payment method:',
+                      paymentMethods.map(pm => ({
+                        text: pm.name,
+                        onPress: async () => {
+                          try {
+                            await apiClient.post(`/orders/${order.id}/convert-to-sale?payment_method=${encodeURIComponent(pm.name)}`);
+                            setOrders(orders.filter(o => o.id !== order.id));
+                            Alert.alert('Success', 'Order converted to sale!');
+                            fetchData();
+                          } catch (error) {
+                            Alert.alert('Error', 'Failed to convert order');
+                          }
+                        },
+                      }))
+                    );
+                  }}
+                >
+                  <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>Convert to Sale</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+
+        {!isExpanded && order.payment_status === 'Paid' && (
           <View style={{ backgroundColor: '#1A3A2A', borderRadius: 8, padding: 8, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <Ionicons name="checkmark-circle" size={14} color="#25D366" />
             <Text style={{ color: '#25D366', fontSize: 12, fontWeight: '600' }}>Ready to convert to sale</Text>
           </View>
         )}
-      </TouchableOpacity>
+      </View>
     );
   };
 
