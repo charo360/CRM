@@ -170,19 +170,24 @@ export default function FollowupsScreen() {
   const handleColdDone = async () => {
     if (!coldDoneCustomer || !coldSelectedOutcome) return;
     setSavingColdOutcome(true);
+    // Optimistic update - remove immediately so UI feels instant
+    const doneCustomer = coldDoneCustomer;
+    const doneOutcome = coldSelectedOutcome;
+    const doneNote = coldOutcomeNote;
+    setColdCustomers(prev => prev.filter(c => c.id !== doneCustomer.id));
+    setColdDoneModalVisible(false);
+    setColdDoneCustomer(null);
+    setColdSelectedOutcome('');
+    setColdOutcomeNote('');
     try {
       await apiClient.post('/followup-events', {
-        customer_id: coldDoneCustomer.id,
-        outcome: coldSelectedOutcome,
-        note: coldOutcomeNote || null,
+        customer_id: doneCustomer.id,
+        outcome: doneOutcome,
+        note: doneNote || null,
       });
-      setColdCustomers(prev => prev.filter(c => c.id !== coldDoneCustomer.id));
-      setColdDoneModalVisible(false);
-      setColdDoneCustomer(null);
-      setColdSelectedOutcome('');
-      setColdOutcomeNote('');
     } catch (e) {
-      Alert.alert('Error', 'Could not save outcome');
+      // Silently fail - outcome wasn't logged but customer is already removed from UI
+      console.log('Could not save outcome:', e);
     } finally {
       setSavingColdOutcome(false);
     }
