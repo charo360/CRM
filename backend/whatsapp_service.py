@@ -980,10 +980,13 @@ class WhatsAppService:
                     {"label": "Ask a Question", "action_type": "ask",         "index": 3},
                 ]
                 _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
-                _count = len(_actions)
-                _reply_hint = f"1 or {_count}" if _count == 2 else f"1, 2 or {_count}"
+                # Always add "Back to Catalog" as the last option
+                _back_index = len(_actions) + 1
+                _actions_with_back = _actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
+                _count = len(_actions_with_back)
+                _reply_hint = f"1-{_count}"
                 action_lines = "\n".join(
-                    f"{a['index']}\ufe0f\u20e3  {a['label']}" for a in _actions
+                    f"{a['index']}\ufe0f\u20e3  {a['label']}" for a in _actions_with_back
                 )
                 actions_text = f"*What would you like to do?*\n\n{action_lines}\n\n_Reply with {_reply_hint}_"
                 btn_resp = await client.post(
