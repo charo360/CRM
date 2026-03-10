@@ -6648,7 +6648,15 @@ async def evolution_webhook(request: Request):
                 if not button_action and not from_me and body:
                     _ck = body.strip().lower()
                     _is_checkout = _ck in ("checkout", "check out", "✅ checkout")
-                    _is_view_cart = _ck in ("cart", "view cart", "my cart")
+                    # Expanded cart detection for natural language variations
+                    _is_view_cart = (
+                        _ck in ("cart", "view cart", "my cart", "show cart", "see cart")
+                        or "my cart" in _ck
+                        or "show" in _ck and "cart" in _ck
+                        or "back to" in _ck and "cart" in _ck
+                        or "go to" in _ck and "cart" in _ck
+                        or "what" in _ck and "cart" in _ck
+                    )
                     if _is_checkout or _is_view_cart:
                         _biz_id_cart = user.get("business_id", user["_id"])
                         _cart = await db.carts.find_one(
