@@ -3864,15 +3864,15 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         
         return OrderResponse(
             id=order["_id"],
-            customer_id=order["customer_id"],
+            customer_id=order.get("customer_id", ""),
             customer_name=customer_name,
             customer_phone=customer_phone,
-            product=order["product"],
-            quantity=order["quantity"],
-            price=order["price"],
-            total_amount=order["total_amount"],
-            payment_status=order["payment_status"],
-            delivery_status=order["delivery_status"],
+            product=order.get("product") or order.get("item") or order.get("product_name") or "Unknown",
+            quantity=order.get("quantity", 1),
+            price=order.get("price", 0),
+            total_amount=order.get("total_amount") or order.get("amount", 0),
+            payment_status=order.get("payment_status", "Pending"),
+            delivery_status=order.get("delivery_status", "Processing"),
             notes=order.get("notes"),
             due_date=order.get("due_date"),
             created_at=created_at_str
