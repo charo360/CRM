@@ -1004,9 +1004,11 @@ class WhatsAppService:
         to_number: str,
         title: str,
         products: List[Dict[str, Any]],
-        category: Optional[str] = None
+        category: Optional[str] = None,
+        has_more: bool = False,
+        page_num: int = 1
     ) -> Dict:
-        """Send multiple products as an interactive list using authenticated client"""
+        """Send multiple products as a numbered list (max 8 per page). If has_more, option 9 = next page."""
         user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
@@ -1014,14 +1016,17 @@ class WhatsAppService:
         instance_name = user["whatsapp"]["instance_name"]
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
-        # Build numbered list text
-        lines = [f"🛍️ *{title}*\n"]
-        for i, p in enumerate(products[:9], 1):
+        # Show max 8 products as options 1-8
+        page_label = f" (Page {page_num})" if page_num > 1 else ""
+        lines = [f"🛍️ *{title}{page_label}*\n"]
+        for i, p in enumerate(products[:8], 1):
             price = p.get('price', 0)
             currency = p.get('currency', '')
             stock = "✅" if p.get('in_stock', True) else "❌"
             price_str = f"{currency} {price:,.0f}" if price else "POA"
             lines.append(f"{i}\ufe0f\u20e3  *{p['name']}* — {price_str} {stock}")
+        if has_more:
+            lines.append(f"9\ufe0f\u20e3  ➡️ *See more products*")
         lines.append("\n_Reply with a number to select_")
         payload = {"number": clean_to, "text": "\n".join(lines)}
 

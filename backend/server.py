@@ -6036,32 +6036,72 @@ async def evolution_webhook(request: Request):
                             _ctx = _pending_cat.get("action_context", "product")
 
                             if _ctx == "catalog_select":
-                                # Customer picked a product from a numbered list — show it fully
                                 _cat_products = _pending_cat.get("products", [])
-                                _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
-                                if _selected_p:
-                                    _biz_id_cs = user.get("business_id", user["_id"])
-                                    _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
-                                    if _full_p:
+                                _biz_id_cs = user.get("business_id", user["_id"])
+                                # Check if customer wants next page (reply=9 and has_more=True)
+                                if _reply_num == 9 and _pending_cat.get("has_more"):
+                                    _all_ids = _pending_cat.get("all_product_ids", [])
+                                    _cur_offset = _pending_cat.get("page_offset", 0)
+                                    _new_offset = _cur_offset + 8
+                                    _next_ids = _all_ids[_new_offset:_new_offset + 8]
+                                    _new_has_more = len(_all_ids) > _new_offset + 8
+                                    _page_num = (_new_offset // 8) + 1
+                                    # Fetch next page products from DB
+                                    _next_products = []
+                                    for _pid in _next_ids:
+                                        _np = await db.products.find_one({"_id": _pid, "user_id": _biz_id_cs})
+                                        if _np:
+                                            _next_products.append(_np)
+                                    if _next_products:
+                                        _currency_pg = user.get("settings", {}).get("currency", "KES")
+                                        _next_with_curr = [{"currency": _currency_pg, **_np} for _np in _next_products]
                                         ws = get_whatsapp_service(db)
-                                        await ws.send_product_showcase(
+                                        await ws.send_product_list(
                                             user_id=user["_id"],
                                             to_number=from_number,
-                                            product=_full_p,
-                                            send_buttons=True,
+                                            title="Our Products",
+                                            products=_next_with_curr,
+                                            has_more=_new_has_more,
+                                            page_num=_page_num
                                         )
-                                        # Switch context to product actions so next 1/2/3 = order/cart/ask
                                         await db.pending_catalogs.update_one(
                                             {"customer_id": customer_id, "user_id": user["_id"]},
                                             {"$set": {
-                                                "products": [{"id": _full_p["_id"], "name": _full_p["name"],
-                                                              "price": _full_p.get("price", 0), "index": 1}],
-                                                "action_context": "product",
+                                                "products": [{"id": _np["_id"], "name": _np["name"],
+                                                              "price": _np.get("price", 0), "index": i}
+                                                             for i, _np in enumerate(_next_products, 1)],
+                                                "page_offset": _new_offset,
+                                                "has_more": _new_has_more,
                                                 "updated_at": datetime.utcnow()
                                             }}
                                         )
-                                        logging.info(f"Catalog select #{_reply_num}: showed product {_full_p['_id']}")
-                                        return {"status": "ok", "handled_by": "catalog_select"}
+                                        logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
+                                        return {"status": "ok", "handled_by": "catalog_next_page"}
+                                else:
+                                    # Customer picked a product from the numbered list — show full details
+                                    _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
+                                    if _selected_p:
+                                        _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
+                                        if _full_p:
+                                            ws = get_whatsapp_service(db)
+                                            await ws.send_product_showcase(
+                                                user_id=user["_id"],
+                                                to_number=from_number,
+                                                product=_full_p,
+                                                send_buttons=True,
+                                            )
+                                            # Switch context to product actions so next 1/2/3 = order/cart/ask
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": {
+                                                    "products": [{"id": _full_p["_id"], "name": _full_p["name"],
+                                                                  "price": _full_p.get("price", 0), "index": 1}],
+                                                    "action_context": "product",
+                                                    "updated_at": datetime.utcnow()
+                                                }}
+                                            )
+                                            logging.info(f"Catalog select #{_reply_num}: showed product {_full_p['_id']}")
+                                            return {"status": "ok", "handled_by": "catalog_select"}
                                 # If product not found, fall through to AI
                                 logging.warning(f"Catalog select #{_reply_num}: no product at that index")
 
@@ -6151,7 +6191,7 @@ async def evolution_webhook(request: Request):
                                     _price_conf = _conf_product.get("price", 0)
                                     _now_conf = datetime.utcnow()
                                     _order_id_conf = str(uuid.uuid4())
-                                    # Create ORDER only (no sale yet — sale created when payment is confirmed by owner)
+                                    # Create ORDER with Unpaid status — sale only created when payment confirmed by owner
                                     await db.orders.insert_one({
                                         "_id": _order_id_conf,
                                         "user_id": _biz_id_conf,
@@ -6165,7 +6205,7 @@ async def evolution_webhook(request: Request):
                                         "price": _price_conf,
                                         "total_amount": _price_conf,
                                         "total": _price_conf,
-                                        "payment_status": "Pending",
+                                        "payment_status": "Unpaid",
                                         "delivery_status": "Processing",
                                         "status": "pending",
                                         "created_at": _now_conf,
@@ -6183,20 +6223,25 @@ async def evolution_webhook(request: Request):
                                         _payment_text = _bk_conf.get("payment_methods") or _bk_conf.get("payment") or _bk_conf.get("payments") or ""
                                     elif isinstance(_bk_conf, str):
                                         _payment_text = _bk_conf[:500]
-                                    # Build confirmation message
+                                    # Build order confirmation + payment request message
                                     _conf_msg = (
-                                        f"✅ *Order Placed!*\n\n"
+                                        f"✅ *Order Received!*\n\n"
                                         f"📦 *{_conf_product['name']}*\n"
-                                        f"💰 {_currency_conf} {_price_conf:,.0f}\n\n"
-                                        f"Please send us your *delivery details*:\n"
+                                        f"💰 {_currency_conf} {_price_conf:,.0f}\n"
+                                        f"Status: 🔴 *Unpaid*\n\n"
+                                        f"To complete your order, please make payment using the details below and send us proof of payment.\n\n"
+                                    )
+                                    if _payment_text:
+                                        _conf_msg += f"*💳 Payment Details:*\n{_payment_text}\n\n"
+                                    else:
+                                        _conf_msg += "We will send you payment details shortly.\n\n"
+                                    _conf_msg += (
+                                        f"Also send us your *delivery details:*\n"
                                         f"• Full name\n"
                                         f"• Delivery address\n"
                                         f"• Phone number\n\n"
+                                        f"Your order will be processed once payment is confirmed. Thank you! 🙏"
                                     )
-                                    if _payment_text:
-                                        _conf_msg += f"*Payment Details:*\n{_payment_text}"
-                                    else:
-                                        _conf_msg += "We will send you payment details shortly. Thank you! 🙏"
                                     ws = get_whatsapp_service(db)
                                     await ws.send_message(
                                         user_id=_biz_id_conf, to_number=from_number,
@@ -9129,7 +9174,7 @@ async def send_catalog_to_customer(
         raise HTTPException(status_code=404, detail="Customer not found")
     
     products = []
-    for pid in request.product_ids[:10]:  # Max 10 products per catalog
+    for pid in request.product_ids:  # No hard limit — pagination handles display
         p = await db.products.find_one({"_id": pid, "user_id": business_id})
         if p:
             products.append(p)
@@ -9137,24 +9182,30 @@ async def send_catalog_to_customer(
     if not products:
         raise HTTPException(status_code=400, detail="No valid products found")
     
-    currency = user.get("settings", {}).get("currency", "USD")
+    currency = user.get("settings", {}).get("currency", "KES")
     
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
-    
-    # Add currency to products
-    products_with_currency = [{"currency": currency, **p} for p in products]
+
+    PAGE_SIZE = 8
+    page_products = products[:PAGE_SIZE]
+    has_more = len(products) > PAGE_SIZE
+
+    # Add currency to products for this page
+    products_with_currency = [{"currency": currency, **p} for p in page_products]
     
     # Try interactive list first
     result = None
-    if use_list and len(products) > 1:
+    if use_list and len(page_products) > 1:
         try:
             result = await whatsapp_service.send_product_list(
                 user_id=business_id,
                 to_number=customer["phone_number"],
                 title="Our Products",
                 products=products_with_currency,
-                category="Catalog"
+                category="Catalog",
+                has_more=has_more,
+                page_num=1
             )
             use_list = True
         except Exception as e:
@@ -9166,7 +9217,7 @@ async def send_catalog_to_customer(
     # Fallback to legacy method (send each product separately)
     if not use_list:
         server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-        for i, p in enumerate(products):
+        for i, p in enumerate(page_products):
             stock_label = "✅ In Stock" if p.get("in_stock", True) else "❌ Out of Stock"
             desc = f"\n_{p.get('description', '')}_" if p.get("description") else ""
             price = p.get('price') or 0
@@ -9174,10 +9225,8 @@ async def send_catalog_to_customer(
                 f"*{p['name']}*\n"
                 f"💰 {currency} {price:,.0f}\n"
                 f"{stock_label}{desc}\n\n"
-                f"👉 Reply *{i+1}* to order!"
+                f"👉 Reply *{i+1}* to select!"
             )
-            
-            # Collect all product images (deduplicated, preserving order)
             all_images = []
             seen = set()
             for img in list(p.get("images", [])):
@@ -9192,34 +9241,35 @@ async def send_catalog_to_customer(
                     full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
                     if full:
                         all_images.append(full)
-            
-            # Send extra images first (no caption)
             if len(all_images) > 1:
                 for extra_img in all_images[:-1]:
                     await whatsapp_service.send_message(
-                        user_id=business_id,
-                        to_number=customer["phone_number"],
-                        message="",
-                        customer_name=customer.get("name"),
-                        media_url=extra_img,
-                        send_context="product_send",
+                        user_id=business_id, to_number=customer["phone_number"],
+                        message="", customer_name=customer.get("name"),
+                        media_url=extra_img, send_context="product_send",
                     )
-            
-            # Send last image with product details caption
             result = await whatsapp_service.send_message(
-                user_id=business_id,
-                to_number=customer["phone_number"],
-                message=message_text,
-                customer_name=customer.get("name"),
-                media_url=all_images[-1] if all_images else None,
+                user_id=business_id, to_number=customer["phone_number"],
+                message=message_text, customer_name=customer.get("name"),
+                media_url=all_images[-1] if all_images else None, send_context="product_send",
+            )
+        if has_more:
+            await whatsapp_service.send_message(
+                user_id=business_id, to_number=customer["phone_number"],
+                message=f"Reply *9* to see more products ➡️", customer_name=customer.get("name"),
                 send_context="product_send",
             )
     
-    # Store product IDs in a pending catalog for this customer (for order matching)
+    # Store ALL product IDs for pagination, show first page indexed 1-8
+    all_product_ids = [p["_id"] for p in products]
     await db.pending_catalogs.update_one(
         {"customer_id": request.customer_id, "user_id": business_id},
         {"$set": {
-            "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i} for i, p in enumerate(products, 1)],
+            "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i}
+                         for i, p in enumerate(page_products, 1)],
+            "all_product_ids": all_product_ids,
+            "page_offset": 0,
+            "has_more": has_more,
             "action_context": "catalog_select",
             "created_at": datetime.utcnow()
         }},
@@ -9228,7 +9278,9 @@ async def send_catalog_to_customer(
     
     return {
         "status": "success",
-        "products_sent": len(products),
+        "products_sent": len(page_products),
+        "total_products": len(products),
+        "has_more": has_more,
         "message_id": result.get("message_id") if isinstance(result, dict) else None,
         "method": "interactive_list" if use_list else "legacy"
     }
