@@ -3745,6 +3745,13 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
 
     await db.orders.insert_one(order_doc)
     
+    # Handle created_at safely
+    created_at_val = order_doc["created_at"]
+    if isinstance(created_at_val, datetime):
+        created_at_str = created_at_val.isoformat()
+    else:
+        created_at_str = created_at_val
+    
     return OrderResponse(
         id=order_id,
         customer_id=order.customer_id,
@@ -3758,7 +3765,7 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
         delivery_status=order.delivery_status,
         notes=order.notes,
         due_date=order.due_date,
-        created_at=order_doc["created_at"].isoformat()
+        created_at=created_at_str
     )
 
 @api_router.get("/orders", response_model=List[OrderResponse])
