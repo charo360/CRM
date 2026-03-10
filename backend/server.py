@@ -6130,87 +6130,152 @@ async def evolution_webhook(request: Request):
                             button_product_id = _pending_cat["products"][0].get("id")
                             logging.info(f"Text option matched: action={_poll_matched}, product={button_product_id}")
                 
+                # ORDER CONFIRMATION HANDLER — customer replied YES or NO to an order confirmation request
+                if not button_action and not from_me and body:
+                    _body_confirm = body.strip().lower()
+                    _yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "ndio", "sawa", "yes please", "yep!", "yes!"}
+                    _no_words = {"no", "nope", "cancel", "hapana", "nah", "no thanks", "no thank you", "cancel order"}
+                    if _body_confirm in _yes_words or _body_confirm in _no_words:
+                        _pending_confirm = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"],
+                            "action_context": "order_confirm"
+                        })
+                        if _pending_confirm:
+                            _biz_id_conf = user.get("business_id", user["_id"])
+                            _conf_product_id = _pending_confirm.get("confirm_product_id")
+                            if _body_confirm in _yes_words:
+                                # Customer confirmed — create order and send payment details
+                                _conf_product = await db.products.find_one({"_id": _conf_product_id, "user_id": _biz_id_conf}) if _conf_product_id else None
+                                if _conf_product:
+                                    _currency_conf = user.get("settings", {}).get("currency", "KES")
+                                    _price_conf = _conf_product.get("price", 0)
+                                    _now_conf = datetime.utcnow()
+                                    _order_id_conf = str(uuid.uuid4())
+                                    # Create ORDER only (no sale yet — sale created when payment is confirmed by owner)
+                                    await db.orders.insert_one({
+                                        "_id": _order_id_conf,
+                                        "user_id": _biz_id_conf,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "customer_phone": from_number,
+                                        "product": _conf_product["name"],
+                                        "product_id": _conf_product["_id"],
+                                        "items": [{"product_id": _conf_product["_id"], "product_name": _conf_product["name"], "quantity": 1, "price": _price_conf}],
+                                        "quantity": 1,
+                                        "price": _price_conf,
+                                        "total_amount": _price_conf,
+                                        "total": _price_conf,
+                                        "payment_status": "Pending",
+                                        "delivery_status": "Processing",
+                                        "status": "pending",
+                                        "created_at": _now_conf,
+                                        "source": "whatsapp_confirmed"
+                                    })
+                                    await db.customers.update_one(
+                                        {"_id": customer_id},
+                                        {"$set": {"last_contacted": _now_conf}}
+                                    )
+                                    # Extract payment details from business knowledge
+                                    _user_conf_doc = await db.users.find_one({"_id": _biz_id_conf})
+                                    _bk_conf = (_user_conf_doc or {}).get("business_knowledge", {})
+                                    _payment_text = ""
+                                    if isinstance(_bk_conf, dict):
+                                        _payment_text = _bk_conf.get("payment_methods") or _bk_conf.get("payment") or _bk_conf.get("payments") or ""
+                                    elif isinstance(_bk_conf, str):
+                                        _payment_text = _bk_conf[:500]
+                                    # Build confirmation message
+                                    _conf_msg = (
+                                        f"✅ *Order Placed!*\n\n"
+                                        f"📦 *{_conf_product['name']}*\n"
+                                        f"💰 {_currency_conf} {_price_conf:,.0f}\n\n"
+                                        f"Please send us your *delivery details*:\n"
+                                        f"• Full name\n"
+                                        f"• Delivery address\n"
+                                        f"• Phone number\n\n"
+                                    )
+                                    if _payment_text:
+                                        _conf_msg += f"*Payment Details:*\n{_payment_text}"
+                                    else:
+                                        _conf_msg += "We will send you payment details shortly. Thank you! 🙏"
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(
+                                        user_id=_biz_id_conf, to_number=from_number,
+                                        message=_conf_msg, customer_name=customer_name, send_context="order_confirm"
+                                    )
+                                    # Update context to awaiting delivery details
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "delivery_pending", "order_id": _order_id_conf, "updated_at": _now_conf}}
+                                    )
+                                    # Notify business owner
+                                    _owner_conf = await db.users.find_one({"_id": _biz_id_conf}, {"expo_push_token": 1})
+                                    _push_conf = (_owner_conf or {}).get("expo_push_token", "")
+                                    if _push_conf:
+                                        try:
+                                            from notification_service import get_notification_service
+                                            _ns_conf = get_notification_service()
+                                            await _ns_conf.send_notification(
+                                                push_token=_push_conf,
+                                                title="🛒 New Order Received!",
+                                                body=f"{customer_name} ordered {_conf_product['name']} — {_currency_conf} {_price_conf:,.0f}",
+                                                data={"type": "new_order", "order_id": _order_id_conf, "customer_id": customer_id}
+                                            )
+                                        except Exception as _ne_conf:
+                                            logging.warning(f"Order confirm push failed: {_ne_conf}")
+                                    logging.info(f"[Order] Confirmed via YES reply: {_order_id_conf}")
+                                    return {"status": "ok", "handled_by": "order_confirm_yes"}
+                            else:
+                                # Customer cancelled
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! If you'd like to browse our products again, just say *catalog* or let me know how I can help. 😊",
+                                    customer_name=customer_name, send_context="order_cancel"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "product", "updated_at": datetime.utcnow()}}
+                                )
+                                logging.info(f"[Order] Cancelled via NO reply for customer={customer_id}")
+                                return {"status": "ok", "handled_by": "order_confirm_no"}
+
                 # Handle button actions
                 if button_action and (button_product_id or button_action in ("checkout", "continue")):
                     try:
                         if button_action == "order":
-                            # Customer clicked "Order Now" button
+                            # Customer clicked "Order Now" — ask for confirmation first, don't create order yet
                             _biz_id = user.get("business_id", user["_id"])
                             product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id})
                             if product:
-                                currency = user.get("settings", {}).get("currency", "USD")
-                                order_id = str(uuid.uuid4())
+                                currency = user.get("settings", {}).get("currency", "KES")
                                 _price = product.get("price", 0)
-                                _now = datetime.utcnow()
-                                # Insert order — includes all fields the CRM orders page expects
-                                await db.orders.insert_one({
-                                    "_id": order_id,
-                                    "user_id": _biz_id,
-                                    "customer_id": customer_id,
-                                    "customer_name": customer_name,
-                                    "customer_phone": from_number,
-                                    "product": product["name"],
-                                    "product_id": product["_id"],
-                                    "items": [{"product_id": product["_id"], "product_name": product["name"], "quantity": 1, "price": _price}],
-                                    "quantity": 1,
-                                    "price": _price,
-                                    "total_amount": _price,
-                                    "total": _price,
-                                    "status": "pending",
-                                    "created_at": _now,
-                                    "source": "button_click"
-                                })
-                                # Also create a sale record so revenue dashboard updates
-                                await db.sales.insert_one({
-                                    "_id": str(uuid.uuid4()),
-                                    "user_id": _biz_id,
-                                    "customer_id": customer_id,
-                                    "customer_name": customer_name,
-                                    "product": product["name"],
-                                    "product_id": product["_id"],
-                                    "amount": _price,
-                                    "quantity": 1,
-                                    "status": "completed",
-                                    "created_at": _now,
-                                    "source": "button_click"
-                                })
-                                # Update customer total_spent and purchase_count
-                                await db.customers.update_one(
-                                    {"_id": customer_id},
-                                    {"$inc": {"total_spent": _price, "purchase_count": 1},
-                                     "$set": {"last_contacted": _now}}
-                                )
-                                confirmation = (
-                                    f"✅ *Order Confirmed!*\n\n"
-                                    f"📦 *{product['name']}*\n"
-                                    f"💰 {currency} {_price:,.0f}\n\n"
-                                    f"We'll contact you shortly to confirm delivery. Thank you! 🙏"
+                                confirm_req = (
+                                    f"📦 *Please confirm your order:*\n\n"
+                                    f"🛍️ *{product['name']}*\n"
+                                    f"💰 {currency} {_price:,.0f}\n"
+                                    f"Qty: 1\n\n"
+                                    f"Reply *YES* to confirm or *NO* to cancel"
                                 )
                                 ws = get_whatsapp_service(db)
                                 await ws.send_message(
                                     user_id=_biz_id,
                                     to_number=from_number,
-                                    message=confirmation,
+                                    message=confirm_req,
                                     customer_name=customer_name,
-                                    send_context="order_confirm"
+                                    send_context="order_request"
                                 )
-                                logging.info(f"Order + sale created from button click: {order_id}")
-                                # Notify business owner via push notification
-                                _owner = await db.users.find_one({"_id": _biz_id}, {"expo_push_token": 1})
-                                _push_token = (_owner or {}).get("expo_push_token", "")
-                                if _push_token:
-                                    try:
-                                        from notification_service import get_notification_service
-                                        _ns = get_notification_service()
-                                        await _ns.send_notification(
-                                            push_token=_push_token,
-                                            title="🛒 New Order Received!",
-                                            body=f"{customer_name} ordered {product['name']} — {currency} {_price:,.0f}",
-                                            data={"type": "new_order", "order_id": order_id, "customer_id": customer_id}
-                                        )
-                                    except Exception as _ne:
-                                        logging.warning(f"Order push notification failed: {_ne}")
-                                return {"status": "ok", "handled_by": "button_order"}
+                                # Store context so YES/NO reply is understood
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "action_context": "order_confirm",
+                                        "confirm_product_id": button_product_id,
+                                        "updated_at": datetime.utcnow()
+                                    }},
+                                    upsert=True
+                                )
+                                logging.info(f"Order confirmation requested: product={button_product_id}, customer={customer_id}")
+                                return {"status": "ok", "handled_by": "order_request"}
                         
                         elif button_action == "details":
                             # Customer clicked "More Info" button
