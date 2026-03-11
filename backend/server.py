@@ -872,6 +872,7 @@ class SaleResponse(BaseModel):
     due_date: Optional[str] = None
     paid_date: Optional[str] = None
     created_at: datetime
+    source: str = "sale"  # "sale" | "booking"
 
 # Order Models
 class OrderCreate(BaseModel):
@@ -3757,6 +3758,59 @@ async def get_sales(user = Depends(get_current_user)):
         logging.error(f"Error in get_sales endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch sales: {str(e)}")
 
+@api_router.get("/revenue", response_model=List[SaleResponse])
+async def get_revenue(user = Depends(get_current_user)):
+    """Unified revenue: sales + paid bookings combined and sorted by date."""
+    business_id = user.get("business_id", user["_id"])
+    result = []
+
+    # 1. Regular sales
+    sales = await db.sales.find({"user_id": business_id}).sort("created_at", -1).to_list(1000)
+    for s in sales:
+        try:
+            customer = await db.customers.find_one({"_id": s.get("customer_id")})
+            result.append(SaleResponse(
+                id=s["_id"], user_id=s["user_id"],
+                customer_id=s.get("customer_id", ""),
+                customer_name=customer.get("name") if customer else s.get("customer_name", "Unknown"),
+                customer_phone=customer.get("phone_number") if customer else None,
+                item=s.get("item", ""), amount=s.get("amount", 0),
+                payment_method=s.get("payment_method", ""),
+                receipt_sent=s.get("receipt_sent", False),
+                is_credit=s.get("is_credit", False),
+                due_date=s.get("due_date"), paid_date=s.get("paid_date"),
+                created_at=s.get("created_at"), source="sale"
+            ))
+        except Exception:
+            continue
+
+    # 2. Paid bookings
+    paid_bookings = await db.bookings.find(
+        {"user_id": business_id, "payment_status": "paid"}
+    ).sort("date", -1).to_list(1000)
+    for b in paid_bookings:
+        try:
+            # Use the booking date as created_at for sorting
+            booking_dt = datetime.strptime(f"{b['date']} {b.get('time', '00:00')}", "%Y-%m-%d %H:%M")
+            result.append(SaleResponse(
+                id=b["_id"], user_id=b["user_id"],
+                customer_id=b.get("customer_id", ""),
+                customer_name=b.get("customer_name", "Customer"),
+                customer_phone=b.get("customer_phone"),
+                item=b.get("service_name", "Appointment"),
+                amount=b.get("price", 0),
+                payment_method=b.get("payment_method", "Cash"),
+                receipt_sent=False, is_credit=False,
+                created_at=booking_dt, source="booking"
+            ))
+        except Exception:
+            continue
+
+    # Sort combined list by date descending
+    result.sort(key=lambda x: x.created_at, reverse=True)
+    return result
+
+
 @api_router.get("/sales/by-employee")
 async def get_sales_by_employee(user = Depends(get_current_user)):
     """Get sales totals grouped by employee (owner/manager only)"""
@@ -4369,7 +4423,9 @@ async def delete_customer_group(group_id: str, user = Depends(get_current_user))
 
 class BookingCreate(BaseModel):
     service_id: str
-    customer_id: str
+    customer_id: Optional[str] = None  # None for walk-in customers
+    customer_name: Optional[str] = None  # used when no customer_id (walk-in)
+    customer_phone: Optional[str] = None
     date: str                          # "YYYY-MM-DD"
     time: str                          # "HH:MM" 24h
     notes: Optional[str] = None
@@ -4431,10 +4487,12 @@ async def create_booking(booking: BookingCreate, user = Depends(get_current_user
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
 
-    # Fetch customer
-    customer = await db.customers.find_one({"_id": booking.customer_id})
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
+    # Fetch customer (or allow walk-in with no customer record)
+    customer = None
+    if booking.customer_id:
+        customer = await db.customers.find_one({"_id": booking.customer_id})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
 
     duration = service.get("duration") or 60
     end_time = _calc_end_time(booking.time, duration)
@@ -4471,9 +4529,9 @@ async def create_booking(booking: BookingCreate, user = Depends(get_current_user
         "_id": booking_id,
         "user_id": business_id,
         "booking_number": booking_number,
-        "customer_id": booking.customer_id,
-        "customer_name": customer.get("name", "Customer"),
-        "customer_phone": customer.get("phone_number"),
+        "customer_id": booking.customer_id or "walkin",
+        "customer_name": customer.get("name", "Customer") if customer else (booking.customer_name or "Walk-in Customer"),
+        "customer_phone": customer.get("phone_number") if customer else booking.customer_phone,
         "service_id": booking.service_id,
         "service_name": service.get("name", "Service"),
         "staff_id": booking.staff_id,
@@ -5965,6 +6023,14 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
     sales_today = sales_result[0]["total"] if sales_result else 0
     sales_count = sales_result[0]["count"] if sales_result else 0
 
+    # Today's bookings count (appointments scheduled for today)
+    today_date_str = local_now.strftime("%Y-%m-%d")
+    bookings_today = await db.bookings.count_documents({
+        "user_id": uid,
+        "date": today_date_str,
+        "status": {"$in": ["pending", "confirmed"]}
+    })
+
     # Total customers (confirmed only, not raw contacts)
     total_customers = await db.customers.count_documents({
         "user_id": uid,
@@ -5976,6 +6042,7 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
         "followups_today": followups_today,
         "sales_today": sales_today,
         "sales_count_today": sales_count,
+        "bookings_today": bookings_today,
         "total_customers": total_customers,
     }
 

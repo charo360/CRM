@@ -18,6 +18,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient, settingsAPI } from '../../context/api';
+import { useBusiness } from '../../context/BusinessContext';
+import { useAuth } from '../../context/AuthContext';
 import { useRouter } from 'expo-router';
 
 interface Customer {
@@ -39,6 +41,7 @@ interface Sale {
   due_date?: string;
   paid_date?: string;
   created_at: string;
+  source?: 'sale' | 'booking';
 }
 
 interface Order {
@@ -70,6 +73,8 @@ const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Sala
 
 export default function SalesScreen() {
   const router = useRouter();
+  const { isServiceBusiness } = useBusiness();
+  const { user } = useAuth();
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -143,14 +148,14 @@ export default function SalesScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [salesRes, expensesRes, ordersRes, customersRes, userRes] = await Promise.all([
-        apiClient.get('/sales'),
+      const [revenueRes, expensesRes, ordersRes, customersRes, userRes] = await Promise.all([
+        apiClient.get('/revenue'),
         apiClient.get('/expenses'),
         apiClient.get('/orders'),
         apiClient.get('/customers'),
         apiClient.get('/auth/me'),
       ]);
-      setSales(salesRes.data);
+      setSales(revenueRes.data);
       setExpenses(expensesRes.data);
       setOrders(ordersRes.data);
       setCustomers(customersRes.data);
@@ -407,7 +412,8 @@ export default function SalesScreen() {
     const totalRevenue = filteredSales.reduce((sum, s) => sum + s.amount, 0);
     const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
     const netProfit = totalRevenue - totalExpenses;
-    const salesCount = filteredSales.length;
+    const salesCount = filteredSales.filter(s => s.source !== 'booking').length;
+    const bookingsCount = filteredSales.filter(s => s.source === 'booking').length;
     const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
 
     // Order analytics — filtered by date
@@ -435,6 +441,7 @@ export default function SalesScreen() {
       totalExpenses,
       netProfit,
       salesCount,
+      bookingsCount,
       avgSale,
       topCustomer,
       totalOrders,
@@ -654,6 +661,7 @@ export default function SalesScreen() {
     <TouchableOpacity
       style={styles.saleCard}
       onPress={() => {
+        if (sale.source === 'booking') return;
         setSelectedSale(sale);
         setSaleDetailsVisible(true);
       }}
@@ -661,8 +669,11 @@ export default function SalesScreen() {
     >
       <View style={styles.saleHeader}>
         <View style={styles.saleCustomer}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{sale.customer_name.charAt(0)}</Text>
+          <View style={[styles.avatar, sale.source === 'booking' && { backgroundColor: '#1E3A5F' }]}>
+            {sale.source === 'booking'
+              ? <Ionicons name="calendar" size={16} color="#4A90E2" />
+              : <Text style={styles.avatarText}>{sale.customer_name.charAt(0)}</Text>
+            }
           </View>
           <View>
             <Text style={styles.customerName}>{sale.customer_name}</Text>
@@ -678,17 +689,23 @@ export default function SalesScreen() {
         </View>
         <View style={styles.amountContainer}>
           <Text style={styles.amount}>{currency} {sale.amount.toLocaleString()}</Text>
-          <View style={[
-            styles.paymentBadge,
-            sale.payment_method === 'M-Pesa' && styles.mpesaBadge,
-            sale.is_credit && styles.creditBadge
-          ]}>
-            <Text style={styles.paymentText}>{sale.payment_method || 'Credit'}</Text>
-          </View>
+          {sale.source === 'booking' ? (
+            <View style={[styles.paymentBadge, { backgroundColor: '#1E3A5F' }]}>
+              <Text style={[styles.paymentText, { color: '#4A90E2' }]}>Booking</Text>
+            </View>
+          ) : (
+            <View style={[
+              styles.paymentBadge,
+              sale.payment_method === 'M-Pesa' && styles.mpesaBadge,
+              sale.is_credit && styles.creditBadge
+            ]}>
+              <Text style={styles.paymentText}>{sale.payment_method || 'Credit'}</Text>
+            </View>
+          )}
         </View>
       </View>
       <View style={styles.saleDetails}>
-        <Ionicons name="pricetag-outline" size={14} color="#666" />
+        <Ionicons name={sale.source === 'booking' ? 'calendar-outline' : 'pricetag-outline'} size={14} color="#666" />
         <Text style={styles.itemText}>{sale.item}</Text>
         {!!sale.receipt_sent && (
           <View style={styles.receiptBadge}>
@@ -987,10 +1004,13 @@ export default function SalesScreen() {
             <View style={styles.analyticsCard}>
               <Text style={styles.analyticsLabel}>Revenue</Text>
               <Text style={styles.analyticsValue}>{currency} {analytics.totalRevenue.toLocaleString()}</Text>
+              {isServiceBusiness && analytics.bookingsCount > 0 && (
+                <Text style={styles.analyticsSubtext}>{analytics.bookingsCount} booking{analytics.bookingsCount !== 1 ? 's' : ''} included</Text>
+              )}
             </View>
             <View style={styles.analyticsCard}>
-              <Text style={styles.analyticsLabel}>Avg Sale</Text>
-              <Text style={styles.analyticsValue}>{currency} {Math.round(analytics.avgSale).toLocaleString()}</Text>
+              <Text style={styles.analyticsLabel}>{isServiceBusiness ? 'Sales' : 'Avg Sale'}</Text>
+              <Text style={styles.analyticsValue}>{isServiceBusiness ? analytics.salesCount : `${currency} ${Math.round(analytics.avgSale).toLocaleString()}`}</Text>
             </View>
             {!!analytics.topCustomer && (
               <View style={[styles.analyticsCard, { marginRight: 0 }]}>

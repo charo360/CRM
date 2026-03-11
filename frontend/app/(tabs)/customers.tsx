@@ -18,6 +18,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, dashboardAPI, messageHelpers } from '../../context/api';
 import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import * as Contacts from 'expo-contacts';
@@ -47,6 +48,7 @@ interface DashboardSummary {
   followups_today: number;
   sales_today: number;
   sales_count_today: number;
+  bookings_today: number;
   total_customers: number;
 }
 
@@ -196,6 +198,7 @@ export default function CustomersScreen() {
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
   const { user, token } = useAuth();
+  const { isServiceBusiness } = useBusiness();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
@@ -1784,13 +1787,20 @@ export default function CustomersScreen() {
                 </View>
               </TouchableOpacity>
               <View style={styles.dashboardDivider} />
-              <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/sales')}>
-                <View style={[styles.dashboardIcon, { backgroundColor: '#4A90D920' }]}>
-                  <Ionicons name="cash" size={14} color="#4A90D9" />
+              <TouchableOpacity
+                style={styles.dashboardItem}
+                onPress={() => router.push(isServiceBusiness ? '/(tabs)/bookings' : '/(tabs)/sales')}
+              >
+                <View style={[styles.dashboardIcon, { backgroundColor: isServiceBusiness ? '#6366F120' : '#4A90D920' }]}>
+                  <Ionicons name={isServiceBusiness ? 'calendar' : 'cash'} size={14} color={isServiceBusiness ? '#6366F1' : '#4A90D9'} />
                 </View>
                 <View style={styles.dashboardInfo}>
-                  <Text style={styles.dashboardValue} numberOfLines={1} adjustsFontSizeToFit>{currency} {dashboardSummary.sales_today.toLocaleString()}</Text>
-                  <Text style={styles.dashboardLabel}>Sales</Text>
+                  {isServiceBusiness ? (
+                    <Text style={styles.dashboardValue} numberOfLines={1}>{dashboardSummary.bookings_today ?? 0}</Text>
+                  ) : (
+                    <Text style={styles.dashboardValue} numberOfLines={1} adjustsFontSizeToFit>{currency} {dashboardSummary.sales_today.toLocaleString()}</Text>
+                  )}
+                  <Text style={styles.dashboardLabel}>{isServiceBusiness ? 'Bookings' : 'Sales'}</Text>
                 </View>
               </TouchableOpacity>
             </View>

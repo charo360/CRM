@@ -164,7 +164,10 @@ export default function BookingsScreen() {
 
   // New booking modal
   const [showNewModal, setShowNewModal] = useState(false);
-  const [newCustomerSearch, setNewCustomerSearch] = useState('');
+  const [customerSelectVisible, setCustomerSelectVisible] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [isWalkInCustomer, setIsWalkInCustomer] = useState(false);
+  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [newBooking, setNewBooking] = useState({
     customer_id: '',
     customer_name: '',
@@ -226,15 +229,21 @@ export default function BookingsScreen() {
       return ta - tb;
     });
 
-  const filteredCustomers = customers.filter(c =>
-    !newCustomerSearch || c.name?.toLowerCase().includes(newCustomerSearch.toLowerCase())
-  ).slice(0, 10);
+  const filteredCustomers = customers.filter(c => {
+    if (!customerSearchQuery.trim()) return true;
+    const q = customerSearchQuery.toLowerCase();
+    return c.name?.toLowerCase().includes(q) || c.phone_number?.toLowerCase().includes(q);
+  });
 
   // ── Create ──────────────────────────────────────────────────────────────────
 
   const handleCreate = async () => {
-    if (!newBooking.customer_id || !newBooking.service_id) {
-      Alert.alert('Missing Fields', 'Please select a customer and service.');
+    if (!isWalkInCustomer && !selectedCustomer) {
+      Alert.alert('Missing Fields', 'Please select a customer.');
+      return;
+    }
+    if (!newBooking.service_id) {
+      Alert.alert('Missing Fields', 'Please select a service.');
       return;
     }
     if (!newBooking.date || !newBooking.time) {
@@ -244,17 +253,24 @@ export default function BookingsScreen() {
     setSaving(true);
     try {
       const svc = services.find(s => s.id === newBooking.service_id);
-      await bookingsAPI.createBooking({
-        customer_id: newBooking.customer_id,
+      const payload: any = {
         service_id: newBooking.service_id,
         date: newBooking.date,
         time: newBooking.time,
         notes: newBooking.notes,
         price: svc?.price || 0,
-      });
+      };
+      if (isWalkInCustomer) {
+        payload.customer_name = 'Walk-in Customer';
+      } else {
+        payload.customer_id = selectedCustomer!.id;
+      }
+      await bookingsAPI.createBooking(payload);
       setShowNewModal(false);
       setNewBooking({ customer_id: '', customer_name: '', service_id: '', service_name: '', date: formatDate(new Date()), time: '09:00', notes: '' });
-      setNewCustomerSearch('');
+      setSelectedCustomer(null);
+      setIsWalkInCustomer(false);
+      setCustomerSearchQuery('');
       await loadData();
     } catch (err: any) {
       Alert.alert('Error', err?.response?.data?.detail || 'Failed to create booking.');
@@ -414,7 +430,7 @@ export default function BookingsScreen() {
       <Modal visible={showNewModal} animationType="slide" presentationStyle="pageSheet">
         <SafeAreaView style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => { setShowNewModal(false); setNewCustomerSearch(''); }}>
+            <TouchableOpacity onPress={() => { setShowNewModal(false); setCustomerSearchQuery(''); }}>
               <Ionicons name="close" size={24} color="#94A3B8" />
             </TouchableOpacity>
             <Text style={styles.modalTitle}>New Booking</Text>
@@ -429,36 +445,35 @@ export default function BookingsScreen() {
           <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
             {/* Customer selection */}
             <Text style={styles.fieldLabel}>Customer *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Search customer..."
-              placeholderTextColor="#475569"
-              value={newBooking.customer_id ? newBooking.customer_name : newCustomerSearch}
-              onChangeText={text => {
-                setNewCustomerSearch(text);
-                if (newBooking.customer_id) setNewBooking(prev => ({ ...prev, customer_id: '', customer_name: '' }));
-              }}
-            />
-            {!newBooking.customer_id && newCustomerSearch.length > 0 && (
-              <View style={styles.dropdownList}>
-                {filteredCustomers.length === 0
-                  ? <Text style={styles.dropdownEmpty}>No customers found</Text>
-                  : filteredCustomers.map(c => (
-                    <TouchableOpacity
-                      key={c.id}
-                      style={styles.dropdownItem}
-                      onPress={() => {
-                        setNewBooking(prev => ({ ...prev, customer_id: c.id, customer_name: c.name }));
-                        setNewCustomerSearch('');
-                      }}
-                    >
-                      <Text style={styles.dropdownItemText}>{c.name}</Text>
-                      <Text style={styles.dropdownItemSub}>{c.phone_number}</Text>
-                    </TouchableOpacity>
-                  ))
-                }
-              </View>
-            )}
+            <TouchableOpacity
+              style={styles.customerSelect}
+              onPress={() => setCustomerSelectVisible(true)}
+            >
+              {isWalkInCustomer ? (
+                <View style={styles.selectedCustomer}>
+                  <View style={styles.miniAvatar}>
+                    <Ionicons name="walk-outline" size={16} color="#FFFFFF" />
+                  </View>
+                  <View>
+                    <Text style={styles.selectedName}>Walk-in Customer</Text>
+                    <Text style={styles.selectedPhone}>No contact info</Text>
+                  </View>
+                </View>
+              ) : selectedCustomer ? (
+                <View style={styles.selectedCustomer}>
+                  <View style={styles.miniAvatar}>
+                    <Text style={styles.miniAvatarText}>{selectedCustomer.name.charAt(0)}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
+                    <Text style={styles.selectedPhone}>{selectedCustomer.phone_number}</Text>
+                  </View>
+                </View>
+              ) : (
+                <Text style={styles.customerSelectPlaceholder}>Select a customer</Text>
+              )}
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
 
             {/* Service selection */}
             <Text style={styles.fieldLabel}>Service *</Text>
@@ -516,6 +531,93 @@ export default function BookingsScreen() {
               multiline
             />
           </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* ── Customer Select Modal ─────────────────────────────────────── */}
+      <Modal
+        visible={customerSelectVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => { setCustomerSelectVisible(false); setCustomerSearchQuery(''); }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => { setCustomerSelectVisible(false); setCustomerSearchQuery(''); }}>
+              <Text style={{ color: '#94A3B8', fontSize: 16 }}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Select Customer</Text>
+            <View style={{ width: 60 }} />
+          </View>
+
+          {/* Search */}
+          <View style={styles.csSearchContainer}>
+            <Ionicons name="search" size={20} color="#666" style={{ marginRight: 8 }} />
+            <TextInput
+              style={styles.csSearchInput}
+              placeholder="Search by name or phone..."
+              placeholderTextColor="#666"
+              value={customerSearchQuery}
+              onChangeText={setCustomerSearchQuery}
+              autoCapitalize="none"
+            />
+            {customerSearchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setCustomerSearchQuery('')}>
+                <Ionicons name="close-circle" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Walk-in option */}
+          <TouchableOpacity
+            style={styles.walkInButton}
+            onPress={() => {
+              setIsWalkInCustomer(true);
+              setSelectedCustomer(null);
+              setCustomerSelectVisible(false);
+              setCustomerSearchQuery('');
+            }}
+          >
+            <Ionicons name="walk-outline" size={24} color="#25D366" />
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={styles.walkInButtonText}>Walk-in Customer</Text>
+              <Text style={styles.walkInButtonSubtext}>Quick booking without customer details</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="#666" />
+          </TouchableOpacity>
+
+          <FlatList
+            data={filteredCustomers}
+            keyExtractor={item => item.id}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
+            renderItem={({ item: c }) => (
+              <TouchableOpacity
+                style={styles.customerOption}
+                onPress={() => {
+                  setSelectedCustomer(c);
+                  setIsWalkInCustomer(false);
+                  setCustomerSelectVisible(false);
+                  setCustomerSearchQuery('');
+                }}
+              >
+                <View style={styles.miniAvatar}>
+                  <Text style={styles.miniAvatarText}>{c.name.charAt(0)}</Text>
+                </View>
+                <View style={styles.customerOptionInfo}>
+                  <Text style={styles.customerOptionName}>{c.name}</Text>
+                  <Text style={styles.customerOptionPhone}>{c.phone_number}</Text>
+                </View>
+                {selectedCustomer?.id === c.id && (
+                  <Ionicons name="checkmark-circle" size={24} color="#25D366" />
+                )}
+              </TouchableOpacity>
+            )}
+            ListEmptyComponent={
+              <View style={{ alignItems: 'center', marginTop: 40 }}>
+                <Text style={{ color: '#64748B', fontSize: 15 }}>No customers found</Text>
+              </View>
+            }
+          />
         </SafeAreaView>
       </Modal>
 
@@ -736,6 +838,22 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#1A2942', paddingHorizontal: 14, paddingVertical: 10,
     fontSize: 15, marginBottom: 16,
   },
+  customerSelect: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#1A2942', borderRadius: 12, padding: 16, marginBottom: 16 },
+  customerSelectPlaceholder: { fontSize: 16, color: '#666' },
+  selectedCustomer: { flexDirection: 'row', alignItems: 'center' },
+  miniAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#25D366', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  miniAvatarText: { fontSize: 14, fontWeight: 'bold', color: '#FFFFFF' },
+  selectedName: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
+  selectedPhone: { fontSize: 12, color: '#666' },
+  csSearchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A2942', marginHorizontal: 16, borderRadius: 10, paddingHorizontal: 12, marginBottom: 8, borderWidth: 1, borderColor: '#2A3952' },
+  csSearchInput: { flex: 1, paddingVertical: 8, fontSize: 14, color: '#FFFFFF' },
+  walkInButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A2942', borderRadius: 12, padding: 16, marginHorizontal: 20, marginBottom: 12, borderWidth: 1, borderColor: '#25D366' },
+  walkInButtonText: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
+  walkInButtonSubtext: { fontSize: 12, color: '#888', marginTop: 2 },
+  customerOption: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A2942', borderRadius: 12, padding: 16, marginBottom: 8 },
+  customerOptionInfo: { flex: 1 },
+  customerOptionName: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
+  customerOptionPhone: { fontSize: 12, color: '#666' },
   dropdownList: { backgroundColor: '#0F1E35', borderRadius: 10, borderWidth: 1, borderColor: '#1A2942', marginTop: -12, marginBottom: 16 },
   dropdownEmpty: { color: '#64748B', padding: 12, textAlign: 'center' },
   dropdownItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#1A2942' },

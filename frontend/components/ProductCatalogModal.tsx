@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { productsAPI, settingsAPI } from '../context/api';
+import { useBusiness } from '../context/BusinessContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_GAP = 10;
@@ -48,6 +49,9 @@ export default function ProductCatalogModal({
     visible,
     onClose,
 }: ProductCatalogModalProps) {
+    const { config } = useBusiness();
+    const itemLabel = config.catalogItemLabel;   // 'Product' | 'Service' | 'Item'
+    const catalogLabel = config.catalogLabel;     // 'Products' | 'Services' | 'Menu'
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -219,7 +223,7 @@ export default function ProductCatalogModal({
 
     const handleDeleteProduct = (product: Product) => {
         Alert.alert(
-            'Delete Product',
+            `Delete ${itemLabel}`,
             `Delete "${product.name}"? This cannot be undone.`,
             [
                 { text: 'Cancel', style: 'cancel' },
@@ -233,7 +237,7 @@ export default function ProductCatalogModal({
                             setSelectedProduct(null);
                             fetchProducts();
                         } catch (error) {
-                            Alert.alert('Error', 'Failed to delete product');
+                            Alert.alert('Error', `Failed to delete ${itemLabel.toLowerCase()}`);
                         }
                     },
                 },
@@ -531,7 +535,7 @@ export default function ProductCatalogModal({
                     <TouchableOpacity onPress={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); setAiFailedBanner(false); }}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitle}>{addMode ? 'Add Product' : editMode ? 'Edit Product' : 'Product Details'}</Text>
+                    <Text style={styles.headerTitle}>{addMode ? `Add ${itemLabel}` : editMode ? `Edit ${itemLabel}` : `${itemLabel} Details`}</Text>
                     {!editMode && selectedProduct ? (
                         <TouchableOpacity onPress={() => startEdit(selectedProduct)}>
                             <Ionicons name="create-outline" size={24} color="#25D366" />
@@ -759,14 +763,14 @@ export default function ProductCatalogModal({
                                 {saving ? (
                                     <ActivityIndicator color="#FFF" size="small" />
                                 ) : (
-                                    <Text style={styles.saveBtnText}>{addMode ? 'Add Product' : 'Save Changes'}</Text>
+                                    <Text style={styles.saveBtnText}>{addMode ? `Add ${itemLabel}` : 'Save Changes'}</Text>
                                 )}
                             </TouchableOpacity>
 
                             {!addMode && selectedProduct && (
                                 <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDeleteProduct(selectedProduct)}>
                                     <Ionicons name="trash-outline" size={18} color="#FF6B6B" />
-                                    <Text style={styles.deleteBtnText}>Delete Product</Text>
+                                    <Text style={styles.deleteBtnText}>{`Delete ${itemLabel}`}</Text>
                                 </TouchableOpacity>
                             )}
                         </View>
@@ -882,7 +886,7 @@ export default function ProductCatalogModal({
                                         onPress={() => startEdit(selectedProduct)}
                                     >
                                         <Ionicons name="create-outline" size={22} color="#4A90D9" />
-                                        <Text style={styles.actionBtnText}>Edit Product</Text>
+                                        <Text style={styles.actionBtnText}>{`Edit ${itemLabel}`}</Text>
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
@@ -911,7 +915,7 @@ export default function ProductCatalogModal({
                     <TouchableOpacity onPress={onClose}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitle}>Product Catalog</Text>
+                    <Text style={styles.headerTitle}>{`${catalogLabel} Catalog`}</Text>
                     <TouchableOpacity onPress={startAddProduct}>
                         <Ionicons name="add-circle-outline" size={26} color="#25D366" />
                     </TouchableOpacity>
@@ -1005,7 +1009,7 @@ export default function ProductCatalogModal({
                             <Ionicons name="storefront-outline" size={64} color="#25D366" />
                         </View>
                         <Text style={styles.emptyText}>Your catalog is empty</Text>
-                        <Text style={styles.emptySubtext}>Add products to share with customers and let AI recommend them automatically</Text>
+                        <Text style={styles.emptySubtext}>{`Add ${catalogLabel.toLowerCase()} to share with customers and let AI recommend them automatically`}</Text>
                         <View style={styles.emptyActionRow}>
                             <TouchableOpacity style={styles.emptyUploadBtn} onPress={() => handleUploadProducts('library')}>
                                 <Ionicons name="images-outline" size={20} color="#FFF" />

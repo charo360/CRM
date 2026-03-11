@@ -123,6 +123,7 @@ export default function AccountScreen() {
   // Business Type State
   const [businessType, setBusinessType] = useState('retail');
   const [savingBusinessType, setSavingBusinessType] = useState(false);
+  const [showBtDropdown, setShowBtDropdown] = useState(false);
 
   // Business Hours State
   const [businessHours, setBusinessHours] = useState<Record<DayKey, DayHours>>(DEFAULT_HOURS);
@@ -779,45 +780,75 @@ export default function AccountScreen() {
         </View>
 
         {/* Business Type */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Business Type</Text>
-          <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>Tells the AI how to handle bookings and products.</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {[
-              { id: 'retail',     label: '🛍️ Retail',      desc: 'Physical/online shop' },
-              { id: 'salon',      label: '✂️ Salon',        desc: 'Beauty & hair' },
-              { id: 'services',   label: '🔧 Services',     desc: 'Freelance & trades' },
-              { id: 'fitness',    label: '🏋️ Fitness',      desc: 'Gym & classes' },
-              { id: 'restaurant', label: '🍽️ Restaurant',   desc: 'Food & dining' },
-              { id: 'healthcare', label: '🏥 Healthcare',   desc: 'Clinic & medical' },
-              { id: 'creator',    label: '🎨 Creator',      desc: 'Digital products' },
-            ].map(bt => (
+        {(() => {
+          const BT_OPTIONS = [
+            { id: 'retail',     label: '🛍️ Retail',      desc: 'Physical / online shop' },
+            { id: 'salon',      label: '✂️ Salon',        desc: 'Beauty & hair' },
+            { id: 'services',   label: '🔧 Services',     desc: 'Freelance & trades' },
+            { id: 'fitness',    label: '🏋️ Fitness',      desc: 'Gym & classes' },
+            { id: 'restaurant', label: '🍽️ Restaurant',   desc: 'Food & dining' },
+            { id: 'healthcare', label: '🏥 Healthcare',   desc: 'Clinic & medical' },
+            { id: 'creator',    label: '🎨 Creator',      desc: 'Digital products' },
+          ];
+          const selected = BT_OPTIONS.find(b => b.id === businessType) || BT_OPTIONS[0];
+          return (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Business Type</Text>
+              <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>Tells the AI how to handle bookings and products.</Text>
+              {/* Dropdown trigger */}
               <TouchableOpacity
-                key={bt.id}
-                style={[
-                  styles.btChip,
-                  businessType === bt.id && styles.btChipActive,
-                ]}
-                onPress={async () => {
-                  if (businessType === bt.id) return;
-                  setBusinessType(bt.id);
-                  setSavingBusinessType(true);
-                  try {
-                    await apiClient.put('/settings', { business_type: bt.id });
-                  } catch (e) {
-                    Alert.alert('Error', 'Failed to save business type');
-                  } finally {
-                    setSavingBusinessType(false);
-                  }
-                }}
+                style={styles.btDropdownTrigger}
+                onPress={() => setShowBtDropdown(v => !v)}
+                activeOpacity={0.8}
               >
-                <Text style={[styles.btChipLabel, businessType === bt.id && styles.btChipLabelActive]}>{bt.label}</Text>
-                <Text style={[styles.btChipDesc, businessType === bt.id && { color: '#25D366' }]}>{bt.desc}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.btDropdownLabel}>{selected.label}</Text>
+                  <Text style={styles.btDropdownDesc}>{selected.desc}</Text>
+                </View>
+                <Ionicons
+                  name={showBtDropdown ? 'chevron-up' : 'chevron-down'}
+                  size={18}
+                  color='#25D366'
+                />
               </TouchableOpacity>
-            ))}
-          </View>
-          {savingBusinessType && <Text style={{ color: '#64748B', fontSize: 12, marginTop: 8 }}>Saving...</Text>}
-        </View>
+              {/* Options list */}
+              {showBtDropdown && (
+                <View style={styles.btDropdownList}>
+                  {BT_OPTIONS.map((bt, idx) => (
+                    <TouchableOpacity
+                      key={bt.id}
+                      style={[
+                        styles.btDropdownItem,
+                        bt.id === businessType && styles.btDropdownItemActive,
+                        idx === BT_OPTIONS.length - 1 && { borderBottomWidth: 0 },
+                      ]}
+                      onPress={async () => {
+                        setShowBtDropdown(false);
+                        if (businessType === bt.id) return;
+                        setBusinessType(bt.id);
+                        setSavingBusinessType(true);
+                        try {
+                          await apiClient.put('/settings', { business_type: bt.id });
+                        } catch (e) {
+                          Alert.alert('Error', 'Failed to save business type');
+                        } finally {
+                          setSavingBusinessType(false);
+                        }
+                      }}
+                    >
+                      <Text style={[styles.btDropdownItemLabel, bt.id === businessType && { color: '#25D366' }]}>{bt.label}</Text>
+                      <Text style={styles.btDropdownItemDesc}>{bt.desc}</Text>
+                      {bt.id === businessType && (
+                        <Ionicons name='checkmark' size={16} color='#25D366' style={{ marginLeft: 'auto' }} />
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+              {savingBusinessType && <Text style={{ color: '#64748B', fontSize: 12, marginTop: 8 }}>Saving...</Text>}
+            </View>
+          );
+        })()}
 
         {/* Business Hours */}
         <View style={styles.section}>
@@ -1615,32 +1646,55 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
-  btChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  btDropdownTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F1E35',
+    borderWidth: 1,
+    borderColor: '#25D366',
     borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  btDropdownLabel: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  btDropdownDesc: {
+    color: '#64748B',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  btDropdownList: {
     backgroundColor: '#0F1E35',
     borderWidth: 1,
     borderColor: '#1A2942',
-    minWidth: '30%',
+    borderRadius: 12,
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+  btDropdownItem: {
+    flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
   },
-  btChipActive: {
-    borderColor: '#25D366',
-    backgroundColor: 'rgba(37,211,102,0.12)',
+  btDropdownItemActive: {
+    backgroundColor: 'rgba(37,211,102,0.08)',
   },
-  btChipLabel: {
+  btDropdownItemLabel: {
     color: '#94A3B8',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
+    width: 120,
   },
-  btChipLabelActive: {
-    color: '#25D366',
-  },
-  btChipDesc: {
+  btDropdownItemDesc: {
     color: '#64748B',
-    fontSize: 11,
-    marginTop: 3,
+    fontSize: 12,
+    flex: 1,
   },
   hoursCard: {
     backgroundColor: '#0F1E35',
