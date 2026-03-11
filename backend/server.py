@@ -6833,13 +6833,137 @@ async def evolution_webhook(request: Request):
                                 logging.warning(f"Catalog select #{_reply_num}: no product at that index")
 
                             elif _ctx == "cart":
-                                # 1 = checkout, 2 = continue shopping
-                                _num_to_action = {1: "checkout", 2: "continue"}
+                                # 1 = checkout, 2 = continue shopping, 3 = cancel order
+                                _num_to_action = {1: "checkout", 2: "continue", 3: "cancel_cart"}
                                 _matched = _num_to_action.get(_reply_num)
                                 if _matched:
                                     button_action = _matched
                                     button_product_id = None
                                     logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
+
+                            elif _ctx == "duplicate_order_choice":
+                                # 1 = create new (double), 2 = keep existing, 3 = cancel existing & create new
+                                _dup_order_id = _pending_cat.get("duplicate_order_id")
+                                _dup_items = _pending_cat.get("pending_cart_items", [])
+                                _dup_total = _pending_cat.get("pending_cart_total", 0)
+                                _biz_id_dup = user.get("business_id", user["_id"])
+                                _currency_dup = user.get("settings", {}).get("currency", "USD")
+                                
+                                if _reply_num == 1:
+                                    # Create new order (double order)
+                                    _new_order_id = str(uuid.uuid4())
+                                    _new_order_num = "ORD-" + _new_order_id.replace("-", "").upper()[:6]
+                                    _item_names_dup = ", ".join(i["product_name"] for i in _dup_items[:3])
+                                    if len(_dup_items) > 3:
+                                        _item_names_dup += f" +{len(_dup_items)-3} more"
+                                    await db.orders.insert_one({
+                                        "_id": _new_order_id,
+                                        "order_number": _new_order_num,
+                                        "user_id": _biz_id_dup,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "customer_phone": from_number,
+                                        "product": _item_names_dup,
+                                        "items": _dup_items,
+                                        "quantity": len(_dup_items),
+                                        "total_amount": _dup_total,
+                                        "total": _dup_total,
+                                        "payment_status": "Unpaid",
+                                        "delivery_status": "Processing",
+                                        "status": "pending",
+                                        "created_at": datetime.utcnow(),
+                                        "source": "cart_checkout_duplicate"
+                                    })
+                                    # Clear cart
+                                    _cart_dup = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                    if _cart_dup:
+                                        await db.carts.update_one({"_id": _cart_dup["_id"]}, {"$set": {"status": "completed"}})
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(
+                                        user_id=user["_id"],
+                                        to_number=from_number,
+                                        message=f"✅ New order *#{_new_order_num}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nYou now have 2 orders for the same items. Payment details will be sent shortly. 📲",
+                                        customer_name=customer_name,
+                                        send_context="order_confirm"
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id, "updated_at": datetime.utcnow()}}
+                                    )
+                                    logging.info(f"Duplicate order created: {_new_order_num}")
+                                    return {"status": "ok", "handled_by": "duplicate_order_create_new"}
+                                
+                                elif _reply_num == 2:
+                                    # Keep existing order, clear cart
+                                    _cart_dup2 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                    if _cart_dup2:
+                                        await db.carts.update_one({"_id": _cart_dup2["_id"]}, {"$set": {"status": "cancelled"}})
+                                    _existing = await db.orders.find_one({"_id": _dup_order_id})
+                                    _existing_num = (_existing or {}).get("order_number", "")
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(
+                                        user_id=user["_id"],
+                                        to_number=from_number,
+                                        message=f"👍 Got it! Your existing order *#{_existing_num}* is still active.\n\nCart has been cleared. Payment details were sent earlier. 😊",
+                                        customer_name=customer_name,
+                                        send_context="order_confirm"
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    logging.info(f"Duplicate order: kept existing {_existing_num}")
+                                    return {"status": "ok", "handled_by": "duplicate_order_keep_existing"}
+                                
+                                elif _reply_num == 3:
+                                    # Cancel existing, create new
+                                    await db.orders.update_one(
+                                        {"_id": _dup_order_id},
+                                        {"$set": {"status": "cancelled", "cancelled_at": datetime.utcnow(), "cancelled_by": "customer"}}
+                                    )
+                                    _new_order_id3 = str(uuid.uuid4())
+                                    _new_order_num3 = "ORD-" + _new_order_id3.replace("-", "").upper()[:6]
+                                    _item_names_dup3 = ", ".join(i["product_name"] for i in _dup_items[:3])
+                                    if len(_dup_items) > 3:
+                                        _item_names_dup3 += f" +{len(_dup_items)-3} more"
+                                    await db.orders.insert_one({
+                                        "_id": _new_order_id3,
+                                        "order_number": _new_order_num3,
+                                        "user_id": _biz_id_dup,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "customer_phone": from_number,
+                                        "product": _item_names_dup3,
+                                        "items": _dup_items,
+                                        "quantity": len(_dup_items),
+                                        "total_amount": _dup_total,
+                                        "total": _dup_total,
+                                        "payment_status": "Unpaid",
+                                        "delivery_status": "Processing",
+                                        "status": "pending",
+                                        "created_at": datetime.utcnow(),
+                                        "source": "cart_checkout_replaced"
+                                    })
+                                    # Clear cart
+                                    _cart_dup3 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                    if _cart_dup3:
+                                        await db.carts.update_one({"_id": _cart_dup3["_id"]}, {"$set": {"status": "completed"}})
+                                    _old_order = await db.orders.find_one({"_id": _dup_order_id})
+                                    _old_num = (_old_order or {}).get("order_number", "")
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(
+                                        user_id=user["_id"],
+                                        to_number=from_number,
+                                        message=f"✅ Order *#{_old_num}* cancelled.\n\n🆕 New order *#{_new_order_num3}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nPayment details will be sent shortly. 📲",
+                                        customer_name=customer_name,
+                                        send_context="order_confirm"
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id3, "updated_at": datetime.utcnow()}}
+                                    )
+                                    logging.info(f"Duplicate order: cancelled {_old_num}, created {_new_order_num3}")
+                                    return {"status": "ok", "handled_by": "duplicate_order_replace"}
 
                             elif _ctx == "booking_service_select":
                                 # Customer picked a service number from booking menu
@@ -7471,9 +7595,10 @@ async def evolution_webhook(request: Request):
                                         await asyncio.sleep(0.5)
                                         cart_text = (
                                             f"*What would you like to do?*\n\n"
-                                            f"1\ufe0f\u20e3  Checkout Now\n"
-                                            f"2\ufe0f\u20e3  Continue Shopping\n\n"
-                                            f"_Reply with 1 or 2_"
+                                            f"1️⃣  Checkout Now\n"
+                                            f"2️⃣  Continue Shopping\n"
+                                            f"3️⃣  Cancel Order\n\n"
+                                            f"_Reply with 1, 2 or 3_"
                                         )
                                         await client.post(
                                             f"{ws.base_url}/message/sendText/{_inst_name}",
@@ -7497,6 +7622,77 @@ async def evolution_webhook(request: Request):
                                 _total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _items)
                                 _now = datetime.utcnow()
                                 _currency = user.get("settings", {}).get("currency", "USD")
+                                
+                                # ── Check for duplicate unpaid orders with same items ──────────────
+                                _existing_orders = await db.orders.find({
+                                    "user_id": _biz_id,
+                                    "customer_id": customer_id,
+                                    "payment_status": "Unpaid",
+                                    "status": {"$in": ["pending", "confirmed"]}
+                                }).sort("created_at", -1).to_list(10)
+                                
+                                _duplicate_order = None
+                                for _eo in _existing_orders:
+                                    _eo_items = _eo.get("items", [])
+                                    # Check if items match (same products, same quantities)
+                                    if len(_eo_items) == len(_items):
+                                        _match = True
+                                        for _ci in _items:
+                                            _found = False
+                                            for _ei in _eo_items:
+                                                if (_ei.get("product_id") == _ci.get("product_id") and
+                                                    _ei.get("quantity") == _ci.get("quantity")):
+                                                    _found = True
+                                                    break
+                                            if not _found:
+                                                _match = False
+                                                break
+                                        if _match:
+                                            _duplicate_order = _eo
+                                            break
+                                
+                                if _duplicate_order:
+                                    # Found duplicate unpaid order — ask customer what to do
+                                    _dup_order_num = _duplicate_order.get("order_number") or ("ORD-" + str(_duplicate_order.get("_id", ""))[:6].upper())
+                                    _dup_items_text = ", ".join(i.get("product_name", "Item") for i in _duplicate_order.get("items", [])[:3])
+                                    if len(_duplicate_order.get("items", [])) > 3:
+                                        _dup_items_text += f" +{len(_duplicate_order.get('items', []))-3} more"
+                                    
+                                    ws = get_whatsapp_service(db)
+                                    _dup_msg = (
+                                        f"⚠️ You already have an unpaid order with the same items:\n\n"
+                                        f"🔖 Order *#{_dup_order_num}*\n"
+                                        f"📦 {_dup_items_text}\n"
+                                        f"💰 {_currency} {_duplicate_order.get('total_amount', 0):,.0f}\n\n"
+                                        f"*What would you like to do?*\n\n"
+                                        f"1️⃣  Create New Order (double order)\n"
+                                        f"2️⃣  Keep Existing Order\n"
+                                        f"3️⃣  Cancel Existing & Create New\n\n"
+                                        f"_Reply with 1, 2 or 3_"
+                                    )
+                                    await ws.send_message(
+                                        user_id=user["_id"],
+                                        to_number=from_number,
+                                        message=_dup_msg,
+                                        customer_name=customer_name,
+                                        send_context="order_confirm"
+                                    )
+                                    # Store duplicate context so next reply resolves the choice
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "action_context": "duplicate_order_choice",
+                                            "duplicate_order_id": str(_duplicate_order["_id"]),
+                                            "pending_cart_items": _items,
+                                            "pending_cart_total": _total,
+                                            "updated_at": _now
+                                        }},
+                                        upsert=True
+                                    )
+                                    logging.info(f"Duplicate order detected: existing={_dup_order_num}, asking customer")
+                                    return {"status": "ok", "handled_by": "duplicate_order_prompt"}
+                                
+                                # No duplicate — proceed with normal checkout
                                 _order_id = str(uuid.uuid4())
                                 _order_number = "ORD-" + _order_id.replace("-", "").upper()[:6]
                                 # Build item summary for order name
@@ -7597,6 +7793,27 @@ async def evolution_webhook(request: Request):
                                     except Exception as _ne2:
                                         logging.warning(f"Checkout push notification failed: {_ne2}")
                                 return {"status": "ok", "handled_by": "checkout"}
+
+                        elif button_action == "cancel_cart":
+                            # Customer chose "Cancel Order" from cart menu
+                            _biz_id_cancel = user.get("business_id", user["_id"])
+                            _cart_cancel = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_cancel, "status": "active"})
+                            if _cart_cancel:
+                                await db.carts.update_one({"_id": _cart_cancel["_id"]}, {"$set": {"status": "cancelled"}})
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message="🗑️ Your cart has been cleared.\n\nFeel free to browse our catalog anytime! 😊",
+                                    customer_name=customer_name,
+                                    send_context="order_confirm"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                )
+                                logging.info(f"Cart cancelled by customer: customer_id={customer_id}")
+                                return {"status": "ok", "handled_by": "cancel_cart"}
 
                         elif button_action == "continue" or button_action == "back":
                             # Customer chose "Continue Shopping" or "Back to Catalog" — re-send product catalog with pagination
