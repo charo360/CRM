@@ -399,7 +399,7 @@ class WhatsAppCatalog:
             logger.error(f"Error sending product carousel: {e}")
             raise
     
-    def format_product_message(self, product: Dict[str, Any]) -> str:
+    def format_product_message(self, product: Dict[str, Any], currency: str = 'USD') -> str:
         """
         Format a product into a rich text message with emojis
         
@@ -429,7 +429,6 @@ class WhatsAppCatalog:
         emoji = category_emojis.get(category, '🛍️')
         
         price = product.get('price', 0)
-        currency = product.get('currency', 'KES')
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         
         parts = [

@@ -924,15 +924,15 @@ class WhatsAppService:
         send_buttons: bool = True
     ) -> Dict:
         """Send product image with caption then interactive buttons using authenticated client"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
+        currency = user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         price = product.get('price', 0)
-        currency = product.get('currency', 'KES')
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
         stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
@@ -1012,11 +1012,12 @@ class WhatsAppService:
         page_num: int = 1
     ) -> Dict:
         """Send multiple products as a numbered list (max 8 per page). If has_more, option 9 = next page."""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
+        currency = user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         # Show max 8 products as options 1-8
@@ -1024,7 +1025,6 @@ class WhatsAppService:
         lines = [f"🛍️ *{title}{page_label}*\n"]
         for i, p in enumerate(products[:8], 1):
             price = p.get('price', 0)
-            currency = p.get('currency', '')
             stock = "✅" if p.get('in_stock', True) else "❌"
             price_str = f"{currency} {price:,.0f}" if price else "POA"
             lines.append(f"{i}\ufe0f\u20e3  *{p['name']}* — {price_str} {stock}")
@@ -1053,15 +1053,15 @@ class WhatsAppService:
         include_share: bool = True
     ) -> Dict:
         """Send a single product with interactive buttons (no image)"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
+        currency = user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         price = product.get('price', 0)
-        currency = product.get('currency', 'KES')
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
         product_id = str(product.get('_id', product.get('id', '')))
@@ -1099,10 +1099,9 @@ class WhatsAppService:
             else:
                 raise Exception(f"sendPoll error: {resp.status_code} {resp.text[:200]}")
 
-    def format_product_message(self, product: Dict[str, Any]) -> str:
+    def format_product_message(self, product: Dict[str, Any], currency: str = 'USD') -> str:
         """Format a product into a rich text message"""
         price = product.get('price', 0)
-        currency = product.get('currency', 'KES')
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
         stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
