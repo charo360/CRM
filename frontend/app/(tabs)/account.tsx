@@ -148,9 +148,6 @@ export default function AccountScreen() {
   // Product Actions State
   const [showProductActionsModal, setShowProductActionsModal] = useState(false);
 
-  const { user, logout, refreshUser } = useAuth();
-  const router = useRouter();
-
   // IAP refs for purchase callbacks
   const pendingBundleIdRef = useRef<string | null>(null);
   const purchaseListenerRef = useRef<any>(null);
