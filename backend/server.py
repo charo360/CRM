@@ -6905,9 +6905,9 @@ async def evolution_webhook(request: Request):
                             else:
                                 # product context — look up user's custom action buttons
                                 _default_actions = [
-                                    {"label": "Order Now",      "action_type": "order",       "index": 1},
-                                    {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
-                                    {"label": "Ask a Question", "action_type": "ask",         "index": 3},
+                                    {"label": "Order Now",             "action_type": "order",       "index": 1},
+                                    {"label": "Add to Cart",           "action_type": "add_to_cart", "index": 2},
+                                    {"label": "See Similar Products",  "action_type": "similar",     "index": 3},
                                 ]
                                 _user_actions_doc = await db.users.find_one(
                                     {"_id": user["_id"]}, {"settings.product_actions": 1}
@@ -6940,10 +6940,12 @@ async def evolution_webhook(request: Request):
                         "➕ add to cart": "add_to_cart",
                         "🛒 add to cart": "add_to_cart",
                         "add to cart": "add_to_cart",
-                        "💬 ask a question": "ask",
-                        "💬 ask question": "ask",
-                        "ask a question": "ask",
-                        "ask question": "ask",
+                        "💬 ask a question": "similar",
+                        "💬 ask question": "similar",
+                        "ask a question": "similar",
+                        "ask question": "similar",
+                        "see similar": "similar",
+                        "similar products": "similar",
                         "📋 more info": "details",
                         "more info": "details",
                         "🛍️ continue shopping": "continue",
@@ -7630,18 +7632,55 @@ async def evolution_webhook(request: Request):
                             logging.info("Continue shopping: re-sent product catalog")
                             return {"status": "ok", "handled_by": "continue_shopping"}
 
-                        elif button_action == "ask":
-                            # Customer clicked "Ask Question" — replace raw button ID with
-                            # a meaningful question so the AI knows what the customer wants
-                            _biz_id_ask = user.get("business_id", user["_id"])
-                            _ask_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_ask})
-                            if _ask_product:
-                                body = f"I have a question about {_ask_product['name']}"
-                                await db.messages.update_one(
-                                    {"_id": message_id},
-                                    {"$set": {"content": body}}
-                                )
-                            logging.info(f"Ask button clicked for product {button_product_id}, passing to AI with body={body!r}")
+                        elif button_action == "similar":
+                            # Customer wants to see similar/related products
+                            _biz_id_sim = user.get("business_id", user["_id"])
+                            _sim_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_sim})
+                            _sim_currency = user.get("settings", {}).get("currency", "USD")
+                            if _sim_product:
+                                _sim_category = _sim_product.get("category", "")
+                                _sim_name = _sim_product["name"]
+                                # Find products in same category, excluding the current one
+                                _sim_query = {"user_id": _biz_id_sim, "_id": {"$ne": button_product_id}}
+                                if _sim_category:
+                                    _sim_query["category"] = _sim_category
+                                _sim_matches = await db.products.find(_sim_query).to_list(5)
+                                # If same-category has < 3 results, pad with other products
+                                if len(_sim_matches) < 3:
+                                    _other_query = {"user_id": _biz_id_sim, "_id": {"$nin": [button_product_id] + [p["_id"] for p in _sim_matches]}}
+                                    _others = await db.products.find(_other_query).to_list(5 - len(_sim_matches))
+                                    _sim_matches += _others
+                                ws = get_whatsapp_service(db)
+                                if _sim_matches:
+                                    _sim_lines = [f"Here are some products you might also like:\n"]
+                                    for _si, _sp in enumerate(_sim_matches[:5], 1):
+                                        _sp_price = f"{_sim_currency} {_sp.get('price',0):,.0f}" if _sp.get('price') else "POA"
+                                        _sp_stock = "✅" if _sp.get('in_stock', True) else "❌"
+                                        _sim_lines.append(f"{_si}️⃣  *{_sp['name']}* — {_sp_price} {_sp_stock}")
+                                    _sim_lines.append("\n_Reply with a number to select_")
+                                    await ws.send_message(
+                                        user_id=_biz_id_sim, to_number=from_number,
+                                        message="\n".join(_sim_lines),
+                                        customer_name=customer_name, send_context="similar_products"
+                                    )
+                                    # Save to pending_catalogs so numbered replies work
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "products": [{"id": str(p["_id"]), "name": p["name"], "price": p.get("price",0), "index": idx}
+                                                         for idx, p in enumerate(_sim_matches[:5], 1)],
+                                            "action_context": "catalog_select",
+                                            "updated_at": datetime.utcnow()
+                                        }}
+                                    )
+                                else:
+                                    await ws.send_message(
+                                        user_id=_biz_id_sim, to_number=from_number,
+                                        message=f"Sorry, we don't have other products similar to *{_sim_name}* right now. Feel free to browse our full catalog by typing *catalog*! 😊",
+                                        customer_name=customer_name, send_context="similar_products"
+                                    )
+                            logging.info(f"Similar products shown for product {button_product_id}")
+                            return {"status": "ok", "handled_by": "similar_products"}
 
                         elif button_action in ("book", "subscribe", "quote", "test_drive", "info", "custom"):
                             # Custom action types — craft intent message and let AI handle naturally

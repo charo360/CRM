@@ -124,7 +124,7 @@ class SalesAgent(BaseAgent):
                 "*What would you like to do?*\n\n"
                 "1️⃣  Order Now\n"
                 "2️⃣  Add to Cart\n"
-                "3️⃣  Ask a Question\n\n"
+                "3️⃣  See Similar Products\n\n"
                 "_Reply with 1, 2 or 3_"
             )
             messages_out.append({"text": instruction})
