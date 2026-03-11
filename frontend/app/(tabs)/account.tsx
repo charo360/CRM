@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/api';
 
 import { NotificationHandler } from '../../utils/notification-handler';
@@ -84,6 +85,9 @@ const DAY_LABELS: Record<DayKey, string> = {
 };
 
 export default function AccountScreen() {
+  const router = useRouter();
+  const { user, logout } = useAuth();
+  const { refresh: refreshBusinessContext } = useBusiness();
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -829,6 +833,8 @@ export default function AccountScreen() {
                         setSavingBusinessType(true);
                         try {
                           await apiClient.put('/settings', { business_type: bt.id });
+                          await refreshBusinessContext();
+                          Alert.alert('Success', 'Business type updated. UI will adapt accordingly.');
                         } catch (e) {
                           Alert.alert('Error', 'Failed to save business type');
                         } finally {
