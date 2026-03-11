@@ -195,6 +195,10 @@ export const settingsAPI = {
     faqs?: string;
     special_offers?: string;
     business_description?: string;
+    booking_process?: string;
+    cancellation_policy?: string;
+    staff_info?: string;
+    [key: string]: any;
   }) => {
     const response = await apiClient.put('/business-knowledge', knowledge);
     return response.data;

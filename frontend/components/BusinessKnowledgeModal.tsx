@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { settingsAPI, apiClient } from '../context/api';
+import { useBusiness } from '../context/BusinessContext';
 
 interface BusinessKnowledgeModalProps {
     visible: boolean;
@@ -137,13 +138,16 @@ function FAQField({
     );
 }
 
-const BUSINESS_TYPES = [
-    { key: 'general', label: 'General', icon: 'storefront-outline' },
-    { key: 'retail', label: 'Retail', icon: 'cart-outline' },
-    { key: 'creator', label: 'Creator', icon: 'videocam-outline' },
-    { key: 'restaurant', label: 'Food & Resto', icon: 'restaurant-outline' },
-    { key: 'service', label: 'Services', icon: 'briefcase-outline' },
-];
+const GLOBAL_TO_BK_TYPE: Record<string, string> = {
+    retail: 'retail', restaurant: 'restaurant', creator: 'creator',
+    salon: 'service', services: 'service', fitness: 'service', healthcare: 'service',
+    '': 'general',
+};
+
+const BK_TYPE_LABELS: Record<string, string> = {
+    general: 'General', retail: 'Retail', creator: 'Creator',
+    restaurant: 'Restaurant', service: 'Services / Salon',
+};
 
 const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'Twitter/X', 'Facebook', 'Snapchat', 'LinkedIn', 'Podcast'];
 
@@ -151,9 +155,10 @@ export default function BusinessKnowledgeModal({
     visible,
     onClose,
 }: BusinessKnowledgeModalProps) {
+    const { businessType: globalBT, isServiceBusiness, config } = useBusiness();
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [businessType, setBusinessType] = useState('general');
+    const [businessType, setBusinessType] = useState(() => GLOBAL_TO_BK_TYPE[globalBT] || 'general');
     const [knowledge, setKnowledge] = useState({
         business_description: '',
         products_services: '',
@@ -162,6 +167,9 @@ export default function BusinessKnowledgeModal({
         delivery_info: '',
         faqs: '',
         special_offers: '',
+        booking_process: '',
+        cancellation_policy: '',
+        staff_info: '',
     });
     const [creator, setCreator] = useState({
         creator_niche: '',
@@ -193,11 +201,13 @@ export default function BusinessKnowledgeModal({
     const [faqList, setFaqList] = useState<{ question: string; answer: string }[]>([]);
     const [offerItems, setOfferItems] = useState<string[]>([]);
 
+    // Sync internal type from global context whenever modal opens
     useEffect(() => {
         if (visible) {
+            setBusinessType(GLOBAL_TO_BK_TYPE[globalBT] || 'general');
             fetchKnowledge();
         }
-    }, [visible]);
+    }, [visible, globalBT]);
 
     const fetchKnowledge = async () => {
         setLoading(true);
@@ -212,8 +222,12 @@ export default function BusinessKnowledgeModal({
                     delivery_info: data.delivery_info || '',
                     faqs: data.faqs || '',
                     special_offers: data.special_offers || '',
+                    booking_process: data.booking_process || '',
+                    cancellation_policy: data.cancellation_policy || '',
+                    staff_info: data.staff_info || '',
                 });
-                setBusinessType(data.business_type || 'general');
+                // Always use global type mapping, ignoring any stale saved BK type
+                setBusinessType(GLOBAL_TO_BK_TYPE[globalBT] || data.business_type || 'general');
                 setCreator({
                     creator_niche: data.creator_niche || '',
                     creator_platforms: data.creator_platforms || '',
@@ -337,6 +351,8 @@ export default function BusinessKnowledgeModal({
     };
 
     const isCreator = businessType === 'creator';
+    const isService = businessType === 'service' || isServiceBusiness;
+    const itemLabel = config.catalogItemLabel;    // 'Product' | 'Service' | 'Class'
 
     return (
         <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -370,27 +386,14 @@ export default function BusinessKnowledgeModal({
                             </Text>
                         </View>
 
-                        {/* Business Type Selector */}
-                        <View style={styles.field}>
-                            <Text style={styles.label}>Business Type</Text>
-                            <Text style={styles.hint}>Select the type that best describes you</Text>
-                            <View style={styles.typeGrid}>
-                                {BUSINESS_TYPES.map(bt => (
-                                    <TouchableOpacity
-                                        key={bt.key}
-                                        style={[styles.typeCard, businessType === bt.key && styles.typeCardActive]}
-                                        onPress={() => setBusinessType(bt.key)}
-                                    >
-                                        <Ionicons
-                                            name={bt.icon as any}
-                                            size={22}
-                                            color={businessType === bt.key ? '#25D366' : '#6B7D99'}
-                                        />
-                                        <Text style={[styles.typeLabel, businessType === bt.key && styles.typeLabelActive]}>
-                                            {bt.label}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))}
+                        {/* Business Type — read-only, driven by Account Settings */}
+                        <View style={[styles.field, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
+                            <Ionicons name="storefront-outline" size={18} color="#25D366" />
+                            <View style={{ flex: 1 }}>
+                                <Text style={styles.label}>Business Type</Text>
+                                <Text style={[styles.hint, { marginTop: 2 }]}>
+                                    {BK_TYPE_LABELS[businessType] || businessType}  ·  Change in Account Settings
+                                </Text>
                             </View>
                         </View>
 
@@ -612,8 +615,87 @@ export default function BusinessKnowledgeModal({
                             </>
                         )}
 
-                        {/* ── STANDARD FIELDS (shown for all types) ── */}
-                        {!isCreator && (
+                        {/* ── SERVICE-SPECIFIC FIELDS ── */}
+                        {isService && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="briefcase-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Service Details</Text>
+                                </View>
+
+                                {/* Services Menu */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="list-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>{config.catalogLabel} & Pricing</Text>
+                                    </View>
+                                    <Text style={styles.hint}>Add each {itemLabel.toLowerCase()} with its price and duration</Text>
+                                    <ListField
+                                        items={productItems}
+                                        onUpdate={setProductItems}
+                                        placeholder={`${itemLabel} - price - duration`}
+                                        icon="timer-outline"
+                                    />
+                                </View>
+
+                                {/* Booking Process */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="calendar-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Booking Process</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Book via WhatsApp 24hrs in advance. We confirm within 1 hour."</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="How do clients book appointments?"
+                                        placeholderTextColor="#555"
+                                        value={knowledge.booking_process}
+                                        onChangeText={(text) => setKnowledge({ ...knowledge, booking_process: text })}
+                                        multiline
+                                        numberOfLines={2}
+                                    />
+                                </View>
+
+                                {/* Cancellation Policy */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="close-circle-outline" size={18} color="#FF9800" />
+                                        <Text style={styles.label}>Cancellation Policy</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Cancel at least 24hrs before. Late cancellations charged 50%."</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="Your cancellation & rescheduling policy"
+                                        placeholderTextColor="#555"
+                                        value={knowledge.cancellation_policy}
+                                        onChangeText={(text) => setKnowledge({ ...knowledge, cancellation_policy: text })}
+                                        multiline
+                                        numberOfLines={2}
+                                    />
+                                </View>
+
+                                {/* Staff Info */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="people-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Team / Staff</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Maria - hair colouring specialist. John - massage therapist."</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="Who are your team members and their specialties?"
+                                        placeholderTextColor="#555"
+                                        value={knowledge.staff_info}
+                                        onChangeText={(text) => setKnowledge({ ...knowledge, staff_info: text })}
+                                        multiline
+                                        numberOfLines={2}
+                                    />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── STANDARD FIELDS (retail / restaurant / general) ── */}
+                        {!isCreator && !isService && (
                             <>
                                 {/* Products & Prices */}
                                 <View style={styles.field}>
@@ -649,8 +731,8 @@ export default function BusinessKnowledgeModal({
                             />
                         </View>
 
-                        {/* Delivery - only for non-creators */}
-                        {!isCreator && (
+                        {/* Delivery - only for retail/restaurant, not service businesses or creators */}
+                        {!isCreator && !isService && (
                             <View style={styles.field}>
                                 <View style={styles.sectionHeader}>
                                     <Ionicons name="bicycle-outline" size={18} color="#25D366" />

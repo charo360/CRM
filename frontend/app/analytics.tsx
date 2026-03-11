@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { apiClient, settingsAPI } from '../context/api';
+import { useBusiness } from '../context/BusinessContext';
 
 interface Analytics {
   currency: string;
@@ -59,6 +60,7 @@ interface StockAnalytics {
 }
 
 export default function AnalyticsScreen() {
+  const { config, isServiceBusiness } = useBusiness();
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [stock, setStock] = useState<StockAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -168,13 +170,13 @@ export default function AnalyticsScreen() {
         {/* Top Products */}
         {analytics?.top_products && analytics.top_products.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Best Selling Products (30d)</Text>
+            <Text style={styles.sectionTitle}>Best Selling {config.catalogLabel} (30d)</Text>
             <View style={styles.productsCard}>
               {analytics.top_products.map((product, index) => (
                 <View key={index} style={[styles.productRow, index === analytics.top_products.length - 1 && { borderBottomWidth: 0 }]}>
                   <View style={styles.productInfo}>
                     <Text style={styles.productName}>{product.name}</Text>
-                    <Text style={styles.productSubtext}>{product.orders} orders • {product.quantity} units</Text>
+                    <Text style={styles.productSubtext}>{isServiceBusiness ? `${product.orders} bookings` : `${product.orders} orders • ${product.quantity} units`}</Text>
                   </View>
                   <Text style={styles.productRevenue}>
                     {currency} {product.revenue.toLocaleString()}
@@ -253,13 +255,13 @@ export default function AnalyticsScreen() {
         {/* Top Selling Items */}
         {analytics?.top_items && analytics.top_items.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Top Selling Items (30d)</Text>
+            <Text style={styles.sectionTitle}>Top {config.catalogLabel} (30d)</Text>
             <View style={styles.productsCard}>
               {analytics.top_items.map((item, index) => (
                 <View key={index} style={[styles.productRow, index === analytics.top_items.length - 1 && { borderBottomWidth: 0 }]}>
                   <View style={styles.productInfo}>
                     <Text style={styles.productName}>{item.name}</Text>
-                    <Text style={styles.productSubtext}>{item.count} sales</Text>
+                    <Text style={styles.productSubtext}>{isServiceBusiness ? `${item.count} sessions` : `${item.count} sales`}</Text>
                   </View>
                   <Text style={styles.productRevenue}>{currency} {item.revenue.toLocaleString()}</Text>
                 </View>
@@ -310,8 +312,8 @@ export default function AnalyticsScreen() {
           </View>
         )}
 
-        {/* Stock Analytics */}
-        {stock && (
+        {/* Stock Analytics — only relevant for retail/restaurant */}
+        {stock && !isServiceBusiness && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Stock Overview</Text>
             <View style={styles.statsGrid}>
