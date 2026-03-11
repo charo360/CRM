@@ -49,7 +49,7 @@ export default function ProductCatalogModal({
     visible,
     onClose,
 }: ProductCatalogModalProps) {
-    const { config } = useBusiness();
+    const { config, isServiceBusiness, businessType } = useBusiness();
     const itemLabel = config.catalogItemLabel;   // 'Product' | 'Service' | 'Item'
     const catalogLabel = config.catalogLabel;     // 'Products' | 'Services' | 'Menu'
     const [products, setProducts] = useState<Product[]>([]);
@@ -293,8 +293,8 @@ export default function ProductCatalogModal({
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
-        setEditOfferingType('product');
-        setEditDuration('');
+        setEditOfferingType(isServiceBusiness ? 'service' : businessType === 'restaurant' ? 'menu_item' : businessType === 'creator' ? 'digital' : 'product');
+        setEditDuration(isServiceBusiness ? '60' : '');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -559,12 +559,12 @@ export default function ProductCatalogModal({
                                 </View>
                             )}
                             <View style={styles.formGroup}>
-                                <Text style={styles.formLabel}>Product Name *</Text>
+                                <Text style={styles.formLabel}>{itemLabel} Name *</Text>
                                 <TextInput
                                     style={styles.formInput}
                                     value={editName}
                                     onChangeText={setEditName}
-                                    placeholder="e.g. Chocolate Cake"
+                                    placeholder={isServiceBusiness ? 'e.g. Haircut, Deep Tissue Massage' : businessType === 'restaurant' ? 'e.g. Grilled Chicken, Jollof Rice' : businessType === 'creator' ? 'e.g. Brand Deal Package, E-Book' : 'e.g. Chocolate Cake, T-Shirt'}
                                     placeholderTextColor="#555"
                                 />
                             </View>
@@ -599,7 +599,7 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editCategory}
                                     onChangeText={setEditCategory}
-                                    placeholder="e.g. Cakes, Electronics, Clothing"
+                                    placeholder={isServiceBusiness ? 'e.g. Hair, Nails, Massage, Fitness' : businessType === 'restaurant' ? 'e.g. Mains, Starters, Drinks, Desserts' : businessType === 'creator' ? 'e.g. Sponsored Post, Digital Product, Merch' : 'e.g. Clothing, Electronics, Food'}
                                     placeholderTextColor="#555"
                                 />
                             </View>
@@ -610,30 +610,32 @@ export default function ProductCatalogModal({
                                     style={[styles.formInput, { height: 80, textAlignVertical: 'top' }]}
                                     value={editDescription}
                                     onChangeText={setEditDescription}
-                                    placeholder="Describe your product..."
+                                    placeholder={isServiceBusiness ? 'What does this service include? Any preparation needed?' : businessType === 'restaurant' ? 'Ingredients, allergens, portion size...' : `Describe your ${itemLabel.toLowerCase()}...`}
                                     placeholderTextColor="#555"
                                     multiline
                                     numberOfLines={3}
                                 />
                             </View>
 
-                            <View style={styles.formGroup}>
-                                <Text style={styles.formLabel}>Stock Quantity (Optional)</Text>
-                                <TextInput
-                                    style={styles.formInput}
-                                    value={editStockQuantity}
-                                    onChangeText={setEditStockQuantity}
-                                    placeholder="Leave empty for unlimited stock"
-                                    placeholderTextColor="#555"
-                                    keyboardType="numeric"
-                                />
-                                <Text style={styles.stockHint}>Automatically reduces when orders are placed</Text>
-                            </View>
+                            {!isServiceBusiness && (
+                                <View style={styles.formGroup}>
+                                    <Text style={styles.formLabel}>Stock Quantity (Optional)</Text>
+                                    <TextInput
+                                        style={styles.formInput}
+                                        value={editStockQuantity}
+                                        onChangeText={setEditStockQuantity}
+                                        placeholder="Leave empty for unlimited stock"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <Text style={styles.stockHint}>Automatically reduces when orders are placed</Text>
+                                </View>
+                            )}
 
                             <View style={styles.stockToggleRow}>
                                 <View>
-                                    <Text style={styles.formLabel}>In Stock</Text>
-                                    <Text style={styles.stockHint}>{editInStock ? 'Available for customers' : 'Hidden from AI replies'}</Text>
+                                    <Text style={styles.formLabel}>{isServiceBusiness ? 'Available' : 'In Stock'}</Text>
+                                    <Text style={styles.stockHint}>{editInStock ? (isServiceBusiness ? 'Bookable by customers' : 'Available for customers') : 'Hidden from AI replies'}</Text>
                                 </View>
                                 <Switch
                                     value={editInStock}
@@ -646,14 +648,33 @@ export default function ProductCatalogModal({
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Type</Text>
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                                    {[
-                                        { id: 'product',      label: '📦 Product' },
-                                        { id: 'service',      label: '🔧 Service' },
-                                        { id: 'class',        label: '🎓 Class' },
-                                        { id: 'appointment',  label: '📅 Appt' },
-                                        { id: 'digital',      label: '💾 Digital' },
-                                        { id: 'menu_item',    label: '🍽️ Menu' },
-                                    ].map(ot => (
+                                    {(isServiceBusiness
+                                        ? [
+                                            { id: 'service',      label: '✂️ Service' },
+                                            { id: 'class',        label: '🎓 Class' },
+                                            { id: 'appointment',  label: '📅 Appointment' },
+                                            { id: 'consultation', label: '💬 Consultation' },
+                                            { id: 'package',      label: '🎁 Package' },
+                                          ]
+                                        : businessType === 'restaurant'
+                                        ? [
+                                            { id: 'menu_item',    label: '🍽️ Menu Item' },
+                                            { id: 'drink',        label: '🥤 Drink' },
+                                            { id: 'combo',        label: '🥡 Combo' },
+                                          ]
+                                        : businessType === 'creator'
+                                        ? [
+                                            { id: 'digital',      label: '💾 Digital' },
+                                            { id: 'service',      label: '🔧 Service' },
+                                            { id: 'product',      label: '📦 Product' },
+                                          ]
+                                        : [
+                                            { id: 'product',      label: '📦 Product' },
+                                            { id: 'service',      label: '🔧 Service' },
+                                            { id: 'digital',      label: '💾 Digital' },
+                                            { id: 'menu_item',    label: '🍽️ Menu Item' },
+                                          ]
+                                    ).map(ot => (
                                         <TouchableOpacity
                                             key={ot.id}
                                             style={[
@@ -671,14 +692,14 @@ export default function ProductCatalogModal({
                                 </ScrollView>
                             </View>
 
-                            {['service','class','appointment','consultation'].includes(editOfferingType) && (
-                                <View style={styles.formGroup}>
-                                    <Text style={styles.formLabel}>Duration (minutes)</Text>
+                            {(isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
+                                <View style={[styles.formGroup, isServiceBusiness && { borderLeftWidth: 3, borderLeftColor: '#25D366', paddingLeft: 12 }]}>
+                                    <Text style={styles.formLabel}>Duration (minutes) {isServiceBusiness && '*'}</Text>
                                     <TextInput
                                         style={styles.formInput}
                                         value={editDuration}
                                         onChangeText={setEditDuration}
-                                        placeholder="e.g. 60"
+                                        placeholder="e.g. 30, 60, 90"
                                         placeholderTextColor="#555"
                                         keyboardType="numeric"
                                     />
@@ -839,7 +860,7 @@ export default function ProductCatalogModal({
                                     <Text style={styles.detailName}>{selectedProduct.name}</Text>
                                     <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
                                         <Text style={styles.stockBadgeText}>
-                                            {selectedProduct.in_stock === false ? 'Out of Stock' : 'In Stock'}
+                                            {selectedProduct.in_stock === false ? (isServiceBusiness ? 'Unavailable' : 'Out of Stock') : (isServiceBusiness ? 'Available' : 'In Stock')}
                                         </Text>
                                     </View>
                                 </View>
@@ -850,12 +871,18 @@ export default function ProductCatalogModal({
                                     <Ionicons name="pricetag-outline" size={14} color="#8899AA" />
                                     <Text style={styles.detailCategory}>{selectedProduct.category || 'Other'}</Text>
 
-                                    {selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
+                                    {!isServiceBusiness && selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
                                         <View style={styles.detailStockInfo}>
                                             <Ionicons name="cube-outline" size={14} color="#8899AA" style={{ marginLeft: 12 }} />
                                             <Text style={styles.detailCategory}>Stock: {selectedProduct.stock_quantity}</Text>
                                         </View>
                                     )}
+                                    {selectedProduct.duration ? (
+                                        <View style={styles.detailStockInfo}>
+                                            <Ionicons name="time-outline" size={14} color="#8899AA" style={{ marginLeft: 12 }} />
+                                            <Text style={styles.detailCategory}>{selectedProduct.duration} min</Text>
+                                        </View>
+                                    ) : null}
                                 </View>
 
                                 {selectedProduct.description ? (
