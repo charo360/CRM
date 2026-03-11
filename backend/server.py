@@ -7480,12 +7480,15 @@ async def evolution_webhook(request: Request):
                                 _now = datetime.utcnow()
                                 _currency = user.get("settings", {}).get("currency", "USD")
                                 _order_id = str(uuid.uuid4())
+                                _order_number = "ORD-" + _order_id.replace("-", "").upper()[:6]
                                 # Build item summary for order name
                                 _item_names = ", ".join(i["product_name"] for i in _items[:3])
                                 if len(_items) > 3:
                                     _item_names += f" +{len(_items)-3} more"
+                                # Create ORDER as Unpaid — sale record only after payment confirmed
                                 await db.orders.insert_one({
                                     "_id": _order_id,
+                                    "order_number": _order_number,
                                     "user_id": _biz_id,
                                     "customer_id": customer_id,
                                     "customer_name": customer_name,
@@ -7495,39 +7498,57 @@ async def evolution_webhook(request: Request):
                                     "quantity": len(_items),
                                     "total_amount": _total,
                                     "total": _total,
+                                    "payment_status": "Unpaid",
+                                    "delivery_status": "Processing",
                                     "status": "pending",
                                     "created_at": _now,
                                     "source": "cart_checkout"
                                 })
-                                # Create sale record for revenue tracking
-                                await db.sales.insert_one({
-                                    "_id": str(uuid.uuid4()),
-                                    "user_id": _biz_id,
-                                    "customer_id": customer_id,
-                                    "customer_name": customer_name,
-                                    "product": _item_names,
-                                    "amount": _total,
-                                    "quantity": len(_items),
-                                    "status": "completed",
-                                    "created_at": _now,
-                                    "source": "cart_checkout"
-                                })
-                                # Update customer totals
                                 await db.customers.update_one(
                                     {"_id": customer_id},
-                                    {"$inc": {"total_spent": _total, "purchase_count": 1},
-                                     "$set": {"last_contacted": _now}}
+                                    {"$set": {"last_contacted": _now}}
                                 )
                                 await db.carts.update_one({"_id": _cart["_id"]}, {"$set": {"status": "completed"}})
-                                # Build cart summary for confirmation
-                                _lines = [f"✅ *Order Confirmed!*\n"]
+                                # Extract payment details from business knowledge
+                                _user_co_doc = await db.users.find_one({"_id": _biz_id})
+                                _bk_co = (_user_co_doc or {}).get("business_knowledge", {})
+                                _payment_text_co = ""
+                                if isinstance(_bk_co, dict):
+                                    _payment_text_co = _bk_co.get("payment_methods") or _bk_co.get("payment") or _bk_co.get("payments") or ""
+                                elif isinstance(_bk_co, str):
+                                    _payment_text_co = _bk_co[:500]
+                                # Build order summary + payment request
+                                _co_lines = [f"✅ *Order Received!*\n", f"🔖 Order No: *#{_order_number}*\n"]
                                 for _it in _items:
-                                    _lines.append(f"• {_it['product_name']} × {_it.get('quantity',1)} — {_currency} {_it.get('price',0):,.0f}")
-                                _lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
-                                _lines.append("\nWe'll contact you shortly to confirm delivery. Thank you! 🙏")
+                                    _co_lines.append(f"• {_it['product_name']} × {_it.get('quantity',1)} — {_currency} {_it.get('price',0):,.0f}")
+                                _co_lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
+                                _co_lines.append(f"Status: 🔴 *Unpaid*\n")
+                                _co_lines.append("To complete your order, please make payment using the details below.\n")
+                                if _payment_text_co:
+                                    _co_lines.append(f"*💳 Payment Details:*\n{_payment_text_co}\n")
+                                else:
+                                    _co_lines.append("We will send you our payment details shortly.\n")
+                                _co_lines.append(
+                                    f"📸 Once you have paid, *send us a screenshot* of your payment confirmation.\n\n"
+                                    f"Also send your *delivery details:*\n"
+                                    f"• Full name\n"
+                                    f"• Delivery address\n"
+                                    f"• Phone number\n\n"
+                                    f"Your order *#{_order_number}* will be processed once payment is confirmed. 🙏"
+                                )
                                 ws = get_whatsapp_service(db)
-                                await ws.send_message(user_id=_biz_id, to_number=from_number, message="\n".join(_lines), customer_name=customer_name, send_context="order_confirm")
-                                logging.info(f"Cart checkout completed: order_id={_order_id}, items={len(_items)}, total={_total}")
+                                await ws.send_message(
+                                    user_id=_biz_id, to_number=from_number,
+                                    message="\n".join(_co_lines),
+                                    customer_name=customer_name, send_context="order_confirm"
+                                )
+                                # Set state to delivery_pending so payment screenshot is captured
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "delivery_pending", "order_id": _order_id, "updated_at": _now}},
+                                    upsert=True
+                                )
+                                logging.info(f"Cart checkout initiated: order_id={_order_id}, items={len(_items)}, total={_total}")
                                 # Notify business owner via push notification
                                 _owner2 = await db.users.find_one({"_id": _biz_id}, {"expo_push_token": 1})
                                 _push_token2 = (_owner2 or {}).get("expo_push_token", "")
