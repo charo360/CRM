@@ -7009,14 +7009,22 @@ async def evolution_webhook(request: Request):
                                         {"_id": customer_id},
                                         {"$set": {"last_contacted": _now_conf}}
                                     )
-                                    # Extract payment details from business knowledge
+                                    # Extract payment details from user.payment_methods (top-level)
                                     _user_conf_doc = await db.users.find_one({"_id": _biz_id_conf})
-                                    _bk_conf = (_user_conf_doc or {}).get("business_knowledge", {})
-                                    _payment_text = ""
-                                    if isinstance(_bk_conf, dict):
-                                        _payment_text = _bk_conf.get("payment_methods") or _bk_conf.get("payment") or _bk_conf.get("payments") or ""
-                                    elif isinstance(_bk_conf, str):
-                                        _payment_text = _bk_conf[:500]
+                                    _raw_pm_conf = (_user_conf_doc or {}).get("payment_methods", [])
+                                    _pm_conf_lines = []
+                                    for _pm in _raw_pm_conf:
+                                        if isinstance(_pm, dict):
+                                            _line = _pm.get("name", "")
+                                            if _pm.get("fields"):
+                                                _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                if _fp: _line += " — " + ", ".join(_fp)
+                                            elif _pm.get("details"):
+                                                _line += f": {_pm['details']}"
+                                        else:
+                                            _line = str(_pm)
+                                        if _line.strip(): _pm_conf_lines.append(f"  • {_line}")
+                                    _payment_text = "\n".join(_pm_conf_lines)
                                     # Build order confirmation + payment request message
                                     _conf_msg = (
                                         f"✅ *Order Received!*\n\n"
@@ -7509,14 +7517,22 @@ async def evolution_webhook(request: Request):
                                     {"$set": {"last_contacted": _now}}
                                 )
                                 await db.carts.update_one({"_id": _cart["_id"]}, {"$set": {"status": "completed"}})
-                                # Extract payment details from business knowledge
+                                # Extract payment details from user.payment_methods (top-level)
                                 _user_co_doc = await db.users.find_one({"_id": _biz_id})
-                                _bk_co = (_user_co_doc or {}).get("business_knowledge", {})
-                                _payment_text_co = ""
-                                if isinstance(_bk_co, dict):
-                                    _payment_text_co = _bk_co.get("payment_methods") or _bk_co.get("payment") or _bk_co.get("payments") or ""
-                                elif isinstance(_bk_co, str):
-                                    _payment_text_co = _bk_co[:500]
+                                _raw_pm_co = (_user_co_doc or {}).get("payment_methods", [])
+                                _pm_co_lines = []
+                                for _pm in _raw_pm_co:
+                                    if isinstance(_pm, dict):
+                                        _line = _pm.get("name", "")
+                                        if _pm.get("fields"):
+                                            _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                            if _fp: _line += " — " + ", ".join(_fp)
+                                        elif _pm.get("details"):
+                                            _line += f": {_pm['details']}"
+                                    else:
+                                        _line = str(_pm)
+                                    if _line.strip(): _pm_co_lines.append(f"  • {_line}")
+                                _payment_text_co = "\n".join(_pm_co_lines)
                                 # Build order summary + payment request
                                 _co_lines = [f"✅ *Order Received!*\n", f"🔖 Order No: *#{_order_number}*\n"]
                                 for _it in _items:
