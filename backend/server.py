@@ -7453,8 +7453,8 @@ async def evolution_webhook(request: Request):
                                         await asyncio.sleep(0.5)
                                         cart_text = (
                                             f"*What would you like to do?*\n\n"
-                                            f"1\ufe0f\u20e3  Continue Shopping\n"
-                                            f"2\ufe0f\u20e3  Checkout Now\n\n"
+                                            f"1\ufe0f\u20e3  Checkout Now\n"
+                                            f"2\ufe0f\u20e3  Continue Shopping\n\n"
                                             f"_Reply with 1 or 2_"
                                         )
                                         await client.post(
