@@ -7018,14 +7018,20 @@ async def evolution_webhook(request: Request):
                                     for _pm in _raw_pm_conf:
                                         if isinstance(_pm, dict):
                                             _line = _pm.get("name", "")
+                                            _has_details = False
                                             if _pm.get("fields"):
                                                 _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
-                                                if _fp: _line += " — " + ", ".join(_fp)
-                                            elif _pm.get("details"):
+                                                if _fp:
+                                                    _line += " — " + ", ".join(_fp)
+                                                    _has_details = True
+                                            elif _pm.get("details") and str(_pm["details"]).strip():
                                                 _line += f": {_pm['details']}"
+                                                _has_details = True
+                                            if _line.strip() and _has_details:
+                                                _pm_conf_lines.append(f"  • {_line}")
                                         else:
-                                            _line = str(_pm)
-                                        if _line.strip(): _pm_conf_lines.append(f"  • {_line}")
+                                            if str(_pm).strip():
+                                                _pm_conf_lines.append(f"  • {_pm}")
                                     _payment_text = "\n".join(_pm_conf_lines)
                                     # Build order confirmation + payment request message
                                     _conf_msg = (
@@ -7526,14 +7532,20 @@ async def evolution_webhook(request: Request):
                                 for _pm in _raw_pm_co:
                                     if isinstance(_pm, dict):
                                         _line = _pm.get("name", "")
+                                        _has_details_co = False
                                         if _pm.get("fields"):
                                             _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
-                                            if _fp: _line += " — " + ", ".join(_fp)
-                                        elif _pm.get("details"):
+                                            if _fp:
+                                                _line += " — " + ", ".join(_fp)
+                                                _has_details_co = True
+                                        elif _pm.get("details") and str(_pm["details"]).strip():
                                             _line += f": {_pm['details']}"
+                                            _has_details_co = True
+                                        if _line.strip() and _has_details_co:
+                                            _pm_co_lines.append(f"  • {_line}")
                                     else:
-                                        _line = str(_pm)
-                                    if _line.strip(): _pm_co_lines.append(f"  • {_line}")
+                                        if str(_pm).strip():
+                                            _pm_co_lines.append(f"  • {_pm}")
                                 _payment_text_co = "\n".join(_pm_co_lines)
                                 # Build order summary + payment request
                                 _co_lines = [f"✅ *Order Received!*\n", f"🔖 Order No: *#{_order_number}*\n"]
