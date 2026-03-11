@@ -8065,25 +8065,38 @@ async def evolution_webhook(request: Request):
                             except Exception as notif_err:
                                 logging.error(f"[Escalation] Notification failed: {notif_err}")
 
-                        # Send a natural hold message to the customer — sounds like owner, not AI
+                        # Send agent-prepared message (e.g. cancel confirmation) OR a hold message
+                        _escalation_messages = agent_result.get("messages", [])
                         try:
-                            import random as _random
-                            _hold_messages = [
-                                "Hang on, let me check on that for you.",
-                                "One sec, let me look into that.",
-                                "Sure, give me a moment on that.",
-                                "Let me check and get back to you shortly.",
-                                "On it — give me a moment.",
-                            ]
-                            _hold_msg = _random.choice(_hold_messages)
                             _ws_hold = get_whatsapp_service(db)
-                            await _ws_hold.send_message(
-                                user_id=user["_id"],
-                                to_number=from_number,
-                                message=_hold_msg,
-                                customer_name=customer_name,
-                                send_context="auto_reply"
-                            )
+                            if _escalation_messages:
+                                # Agent gave a specific reply (e.g. "order cancelled", "flagged for team")
+                                for _em in _escalation_messages:
+                                    if _em.get("text"):
+                                        await _ws_hold.send_message(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            message=_em["text"],
+                                            customer_name=customer_name,
+                                            send_context="auto_reply"
+                                        )
+                            else:
+                                import random as _random
+                                _hold_messages = [
+                                    "Hang on, let me check on that for you.",
+                                    "One sec, let me look into that.",
+                                    "Sure, give me a moment on that.",
+                                    "Let me check and get back to you shortly.",
+                                    "On it — give me a moment.",
+                                ]
+                                _hold_msg = _random.choice(_hold_messages)
+                                await _ws_hold.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message=_hold_msg,
+                                    customer_name=customer_name,
+                                    send_context="auto_reply"
+                                )
                         except Exception as _hold_err:
                             logging.error(f"[Escalation] Hold message failed: {_hold_err}")
 

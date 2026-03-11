@@ -52,6 +52,7 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                 "pending_question": doc.get("pending_question"),
                 "complaint_count": doc.get("complaint_count", 0),
                 "last_intent": doc.get("last_intent"),
+                "pending_order_list": doc.get("pending_order_list"),
                 "updated_at": doc.get("updated_at"),
             }
     except Exception as e:
@@ -131,5 +132,6 @@ def _default_state() -> Dict[str, Any]:
         "pending_question": None,
         "complaint_count": 0,
         "last_intent": None,
+        "pending_order_list": None,
         "updated_at": None,
     }

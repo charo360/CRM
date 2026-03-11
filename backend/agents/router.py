@@ -107,10 +107,12 @@ class Router:
         if agent_result.get("escalate"):
             reason = agent_result.get("escalate_reason", f"Agent {agent_name} escalated")
             await self._do_escalate(user_id, customer_id, reason)
+            # Preserve any messages the agent already prepared (e.g. cancel/update confirmations)
+            escalate_messages = agent_result.get("messages", [])
             return {
                 "handled": True,
                 "escalated": True,
-                "messages": [],
+                "messages": escalate_messages,
                 "escalation_reason": reason,
             }
 
