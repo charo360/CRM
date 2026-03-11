@@ -316,10 +316,10 @@ export default function BusinessKnowledgeModal({
             creator_platforms: selectedPlatforms.join(', '),
         };
         try {
-            await Promise.all([
-                settingsAPI.updateBusinessKnowledge(updatedKnowledge),
-                apiClient.put('/settings', { payment_methods: paymentMethods }),
-            ]);
+            await settingsAPI.updateBusinessKnowledge({
+                ...updatedKnowledge,
+                payment_methods: paymentMethods,
+            });
             Alert.alert('Saved', 'Business knowledge updated!', [
                 { text: 'OK', onPress: onClose },
             ]);

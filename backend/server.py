@@ -1488,6 +1488,7 @@ class BusinessKnowledge(BaseModel):
     creator_blacklisted_niches: Optional[str] = None
     creator_fan_dm_response: Optional[str] = None
     creator_media_kit_link: Optional[str] = None
+    payment_methods: Optional[List[Any]] = None
 
 # Product Catalog Models
 class Product(BaseModel):
@@ -8913,6 +8914,8 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
         val = getattr(knowledge, field, None)
         if val is not None:
             update_data[f'business_knowledge.{field}'] = val
+    if knowledge.payment_methods is not None:
+        update_data['payment_methods'] = knowledge.payment_methods
     if update_data:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_data})
     return {"status": "success", "message": "Business knowledge updated"}
