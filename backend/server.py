@@ -6756,304 +6756,312 @@ async def evolution_webhook(request: Request):
                                 "7\ufe0f\u20e3": 7, "8\ufe0f\u20e3": 8, "9\ufe0f\u20e3": 9}
                     _reply_num = _num_map.get(_body_stripped)
                     if _reply_num is not None:
-                        _pending_cat = await db.pending_catalogs.find_one({
-                            "customer_id": customer_id, "user_id": user["_id"]
+                        # Check if customer has pending order list — if so, skip catalog handler and let OrderAgent handle it
+                        _conv_state_check = await db.conversation_states.find_one({
+                            "customer_id": str(customer_id), "user_id": user["_id"]
                         })
-                        if _pending_cat:
-                            _ctx = _pending_cat.get("action_context", "product")
+                        if _conv_state_check and _conv_state_check.get("pending_order_list"):
+                            # Customer is selecting from order list — don't intercept, let it go to OrderAgent
+                            logging.info(f"Numbered reply {_reply_num} with pending_order_list — passing to OrderAgent")
+                        else:
+                            _pending_cat = await db.pending_catalogs.find_one({
+                                "customer_id": customer_id, "user_id": user["_id"]
+                            })
+                            if _pending_cat:
+                                _ctx = _pending_cat.get("action_context", "product")
 
-                            if _ctx == "catalog_select":
-                                _cat_products = _pending_cat.get("products", [])
-                                _biz_id_cs = user.get("business_id", user["_id"])
-                                # Check if customer wants next page (reply=9 and has_more=True)
-                                if _reply_num == 9 and _pending_cat.get("has_more"):
-                                    _all_ids = _pending_cat.get("all_product_ids", [])
-                                    _cur_offset = _pending_cat.get("page_offset", 0)
-                                    _new_offset = _cur_offset + 8
-                                    _next_ids = _all_ids[_new_offset:_new_offset + 8]
-                                    _new_has_more = len(_all_ids) > _new_offset + 8
-                                    _page_num = (_new_offset // 8) + 1
-                                    # Fetch next page products from DB
-                                    _next_products = []
-                                    for _pid in _next_ids:
-                                        _np = await db.products.find_one({"_id": _pid, "user_id": _biz_id_cs})
-                                        if _np:
-                                            _next_products.append(_np)
-                                    if _next_products:
-                                        _currency_pg = user.get("settings", {}).get("currency", "KES")
-                                        _next_with_curr = [{"currency": _currency_pg, **_np} for _np in _next_products]
+                                if _ctx == "catalog_select":
+                                    _cat_products = _pending_cat.get("products", [])
+                                    _biz_id_cs = user.get("business_id", user["_id"])
+                                    # Check if customer wants next page (reply=9 and has_more=True)
+                                    if _reply_num == 9 and _pending_cat.get("has_more"):
+                                        _all_ids = _pending_cat.get("all_product_ids", [])
+                                        _cur_offset = _pending_cat.get("page_offset", 0)
+                                        _new_offset = _cur_offset + 8
+                                        _next_ids = _all_ids[_new_offset:_new_offset + 8]
+                                        _new_has_more = len(_all_ids) > _new_offset + 8
+                                        _page_num = (_new_offset // 8) + 1
+                                        # Fetch next page products from DB
+                                        _next_products = []
+                                        for _pid in _next_ids:
+                                            _np = await db.products.find_one({"_id": _pid, "user_id": _biz_id_cs})
+                                            if _np:
+                                                _next_products.append(_np)
+                                        if _next_products:
+                                            _currency_pg = user.get("settings", {}).get("currency", "KES")
+                                            _next_with_curr = [{"currency": _currency_pg, **_np} for _np in _next_products]
+                                            ws = get_whatsapp_service(db)
+                                            await ws.send_product_list(
+                                                user_id=user["_id"],
+                                                to_number=from_number,
+                                                title="Our Products",
+                                                products=_next_with_curr,
+                                                has_more=_new_has_more,
+                                                page_num=_page_num
+                                            )
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": {
+                                                    "products": [{"id": _np["_id"], "name": _np["name"],
+                                                                  "price": _np.get("price", 0), "index": i}
+                                                                 for i, _np in enumerate(_next_products, 1)],
+                                                    "page_offset": _new_offset,
+                                                    "has_more": _new_has_more,
+                                                    "updated_at": datetime.utcnow()
+                                                }}
+                                            )
+                                            logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
+                                            return {"status": "ok", "handled_by": "catalog_next_page"}
+                                    else:
+                                        # Customer picked a product from the numbered list — show full details
+                                        _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
+                                        if _selected_p:
+                                            _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
+                                            if _full_p:
+                                                ws = get_whatsapp_service(db)
+                                                await ws.send_product_showcase(
+                                                    user_id=user["_id"],
+                                                    to_number=from_number,
+                                                    product=_full_p,
+                                                    send_buttons=True,
+                                                )
+                                                # Switch context to product actions so next 1/2/3 = order/cart/ask
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {
+                                                        "products": [{"id": _full_p["_id"], "name": _full_p["name"],
+                                                                      "price": _full_p.get("price", 0), "index": 1}],
+                                                        "action_context": "product",
+                                                        "updated_at": datetime.utcnow()
+                                                    }}
+                                                )
+                                                logging.info(f"Catalog select #{_reply_num}: showed product {_full_p['_id']}")
+                                                return {"status": "ok", "handled_by": "catalog_select"}
+                                    # If product not found, fall through to AI
+                                    logging.warning(f"Catalog select #{_reply_num}: no product at that index")
+
+                                elif _ctx == "cart":
+                                    # 1 = checkout, 2 = continue shopping, 3 = cancel order
+                                    _num_to_action = {1: "checkout", 2: "continue", 3: "cancel_cart"}
+                                    _matched = _num_to_action.get(_reply_num)
+                                    if _matched:
+                                        button_action = _matched
+                                        button_product_id = None
+                                        logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
+
+                                elif _ctx == "duplicate_order_choice":
+                                    # 1 = create new (double), 2 = keep existing, 3 = cancel existing & create new
+                                    _dup_order_id = _pending_cat.get("duplicate_order_id")
+                                    _dup_items = _pending_cat.get("pending_cart_items", [])
+                                    _dup_total = _pending_cat.get("pending_cart_total", 0)
+                                    _biz_id_dup = user.get("business_id", user["_id"])
+                                    _currency_dup = user.get("settings", {}).get("currency", "USD")
+
+                                    if _reply_num == 1:
+                                        # Create new order (double order)
+                                        _new_order_id = str(uuid.uuid4())
+                                        _new_order_num = "ORD-" + _new_order_id.replace("-", "").upper()[:6]
+                                        _item_names_dup = ", ".join(i["product_name"] for i in _dup_items[:3])
+                                        if len(_dup_items) > 3:
+                                            _item_names_dup += f" +{len(_dup_items)-3} more"
+                                        await db.orders.insert_one({
+                                            "_id": _new_order_id,
+                                            "order_number": _new_order_num,
+                                            "user_id": _biz_id_dup,
+                                            "customer_id": customer_id,
+                                            "customer_name": customer_name,
+                                            "customer_phone": from_number,
+                                            "product": _item_names_dup,
+                                            "items": _dup_items,
+                                            "quantity": len(_dup_items),
+                                            "total_amount": _dup_total,
+                                            "total": _dup_total,
+                                            "payment_status": "Unpaid",
+                                            "delivery_status": "Processing",
+                                            "status": "pending",
+                                            "created_at": datetime.utcnow(),
+                                            "source": "cart_checkout_duplicate"
+                                        })
+                                        # Clear cart
+                                        _cart_dup = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                        if _cart_dup:
+                                            await db.carts.update_one({"_id": _cart_dup["_id"]}, {"$set": {"status": "completed"}})
                                         ws = get_whatsapp_service(db)
-                                        await ws.send_product_list(
+                                        await ws.send_message(
                                             user_id=user["_id"],
                                             to_number=from_number,
-                                            title="Our Products",
-                                            products=_next_with_curr,
-                                            has_more=_new_has_more,
-                                            page_num=_page_num
+                                            message=f"✅ New order *#{_new_order_num}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nYou now have 2 orders for the same items. Payment details will be sent shortly. 📲",
+                                            customer_name=customer_name,
+                                            send_context="order_confirm"
+                                        )
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id, "updated_at": datetime.utcnow()}}
+                                        )
+                                        logging.info(f"Duplicate order created: {_new_order_num}")
+                                        return {"status": "ok", "handled_by": "duplicate_order_create_new"}
+
+                                    elif _reply_num == 2:
+                                        # Keep existing order, clear cart
+                                        _cart_dup2 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                        if _cart_dup2:
+                                            await db.carts.update_one({"_id": _cart_dup2["_id"]}, {"$set": {"status": "cancelled"}})
+                                        _existing = await db.orders.find_one({"_id": _dup_order_id})
+                                        _existing_num = (_existing or {}).get("order_number", "")
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            message=f"👍 Got it! Your existing order *#{_existing_num}* is still active.\n\nCart has been cleared. Payment details were sent earlier. 😊",
+                                            customer_name=customer_name,
+                                            send_context="order_confirm"
+                                        )
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                        )
+                                        logging.info(f"Duplicate order: kept existing {_existing_num}")
+                                        return {"status": "ok", "handled_by": "duplicate_order_keep_existing"}
+
+                                    elif _reply_num == 3:
+                                        # Cancel existing, create new
+                                        await db.orders.update_one(
+                                            {"_id": _dup_order_id},
+                                            {"$set": {"status": "cancelled", "cancelled_at": datetime.utcnow(), "cancelled_by": "customer"}}
+                                        )
+                                        _new_order_id3 = str(uuid.uuid4())
+                                        _new_order_num3 = "ORD-" + _new_order_id3.replace("-", "").upper()[:6]
+                                        _item_names_dup3 = ", ".join(i["product_name"] for i in _dup_items[:3])
+                                        if len(_dup_items) > 3:
+                                            _item_names_dup3 += f" +{len(_dup_items)-3} more"
+                                        await db.orders.insert_one({
+                                            "_id": _new_order_id3,
+                                            "order_number": _new_order_num3,
+                                            "user_id": _biz_id_dup,
+                                            "customer_id": customer_id,
+                                            "customer_name": customer_name,
+                                            "customer_phone": from_number,
+                                            "product": _item_names_dup3,
+                                            "items": _dup_items,
+                                            "quantity": len(_dup_items),
+                                            "total_amount": _dup_total,
+                                            "total": _dup_total,
+                                            "payment_status": "Unpaid",
+                                            "delivery_status": "Processing",
+                                            "status": "pending",
+                                            "created_at": datetime.utcnow(),
+                                            "source": "cart_checkout_replaced"
+                                        })
+                                        # Clear cart
+                                        _cart_dup3 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                        if _cart_dup3:
+                                            await db.carts.update_one({"_id": _cart_dup3["_id"]}, {"$set": {"status": "completed"}})
+                                        _old_order = await db.orders.find_one({"_id": _dup_order_id})
+                                        _old_num = (_old_order or {}).get("order_number", "")
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            message=f"✅ Order *#{_old_num}* cancelled.\n\n🆕 New order *#{_new_order_num3}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nPayment details will be sent shortly. 📲",
+                                            customer_name=customer_name,
+                                            send_context="order_confirm"
+                                        )
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id3, "updated_at": datetime.utcnow()}}
+                                        )
+                                        logging.info(f"Duplicate order: cancelled {_old_num}, created {_new_order_num3}")
+                                        return {"status": "ok", "handled_by": "duplicate_order_replace"}
+
+                                elif _ctx == "booking_service_select":
+                                    # Customer picked a service number from booking menu
+                                    _bk_services = _pending_cat.get("products", [])
+                                    _bk_sel = next((s for s in _bk_services if s.get("index") == _reply_num), None)
+                                    if _bk_sel:
+                                        _bk_currency = user.get("settings", {}).get("currency", "USD")
+                                        _bk_price_str = f"{_bk_currency} {_bk_sel.get('price', 0):,.0f}" if _bk_sel.get("price") else "Contact for price"
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {
+                                                "action_context": "booking_date_input",
+                                                "booking_service_id": _bk_sel["id"],
+                                                "booking_service_name": _bk_sel["name"],
+                                                "booking_service_price": _bk_sel.get("price", 0),
+                                                "updated_at": datetime.utcnow()
+                                            }}
+                                        )
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message=(
+                                                f"Great choice! You selected *{_bk_sel['name']}* ({_bk_price_str}).\n\n"
+                                                f"📅 *What date would you like?*\n"
+                                                f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_"
+                                            ),
+                                            customer_name=customer_name, send_context="booking_flow"
+                                        )
+                                        logging.info(f"[Booking] Service selected: {_bk_sel['name']} for customer {customer_id}")
+                                        return {"status": "ok", "handled_by": "booking_service_select"}
+
+                                elif _ctx == "booking_time_select":
+                                    # Customer picked a time slot number
+                                    _bk_slots = _pending_cat.get("time_slots", [])
+                                    _bk_slot = next((s for s in _bk_slots if s.get("index") == _reply_num), None)
+                                    if _bk_slot:
+                                        _bk_currency = user.get("settings", {}).get("currency", "USD")
+                                        _bk_price = _pending_cat.get("booking_service_price", 0)
+                                        _bk_price_str = f"{_bk_currency} {_bk_price:,.0f}" if _bk_price else ""
+                                        _bk_summary = (
+                                            f"✅ *Booking Summary*\n\n"
+                                            f"📋 Service: *{_pending_cat.get('booking_service_name', '')}*\n"
+                                            f"📅 Date: *{_pending_cat.get('booking_date', '')}*\n"
+                                            f"🕐 Time: *{_bk_slot['time']}*\n"
+                                            + (f"💰 Price: *{_bk_price_str}*\n" if _bk_price_str else "")
+                                            + f"\nReply *YES* to confirm or *NO* to cancel"
                                         )
                                         await db.pending_catalogs.update_one(
                                             {"customer_id": customer_id, "user_id": user["_id"]},
                                             {"$set": {
-                                                "products": [{"id": _np["_id"], "name": _np["name"],
-                                                              "price": _np.get("price", 0), "index": i}
-                                                             for i, _np in enumerate(_next_products, 1)],
-                                                "page_offset": _new_offset,
-                                                "has_more": _new_has_more,
+                                                "action_context": "booking_confirm",
+                                                "booking_time": _bk_slot["time"],
                                                 "updated_at": datetime.utcnow()
                                             }}
                                         )
-                                        logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
-                                        return {"status": "ok", "handled_by": "catalog_next_page"}
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message=_bk_summary, customer_name=customer_name, send_context="booking_flow"
+                                        )
+                                        logging.info(f"[Booking] Time selected: {_bk_slot['time']} for customer {customer_id}")
+                                        return {"status": "ok", "handled_by": "booking_time_select"}
+
                                 else:
-                                    # Customer picked a product from the numbered list — show full details
-                                    _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
-                                    if _selected_p:
-                                        _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
-                                        if _full_p:
-                                            ws = get_whatsapp_service(db)
-                                            await ws.send_product_showcase(
-                                                user_id=user["_id"],
-                                                to_number=from_number,
-                                                product=_full_p,
-                                                send_buttons=True,
-                                            )
-                                            # Switch context to product actions so next 1/2/3 = order/cart/ask
-                                            await db.pending_catalogs.update_one(
-                                                {"customer_id": customer_id, "user_id": user["_id"]},
-                                                {"$set": {
-                                                    "products": [{"id": _full_p["_id"], "name": _full_p["name"],
-                                                                  "price": _full_p.get("price", 0), "index": 1}],
-                                                    "action_context": "product",
-                                                    "updated_at": datetime.utcnow()
-                                                }}
-                                            )
-                                            logging.info(f"Catalog select #{_reply_num}: showed product {_full_p['_id']}")
-                                            return {"status": "ok", "handled_by": "catalog_select"}
-                                # If product not found, fall through to AI
-                                logging.warning(f"Catalog select #{_reply_num}: no product at that index")
+                                    # product context — look up user's custom action buttons
+                                    _default_actions = [
+                                        {"label": "Order Now",             "action_type": "order",       "index": 1},
+                                        {"label": "Add to Cart",           "action_type": "add_to_cart", "index": 2},
+                                        {"label": "See Similar Products",  "action_type": "similar",     "index": 3},
+                                    ]
+                                    _user_actions_doc = await db.users.find_one(
+                                        {"_id": user["_id"]}, {"settings.product_actions": 1}
+                                    )
+                                    _user_actions = (
+                                        (_user_actions_doc or {}).get("settings", {}).get("product_actions")
+                                        or _default_actions
+                                    )
+                                    # Add "Back to Catalog" as last option (matches whatsapp_service.py)
+                                    _back_index = len(_user_actions) + 1
+                                    _user_actions_with_back = _user_actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
 
-                            elif _ctx == "cart":
-                                # 1 = checkout, 2 = continue shopping, 3 = cancel order
-                                _num_to_action = {1: "checkout", 2: "continue", 3: "cancel_cart"}
-                                _matched = _num_to_action.get(_reply_num)
-                                if _matched:
-                                    button_action = _matched
-                                    button_product_id = None
-                                    logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
-
-                            elif _ctx == "duplicate_order_choice":
-                                # 1 = create new (double), 2 = keep existing, 3 = cancel existing & create new
-                                _dup_order_id = _pending_cat.get("duplicate_order_id")
-                                _dup_items = _pending_cat.get("pending_cart_items", [])
-                                _dup_total = _pending_cat.get("pending_cart_total", 0)
-                                _biz_id_dup = user.get("business_id", user["_id"])
-                                _currency_dup = user.get("settings", {}).get("currency", "USD")
-                                
-                                if _reply_num == 1:
-                                    # Create new order (double order)
-                                    _new_order_id = str(uuid.uuid4())
-                                    _new_order_num = "ORD-" + _new_order_id.replace("-", "").upper()[:6]
-                                    _item_names_dup = ", ".join(i["product_name"] for i in _dup_items[:3])
-                                    if len(_dup_items) > 3:
-                                        _item_names_dup += f" +{len(_dup_items)-3} more"
-                                    await db.orders.insert_one({
-                                        "_id": _new_order_id,
-                                        "order_number": _new_order_num,
-                                        "user_id": _biz_id_dup,
-                                        "customer_id": customer_id,
-                                        "customer_name": customer_name,
-                                        "customer_phone": from_number,
-                                        "product": _item_names_dup,
-                                        "items": _dup_items,
-                                        "quantity": len(_dup_items),
-                                        "total_amount": _dup_total,
-                                        "total": _dup_total,
-                                        "payment_status": "Unpaid",
-                                        "delivery_status": "Processing",
-                                        "status": "pending",
-                                        "created_at": datetime.utcnow(),
-                                        "source": "cart_checkout_duplicate"
-                                    })
-                                    # Clear cart
-                                    _cart_dup = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
-                                    if _cart_dup:
-                                        await db.carts.update_one({"_id": _cart_dup["_id"]}, {"$set": {"status": "completed"}})
-                                    ws = get_whatsapp_service(db)
-                                    await ws.send_message(
-                                        user_id=user["_id"],
-                                        to_number=from_number,
-                                        message=f"✅ New order *#{_new_order_num}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nYou now have 2 orders for the same items. Payment details will be sent shortly. 📲",
-                                        customer_name=customer_name,
-                                        send_context="order_confirm"
+                                    _chosen = next(
+                                        (a for a in _user_actions_with_back if a.get("index") == _reply_num), None
                                     )
-                                    await db.pending_catalogs.update_one(
-                                        {"customer_id": customer_id, "user_id": user["_id"]},
-                                        {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id, "updated_at": datetime.utcnow()}}
-                                    )
-                                    logging.info(f"Duplicate order created: {_new_order_num}")
-                                    return {"status": "ok", "handled_by": "duplicate_order_create_new"}
-                                
-                                elif _reply_num == 2:
-                                    # Keep existing order, clear cart
-                                    _cart_dup2 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
-                                    if _cart_dup2:
-                                        await db.carts.update_one({"_id": _cart_dup2["_id"]}, {"$set": {"status": "cancelled"}})
-                                    _existing = await db.orders.find_one({"_id": _dup_order_id})
-                                    _existing_num = (_existing or {}).get("order_number", "")
-                                    ws = get_whatsapp_service(db)
-                                    await ws.send_message(
-                                        user_id=user["_id"],
-                                        to_number=from_number,
-                                        message=f"👍 Got it! Your existing order *#{_existing_num}* is still active.\n\nCart has been cleared. Payment details were sent earlier. 😊",
-                                        customer_name=customer_name,
-                                        send_context="order_confirm"
-                                    )
-                                    await db.pending_catalogs.update_one(
-                                        {"customer_id": customer_id, "user_id": user["_id"]},
-                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
-                                    )
-                                    logging.info(f"Duplicate order: kept existing {_existing_num}")
-                                    return {"status": "ok", "handled_by": "duplicate_order_keep_existing"}
-                                
-                                elif _reply_num == 3:
-                                    # Cancel existing, create new
-                                    await db.orders.update_one(
-                                        {"_id": _dup_order_id},
-                                        {"$set": {"status": "cancelled", "cancelled_at": datetime.utcnow(), "cancelled_by": "customer"}}
-                                    )
-                                    _new_order_id3 = str(uuid.uuid4())
-                                    _new_order_num3 = "ORD-" + _new_order_id3.replace("-", "").upper()[:6]
-                                    _item_names_dup3 = ", ".join(i["product_name"] for i in _dup_items[:3])
-                                    if len(_dup_items) > 3:
-                                        _item_names_dup3 += f" +{len(_dup_items)-3} more"
-                                    await db.orders.insert_one({
-                                        "_id": _new_order_id3,
-                                        "order_number": _new_order_num3,
-                                        "user_id": _biz_id_dup,
-                                        "customer_id": customer_id,
-                                        "customer_name": customer_name,
-                                        "customer_phone": from_number,
-                                        "product": _item_names_dup3,
-                                        "items": _dup_items,
-                                        "quantity": len(_dup_items),
-                                        "total_amount": _dup_total,
-                                        "total": _dup_total,
-                                        "payment_status": "Unpaid",
-                                        "delivery_status": "Processing",
-                                        "status": "pending",
-                                        "created_at": datetime.utcnow(),
-                                        "source": "cart_checkout_replaced"
-                                    })
-                                    # Clear cart
-                                    _cart_dup3 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
-                                    if _cart_dup3:
-                                        await db.carts.update_one({"_id": _cart_dup3["_id"]}, {"$set": {"status": "completed"}})
-                                    _old_order = await db.orders.find_one({"_id": _dup_order_id})
-                                    _old_num = (_old_order or {}).get("order_number", "")
-                                    ws = get_whatsapp_service(db)
-                                    await ws.send_message(
-                                        user_id=user["_id"],
-                                        to_number=from_number,
-                                        message=f"✅ Order *#{_old_num}* cancelled.\n\n🆕 New order *#{_new_order_num3}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nPayment details will be sent shortly. 📲",
-                                        customer_name=customer_name,
-                                        send_context="order_confirm"
-                                    )
-                                    await db.pending_catalogs.update_one(
-                                        {"customer_id": customer_id, "user_id": user["_id"]},
-                                        {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id3, "updated_at": datetime.utcnow()}}
-                                    )
-                                    logging.info(f"Duplicate order: cancelled {_old_num}, created {_new_order_num3}")
-                                    return {"status": "ok", "handled_by": "duplicate_order_replace"}
-
-                            elif _ctx == "booking_service_select":
-                                # Customer picked a service number from booking menu
-                                _bk_services = _pending_cat.get("products", [])
-                                _bk_sel = next((s for s in _bk_services if s.get("index") == _reply_num), None)
-                                if _bk_sel:
-                                    _bk_currency = user.get("settings", {}).get("currency", "USD")
-                                    _bk_price_str = f"{_bk_currency} {_bk_sel.get('price', 0):,.0f}" if _bk_sel.get("price") else "Contact for price"
-                                    await db.pending_catalogs.update_one(
-                                        {"customer_id": customer_id, "user_id": user["_id"]},
-                                        {"$set": {
-                                            "action_context": "booking_date_input",
-                                            "booking_service_id": _bk_sel["id"],
-                                            "booking_service_name": _bk_sel["name"],
-                                            "booking_service_price": _bk_sel.get("price", 0),
-                                            "updated_at": datetime.utcnow()
-                                        }}
-                                    )
-                                    ws = get_whatsapp_service(db)
-                                    await ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=(
-                                            f"Great choice! You selected *{_bk_sel['name']}* ({_bk_price_str}).\n\n"
-                                            f"📅 *What date would you like?*\n"
-                                            f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_"
-                                        ),
-                                        customer_name=customer_name, send_context="booking_flow"
-                                    )
-                                    logging.info(f"[Booking] Service selected: {_bk_sel['name']} for customer {customer_id}")
-                                    return {"status": "ok", "handled_by": "booking_service_select"}
-
-                            elif _ctx == "booking_time_select":
-                                # Customer picked a time slot number
-                                _bk_slots = _pending_cat.get("time_slots", [])
-                                _bk_slot = next((s for s in _bk_slots if s.get("index") == _reply_num), None)
-                                if _bk_slot:
-                                    _bk_currency = user.get("settings", {}).get("currency", "USD")
-                                    _bk_price = _pending_cat.get("booking_service_price", 0)
-                                    _bk_price_str = f"{_bk_currency} {_bk_price:,.0f}" if _bk_price else ""
-                                    _bk_summary = (
-                                        f"✅ *Booking Summary*\n\n"
-                                        f"📋 Service: *{_pending_cat.get('booking_service_name', '')}*\n"
-                                        f"📅 Date: *{_pending_cat.get('booking_date', '')}*\n"
-                                        f"🕐 Time: *{_bk_slot['time']}*\n"
-                                        + (f"💰 Price: *{_bk_price_str}*\n" if _bk_price_str else "")
-                                        + f"\nReply *YES* to confirm or *NO* to cancel"
-                                    )
-                                    await db.pending_catalogs.update_one(
-                                        {"customer_id": customer_id, "user_id": user["_id"]},
-                                        {"$set": {
-                                            "action_context": "booking_confirm",
-                                            "booking_time": _bk_slot["time"],
-                                            "updated_at": datetime.utcnow()
-                                        }}
-                                    )
-                                    ws = get_whatsapp_service(db)
-                                    await ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_bk_summary, customer_name=customer_name, send_context="booking_flow"
-                                    )
-                                    logging.info(f"[Booking] Time selected: {_bk_slot['time']} for customer {customer_id}")
-                                    return {"status": "ok", "handled_by": "booking_time_select"}
-
-                            else:
-                                # product context — look up user's custom action buttons
-                                _default_actions = [
-                                    {"label": "Order Now",             "action_type": "order",       "index": 1},
-                                    {"label": "Add to Cart",           "action_type": "add_to_cart", "index": 2},
-                                    {"label": "See Similar Products",  "action_type": "similar",     "index": 3},
-                                ]
-                                _user_actions_doc = await db.users.find_one(
-                                    {"_id": user["_id"]}, {"settings.product_actions": 1}
-                                )
-                                _user_actions = (
-                                    (_user_actions_doc or {}).get("settings", {}).get("product_actions")
-                                    or _default_actions
-                                )
-                                # Add "Back to Catalog" as last option (matches whatsapp_service.py)
-                                _back_index = len(_user_actions) + 1
-                                _user_actions_with_back = _user_actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
-                                
-                                _chosen = next(
-                                    (a for a in _user_actions_with_back if a.get("index") == _reply_num), None
-                                )
-                                if _chosen and _pending_cat.get("products"):
-                                    button_action = _chosen["action_type"]
-                                    button_product_id = _pending_cat["products"][0].get("id")
-                                    # Store the full action for prompt lookup in the handler
-                                    _chosen_action_meta = _chosen
-                                    logging.info(f"Numbered product reply: {_reply_num} → {button_action}, product={button_product_id}")
+                                    if _chosen and _pending_cat.get("products"):
+                                        button_action = _chosen["action_type"]
+                                        button_product_id = _pending_cat["products"][0].get("id")
+                                        # Store the full action for prompt lookup in the handler
+                                        _chosen_action_meta = _chosen
+                                        logging.info(f"Numbered product reply: {_reply_num} → {button_action}, product={button_product_id}")
 
                 # TEXT OPTION HANDLER — match full option text (legacy poll / typed responses)
                 if not button_action and not from_me and body:
