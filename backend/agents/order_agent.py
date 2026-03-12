@@ -101,6 +101,19 @@ class OrderAgent:
                 "escalate": False,
             }
 
+        # ── Handle 1=Cancel / 2=Update reply for a focused order ────────────
+        pending_action_order_id = conv_state.get("pending_order_action")
+        if pending_action_order_id:
+            pick_match = PICK_NUMBER_RE.match(message.strip())
+            if pick_match:
+                choice = int(pick_match.group(1))
+                focused_order = await self.db.orders.find_one({"_id": pending_action_order_id})
+                if focused_order:
+                    if choice == 1:
+                        return await self._handle_cancel(focused_order, customer_name, currency, language, user_id, customer_id)
+                    elif choice == 2:
+                        return await self._handle_update(focused_order, customer_name, currency, language)
+
         # ── Handle customer picking from a previously sent order list ──────────
         pending_order_ids = conv_state.get("pending_order_list")
         if pending_order_ids:
@@ -317,20 +330,22 @@ class OrderAgent:
         reply = f"Here are your order details:\n\n{block}"
         if hint:
             reply += f"\n\n{hint}"
-        # Clear any pending order list since we're now focused on a single order
-        await save_state(self.db, user_id, customer_id, {"pending_order_list": None})
+        # Save order ID for 1=Cancel / 2=Update reply, clear any pending order list
+        status = (order.get("status") or "").lower()
+        payment = (order.get("payment_status") or "").lower()
+        action_order_id = str(order["_id"]) if (status in CANCELLABLE_STATUSES or payment == "unpaid") else None
+        await save_state(self.db, user_id, customer_id, {"pending_order_list": None, "pending_order_action": action_order_id})
         return {"handled": True, "messages": [{"text": reply}], "escalate": False}
 
     def _action_hint(self, order: dict) -> str:
         """Return a short action prompt based on order status."""
         status = (order.get("status") or "").lower()
         payment = (order.get("payment_status") or "").lower()
-        order_num = order.get("order_number") or ("ORD-" + str(order.get("_id", ""))[:6].upper())
         if status in CANCELLABLE_STATUSES or payment == "unpaid":
             return (
                 f"_Need to make changes?_\n"
-                f"• Reply *cancel {order_num}* to cancel this order\n"
-                f"• Reply *update {order_num}* to change details"
+                f"1️⃣ Cancel Order\n"
+                f"2️⃣ Update Order"
             )
         return "Let me know if you need anything else! 😊"
 

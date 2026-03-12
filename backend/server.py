@@ -6760,9 +6760,12 @@ async def evolution_webhook(request: Request):
                         _conv_state_check = await db.conversation_states.find_one({
                             "customer_id": str(customer_id), "user_id": user["_id"]
                         })
-                        if _conv_state_check and _conv_state_check.get("pending_order_list"):
-                            # Customer is selecting from order list — don't intercept, let it go to OrderAgent
-                            logging.info(f"Numbered reply {_reply_num} with pending_order_list — passing to OrderAgent")
+                        if _conv_state_check and (
+                            _conv_state_check.get("pending_order_list") or
+                            _conv_state_check.get("pending_order_action")
+                        ):
+                            # Customer is interacting with an order — don't intercept, let it go to OrderAgent
+                            logging.info(f"Numbered reply {_reply_num} with pending order state — passing to OrderAgent")
                         else:
                             _pending_cat = await db.pending_catalogs.find_one({
                                 "customer_id": customer_id, "user_id": user["_id"]
