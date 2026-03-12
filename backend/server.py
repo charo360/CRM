@@ -8381,6 +8381,19 @@ async def evolution_webhook(request: Request):
                             send_context="auto_reply"
                         )
 
+                    # Send push notification to owner if agent requested it (e.g. order cancellation)
+                    _owner_notif = agent_result.get("owner_notification")
+                    if _owner_notif:
+                        try:
+                            await send_push_notification(
+                                user_id=user.get("business_id", user["_id"]),
+                                title=_owner_notif.get("title", "Order Update"),
+                                body=_owner_notif.get("body", ""),
+                            )
+                            logging.info(f"[Agent] Owner notified: {_owner_notif.get('title')}")
+                        except Exception as _notif_err:
+                            logging.error(f"[Agent] Owner notification failed: {_notif_err}")
+
                     import time as _t_stamp
                     _last_auto_reply_sent[f"{user['_id']}:{from_number}"] = _t_stamp.time()
                     return {"status": "ok", "handled_by": "agent"}

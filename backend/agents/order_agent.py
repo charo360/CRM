@@ -393,8 +393,9 @@ class OrderAgent:
                 "messages": [{"text": "Something went wrong cancelling your order. Our team will assist you shortly."}],
             }
 
-        await save_state(self.db, user_id, customer_id, {"pending_order_list": None})
+        await save_state(self.db, user_id, customer_id, {"pending_order_list": None, "pending_order_action": None})
         product = order.get("product_name") or order.get("product") or "your item"
+        total = order.get("total_amount") or order.get("total") or 0
         return {
             "handled": True,
             "messages": [{
@@ -404,6 +405,10 @@ class OrderAgent:
                 )
             }],
             "escalate": False,
+            "owner_notification": {
+                "title": f"❌ Order #{order_num} Cancelled",
+                "body": f"{customer_name} cancelled {product} — {currency} {total:,.0f}",
+            },
         }
 
     async def _handle_update(

@@ -419,7 +419,7 @@ export default function SalesScreen() {
     // Order analytics — filtered by date
     const totalOrders = filteredOrders.length;
     const pendingPayment = filteredOrders
-      .filter(o => o.payment_status === 'Pending' || o.payment_status === 'Partial')
+      .filter(o => ['Pending', 'Unpaid', 'Partial', 'unpaid', 'pending', 'partial'].includes(o.payment_status))
       .reduce((sum, o) => sum + o.total_amount, 0);
     const ordersToDeliver = filteredOrders.filter(
       o => o.delivery_status === 'Processing' || o.delivery_status === 'Shipped'
