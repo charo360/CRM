@@ -33,7 +33,7 @@ export default function TabsLayout() {
   const [dailyPulseEnabled, setDailyPulseEnabled] = useState(false);
 
   const { user } = useAuth();
-  const { config } = useBusiness();
+  const { config, isRetailBusiness } = useBusiness();
   const notificationListener = useRef<any>();
   const responseListener = useRef<any>();
 
@@ -179,12 +179,12 @@ export default function TabsLayout() {
                     onPress: () => router.push('../team-analytics' as any),
                     color: '#4A90E2'
                   }] : []),
-                  {
-                    icon: 'megaphone-outline',
+                  ...(!isRetailBusiness ? [{
+                    icon: 'megaphone-outline' as const,
                     label: 'Broadcast',
                     onPress: () => router.push('/(tabs)/broadcast' as any),
                     color: '#F59E0B'
-                  },
+                  }] : []),
                   {
                     icon: 'cube-outline',
                     label: `${config.catalogLabel} Catalog`,
@@ -262,7 +262,10 @@ export default function TabsLayout() {
           name="broadcast"
           options={{
             title: 'Broadcast',
-            href: null,
+            href: isRetailBusiness ? undefined : null,
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="megaphone" size={size} color={color} />
+            ),
           }}
         />
         <Tabs.Screen
