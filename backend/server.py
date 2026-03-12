@@ -8269,11 +8269,13 @@ async def evolution_webhook(request: Request):
 
                                 if notify_phone and notify_phone != cust_phone:
                                     preview = msg_body[:120] + ("..." if len(msg_body) > 120 else "")
+                                    reason_line = f"📋 *Reason:* {reason}\n\n" if reason else ""
                                     notification_msg = (
                                         f"🔔 *Customer needs your help!*\n\n"
                                         f"👤 *{cust_name}* ({cust_phone})\n"
-                                        f"💬 _{preview}_\n\n"
-                                        f"The AI couldn't handle this — please reply to them directly."
+                                        f"💬 *Last message:* _{preview}_\n\n"
+                                        f"{reason_line}"
+                                        f"Please reply to them directly on WhatsApp."
                                     )
                                     await ws_notif.send_message(
                                         user_id=owner_user["_id"],
@@ -8285,10 +8287,11 @@ async def evolution_webhook(request: Request):
 
                                 # Also send Expo push notification to owner's device
                                 try:
+                                    _push_body = reason if reason else msg_body[:100]
                                     await send_push_notification(
                                         user_id=owner_user["_id"],
                                         title=f"🔔 {cust_name} needs your help",
-                                        body=f"{msg_body[:100]}",
+                                        body=_push_body,
                                         data={"type": "escalation", "customer_id": cust_id, "customer_name": cust_name}
                                     )
                                 except Exception:
