@@ -101,8 +101,25 @@ class OrderAgent:
                 "escalate": False,
             }
 
-        # ── Handle 1=Cancel / 2=Update reply for a focused order ────────────
+        # ── Handle update sub-flow steps (add/remove/change qty) ──────────
+        pending_update_step = conv_state.get("pending_update_step")
         pending_action_order_id = conv_state.get("pending_order_action")
+        if pending_update_step and pending_action_order_id:
+            order_being_updated = await self.db.orders.find_one({"_id": pending_action_order_id})
+            if order_being_updated:
+                return await self._handle_update_step(
+                    step=pending_update_step,
+                    order=order_being_updated,
+                    message=message,
+                    customer_name=customer_name,
+                    currency=currency,
+                    language=language,
+                    user_id=user_id,
+                    customer_id=customer_id,
+                    conv_state=conv_state,
+                )
+
+        # ── Handle 1=Cancel / 2=Update reply for a focused order ────────────
         if pending_action_order_id:
             pick_match = PICK_NUMBER_RE.match(message.strip())
             if pick_match:
@@ -112,7 +129,7 @@ class OrderAgent:
                     if choice == 1:
                         return await self._handle_cancel(focused_order, customer_name, currency, language, user_id, customer_id)
                     elif choice == 2:
-                        return await self._handle_update(focused_order, customer_name, currency, language)
+                        return await self._handle_update(focused_order, customer_name, currency, language, user_id, customer_id)
 
         # ── Handle customer picking from a previously sent order list ──────────
         pending_order_ids = conv_state.get("pending_order_list")
@@ -139,7 +156,7 @@ class OrderAgent:
                 if CANCEL_KEYWORDS_RE.search(message):
                     return await self._handle_cancel(specific_order, customer_name, currency, language, user_id, customer_id)
                 if UPDATE_KEYWORDS_RE.search(message):
-                    return await self._handle_update(specific_order, customer_name, currency, language)
+                    return await self._handle_update(specific_order, customer_name, currency, language, user_id, customer_id)
                 # Otherwise just show the order details with action options
                 return await self._interact_with_order(
                     specific_order, customer_name, currency, language, user_id, customer_id
@@ -181,7 +198,7 @@ class OrderAgent:
                 if is_cancel:
                     return await self._handle_cancel(actionable[0], customer_name, currency, language, user_id, customer_id)
                 else:
-                    return await self._handle_update(actionable[0], customer_name, currency, language)
+                    return await self._handle_update(actionable[0], customer_name, currency, language, user_id, customer_id)
             elif actionable:
                 return await self._send_order_list(
                     actionable, customer_name, language, user_id, customer_id,
@@ -417,22 +434,239 @@ class OrderAgent:
         customer_name: str,
         currency: str,
         language: str,
+        user_id: str,
+        customer_id: str,
     ) -> Dict[str, Any]:
-        """Order update always escalates — too complex to automate. Show clear reason."""
+        """Show self-service update menu: add item, remove item, change quantity."""
+        from agents.conversation_state import save_state
         order_num = order.get("order_number") or ("ORD-" + str(order.get("_id", ""))[:6].upper())
-        status = (order.get("status") or "pending").capitalize()
+        items = order.get("items", [])
+        item_preview = ""
+        if items:
+            item_preview = "\n".join(
+                f"  • {it.get('product_name','Item')} × {it.get('quantity',1)}"
+                for it in items
+            ) + "\n\n"
+        await save_state(self.db, user_id, customer_id, {
+            "pending_update_step": "update_menu",
+            "pending_order_action": str(order["_id"]),
+        })
         return {
             "handled": True,
-            "escalate": True,
-            "escalate_reason": f"Customer wants to update order {order_num} (status: {status}) — needs human action",
-            "messages": [{
-                "text": (
-                    f"I've flagged order *#{order_num}* for our team to update. "
-                    f"Please let them know what you'd like to change (address, item, quantity, etc.) "
-                    f"and they'll sort it out for you right away! 🙏"
-                )
-            }],
+            "escalate": False,
+            "messages": [{"text": (
+                f"What would you like to change for order *#{order_num}*?\n\n"
+                f"{item_preview}"
+                f"1️⃣ Add Item\n"
+                f"2️⃣ Remove Item\n"
+                f"3️⃣ Change Quantity\n\n"
+                f"Reply with *1*, *2*, or *3*."
+            )}],
         }
+
+    async def _handle_update_step(
+        self,
+        step: str,
+        order: dict,
+        message: str,
+        customer_name: str,
+        currency: str,
+        language: str,
+        user_id: str,
+        customer_id: str,
+        conv_state: dict,
+    ) -> Dict[str, Any]:
+        """Handle each step of the self-service order update conversation."""
+        import re as _re
+        from agents.conversation_state import save_state
+        order_num = order.get("order_number") or ("ORD-" + str(order.get("_id", ""))[:6].upper())
+        items = list(order.get("items", []))
+
+        def _clear():
+            return save_state(self.db, user_id, customer_id, {
+                "pending_update_step": None,
+                "pending_order_action": None,
+                "pending_update_item_idx": None,
+            })
+
+        if step == "update_menu":
+            pick = PICK_NUMBER_RE.match(message.strip())
+            if pick:
+                choice = int(pick.group(1))
+                if choice == 1:
+                    await save_state(self.db, user_id, customer_id, {"pending_update_step": "add_item_await"})
+                    return {"handled": True, "escalate": False, "messages": [{"text": (
+                        f"Please type the *item name and quantity* to add to order *#{order_num}*.\n"
+                        f"Example: _Blue Shirt 2_"
+                    )}]}
+                elif choice == 2:
+                    if not items:
+                        await _clear()
+                        return {"handled": True, "escalate": False, "messages": [{"text": (
+                            "This order has no individual items to remove. "
+                            "Please contact us for help."
+                        )}]}
+                    lines = [f"Which item would you like to *remove* from order *#{order_num}*?\n"]
+                    for i, it in enumerate(items, 1):
+                        lines.append(f"*{i}.* {it.get('product_name','Item')} × {it.get('quantity',1)} — {currency} {it.get('price',0):,.0f}")
+                    lines.append("\nReply with the item number (e.g. *1*).")
+                    await save_state(self.db, user_id, customer_id, {"pending_update_step": "remove_item_await"})
+                    return {"handled": True, "escalate": False, "messages": [{"text": "\n".join(lines)}]}
+                elif choice == 3:
+                    if not items:
+                        await _clear()
+                        return {"handled": True, "escalate": False, "messages": [{"text": (
+                            "This order has no individual items to change. "
+                            "Please contact us for help."
+                        )}]}
+                    lines = [f"Which item's quantity would you like to change?\n"]
+                    for i, it in enumerate(items, 1):
+                        lines.append(f"*{i}.* {it.get('product_name','Item')} × {it.get('quantity',1)}")
+                    lines.append("\nReply with the item number (e.g. *1*).")
+                    await save_state(self.db, user_id, customer_id, {"pending_update_step": "change_qty_item"})
+                    return {"handled": True, "escalate": False, "messages": [{"text": "\n".join(lines)}]}
+            return {"handled": True, "escalate": False, "messages": [{"text": (
+                "Please reply with *1* (Add Item), *2* (Remove Item), or *3* (Change Quantity)."
+            )}]}
+
+        elif step == "add_item_await":
+            stripped = message.strip()
+            qty_match = _re.search(r'\b(\d+)\s*$', stripped)
+            if qty_match:
+                qty = int(qty_match.group(1))
+                item_name = stripped[:qty_match.start()].strip().rstrip(',')
+            else:
+                qty = 1
+                item_name = stripped
+            if not item_name:
+                return {"handled": True, "escalate": False, "messages": [{"text": (
+                    "Please send the item name and quantity. Example: _Blue Shirt 2_"
+                )}]}
+            unit_price = 0
+            try:
+                product_row = await self.db.products.find_one({
+                    "user_id": user_id,
+                    "name": {"$regex": f"^{_re.escape(item_name)}$", "$options": "i"}
+                })
+                if product_row:
+                    unit_price = product_row.get("price", 0)
+            except Exception:
+                pass
+            new_item = {"product_name": item_name, "quantity": qty, "price": unit_price * qty}
+            new_items = items + [new_item]
+            new_total = sum(it.get("price", 0) for it in new_items)
+            await self.db.orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {"items": new_items, "total_amount": new_total, "total": new_total}}
+            )
+            await _clear()
+            return {
+                "handled": True, "escalate": False,
+                "messages": [{"text": (
+                    f"✅ Added *{item_name} × {qty}* to order *#{order_num}*.\n\n"
+                    f"Updated total: {currency} {new_total:,.0f} 🎉"
+                )}],
+                "owner_notification": {
+                    "title": f"📦 Order #{order_num} Updated",
+                    "body": f"{customer_name} added {item_name} × {qty}",
+                },
+            }
+
+        elif step == "remove_item_await":
+            pick = PICK_NUMBER_RE.match(message.strip())
+            if pick:
+                idx = int(pick.group(1)) - 1
+                if 0 <= idx < len(items):
+                    removed = items[idx]
+                    new_items = [it for i, it in enumerate(items) if i != idx]
+                    if not new_items:
+                        return {"handled": True, "escalate": False, "messages": [{"text": (
+                            "You can't remove all items from an order. "
+                            "Reply *1* to cancel the whole order instead."
+                        )}]}
+                    new_total = sum(it.get("price", 0) for it in new_items)
+                    await self.db.orders.update_one(
+                        {"_id": order["_id"]},
+                        {"$set": {"items": new_items, "total_amount": new_total, "total": new_total}}
+                    )
+                    await _clear()
+                    removed_name = removed.get("product_name", "Item")
+                    return {
+                        "handled": True, "escalate": False,
+                        "messages": [{"text": (
+                            f"✅ Removed *{removed_name}* from order *#{order_num}*.\n\n"
+                            f"Updated total: {currency} {new_total:,.0f}"
+                        )}],
+                        "owner_notification": {
+                            "title": f"📦 Order #{order_num} Updated",
+                            "body": f"{customer_name} removed {removed_name}",
+                        },
+                    }
+            return {"handled": True, "escalate": False, "messages": [{"text": (
+                "Please reply with the item number to remove."
+            )}]}
+
+        elif step == "change_qty_item":
+            pick = PICK_NUMBER_RE.match(message.strip())
+            if pick:
+                idx = int(pick.group(1)) - 1
+                if 0 <= idx < len(items):
+                    item_name = items[idx].get("product_name", "Item")
+                    cur_qty = items[idx].get("quantity", 1)
+                    await save_state(self.db, user_id, customer_id, {
+                        "pending_update_step": "change_qty_value",
+                        "pending_update_item_idx": idx,
+                    })
+                    return {"handled": True, "escalate": False, "messages": [{"text": (
+                        f"What is the new quantity for *{item_name}*? "
+                        f"(Current: {cur_qty})\n"
+                        f"Reply with a number, e.g. *3*"
+                    )}]}
+            return {"handled": True, "escalate": False, "messages": [{"text": (
+                "Please reply with the item number."
+            )}]}
+
+        elif step == "change_qty_value":
+            item_idx = conv_state.get("pending_update_item_idx", 0)
+            qty_match = _re.match(r'^\s*(\d+)\s*$', message.strip())
+            if qty_match and items and 0 <= item_idx < len(items):
+                new_qty = int(qty_match.group(1))
+                if new_qty <= 0:
+                    return {"handled": True, "escalate": False, "messages": [{"text": (
+                        "Quantity must be at least 1. Please try again."
+                    )}]}
+                new_items = list(items)
+                old_item = dict(new_items[item_idx])
+                old_qty = max(old_item.get("quantity", 1), 1)
+                unit_price = old_item.get("price", 0) / old_qty
+                old_item["quantity"] = new_qty
+                old_item["price"] = round(unit_price * new_qty, 2)
+                new_items[item_idx] = old_item
+                new_total = sum(it.get("price", 0) for it in new_items)
+                await self.db.orders.update_one(
+                    {"_id": order["_id"]},
+                    {"$set": {"items": new_items, "total_amount": new_total, "total": new_total}}
+                )
+                await _clear()
+                item_name = old_item.get("product_name", "Item")
+                return {
+                    "handled": True, "escalate": False,
+                    "messages": [{"text": (
+                        f"✅ Changed *{item_name}* quantity to {new_qty}.\n\n"
+                        f"Updated total: {currency} {new_total:,.0f}"
+                    )}],
+                    "owner_notification": {
+                        "title": f"📦 Order #{order_num} Updated",
+                        "body": f"{customer_name} changed {item_name} qty to {new_qty}",
+                    },
+                }
+            return {"handled": True, "escalate": False, "messages": [{"text": (
+                "Please reply with the new quantity (number only, e.g. *3*)."
+            )}]}
+
+        # Unknown step — clear state
+        await _clear()
+        return {"handled": False, "messages": [], "escalate": False}
 
     async def _build_status_reply(
         self,

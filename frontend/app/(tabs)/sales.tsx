@@ -417,7 +417,9 @@ export default function SalesScreen() {
     const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
 
     // Order analytics — filtered by date
-    const totalOrders = filteredOrders.length;
+    const totalOrders = filteredOrders.filter(
+      o => !['cancelled', 'Cancelled'].includes(o.status ?? '')
+    ).length;
     const pendingPayment = filteredOrders
       .filter(o => ['Pending', 'Unpaid', 'Partial', 'unpaid', 'pending', 'partial'].includes(o.payment_status))
       .reduce((sum, o) => sum + o.total_amount, 0);

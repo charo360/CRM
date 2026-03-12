@@ -897,6 +897,7 @@ class OrderResponse(BaseModel):
     total_amount: float
     payment_status: str
     delivery_status: str
+    status: Optional[str] = None
     notes: Optional[str] = None
     due_date: Optional[str] = None
     created_at: str
@@ -3983,6 +3984,7 @@ async def get_orders(user = Depends(get_current_user)):
                 total_amount=order.get("total_amount", 0),
                 payment_status=order.get("payment_status", "unpaid"),
                 delivery_status=order.get("delivery_status", "pending"),
+                status=order.get("status", "pending"),
                 notes=order.get("notes"),
                 due_date=order.get("due_date"),
                 created_at=created_at_str
@@ -6762,7 +6764,8 @@ async def evolution_webhook(request: Request):
                         })
                         if _conv_state_check and (
                             _conv_state_check.get("pending_order_list") or
-                            _conv_state_check.get("pending_order_action")
+                            _conv_state_check.get("pending_order_action") or
+                            _conv_state_check.get("pending_update_step")
                         ):
                             # Customer is interacting with an order — don't intercept, let it go to OrderAgent
                             logging.info(f"Numbered reply {_reply_num} with pending order state — passing to OrderAgent")
