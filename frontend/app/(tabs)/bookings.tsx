@@ -339,9 +339,23 @@ export default function BookingsScreen() {
   // ── Stats ────────────────────────────────────────────────────────────────────
 
   const todayStr = formatDate(new Date());
-  const todayCount = bookings.filter(b => b.date === todayStr && !['cancelled'].includes(b.status)).length;
-  const pendingCount = bookings.filter(b => b.status === 'pending').length;
-  const confirmedCount = bookings.filter(b => b.status === 'confirmed').length;
+  const todayCount = bookings.filter(b => b.date === todayStr && b.status !== 'cancelled').length;
+
+  const _now = new Date();
+  // Week: Monday of current week
+  const _dow = _now.getDay(); // 0=Sun
+  const _mondayOffset = (_dow === 0 ? -6 : 1 - _dow);
+  const _weekStart = new Date(_now);
+  _weekStart.setDate(_now.getDate() + _mondayOffset);
+  _weekStart.setHours(0, 0, 0, 0);
+  const _weekStartStr = formatDate(_weekStart);
+  const thisWeekCount = bookings.filter(b => b.date >= _weekStartStr && b.date <= todayStr && b.status !== 'cancelled').length;
+
+  // Month: 1st of current month
+  const _monthStartStr = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}-01`;
+  const thisMonthCount = bookings.filter(b => b.date >= _monthStartStr && b.date <= todayStr && b.status !== 'cancelled').length;
+
+  const allTimeCount = bookings.filter(b => b.status !== 'cancelled').length;
 
   // ── Loading ──────────────────────────────────────────────────────────────────
 
@@ -361,9 +375,9 @@ export default function BookingsScreen() {
       {/* Stats */}
       <View style={styles.statsRow}>
         <StatCard label="Today" value={todayCount} color="#25D366" />
-        <StatCard label="Pending" value={pendingCount} color="#F59E0B" />
-        <StatCard label="Confirmed" value={confirmedCount} color="#10B981" />
-        <StatCard label="Total" value={bookings.length} color="#6366F1" />
+        <StatCard label="This Week" value={thisWeekCount} color="#06B6D4" />
+        <StatCard label="This Month" value={thisMonthCount} color="#F59E0B" />
+        <StatCard label="All Time" value={allTimeCount} color="#6366F1" />
       </View>
 
       {/* Search + Add */}

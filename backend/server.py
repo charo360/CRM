@@ -6765,10 +6765,12 @@ async def evolution_webhook(request: Request):
                         if _conv_state_check and (
                             _conv_state_check.get("pending_order_list") or
                             _conv_state_check.get("pending_order_action") or
-                            _conv_state_check.get("pending_update_step")
+                            _conv_state_check.get("pending_update_step") or
+                            _conv_state_check.get("pending_booking_list") or
+                            _conv_state_check.get("pending_booking_action")
                         ):
-                            # Customer is interacting with an order — don't intercept, let it go to OrderAgent
-                            logging.info(f"Numbered reply {_reply_num} with pending order state — passing to OrderAgent")
+                            # Customer is interacting with an order or booking — don't intercept, let agent handle it
+                            logging.info(f"Numbered reply {_reply_num} with pending order/booking state — passing to agent")
                         else:
                             _pending_cat = await db.pending_catalogs.find_one({
                                 "customer_id": customer_id, "user_id": user["_id"]
@@ -6982,10 +6984,59 @@ async def evolution_webhook(request: Request):
                                 elif _ctx == "booking_service_select":
                                     # Customer picked a service number from booking menu
                                     _bk_services = _pending_cat.get("products", [])
+                                    _bk_currency = user.get("settings", {}).get("currency", "USD")
+
+                                    # Reply 9 = see more services (pagination)
+                                    if _reply_num == 9 and _pending_cat.get("catalog_has_more"):
+                                        _all_svc_ids = _pending_cat.get("catalog_all_ids", [])
+                                        _cur_svc_off = _pending_cat.get("catalog_page_offset", 0)
+                                        _new_svc_off = _cur_svc_off + 8
+                                        _next_svc_ids = _all_svc_ids[_new_svc_off:_new_svc_off + 8]
+                                        _more_svc_has_more = len(_all_svc_ids) > _new_svc_off + 8
+                                        if _next_svc_ids:
+                                            _biz_id_bk_pg = user.get("business_id", user["_id"])
+                                            _next_svcs = []
+                                            for _sid in _next_svc_ids:
+                                                _sd = await db.products.find_one({"_id": _sid, "user_id": _biz_id_bk_pg})
+                                                if _sd:
+                                                    _next_svcs.append(_sd)
+                                            if _next_svcs:
+                                                _pg_lines = ["📋 *More Services*\n"]
+                                                for _pi, _ps in enumerate(_next_svcs, 1):
+                                                    _pp = _ps.get("price", 0)
+                                                    _pd = _ps.get("duration")
+                                                    _pp_str = f"{_bk_currency} {_pp:,.0f}" if _pp else "Contact for price"
+                                                    _pd_str = f" · {_pd} min" if _pd else ""
+                                                    _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}{_pd_str}")
+                                                if _more_svc_has_more:
+                                                    _pg_lines.append("9️⃣  ➡️ *See more services*")
+                                                _pg_lines.append("\n_Reply with the number to book_")
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {
+                                                        "products": [
+                                                            {"id": str(_ps["_id"]), "name": _ps["name"],
+                                                             "price": _ps.get("price", 0), "duration": _ps.get("duration"),
+                                                             "index": _pi}
+                                                            for _pi, _ps in enumerate(_next_svcs, 1)
+                                                        ],
+                                                        "catalog_page_offset": _new_svc_off,
+                                                        "catalog_has_more": _more_svc_has_more,
+                                                        "updated_at": datetime.utcnow()
+                                                    }}
+                                                )
+                                                ws = get_whatsapp_service(db)
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message="\n".join(_pg_lines),
+                                                    customer_name=customer_name, send_context="booking_flow"
+                                                )
+                                                return {"status": "ok", "handled_by": "booking_service_page"}
+
                                     _bk_sel = next((s for s in _bk_services if s.get("index") == _reply_num), None)
                                     if _bk_sel:
-                                        _bk_currency = user.get("settings", {}).get("currency", "USD")
                                         _bk_price_str = f"{_bk_currency} {_bk_sel.get('price', 0):,.0f}" if _bk_sel.get("price") else "Contact for price"
+                                        _bk_duration = _bk_sel.get("duration")  # minutes, may be None
                                         await db.pending_catalogs.update_one(
                                             {"customer_id": customer_id, "user_id": user["_id"]},
                                             {"$set": {
@@ -6993,6 +7044,7 @@ async def evolution_webhook(request: Request):
                                                 "booking_service_id": _bk_sel["id"],
                                                 "booking_service_name": _bk_sel["name"],
                                                 "booking_service_price": _bk_sel.get("price", 0),
+                                                "booking_service_duration": _bk_duration,
                                                 "updated_at": datetime.utcnow()
                                             }}
                                         )
@@ -7328,18 +7380,25 @@ async def evolution_webhook(request: Request):
                         }).to_list(100)
                         _bk_taken = {b.get("time") for b in _bk_existing}
 
-                        # Build hourly slots
+                        # Build slots using service duration (or default 60 min)
+                        _bk_slot_mins = 60
+                        try:
+                            _raw_dur = _bk_date_state.get("booking_service_duration")
+                            if _raw_dur and int(_raw_dur) >= 15:
+                                _bk_slot_mins = int(_raw_dur)
+                        except Exception:
+                            pass
                         try:
                             _bk_oh, _bk_om = map(int, _bk_open.split(":"))
                             _bk_ch, _bk_cm = map(int, _bk_close.split(":"))
                             _bk_cur = _bk_oh * 60 + _bk_om
                             _bk_end = _bk_ch * 60 + _bk_cm
                             _bk_avail = []
-                            while _bk_cur + 60 <= _bk_end:
+                            while _bk_cur + _bk_slot_mins <= _bk_end:
                                 _t = f"{_bk_cur // 60:02d}:{_bk_cur % 60:02d}"
                                 if _t not in _bk_taken:
                                     _bk_avail.append(_t)
-                                _bk_cur += 60
+                                _bk_cur += _bk_slot_mins
                         except Exception:
                             _bk_avail = ["09:00","10:00","11:00","14:00","15:00","16:00"]
                         _bk_avail = _bk_avail[:8]
@@ -7392,41 +7451,79 @@ async def evolution_webhook(request: Request):
                             _bkc_currency = user.get("settings", {}).get("currency", "USD")
                             if _bkc_body in _bkc_yes:
                                 _bkc_now = datetime.utcnow()
-                                _bkc_id = str(uuid.uuid4())
-                                _bkc_number = _generate_booking_number()
                                 _bkc_svc_name = _bkc_state.get("booking_service_name", "Service")
                                 _bkc_svc_id   = _bkc_state.get("booking_service_id", "")
                                 _bkc_price    = _bkc_state.get("booking_service_price", 0)
                                 _bkc_date_str = _bkc_state.get("booking_date", "")
                                 _bkc_time_str = _bkc_state.get("booking_time", "")
-                                await db.bookings.insert_one({
-                                    "_id": _bkc_id,
-                                    "booking_number": _bkc_number,
-                                    "user_id": _bkc_biz_id,
-                                    "customer_id": customer_id,
-                                    "customer_name": customer_name,
-                                    "customer_phone": from_number,
-                                    "service_id": _bkc_svc_id,
-                                    "service_name": _bkc_svc_name,
-                                    "date": _bkc_date_str,
-                                    "time": _bkc_time_str,
-                                    "status": "pending",
-                                    "payment_status": "unpaid",
-                                    "price": _bkc_price,
-                                    "source": "whatsapp",
-                                    "created_at": _bkc_now,
-                                    "updated_at": _bkc_now,
-                                })
                                 _bkc_price_str = f"{_bkc_currency} {_bkc_price:,.0f}" if _bkc_price else ""
-                                _bkc_conf_msg = (
-                                    f"✅ *Booking Confirmed!*\n\n"
-                                    f"🔖 Ref: *{_bkc_number}*\n"
-                                    f"📋 Service: *{_bkc_svc_name}*\n"
-                                    f"📅 Date: *{_bkc_date_str}*\n"
-                                    f"🕐 Time: *{_bkc_time_str}*\n"
-                                    + (f"💰 Price: *{_bkc_price_str}*\n" if _bkc_price_str else "")
-                                    + f"\nWe'll see you then! 😊 If you need to change anything, just reply with your ref *{_bkc_number}*."
-                                )
+                                _reschedule_id = _bkc_state.get("reschedule_booking_id")
+                                _reschedule_num = _bkc_state.get("reschedule_booking_number", "")
+
+                                if _reschedule_id:
+                                    # RESCHEDULE — update existing booking
+                                    await db.bookings.update_one(
+                                        {"_id": _reschedule_id},
+                                        {"$set": {
+                                            "date": _bkc_date_str,
+                                            "time": _bkc_time_str,
+                                            "status": "pending",
+                                            "rescheduled_at": _bkc_now,
+                                            "rescheduled_by": "customer",
+                                            "updated_at": _bkc_now,
+                                        }}
+                                    )
+                                    _bkc_number = _reschedule_num
+                                    _bkc_conf_msg = (
+                                        f"✅ *Booking Rescheduled!*\n\n"
+                                        f"🔖 Ref: *{_bkc_number}*\n"
+                                        f"📋 Service: *{_bkc_svc_name}*\n"
+                                        f"📅 New Date: *{_bkc_date_str}*\n"
+                                        f"🕐 New Time: *{_bkc_time_str}*\n"
+                                        + (f"💰 Price: *{_bkc_price_str}*\n" if _bkc_price_str else "")
+                                        + f"\nSee you then! 😊"
+                                    )
+                                    _bkc_push_title = "🔄 Booking Rescheduled"
+                                    _bkc_push_body = f"{customer_name} rescheduled {_bkc_svc_name} to {_bkc_date_str} at {_bkc_time_str}"
+                                    _bkc_push_type = "booking_rescheduled"
+                                    _bkc_id = _reschedule_id
+                                    logging.info(f"[Booking] Rescheduled via WhatsApp: {_reschedule_id}")
+                                else:
+                                    # NEW BOOKING — insert
+                                    _bkc_id = str(uuid.uuid4())
+                                    _bkc_number = _generate_booking_number()
+                                    await db.bookings.insert_one({
+                                        "_id": _bkc_id,
+                                        "booking_number": _bkc_number,
+                                        "user_id": _bkc_biz_id,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "customer_phone": from_number,
+                                        "service_id": _bkc_svc_id,
+                                        "service_name": _bkc_svc_name,
+                                        "date": _bkc_date_str,
+                                        "time": _bkc_time_str,
+                                        "status": "pending",
+                                        "payment_status": "unpaid",
+                                        "price": _bkc_price,
+                                        "source": "whatsapp",
+                                        "created_at": _bkc_now,
+                                        "updated_at": _bkc_now,
+                                    })
+                                    _bkc_conf_msg = (
+                                        f"✅ *Booking Confirmed!*\n\n"
+                                        f"🔖 Ref: *{_bkc_number}*\n"
+                                        f"📋 Service: *{_bkc_svc_name}*\n"
+                                        f"📅 Date: *{_bkc_date_str}*\n"
+                                        f"🕐 Time: *{_bkc_time_str}*\n"
+                                        + (f"💰 Price: *{_bkc_price_str}*\n" if _bkc_price_str else "")
+                                        + f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*."
+                                    )
+                                    _bkc_push_title = "📅 New Booking!"
+                                    _bkc_push_body = f"{customer_name} booked {_bkc_svc_name} on {_bkc_date_str} at {_bkc_time_str}"
+                                    _bkc_push_type = "new_booking"
+                                    logging.info(f"[Booking] Created via WhatsApp confirm: {_bkc_id}")
+
                                 ws = get_whatsapp_service(db)
                                 await ws.send_message(
                                     user_id=_bkc_biz_id, to_number=from_number,
@@ -7448,13 +7545,12 @@ async def evolution_webhook(request: Request):
                                         _bkc_ns = get_notification_service()
                                         await _bkc_ns.send_notification(
                                             push_token=_bkc_push,
-                                            title="📅 New Booking!",
-                                            body=f"{customer_name} booked {_bkc_svc_name} on {_bkc_date_str} at {_bkc_time_str}",
-                                            data={"type": "new_booking", "booking_id": _bkc_id, "customer_id": customer_id}
+                                            title=_bkc_push_title,
+                                            body=_bkc_push_body,
+                                            data={"type": _bkc_push_type, "booking_id": _bkc_id, "customer_id": customer_id}
                                         )
                                     except Exception as _bkc_ne:
                                         logging.warning(f"Booking push failed: {_bkc_ne}")
-                                logging.info(f"[Booking] Created via WhatsApp confirm: {_bkc_id}")
                                 return {"status": "ok", "handled_by": "booking_confirm_yes"}
                             else:
                                 ws = get_whatsapp_service(db)

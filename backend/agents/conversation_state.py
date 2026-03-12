@@ -56,6 +56,8 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                 "pending_order_action": doc.get("pending_order_action"),
                 "pending_update_step": doc.get("pending_update_step"),
                 "pending_update_item_idx": doc.get("pending_update_item_idx"),
+                "pending_booking_list": doc.get("pending_booking_list"),
+                "pending_booking_action": doc.get("pending_booking_action"),
                 "updated_at": doc.get("updated_at"),
             }
     except Exception as e:
@@ -139,5 +141,7 @@ def _default_state() -> Dict[str, Any]:
         "pending_order_action": None,
         "pending_update_step": None,
         "pending_update_item_idx": None,
+        "pending_booking_list": None,
+        "pending_booking_action": None,
         "updated_at": None,
     }
