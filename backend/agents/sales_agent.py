@@ -105,13 +105,22 @@ class SalesAgent(BaseAgent):
                     desc = desc[:117] + "..."
                 caption += f"\n{desc}"
 
-            img_url = p.get("image_url")
-            if not img_url and p.get("images"):
-                img_url = p["images"][0]
+            # Collect ALL images (deduplicated)
+            all_imgs = []
+            if p.get("image_url"):
+                all_imgs.append(p["image_url"])
+            for _im in p.get("images", []):
+                if _im and _im not in all_imgs:
+                    all_imgs.append(_im)
+            all_imgs = [normalize_url(u) for u in all_imgs if u]
+
+            # Extra images first (no caption/text)
+            for _extra_img in all_imgs[1:]:
+                messages_out.append({"text": "", "media_url": _extra_img})
 
             msg = {"text": caption}
-            if img_url:
-                msg["media_url"] = normalize_url(img_url)
+            if all_imgs:
+                msg["media_url"] = all_imgs[0]
             messages_out.append(msg)
         
         # Add instruction text for how to select/order

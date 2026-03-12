@@ -942,21 +942,45 @@ class WhatsAppService:
         if desc:
             caption += f"\n\n{desc}"
 
-        # Get image URL
+        # Collect ALL images for this product (deduplicated)
         images = product.get('images', [])
         image_url = product.get('image_url')
-        media_url = images[0] if images else image_url
+        all_imgs: list = []
+        if image_url:
+            all_imgs.append(image_url)
+        for _img in images:
+            if _img and _img not in all_imgs:
+                all_imgs.append(_img)
+        from agents.tools import normalize_url as _norm_url
+        all_imgs = [_norm_url(u) for u in all_imgs if u]
 
         result = None
         async with httpx.AsyncClient(timeout=30) as client:
-            # Step 1: send image with caption (or text if no image)
-            if media_url:
+            if all_imgs:
+                # Send extra images first (no caption) so the captioned one arrives last
+                for _extra in all_imgs[1:]:
+                    try:
+                        await client.post(
+                            f"{self.base_url}/message/sendMedia/{instance_name}",
+                            json={
+                                "number": clean_to,
+                                "mediatype": "image",
+                                "media": _extra,
+                                "caption": "",
+                            },
+                            headers=self._headers(),
+                        )
+                        await asyncio.sleep(0.4)
+                    except Exception as _ie:
+                        logger.warning(f"Extra image send failed: {_ie}")
+
+                # Main image with caption
                 resp = await client.post(
                     f"{self.base_url}/message/sendMedia/{instance_name}",
                     json={
                         "number": clean_to,
                         "mediatype": "image",
-                        "media": media_url,
+                        "media": all_imgs[0],
                         "caption": caption,
                     },
                     headers=self._headers(),

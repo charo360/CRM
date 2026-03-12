@@ -8468,18 +8468,19 @@ async def evolution_webhook(request: Request):
 
                     # Send all messages returned by agent
                     for msg in agent_result.get("messages", []):
-                        if not msg.get("text"):
+                        _msg_text = msg.get("text", "")
+                        _msg_media = msg.get("media_url")
+                        # Skip if neither text nor media
+                        if not _msg_text and not _msg_media:
                             continue
                         # Strip any [NEEDS_HUMAN] tag that leaked into message text
-                        _msg_text = msg["text"].replace("[NEEDS_HUMAN]", "").strip()
-                        if not _msg_text:
-                            continue
+                        _msg_text = _msg_text.replace("[NEEDS_HUMAN]", "").strip()
                         await ws.send_message(
                             user_id=user["_id"],
                             to_number=from_number,
                             message=_msg_text,
                             customer_name=customer_name,
-                            media_url=msg.get("media_url"),
+                            media_url=_msg_media,
                             send_context="auto_reply"
                         )
 
