@@ -239,26 +239,42 @@ Return ONLY valid JSON with these exact keys:
   "keywords": []
 }}
 
-Intent MUST be one of:
-PRODUCT_INQUIRY, PRICE_INQUIRY, CATALOG_REQUEST, STOCK_CHECK, NEGOTIATION, BULK_ORDER,
-ORDER_STATUS, DELIVERY_INQUIRY, TRACKING, ORDER_CANCEL, ORDER_MODIFY,
-PAYMENT_CONFIRM, PAYMENT_METHOD, PAYMENT_ISSUE, REFUND_REQUEST,
-COMPLAINT, NEGATIVE_FEEDBACK, DAMAGED_ITEM, WRONG_ITEM,
-BOOKING_REQUEST, AVAILABILITY_CHECK, BOOKING_STATUS, BOOKING_CANCEL, RESCHEDULE,
-GENERAL_CHAT, PERSONAL_CHAT, GREETING, SMALL_TALK, OFF_TOPIC,
-LEGAL_THREAT, FRAUD_CLAIM, ESCALATION, UNKNOWN
+Intent categories with examples:
 
-Rules:
-- The CURRENT MESSAGE is what you must classify — not the history
-- If the current message is a short follow-up ("ok", "sure", "yes", "send", "how much") — the intent comes from the RECENT THREAD above, not from the message alone
-- CRITICAL: If the customer says "can I see it/them/that/those/the product" and the RECENT THREAD shows the business JUST mentioned a specific product name, classify as PRODUCT_INQUIRY (NOT CATALOG_REQUEST) and extract that product name in keywords
-- CRITICAL: "Do you have X" where X is a specific product category (shoes, dresses, phones, laptops, etc) = PRODUCT_INQUIRY with X as keyword. CATALOG_REQUEST is ONLY for "show me everything", "what do you sell", "send catalog", "all products" — NOT for specific category requests
-- If this is a NEW CONVERSATION after a long gap, classify based on the current message only — ignore old topics
-- If you are not sure, use GENERAL_CHAT (not UNKNOWN) for messages under 10 words
-- If sentiment is angry AND confidence < 0.7, set needs_escalation=true
-- LEGAL_THREAT always needs_escalation=true
-- For personal contacts, prefer PERSONAL_CHAT or GENERAL_CHAT unless clearly business
-- keywords: 1-4 English keywords useful for product search (only for sales intents)
+CATALOG_REQUEST - Customer wants to browse/see available products to choose from:
+  • "I want to order something", "Can I buy something?", "Show me what you have"
+  • "Let me see your products", "What are you selling?", "Send catalog"
+  • "I'd like to purchase", "I want to order something else", "Show me items"
+
+PRODUCT_INQUIRY - Asking about a SPECIFIC product/category:
+  • "Do you have red dresses?", "Tell me about the iPhone", "What sizes for shoes?"
+  • "How much is the laptop?", "Is the blue dress available?"
+
+PRICE_INQUIRY - Asking about pricing without mentioning specific product:
+  • "How much?", "What's the price?", "Cost?"
+
+ORDER_STATUS - Checking existing order:
+  • "Where is my order?", "Has it shipped?", "Order status?"
+
+PAYMENT_CONFIRM - Confirming payment made:
+  • "I've paid", "Sent the money", "Payment done", "Mpesa sent"
+
+COMPLAINT - Expressing dissatisfaction:
+  • "This is wrong", "Not what I ordered", "Poor quality", "I'm not happy"
+
+GENERAL_CHAT - Casual conversation, greetings, thanks:
+  • "Thank you", "Ok", "Sure", "Hello", "How are you?"
+
+GREETING - Initial contact greeting:
+  • "Hi", "Hello", "Good morning", "Hey"
+
+Classification rules:
+1. Understand INTENT not exact words - "I want to order something else" = CATALOG_REQUEST even though it doesn't say "catalog"
+2. Short follow-ups ("ok", "yes", "sure") inherit intent from RECENT THREAD context
+3. When unsure between two intents, pick the one that requires ACTION (e.g., CATALOG_REQUEST over GENERAL_CHAT)
+4. For personal contacts, prefer PERSONAL_CHAT unless clearly business
+5. Low confidence (<0.4) on business messages → needs_escalation=true
+6. LEGAL_THREAT, FRAUD_CLAIM always → needs_escalation=true
 
 JSON only, no markdown:"""
 
