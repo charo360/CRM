@@ -7567,7 +7567,7 @@ async def evolution_webhook(request: Request):
                                 return {"status": "ok", "handled_by": "booking_confirm_no"}
 
                 # Handle button actions
-                if button_action and (button_product_id or button_action in ("checkout", "continue")):
+                if button_action and (button_product_id or button_action in ("checkout", "continue", "cancel_cart")):
                     try:
                         if button_action == "order":
                             # Customer clicked "Order Now" — ask for confirmation first, don't create order yet
