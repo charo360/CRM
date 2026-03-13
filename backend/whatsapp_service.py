@@ -936,10 +936,12 @@ class WhatsAppService:
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
         stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
-        desc = product.get('description', '')
+        desc = product.get('description', '') or ''
+        if desc.strip().lower() == 'add product description':
+            desc = ''
 
         caption = f"🌟 *{product['name']}*\n💰 {price_str}\n{stock_label}"
-        if desc:
+        if desc.strip():
             caption += f"\n\n{desc}"
 
         # Collect ALL images for this product (deduplicated)
