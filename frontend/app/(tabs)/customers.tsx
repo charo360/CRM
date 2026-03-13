@@ -465,7 +465,8 @@ export default function CustomersScreen() {
   const fetchPendingClassifications = useCallback(async () => {
     try {
       const data = await classificationAPI.getPending();
-      setPendingClassifications(data || []);
+      // Drop any entries with missing customer_id (orphaned / 0% records)
+      setPendingClassifications((data || []).filter((p: any) => !!p.customer_id));
     } catch (error) {
       console.error('Error fetching pending classifications:', error);
     }
@@ -488,6 +489,7 @@ export default function CustomersScreen() {
   }, [fetchPendingClassifications]);
 
   const confirmClassification = async (customerId: string, type: 'customer' | 'supplier') => {
+    if (!customerId || customerId === 'undefined') return;
     try {
       await classificationAPI.confirm(customerId, 'approve', type);
       setPendingClassifications(prev => prev.filter(p => p.customer_id !== customerId));
@@ -499,6 +501,7 @@ export default function CustomersScreen() {
   };
 
   const dismissClassification = async (customerId: string) => {
+    if (!customerId || customerId === 'undefined') return;
     try {
       await classificationAPI.dismiss(customerId);
       setPendingClassifications(prev => prev.filter(p => p.customer_id !== customerId));
@@ -1330,7 +1333,7 @@ export default function CustomersScreen() {
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
             {pendingClassifications.slice(0, 10).map((item: any) => (
-              <View key={item.customer_id} style={styles.pendingCard}>
+              <View key={item.customer_id || item.id || item.phone_number} style={styles.pendingCard}>
                 <View style={styles.pendingCardTop}>
                   <View style={[styles.pendingTypeBadge, { backgroundColor: item.suggested_type === 'supplier' ? '#4A90D920' : '#25D36620' }]}>
                     <Ionicons
