@@ -2737,6 +2737,10 @@ async def get_contacts(search: str = "", user = Depends(get_current_user)):
     result = []
     for c in contacts:
         pending = pending_map.get(c["_id"])
+        raw_confidence = pending["confidence"] if pending else c.get("suggestion_confidence", 0)
+        raw_suggested_type = pending["suggested_type"] if pending else c.get("suggested_type")
+        # Only surface suggestions with meaningful confidence (>= 40%) so empty/0% entries never show confirm buttons
+        suggested_type = raw_suggested_type if (raw_suggested_type and raw_confidence >= 0.4) else None
         result.append({
             "id": str(c["_id"]),
             "name": c.get("name", ""),
@@ -2744,9 +2748,9 @@ async def get_contacts(search: str = "", user = Depends(get_current_user)):
             "profile_picture": c.get("profile_picture"),
             "last_message": c.get("last_message", ""),
             "last_contacted": c.get("last_contacted"),
-            "suggested_type": pending["suggested_type"] if pending else c.get("suggested_type"),
-            "suggestion_reason": pending["reason"] if pending else c.get("suggestion_reason"),
-            "suggestion_confidence": pending["confidence"] if pending else c.get("suggestion_confidence", 0),
+            "suggested_type": suggested_type,
+            "suggestion_reason": (pending["reason"] if pending else c.get("suggestion_reason")) if suggested_type else None,
+            "suggestion_confidence": raw_confidence,
             "tags": c.get("tags", []),
             "created_at": c.get("created_at"),
         })

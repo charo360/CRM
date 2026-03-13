@@ -1450,7 +1450,7 @@ export default function CustomersScreen() {
                       </View>
                       <Text style={styles.contactPhone}>{item.phone_number}</Text>
                       {item.suggestion_reason ? <Text numberOfLines={1} style={{ color: '#8899AA', fontSize: 11, marginTop: 1 }}>{item.suggestion_reason}</Text> : null}
-                      {item.suggested_type && (
+                      {item.suggested_type && item.id && (
                         <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
                           <TouchableOpacity
                             style={{ backgroundColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}
