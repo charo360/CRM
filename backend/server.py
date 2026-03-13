@@ -8323,11 +8323,16 @@ async def evolution_webhook(request: Request):
                     "payment_methods": _raw_pm,  # structured array for PaymentAgent
                 }
 
-                agent_result = await router.route_and_process(
-                    user_id=user["_id"],
-                    message=body,
-                    context=agent_context
-                )
+                # Skip agent pipeline if button_action already set by numbered response handler
+                if not button_action:
+                    agent_result = await router.route_and_process(
+                        user_id=user["_id"],
+                        message=body,
+                        context=agent_context
+                    )
+                else:
+                    agent_result = None
+                    logging.info(f"[Webhook] Skipping agent pipeline - button_action already set: {button_action}")
 
                 if agent_result and agent_result.get("handled"):
                     # If escalated — notify owner/employee, then stop (human will handle)
