@@ -2542,11 +2542,16 @@ async def get_pending_classifications(user = Depends(get_current_user)):
     business_id = user.get("business_id", user["_id"])
     pending = await db.pending_classifications.find({
         "user_id": business_id,
-        "status": "pending"
+        "status": "pending",
+        "confidence": {"$gte": 0.4},
     }).sort("confidence", -1).to_list(50)
     
     for p in pending:
-        p["id"] = p["_id"] if isinstance(p["_id"], str) else str(p["_id"])
+        p["id"] = str(p["_id"])
+        p["customer_id"] = str(p["customer_id"]) if p.get("customer_id") else None
+    
+    # Drop entries where customer_id resolved to None (orphaned records)
+    pending = [p for p in pending if p.get("customer_id")]
     
     return serialize_doc(pending)
 
