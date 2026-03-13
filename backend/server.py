@@ -1731,7 +1731,7 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
     user = await db.users.find_one({"_id": user_id})
     is_new_user = session["is_new_user"] or not user.get("setup_complete", True)
 
-    # Auto-trigger contact sync + profile pictures in background
+    # Auto-trigger contact sync + profile pictures + classification in background
     async def _auto_sync(uid):
         try:
             ws = get_whatsapp_service(db)
@@ -1741,6 +1741,12 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
             logging.info(f"Auto-sync complete for user {uid}")
         except Exception as e:
             logging.error(f"Auto-sync error for user {uid}: {e}")
+        try:
+            classifier = get_classifier(db)
+            await classifier.classify_all_contacts(uid)
+            logging.info(f"Auto-classification complete for user {uid}")
+        except Exception as e:
+            logging.error(f"Auto-classification error for user {uid}: {e}")
     asyncio.create_task(_auto_sync(user_id))
 
     return serialize_doc({
