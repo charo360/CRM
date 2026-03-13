@@ -15,6 +15,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { settingsAPI } from '../../context/api';
+import { useBusiness } from '../../context/BusinessContext';
 import { COUNTRIES } from '../../components/CountryPicker';
 
 const BUSINESS_TYPES = [
@@ -37,6 +38,7 @@ export default function RegisterScreen() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { register, user } = useAuth();
+  const { refresh: refreshBusinessContext } = useBusiness();
 
   const handleNextStep = () => {
     if (!businessName.trim()) {
@@ -59,6 +61,7 @@ export default function RegisterScreen() {
         }
         try {
           await settingsAPI.updateSettings(settingsPayload);
+          await refreshBusinessContext();
         } catch (e) {}
         router.replace('/(tabs)/customers');
       } else {
