@@ -256,8 +256,14 @@ PRICE_INQUIRY - Asking about pricing without mentioning specific product:
 ORDER_STATUS - Checking existing order:
   • "Where is my order?", "Has it shipped?", "Order status?"
 
-PAYMENT_CONFIRM - Confirming payment made:
-  • "I've paid", "Sent the money", "Payment done", "Mpesa sent"
+PAYMENT_METHOD - Asking HOW to pay / requesting payment details (NOT confirming payment):
+  • "Send payment method", "How do I pay?", "What are your payment details?"
+  • "Send me your account number", "Which Mpesa number?", "Where do I send money?"
+  • "Payment details please", "How can I pay?", "Send payment info"
+
+PAYMENT_CONFIRM - Confirming payment ALREADY MADE (money already sent):
+  • "I've paid", "I have paid", "Sent the money", "Payment done", "Mpesa sent"
+  • "I already transferred", "Done paying", "Check your Mpesa", "I've made the payment"
 
 COMPLAINT - Expressing dissatisfaction:
   • "This is wrong", "Not what I ordered", "Poor quality", "I'm not happy"

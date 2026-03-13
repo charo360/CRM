@@ -6895,10 +6895,47 @@ async def evolution_webhook(request: Request):
                                         if _cart_dup:
                                             await db.carts.update_one({"_id": _cart_dup["_id"]}, {"$set": {"status": "completed"}})
                                         ws = get_whatsapp_service(db)
+                                        _user_dup1 = await db.users.find_one({"_id": _biz_id_dup})
+                                        _raw_pm_dup1 = (_user_dup1 or {}).get("payment_methods", [])
+                                        _pm_dup1_lines = []
+                                        for _pm in _raw_pm_dup1:
+                                            if isinstance(_pm, dict):
+                                                _ln = _pm.get("name", "")
+                                                _hd = False
+                                                if _pm.get("fields"):
+                                                    _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                    if _fp:
+                                                        _ln += " — " + ", ".join(_fp)
+                                                        _hd = True
+                                                elif _pm.get("details") and str(_pm["details"]).strip():
+                                                    _ln += f": {_pm['details']}"
+                                                    _hd = True
+                                                if _ln.strip() and _hd:
+                                                    _pm_dup1_lines.append(f"  • {_ln}")
+                                            else:
+                                                if str(_pm).strip():
+                                                    _pm_dup1_lines.append(f"  • {_pm}")
+                                        _pay_text_dup1 = "\n".join(_pm_dup1_lines)
+                                        _dup1_msg_lines = [
+                                            f"✅ New order *#{_new_order_num}* created!\n",
+                                            f"💰 *Total: {_currency_dup} {_dup_total:,.0f}*",
+                                            f"Status: 🔴 *Unpaid*\n",
+                                            "To complete your order, please make payment using the details below.\n",
+                                        ]
+                                        if _pay_text_dup1:
+                                            _dup1_msg_lines.append(f"*💳 Payment Details:*\n{_pay_text_dup1}\n")
+                                        else:
+                                            _dup1_msg_lines.append("We will send you our payment details shortly.\n")
+                                        _dup1_msg_lines.append(
+                                            f"📸 Once you have paid, *send us a screenshot* of your payment confirmation.\n\n"
+                                            f"Also send your *delivery details:*\n"
+                                            f"• Full name\n• Delivery address\n• Phone number\n\n"
+                                            f"Your order *#{_new_order_num}* will be processed once payment is confirmed. 🙏"
+                                        )
                                         await ws.send_message(
                                             user_id=user["_id"],
                                             to_number=from_number,
-                                            message=f"✅ New order *#{_new_order_num}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nYou now have 2 orders for the same items. Payment details will be sent shortly. 📲",
+                                            message="\n".join(_dup1_msg_lines),
                                             customer_name=customer_name,
                                             send_context="order_confirm"
                                         )
@@ -6967,10 +7004,48 @@ async def evolution_webhook(request: Request):
                                         _old_order = await db.orders.find_one({"_id": _dup_order_id})
                                         _old_num = (_old_order or {}).get("order_number", "")
                                         ws = get_whatsapp_service(db)
+                                        _user_dup3 = await db.users.find_one({"_id": _biz_id_dup})
+                                        _raw_pm_dup3 = (_user_dup3 or {}).get("payment_methods", [])
+                                        _pm_dup3_lines = []
+                                        for _pm in _raw_pm_dup3:
+                                            if isinstance(_pm, dict):
+                                                _ln = _pm.get("name", "")
+                                                _hd = False
+                                                if _pm.get("fields"):
+                                                    _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                    if _fp:
+                                                        _ln += " — " + ", ".join(_fp)
+                                                        _hd = True
+                                                elif _pm.get("details") and str(_pm["details"]).strip():
+                                                    _ln += f": {_pm['details']}"
+                                                    _hd = True
+                                                if _ln.strip() and _hd:
+                                                    _pm_dup3_lines.append(f"  • {_ln}")
+                                            else:
+                                                if str(_pm).strip():
+                                                    _pm_dup3_lines.append(f"  • {_pm}")
+                                        _pay_text_dup3 = "\n".join(_pm_dup3_lines)
+                                        _dup3_msg_lines = [
+                                            f"✅ Order *#{_old_num}* cancelled.\n",
+                                            f"🆕 New order *#{_new_order_num3}* created!\n",
+                                            f"💰 *Total: {_currency_dup} {_dup_total:,.0f}*",
+                                            f"Status: 🔴 *Unpaid*\n",
+                                            "To complete your order, please make payment using the details below.\n",
+                                        ]
+                                        if _pay_text_dup3:
+                                            _dup3_msg_lines.append(f"*💳 Payment Details:*\n{_pay_text_dup3}\n")
+                                        else:
+                                            _dup3_msg_lines.append("We will send you our payment details shortly.\n")
+                                        _dup3_msg_lines.append(
+                                            f"📸 Once you have paid, *send us a screenshot* of your payment confirmation.\n\n"
+                                            f"Also send your *delivery details:*\n"
+                                            f"• Full name\n• Delivery address\n• Phone number\n\n"
+                                            f"Your order *#{_new_order_num3}* will be processed once payment is confirmed. 🙏"
+                                        )
                                         await ws.send_message(
                                             user_id=user["_id"],
                                             to_number=from_number,
-                                            message=f"✅ Order *#{_old_num}* cancelled.\n\n🆕 New order *#{_new_order_num3}* created!\n\n💰 Total: {_currency_dup} {_dup_total:,.0f}\n\nPayment details will be sent shortly. 📲",
+                                            message="\n".join(_dup3_msg_lines),
                                             customer_name=customer_name,
                                             send_context="order_confirm"
                                         )
