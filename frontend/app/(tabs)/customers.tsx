@@ -524,6 +524,9 @@ export default function CustomersScreen() {
     if (viewMode === 'suppliers') {
       fetchSupplierData();
       setNewTags(['Supplier', 'New']);
+    } else if (viewMode === 'contacts') {
+      fetchAllContacts(contactSearch2);
+      setNewTags(['New']);
     } else {
       setNewTags(['New']);
     }
@@ -1394,7 +1397,7 @@ export default function CustomersScreen() {
               />
             </View>
             <TouchableOpacity
-              onPress={async () => { setScanningContacts(true); try { await apiClient.post('/contacts/scan-suggestions'); await fetchAllContacts(contactSearch2); } catch (e) { } finally { setScanningContacts(false); } }}
+              onPress={async () => { setScanningContacts(true); try { await apiClient.post('/contacts/classify'); } catch (e) { } finally { await fetchAllContacts(contactSearch2); setScanningContacts(false); } }}
               disabled={scanningContacts}
               style={{ backgroundColor: '#1A2942', borderRadius: 8, padding: 8 }}
             >
@@ -1408,7 +1411,7 @@ export default function CustomersScreen() {
           ) : (
             <FlatList
               data={allContacts}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item) => String(item.id || item._id || item.phone_number)}
               contentContainerStyle={styles.listContent}
               refreshControl={
                 <RefreshControl refreshing={loadingContacts2} onRefresh={() => fetchAllContacts(contactSearch2)} tintColor="#25D366" />
@@ -1452,6 +1455,7 @@ export default function CustomersScreen() {
                           <TouchableOpacity
                             style={{ backgroundColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}
                             onPress={async () => {
+                              if (!item.id) return;
                               try {
                                 await apiClient.post(`/contacts/${item.id}/confirm`, { action: 'approve', type: item.suggested_type });
                                 fetchAllContacts(contactSearch2);
@@ -1466,6 +1470,7 @@ export default function CustomersScreen() {
                           <TouchableOpacity
                             style={{ backgroundColor: '#1A2942', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 }}
                             onPress={async () => {
+                              if (!item.id) return;
                               try {
                                 await apiClient.post(`/contacts/${item.id}/confirm`, { action: 'reject', type: item.suggested_type });
                                 fetchAllContacts(contactSearch2);
@@ -1482,6 +1487,7 @@ export default function CustomersScreen() {
                     <TouchableOpacity
                       style={styles.contactAddBtn}
                       onPress={async () => {
+                        if (!item.id) return;
                         try {
                           await apiClient.post(`/contacts/${item.id}/add-as-customer`);
                           fetchAllContacts(contactSearch2);

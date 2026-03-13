@@ -2738,7 +2738,7 @@ async def get_contacts(search: str = "", user = Depends(get_current_user)):
     for c in contacts:
         pending = pending_map.get(c["_id"])
         result.append({
-            "id": c["_id"],
+            "id": str(c["_id"]),
             "name": c.get("name", ""),
             "phone_number": c.get("phone_number", ""),
             "profile_picture": c.get("profile_picture"),
