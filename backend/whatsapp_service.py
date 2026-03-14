@@ -44,6 +44,28 @@ def get_model_credits(ai_model: str) -> float:
     """Return credit cost for a given AI model slug."""
     return MODEL_MESSAGE_CREDITS.get(ai_model or "standard", 1.6)
 
+def _is_valid_contact_phone(phone: str, own_digits: str = "") -> bool:
+    """
+    Central gate — returns True only if `phone` is a real E.164-style number
+    that is safe to store as a contact.
+
+    Rules:
+      - Must contain digits after stripping leading '+'
+      - Length must be 7–15 digits (valid E.164 range)
+      - Must not equal the business owner's own number
+    This rejects @lid garbage numbers (16+ digits), empty strings, and self-contacts.
+    """
+    if not phone:
+        return False
+    digits = phone.lstrip("+").replace(" ", "").replace("-", "")
+    if not digits.isdigit():
+        return False
+    if len(digits) < 7 or len(digits) > 15:
+        return False
+    if own_digits and digits == own_digits:
+        return False
+    return True
+
 # Rate limiting
 DAILY_MESSAGE_LIMIT = 500  # Max messages per user per day (WhatsApp safety)
 BROADCAST_COOLDOWN_HOURS = 24  # Min hours between broadcasts
@@ -1301,10 +1323,16 @@ class WhatsAppService:
         if "@g.us" in remote_jid:
             return
 
+        # Skip @lid and other non-standard JIDs (not real phone numbers)
+        if "@s.whatsapp.net" not in remote_jid:
+            return
+
         # Convert JID to phone number (remove @s.whatsapp.net)
-        contact_number = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
-        if contact_number and not contact_number.startswith("+"):
-            contact_number = f"+{contact_number}"
+        _raw_contact = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
+        contact_number = f"+{_raw_contact}" if _raw_contact and not _raw_contact.startswith("+") else _raw_contact
+        own_digits = (user.get("phone_number") or "").lstrip("+").replace(" ", "").replace("-", "")
+        if not _is_valid_contact_phone(contact_number, own_digits):
+            return
 
         # Get message content
         message_data = msg.get("message", {})
@@ -1775,13 +1803,13 @@ class WhatsAppService:
                     jid = contact.get("remoteJid", "")
                     if not jid or "@g.us" in jid or "status@" in jid or "0@s.whatsapp.net" == jid:
                         continue  # Skip groups, status broadcasts, system contacts
+                    if "@s.whatsapp.net" not in jid:
+                        continue  # Skip @lid and other non-standard JIDs (not real phone numbers)
                     phone = jid.split("@")[0] if "@" in jid else jid
-                    if not phone or not phone.isdigit():
+                    phone_with_plus = f"+{phone}" if not phone.startswith("+") else phone
+                    if not _is_valid_contact_phone(phone_with_plus, own_number):
                         continue
-                    # Skip own number
-                    if phone == own_number:
-                        continue
-                    phone = f"+{phone}"
+                    phone = phone_with_plus
 
                     raw_name = (
                         contact.get("pushName")
@@ -1892,13 +1920,13 @@ class WhatsAppService:
                     if not chat_jid or "@g.us" in chat_jid or "status@" in chat_jid:
                         continue  # Skip groups and status broadcasts
 
+                    if "@s.whatsapp.net" not in chat_jid:
+                        continue  # Skip @lid and other non-standard JIDs (not real phone numbers)
                     phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
-                    if not phone or not phone.isdigit():
+                    phone_with_plus = f"+{phone}" if not phone.startswith("+") else phone
+                    if not _is_valid_contact_phone(phone_with_plus, own_number):
                         continue
-                    # Skip own number
-                    if phone == own_number:
-                        continue
-                    phone = f"+{phone}"
+                    phone = phone_with_plus
 
                     # Find or create customer record
                     customer = await self.db.customers.find_one({

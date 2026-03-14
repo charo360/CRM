@@ -148,6 +148,7 @@ export default function CustomersScreen() {
   // AI Classification
   const [pendingClassifications, setPendingClassifications] = useState<any[]>([]);
   const [scanningContacts, setScanningContacts] = useState(false);
+  const [purgingContacts, setPurgingContacts] = useState(false);
 
   // New customer form
   const [newName, setNewName] = useState('');
@@ -471,6 +472,55 @@ export default function CustomersScreen() {
       console.error('Error fetching pending classifications:', error);
     }
   }, []);
+
+  const deleteContact = async (contactId: string, contactName: string) => {
+    Alert.alert(
+      'Remove Contact',
+      `Remove "${contactName}" from contacts?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await apiClient.delete(`/contacts/${contactId}`);
+              fetchAllContacts(contactSearch2);
+            } catch (e: any) {
+              Alert.alert('Error', e?.response?.data?.detail || 'Could not remove contact');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const purgeInvalidContacts = async () => {
+    Alert.alert(
+      'Clean Up Contacts',
+      'This will remove contacts with invalid/garbage phone numbers and your own number from the list. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clean Up',
+          style: 'destructive',
+          onPress: async () => {
+            setPurgingContacts(true);
+            try {
+              const res = await apiClient.post('/contacts/purge-lid-numbers');
+              const count = res.data?.deleted ?? 0;
+              await fetchAllContacts(contactSearch2);
+              Alert.alert('Done', count > 0 ? `Removed ${count} invalid contact${count !== 1 ? 's' : ''}.` : 'No invalid contacts found.');
+            } catch (e) {
+              Alert.alert('Error', 'Clean up failed');
+            } finally {
+              setPurgingContacts(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const scanAllContacts = async () => {
     setScanningContacts(true);
@@ -1406,6 +1456,13 @@ export default function CustomersScreen() {
             >
               {scanningContacts ? <ActivityIndicator size="small" color="#FFD700" /> : <Ionicons name="sparkles-outline" size={20} color="#FFD700" />}
             </TouchableOpacity>
+            <TouchableOpacity
+              onPress={purgeInvalidContacts}
+              disabled={purgingContacts}
+              style={{ backgroundColor: '#1A2942', borderRadius: 8, padding: 8 }}
+            >
+              {purgingContacts ? <ActivityIndicator size="small" color="#FF4444" /> : <Ionicons name="trash-outline" size={20} color="#FF4444" />}
+            </TouchableOpacity>
           </View>
           {loadingContacts2 ? (
             <View style={styles.loadingContainer}>
@@ -1486,23 +1543,31 @@ export default function CustomersScreen() {
                       )}
                     </View>
                   </TouchableOpacity>
-                  {!item.suggested_type && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    {!item.suggested_type && (
+                      <TouchableOpacity
+                        style={styles.contactAddBtn}
+                        onPress={async () => {
+                          if (!item.id) return;
+                          try {
+                            await apiClient.post(`/contacts/${item.id}/add-as-customer`);
+                            fetchAllContacts(contactSearch2);
+                            fetchCustomers();
+                            Alert.alert('Added!', `${item.name} is now a customer.`);
+                          } catch (e) { console.error('Add as customer failed', e); }
+                        }}
+                      >
+                        <Ionicons name="person-add" size={12} color="#FFF" />
+                        <Text style={styles.contactAddBtnText}>Add</Text>
+                      </TouchableOpacity>
+                    )}
                     <TouchableOpacity
-                      style={styles.contactAddBtn}
-                      onPress={async () => {
-                        if (!item.id) return;
-                        try {
-                          await apiClient.post(`/contacts/${item.id}/add-as-customer`);
-                          fetchAllContacts(contactSearch2);
-                          fetchCustomers();
-                          Alert.alert('Added!', `${item.name} is now a customer.`);
-                        } catch (e) { console.error('Add as customer failed', e); }
-                      }}
+                      onPress={() => deleteContact(item.id, item.name)}
+                      style={{ padding: 6 }}
                     >
-                      <Ionicons name="person-add" size={12} color="#FFF" />
-                      <Text style={styles.contactAddBtnText}>Add</Text>
+                      <Ionicons name="trash-outline" size={16} color="#FF4444" />
                     </TouchableOpacity>
-                  )}
+                  </View>
                 </View>
               )}
             />

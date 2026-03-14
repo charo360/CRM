@@ -328,9 +328,58 @@ async def fix_team_members_index():
     except Exception as e:
         logging.warning(f"[Migration] offering_type backfill failed: {e}")
 
+    # Startup: purge invalid contacts for all existing users (one-time cleanup + permanent gate)
+    asyncio.create_task(_startup_purge_invalid_contacts())
+
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
+
+async def _purge_invalid_contacts_for_user(user_id: str) -> int:
+    """
+    Remove auto-created contacts whose phone numbers are invalid:
+    - More than 15 digits (garbage from @lid JIDs)
+    - Fewer than 7 digits (not a real phone number)
+    - Matches the user's own phone number (self-contact)
+    Returns number of records deleted.
+    """
+    user = await db.users.find_one({"_id": user_id}, {"phone_number": 1})
+    own_digits = (user.get("phone_number") or "").lstrip("+").replace(" ", "").replace("-", "") if user else ""
+    deleted = 0
+    candidates = await db.customers.find(
+        {"user_id": user_id, "auto_created": True, "is_customer": {"$ne": True}},
+        {"_id": 1, "phone_number": 1}
+    ).to_list(None)
+    for c in candidates:
+        phone = c.get("phone_number", "")
+        digits = phone.lstrip("+").replace(" ", "").replace("-", "")
+        is_too_long = len(digits) > 15
+        is_too_short = len(digits) < 7
+        is_own = own_digits and digits == own_digits
+        if is_too_long or is_too_short or is_own:
+            await db.customers.delete_one({"_id": c["_id"]})
+            await db.messages.delete_many({"customer_id": c["_id"]})
+            deleted += 1
+    if deleted:
+        logging.info(f"[ContactPurge] Removed {deleted} invalid contacts for user {user_id}")
+    return deleted
+
+
+async def _startup_purge_invalid_contacts():
+    """Run once at startup: purge invalid contacts for every user in the DB."""
+    await asyncio.sleep(5)  # let server fully start
+    try:
+        users = await db.users.find({}, {"_id": 1}).to_list(None)
+        total = 0
+        for u in users:
+            try:
+                total += await _purge_invalid_contacts_for_user(u["_id"])
+            except Exception as e:
+                logging.warning(f"[StartupPurge] Failed for user {u['_id']}: {e}")
+        logging.info(f"[StartupPurge] Total invalid contacts removed across all users: {total}")
+    except Exception as e:
+        logging.error(f"[StartupPurge] Failed: {e}")
+
 
 async def run_automation_scheduler():
     """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
@@ -2818,6 +2867,19 @@ async def delete_contact(contact_id: str, user = Depends(get_current_user)):
     await db.customers.delete_one({"_id": contact_id})
     await db.messages.delete_many({"customer_id": contact_id})
     return {"status": "deleted"}
+
+@api_router.post("/contacts/purge-lid-numbers")
+async def purge_lid_numbers(user = Depends(get_current_user)):
+    """
+    Delete auto-created contacts with invalid phone numbers:
+    - Garbage @lid JID numbers (>15 digits)
+    - User's own number stored as a contact
+    - Too-short numbers (<7 digits)
+    Safe to call multiple times — never deletes confirmed customers.
+    """
+    business_id = user.get("business_id", user["_id"])
+    deleted = await _purge_invalid_contacts_for_user(business_id)
+    return {"status": "done", "deleted": deleted}
 
 @api_router.post("/contacts/scan-suggestions")
 async def scan_contact_suggestions(background_tasks: BackgroundTasks, user = Depends(get_current_user)):
@@ -6353,6 +6415,12 @@ async def evolution_webhook(request: Request):
                                     logging.info(f"Profile pic sync: {pic_result}")
                                 except Exception as pic_err:
                                     logging.error(f"Profile pic sync error: {pic_err}")
+
+                                # Auto-purge any invalid contacts that slipped through
+                                try:
+                                    await _purge_invalid_contacts_for_user(uid)
+                                except Exception as purge_err:
+                                    logging.error(f"Post-sync purge error: {purge_err}")
 
                             except Exception as sync_err:
                                 logging.error(f"Initial sync failed for user {uid}: {sync_err}")
