@@ -56,6 +56,7 @@ class Router:
             conversation_state=conv_state,
             customer_name=customer_name,
             is_personal=is_personal,
+            business_type=context.get("business_type", ""),
         )
 
         intent = classification.get("intent", "UNKNOWN")

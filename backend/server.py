@@ -8539,6 +8539,7 @@ async def evolution_webhook(request: Request):
                     "business_name": user.get("business_name", ""),
                     "ai_model": _user_settings.get("ai_model", "standard"),
                     "payment_methods": _raw_pm,  # structured array for PaymentAgent
+                    "business_type": _user_settings.get("business_type", ""),
                 }
 
                 # Skip agent pipeline if button_action already set by numbered response handler

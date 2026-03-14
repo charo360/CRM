@@ -176,6 +176,7 @@ async def analyze_intent(
     conversation_state: dict,
     customer_name: str,
     is_personal: bool,
+    business_type: str = "",
 ) -> Dict[str, Any]:
     """
     Single AI call that returns full intent classification.
@@ -210,10 +211,17 @@ async def analyze_intent(
 
         personal_note = "\nThis is a personal contact (friend/family), not a business customer." if is_personal else ""
 
+        # Business-type bias: service/salon/booking businesses should prefer booking intents
+        SERVICE_BUSINESS_TYPES = {"salon", "saloon", "barbershop", "spa", "clinic", "healthcare", "fitness", "gym", "services", "restaurant", "hotel", "beauty"}
+        _btype = (business_type or "").lower().strip()
+        booking_bias = ""
+        if _btype in SERVICE_BUSINESS_TYPES or any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service")):
+            booking_bias = f"\n⚠️ IMPORTANT: This is a {business_type} business. Customers asking about services, appointments, timing, or 'what do you offer' should be classified as BOOKING_REQUEST or AVAILABILITY_CHECK — NOT CATALOG_REQUEST."
+
         prompt = f"""You are an AI intent classifier for a WhatsApp business assistant.
 
 Analyze the customer's LATEST message below and classify it accurately.
-Focus on what the customer wants RIGHT NOW — not what was discussed before unless it's a direct follow-up.{bk_snippet}{personal_note}{state_hint}
+Focus on what the customer wants RIGHT NOW — not what was discussed before unless it's a direct follow-up.{bk_snippet}{personal_note}{booking_bias}{state_hint}
 
 {history_text}
 
@@ -273,6 +281,22 @@ GENERAL_CHAT - Casual conversation, greetings, thanks:
 
 GREETING - Initial contact greeting:
   • "Hi", "Hello", "Good morning", "Hey"
+
+BOOKING_REQUEST - Customer wants to book/schedule an appointment or service:
+  • "I want to book", "Can I make an appointment?", "Book me in", "I need a haircut"
+  • "Schedule me for Saturday", "I'd like to reserve a slot", "Can I get an appointment?"
+  • "I want to come in", "Can you fit me in?", "Book an appointment for me"
+
+AVAILABILITY_CHECK - Customer asking when business is open or what slots are free:
+  • "When are you available?", "What times do you have?", "Are you open Saturday?"
+  • "What's your schedule?", "Do you have slots this week?", "When can I come?"
+  • "What services do you offer?", "What do you do?", "Show me your services" (for service businesses)
+
+BOOKING_STATUS - Checking an existing appointment:
+  • "What time is my appointment?", "Is my booking confirmed?", "When is my session?"
+
+BOOKING_CANCEL - Cancelling or rescheduling:
+  • "I need to cancel", "Can I reschedule?", "I can't make it", "Change my appointment"
 
 Classification rules:
 1. Understand INTENT not exact words - "I want to order something else" = CATALOG_REQUEST even though it doesn't say "catalog"
