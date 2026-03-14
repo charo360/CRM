@@ -212,10 +212,10 @@ async def analyze_intent(
         personal_note = "\nThis is a personal contact (friend/family), not a business customer." if is_personal else ""
 
         # Business-type bias: service/salon/booking businesses should prefer booking intents
-        SERVICE_BUSINESS_TYPES = {"salon", "saloon", "barbershop", "spa", "clinic", "healthcare", "fitness", "gym", "services", "restaurant", "hotel", "beauty"}
+        SERVICE_BUSINESS_TYPES = {"salon", "saloon", "barbershop", "spa", "clinic", "healthcare", "fitness", "gym", "services", "restaurant", "hotel", "beauty", "rental"}
         _btype = (business_type or "").lower().strip()
         booking_bias = ""
-        if _btype in SERVICE_BUSINESS_TYPES or any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service")):
+        if _btype in SERVICE_BUSINESS_TYPES or any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service", "rental", "airbnb")):
             booking_bias = f"\n⚠️ IMPORTANT: This is a {business_type} business. Customers asking about services, appointments, timing, or 'what do you offer' should be classified as BOOKING_REQUEST or AVAILABILITY_CHECK — NOT CATALOG_REQUEST."
 
         prompt = f"""You are an AI intent classifier for a WhatsApp business assistant.

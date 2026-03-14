@@ -790,6 +790,7 @@ export default function AccountScreen() {
             { id: 'restaurant', label: '🍽️ Restaurant',   desc: 'Food & dining' },
             { id: 'healthcare', label: '🏥 Healthcare',   desc: 'Clinic & medical' },
             { id: 'creator',    label: '🎨 Creator',      desc: 'Digital products' },
+            { id: 'rental',     label: '🏠 Rental / Airbnb', desc: 'Properties, cars & equipment' },
           ];
           const selected = BT_OPTIONS.find(b => b.id === businessType) || BT_OPTIONS[0];
           return (

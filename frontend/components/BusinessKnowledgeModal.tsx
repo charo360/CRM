@@ -141,12 +141,13 @@ function FAQField({
 const GLOBAL_TO_BK_TYPE: Record<string, string> = {
     retail: 'retail', restaurant: 'restaurant', creator: 'creator',
     salon: 'service', services: 'service', fitness: 'service', healthcare: 'service',
+    rental: 'rental',
     '': 'general',
 };
 
 const BK_TYPE_LABELS: Record<string, string> = {
     general: 'General', retail: 'Retail', creator: 'Creator',
-    restaurant: 'Restaurant', service: 'Services / Salon',
+    restaurant: 'Restaurant', service: 'Services / Salon', rental: 'Rental / Airbnb',
 };
 
 const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'Twitter/X', 'Facebook', 'Snapchat', 'LinkedIn', 'Podcast'];

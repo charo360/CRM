@@ -304,7 +304,7 @@ export default function ProductCatalogModal({
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
-        setEditOfferingType(isServiceBusiness ? 'service' : businessType === 'restaurant' ? 'menu_item' : businessType === 'creator' ? 'digital' : 'product');
+        setEditOfferingType(businessType === 'rental' ? 'rental' : isServiceBusiness ? 'service' : businessType === 'restaurant' ? 'menu_item' : businessType === 'creator' ? 'digital' : 'product');
         setEditDuration(isServiceBusiness ? '60' : '');
         setEditServiceCategory('appointment');
         setEditAddons([]);
@@ -665,7 +665,14 @@ export default function ProductCatalogModal({
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Type</Text>
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                                    {(isServiceBusiness
+                                    {(businessType === 'rental'
+                                        ? [
+                                            { id: 'rental',       label: '🏠 Property' },
+                                            { id: 'service',      label: '🚗 Vehicle' },
+                                            { id: 'equipment',    label: '🔧 Equipment' },
+                                            { id: 'package',      label: '🎁 Package' },
+                                          ]
+                                        : isServiceBusiness
                                         ? [
                                             { id: 'service',      label: '✂️ Service' },
                                             { id: 'class',        label: '🎓 Class' },
@@ -724,8 +731,7 @@ export default function ProductCatalogModal({
                                 </View>
                             )}
 
-                            {(isServiceBusiness || ['service','class','appointment','consultation','package','rental'].includes(editOfferingType)) && (
-                                <View style={styles.formGroup}>
+                            <View style={styles.formGroup}>
                                     <Text style={styles.formLabel}>Booking Type</Text>
                                     <View style={{ flexDirection: 'row', gap: 10 }}>
                                         {[{ id: 'appointment', label: '📅 Appointment' }, { id: 'rental', label: '🏠 Rental' }].map(opt => (
@@ -746,10 +752,8 @@ export default function ProductCatalogModal({
                                         {editServiceCategory === 'rental' ? 'Customer picks check-in & check-out dates' : 'Customer picks a date & time slot'}
                                     </Text>
                                 </View>
-                            )}
 
-                            {(isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
-                                <View style={styles.formGroup}>
+                            <View style={styles.formGroup}>
                                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                                         <Text style={styles.formLabel}>Add-ons ({editAddons.length}/4)</Text>
                                         {editAddons.length < 4 && (
@@ -787,7 +791,6 @@ export default function ProductCatalogModal({
                                         <Text style={styles.stockHint}>Optional extras customers can add to their booking</Text>
                                     )}
                                 </View>
-                            )}
 
                             {(addMode || selectedProduct) && (
                                 <>

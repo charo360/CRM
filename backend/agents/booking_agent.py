@@ -61,7 +61,7 @@ class BookingAgent(BaseAgent):
             services = await self.db.products.find({
                 "user_id": user_id,
                 "in_stock": True,
-                "offering_type": {"$in": ["service", "class", "appointment", "consultation"]},
+                "offering_type": {"$in": ["service", "class", "appointment", "consultation", "rental", "equipment", "package"]},
             }).to_list(50)
             if not services:
                 services = await self.db.products.find(

@@ -26,6 +26,7 @@ const BUSINESS_TYPES = [
   { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',   desc: 'Food & dining' },
   { id: 'healthcare', icon: '🏥',  label: 'Healthcare',   desc: 'Clinic, dental & medical' },
   { id: 'creator',    icon: '🎨',  label: 'Creator',      desc: 'Digital products & content' },
+  { id: 'rental',     icon: '🏠',  label: 'Rental / Airbnb', desc: 'Properties, cars & equipment' },
 ];
 
 export default function RegisterScreen() {
