@@ -133,6 +133,11 @@ export default function AccountScreen() {
   const [businessHours, setBusinessHours] = useState<Record<DayKey, DayHours>>(DEFAULT_HOURS);
   const [savingHours, setSavingHours] = useState(false);
 
+  // Rental Availability State
+  const [blockedDates, setBlockedDates] = useState<string[]>([]);
+  const [calendarMonth, setCalendarMonth] = useState(new Date());
+  const [savingAvailability, setSavingAvailability] = useState(false);
+
   // AI Model State
   const [aiModel, setAiModel] = useState('standard');
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -184,6 +189,9 @@ export default function AccountScreen() {
       if (settingsRes.data.business_hours) {
         setBusinessHours({ ...DEFAULT_HOURS, ...settingsRes.data.business_hours });
       }
+      if (settingsRes.data.rental_availability) {
+        setBlockedDates(settingsRes.data.rental_availability);
+      }
 
       // Fetch WhatsApp status
       try {
@@ -218,6 +226,39 @@ export default function AccountScreen() {
     } finally {
       setSavingHours(false);
     }
+  };
+
+  const saveRentalAvailability = async () => {
+    setSavingAvailability(true);
+    try {
+      await apiClient.put('/settings', { rental_availability: blockedDates });
+      Alert.alert('Saved', 'Availability calendar updated.');
+    } catch (e) {
+      Alert.alert('Error', 'Failed to save availability');
+    } finally {
+      setSavingAvailability(false);
+    }
+  };
+
+  const toggleBlockedDate = (dateStr: string) => {
+    setBlockedDates(prev =>
+      prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr]
+    );
+  };
+
+  const getCalendarDays = (month: Date): (string | null)[] => {
+    const year = month.getFullYear();
+    const mo = month.getMonth();
+    const firstDay = new Date(year, mo, 1).getDay();
+    const daysInMonth = new Date(year, mo + 1, 0).getDate();
+    const days: (string | null)[] = [];
+    for (let i = 0; i < firstDay; i++) days.push(null);
+    for (let d = 1; d <= daysInMonth; d++) {
+      const mm = String(mo + 1).padStart(2, '0');
+      const dd = String(d).padStart(2, '0');
+      days.push(`${year}-${mm}-${dd}`);
+    }
+    return days;
   };
 
   const clearWaTimers = useCallback(() => {
@@ -854,64 +895,158 @@ export default function AccountScreen() {
           );
         })()}
 
-        {/* Business Hours */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Business Hours</Text>
-          <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>
-            Sets booking availability — customers can't book outside these times.
-          </Text>
-          <View style={styles.hoursCard}>
-            {(['mon','tue','wed','thu','fri','sat','sun'] as DayKey[]).map((day, idx) => {
-              const h = businessHours[day];
-              return (
-                <View key={day} style={[styles.hoursRow, idx === 6 && { borderBottomWidth: 0 }]}>
-                  <Text style={styles.hoursDay}>{DAY_LABELS[day].slice(0,3)}</Text>
+        {/* Business Hours / Rental Availability */}
+        {businessType === 'rental' ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Date Availability</Text>
+            <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 12, marginTop: -4 }}>
+              Tap dates to mark them as <Text style={{ color: '#EF4444' }}>unavailable</Text> (blocked). All other dates are bookable.
+            </Text>
+            {/* Month navigation */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <TouchableOpacity
+                onPress={() => setCalendarMonth(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
+                style={{ padding: 6 }}
+              >
+                <Ionicons name="chevron-back" size={20} color="#25D366" />
+              </TouchableOpacity>
+              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>
+                {calendarMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setCalendarMonth(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
+                style={{ padding: 6 }}
+              >
+                <Ionicons name="chevron-forward" size={20} color="#25D366" />
+              </TouchableOpacity>
+            </View>
+            {/* Day labels */}
+            <View style={{ flexDirection: 'row', marginBottom: 4 }}>
+              {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+                <Text key={d} style={{ flex: 1, textAlign: 'center', color: '#64748B', fontSize: 11, fontWeight: '700' }}>{d}</Text>
+              ))}
+            </View>
+            {/* Calendar grid */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#0F1E35', borderRadius: 12, borderWidth: 1, borderColor: '#1A2942', padding: 6 }}>
+              {getCalendarDays(calendarMonth).map((dateStr, i) => {
+                if (!dateStr) return <View key={`empty-${i}`} style={{ width: '14.28%', aspectRatio: 1 }} />;
+                const today = new Date();
+                const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+                const isPast = dateStr < todayStr;
+                const isBlocked = blockedDates.includes(dateStr);
+                const dayNum = parseInt(dateStr.split('-')[2]);
+                return (
                   <TouchableOpacity
-                    style={[styles.hoursToggle, !h.closed && styles.hoursToggleActive]}
-                    onPress={() => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], closed: !prev[day].closed } }))}
+                    key={dateStr}
+                    style={{
+                      width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center',
+                      borderRadius: 6, margin: 1,
+                      backgroundColor: isBlocked ? '#EF444422' : 'transparent',
+                      opacity: isPast ? 0.35 : 1,
+                    }}
+                    onPress={() => !isPast && toggleBlockedDate(dateStr)}
+                    disabled={isPast}
                   >
-                    <Text style={[styles.hoursToggleText, !h.closed && styles.hoursToggleTextActive]}>
-                      {h.closed ? 'Closed' : 'Open'}
-                    </Text>
+                    <Text style={{
+                      fontSize: 13, fontWeight: '600',
+                      color: isBlocked ? '#EF4444' : dateStr === todayStr ? '#25D366' : '#FFFFFF',
+                    }}>{dayNum}</Text>
+                    {isBlocked && <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: '#EF4444', marginTop: 1 }} />}
                   </TouchableOpacity>
-                  {!h.closed ? (
-                    <View style={styles.hoursTimeRow}>
-                      <TextInput
-                        style={styles.hoursTimeInput}
-                        value={h.open}
-                        onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], open: v } }))}
-                        placeholder="08:00"
-                        placeholderTextColor="#475569"
-                        maxLength={5}
-                      />
-                      <Text style={{ color: '#64748B', fontSize: 13 }}>–</Text>
-                      <TextInput
-                        style={styles.hoursTimeInput}
-                        value={h.close}
-                        onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], close: v } }))}
-                        placeholder="17:00"
-                        placeholderTextColor="#475569"
-                        maxLength={5}
-                      />
-                    </View>
-                  ) : (
-                    <View style={{ flex: 1 }} />
-                  )}
-                </View>
-              );
-            })}
+                );
+              })}
+            </View>
+            {/* Legend */}
+            <View style={{ flexDirection: 'row', gap: 16, marginTop: 10, marginBottom: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: '#25D36630' }} />
+                <Text style={{ color: '#64748B', fontSize: 12 }}>Available</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: '#EF444422', borderWidth: 1, borderColor: '#EF4444' }} />
+                <Text style={{ color: '#64748B', fontSize: 12 }}>Blocked</Text>
+              </View>
+              {blockedDates.length > 0 && (
+                <TouchableOpacity onPress={() => setBlockedDates([])} style={{ marginLeft: 'auto' }}>
+                  <Text style={{ color: '#64748B', fontSize: 12, textDecorationLine: 'underline' }}>Clear all</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            {blockedDates.length > 0 && (
+              <Text style={{ color: '#64748B', fontSize: 12, marginBottom: 10 }}>
+                {blockedDates.length} date{blockedDates.length !== 1 ? 's' : ''} blocked
+              </Text>
+            )}
+            <TouchableOpacity
+              style={[styles.saveHoursBtn, savingAvailability && { opacity: 0.6 }]}
+              onPress={saveRentalAvailability}
+              disabled={savingAvailability}
+            >
+              {savingAvailability
+                ? <ActivityIndicator size="small" color="#FFFFFF" />
+                : <Text style={styles.saveHoursBtnText}>Save Availability</Text>
+              }
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.saveHoursBtn, savingHours && { opacity: 0.6 }]}
-            onPress={saveBusinessHours}
-            disabled={savingHours}
-          >
-            {savingHours
-              ? <ActivityIndicator size="small" color="#FFFFFF" />
-              : <Text style={styles.saveHoursBtnText}>Save Hours</Text>
-            }
-          </TouchableOpacity>
-        </View>
+        ) : (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Business Hours</Text>
+            <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>
+              Sets booking availability — customers can't book outside these times.
+            </Text>
+            <View style={styles.hoursCard}>
+              {(['mon','tue','wed','thu','fri','sat','sun'] as DayKey[]).map((day, idx) => {
+                const h = businessHours[day];
+                return (
+                  <View key={day} style={[styles.hoursRow, idx === 6 && { borderBottomWidth: 0 }]}>
+                    <Text style={styles.hoursDay}>{DAY_LABELS[day].slice(0,3)}</Text>
+                    <TouchableOpacity
+                      style={[styles.hoursToggle, !h.closed && styles.hoursToggleActive]}
+                      onPress={() => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], closed: !prev[day].closed } }))}
+                    >
+                      <Text style={[styles.hoursToggleText, !h.closed && styles.hoursToggleTextActive]}>
+                        {h.closed ? 'Closed' : 'Open'}
+                      </Text>
+                    </TouchableOpacity>
+                    {!h.closed ? (
+                      <View style={styles.hoursTimeRow}>
+                        <TextInput
+                          style={styles.hoursTimeInput}
+                          value={h.open}
+                          onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], open: v } }))}
+                          placeholder="08:00"
+                          placeholderTextColor="#475569"
+                          maxLength={5}
+                        />
+                        <Text style={{ color: '#64748B', fontSize: 13 }}>–</Text>
+                        <TextInput
+                          style={styles.hoursTimeInput}
+                          value={h.close}
+                          onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], close: v } }))}
+                          placeholder="17:00"
+                          placeholderTextColor="#475569"
+                          maxLength={5}
+                        />
+                      </View>
+                    ) : (
+                      <View style={{ flex: 1 }} />
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+            <TouchableOpacity
+              style={[styles.saveHoursBtn, savingHours && { opacity: 0.6 }]}
+              onPress={saveBusinessHours}
+              disabled={savingHours}
+            >
+              {savingHours
+                ? <ActivityIndicator size="small" color="#FFFFFF" />
+                : <Text style={styles.saveHoursBtnText}>Save Hours</Text>
+              }
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Settings */}
         <View style={styles.section}>

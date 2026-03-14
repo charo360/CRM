@@ -1542,6 +1542,7 @@ class UserSettingsUpdate(BaseModel):
     business_hours: Optional[Dict[str, Any]] = None  # {"mon": {"open": "09:00", "close": "18:00", "closed": false}, ...}
     booking_settings: Optional[Dict[str, Any]] = None  # duration_default, buffer_minutes, advance_days, etc.
     timezone: Optional[str] = None  # e.g. 'Africa/Nairobi', 'America/New_York'
+    rental_availability: Optional[List[str]] = None  # list of blocked date strings YYYY-MM-DD
 
 # Business Knowledge Model
 class BusinessKnowledge(BaseModel):
@@ -1980,6 +1981,7 @@ async def get_settings(user = Depends(get_current_user)):
         "business_hours": s.get("business_hours", {}),
         "booking_settings": s.get("booking_settings", {}),
         "timezone": s.get("timezone", "UTC"),
+        "rental_availability": s.get("rental_availability", []),
     }
 
 @api_router.put("/settings")
@@ -7697,6 +7699,19 @@ async def evolution_webhook(request: Request):
                                 customer_name=customer_name, send_context="booking_flow"
                             )
                             return {"status": "ok", "handled_by": "booking_checkin_invalid"}
+                        # Check against owner-blocked dates
+                        _ci_user_doc = await db.users.find_one({"_id": user["_id"]})
+                        _ci_blocked = (_ci_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                        if str(_parsed_ci) in _ci_blocked:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    f"Sorry, *{_parsed_ci.strftime('%A %d %B %Y')}* is not available for check-in. \n\n"
+                                    f"📅 Please reply with a different check-in date."
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_checkin_blocked"}
                         await db.pending_catalogs.update_one(
                             {"customer_id": customer_id, "user_id": user["_id"]},
                             {"$set": {"booking_checkin_date": str(_parsed_ci), "action_context": "booking_checkout_input", "updated_at": datetime.utcnow()}}
@@ -7757,7 +7772,22 @@ async def evolution_webhook(request: Request):
                                 customer_name=customer_name, send_context="booking_flow"
                             )
                             return {"status": "ok", "handled_by": "booking_checkout_invalid"}
-                        _nights = (_parsed_co - _ci_date).days
+                        # Check if any date in the stay range is blocked
+                        _co_user_doc = await db.users.find_one({"_id": user["_id"]})
+                        _co_blocked = (_co_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                        _nights_check = (_parsed_co - _ci_date).days
+                        _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_blocked]
+                        if _blocked_in_range:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
+                                    f"📅 Please reply with a different check-out date."
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_checkout_blocked"}
+                        _nights = _nights_check
                         _co_currency = user.get("settings", {}).get("currency", "USD")
                         _co_base_price = _co_state.get("booking_service_price", 0)
                         _co_addons = _co_state.get("booking_selected_addons", [])
@@ -10712,6 +10742,7 @@ async def get_user_settings(user = Depends(get_current_user)):
         "business_hours": settings.get("business_hours", {}),
         "booking_settings": settings.get("booking_settings", {}),
         "timezone": settings.get("timezone", "UTC"),
+        "rental_availability": settings.get("rental_availability", []),
     }
 
 @api_router.put("/settings")
@@ -10770,6 +10801,9 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
 
     if settings.timezone is not None:
         update_data['settings.timezone'] = settings.timezone
+
+    if settings.rental_availability is not None:
+        update_data['settings.rental_availability'] = settings.rental_availability
 
     if update_data:
         await db.users.update_one(
