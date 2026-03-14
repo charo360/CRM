@@ -5036,6 +5036,7 @@ class ProductResponse(BaseModel):
     preview_url: Optional[str] = None
     service_category: Optional[str] = "appointment"  # appointment | rental
     addons: Optional[List[dict]] = []               # [{name, price}] max 4
+    listing_blocked_dates: Optional[List[str]] = []  # per-listing blocked YYYY-MM-DD dates
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
@@ -5070,6 +5071,7 @@ async def get_products(user = Depends(get_current_user)):
             preview_url=p.get("preview_url"),
             service_category=p.get("service_category", "appointment"),
             addons=p.get("addons", []),
+            listing_blocked_dates=p.get("listing_blocked_dates", []),
         ))
     return result
 
@@ -5093,6 +5095,7 @@ class ProductCreate(BaseModel):
     preview_url: Optional[str] = None
     service_category: Optional[str] = "appointment"
     addons: Optional[List[dict]] = []
+    listing_blocked_dates: Optional[List[str]] = []
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -5114,6 +5117,7 @@ class ProductUpdate(BaseModel):
     preview_url: Optional[str] = None
     service_category: Optional[str] = None
     addons: Optional[List[dict]] = None
+    listing_blocked_dates: Optional[List[str]] = None
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -5192,6 +5196,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "preview_url": product.preview_url,
         "service_category": product.service_category or "appointment",
         "addons": (product.addons or [])[:4],
+        "listing_blocked_dates": product.listing_blocked_dates or [],
         "created_at": datetime.utcnow()
     }
     
@@ -5218,13 +5223,14 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         preview_url=product_doc["preview_url"],
         service_category=product_doc["service_category"],
         addons=product_doc["addons"],
+        listing_blocked_dates=product_doc.get("listing_blocked_dates", []),
     )
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
 async def update_product(product_id: str, updates: ProductUpdate, user = Depends(get_current_user)):
     """Update a product"""
-    # Create update dict excluding None values
-    update_data = {k: v for k, v in updates.dict().items() if v is not None}
+    # Create update dict excluding None values (allow empty list for listing_blocked_dates)
+    update_data = {k: v for k, v in updates.dict().items() if v is not None or k == "listing_blocked_dates"}
     
     if not update_data:
         raise HTTPException(status_code=400, detail="No updates provided")
@@ -5285,6 +5291,7 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         preview_url=result.get("preview_url"),
         service_category=result.get("service_category", "appointment"),
         addons=result.get("addons", []),
+        listing_blocked_dates=result.get("listing_blocked_dates", []),
     )
 
 @api_router.post("/products/{product_id}/images")
@@ -7699,10 +7706,14 @@ async def evolution_webhook(request: Request):
                                 customer_name=customer_name, send_context="booking_flow"
                             )
                             return {"status": "ok", "handled_by": "booking_checkin_invalid"}
-                        # Check against owner-blocked dates
+                        # Check against owner-blocked dates (global) and listing-specific blocked dates
                         _ci_user_doc = await db.users.find_one({"_id": user["_id"]})
-                        _ci_blocked = (_ci_user_doc or {}).get("settings", {}).get("rental_availability", [])
-                        if str(_parsed_ci) in _ci_blocked:
+                        _ci_blocked_global = (_ci_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                        _ci_svc_id = _ci_state.get("booking_service_id", "")
+                        _ci_listing_doc = await db.products.find_one({"_id": _ci_svc_id}) if _ci_svc_id else None
+                        _ci_blocked_listing = (_ci_listing_doc or {}).get("listing_blocked_dates", [])
+                        _ci_all_blocked = set(_ci_blocked_global) | set(_ci_blocked_listing)
+                        if str(_parsed_ci) in _ci_all_blocked:
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
                                 message=(
@@ -7772,11 +7783,15 @@ async def evolution_webhook(request: Request):
                                 customer_name=customer_name, send_context="booking_flow"
                             )
                             return {"status": "ok", "handled_by": "booking_checkout_invalid"}
-                        # Check if any date in the stay range is blocked
+                        # Check if any date in the stay range is blocked (global + listing-specific)
                         _co_user_doc = await db.users.find_one({"_id": user["_id"]})
-                        _co_blocked = (_co_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                        _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                        _co_svc_id = _co_state.get("booking_service_id", "")
+                        _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
+                        _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates", [])
+                        _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
                         _nights_check = (_parsed_co - _ci_date).days
-                        _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_blocked]
+                        _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
                         if _blocked_in_range:
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,

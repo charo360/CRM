@@ -45,6 +45,7 @@ interface Product {
     duration?: number;
     service_category?: string;
     addons?: Addon[];
+    listing_blocked_dates?: string[];
 }
 
 interface ProductCatalogModalProps {
@@ -84,6 +85,41 @@ export default function ProductCatalogModal({
     const [editAddons, setEditAddons] = useState<Addon[]>([]);
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
+
+    // Per-listing availability calendar state
+    const [listingBlockedDates, setListingBlockedDates] = useState<string[]>([]);
+    const [listingCalMonth, setListingCalMonth] = useState(new Date());
+    const [savingListingAvail, setSavingListingAvail] = useState(false);
+
+    const getListingCalDays = (month: Date): (string | null)[] => {
+        const year = month.getFullYear();
+        const mo = month.getMonth();
+        const firstDay = new Date(year, mo, 1).getDay();
+        const daysInMonth = new Date(year, mo + 1, 0).getDate();
+        const days: (string | null)[] = [];
+        for (let i = 0; i < firstDay; i++) days.push(null);
+        for (let d = 1; d <= daysInMonth; d++) {
+            const mm = String(mo + 1).padStart(2, '0');
+            const dd = String(d).padStart(2, '0');
+            days.push(`${year}-${mm}-${dd}`);
+        }
+        return days;
+    };
+
+    const saveListingAvailability = async (productId: string) => {
+        setSavingListingAvail(true);
+        try {
+            await productsAPI.updateProduct(productId, { listing_blocked_dates: listingBlockedDates } as any);
+            setProducts(prev => prev.map(p =>
+                p.id === productId ? { ...p, listing_blocked_dates: listingBlockedDates } : p
+            ));
+            Alert.alert('Saved', 'Listing availability updated.');
+        } catch (e) {
+            Alert.alert('Error', 'Failed to save listing availability');
+        } finally {
+            setSavingListingAvail(false);
+        }
+    };
     const [addingPhotos, setAddingPhotos] = useState(false);
     const [aiFailedBanner, setAiFailedBanner] = useState(false);
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
@@ -270,6 +306,8 @@ export default function ProductCatalogModal({
         setSelectedProduct(product);
         setEditMode(false);
         setActiveImageIndex(0);
+        setListingBlockedDates(product.listing_blocked_dates || []);
+        setListingCalMonth(new Date());
         setDetailVisible(true);
     };
 
@@ -976,6 +1014,89 @@ export default function ProductCatalogModal({
                                         <Text style={styles.descriptionText}>{selectedProduct.description}</Text>
                                     </View>
                                 ) : null}
+
+                                {/* Per-listing Date Availability Calendar (rental only) */}
+                                {(businessType === 'rental' || selectedProduct.service_category === 'rental') && (
+                                    <View style={{ marginTop: 16, padding: 14, backgroundColor: '#0F1E35', borderRadius: 12, borderWidth: 1, borderColor: '#1A2942' }}>
+                                        <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14, marginBottom: 4 }}>Listing Availability</Text>
+                                        <Text style={{ color: '#64748B', fontSize: 12, marginBottom: 12 }}>
+                                            Tap dates to mark them as <Text style={{ color: '#EF4444' }}>unavailable</Text> for this listing only.
+                                        </Text>
+                                        {/* Month nav */}
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                            <TouchableOpacity onPress={() => setListingCalMonth(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))} style={{ padding: 4 }}>
+                                                <Ionicons name="chevron-back" size={18} color="#25D366" />
+                                            </TouchableOpacity>
+                                            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>
+                                                {listingCalMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
+                                            </Text>
+                                            <TouchableOpacity onPress={() => setListingCalMonth(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))} style={{ padding: 4 }}>
+                                                <Ionicons name="chevron-forward" size={18} color="#25D366" />
+                                            </TouchableOpacity>
+                                        </View>
+                                        {/* Day headers */}
+                                        <View style={{ flexDirection: 'row', marginBottom: 3 }}>
+                                            {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+                                                <Text key={d} style={{ flex: 1, textAlign: 'center', color: '#64748B', fontSize: 10, fontWeight: '700' }}>{d}</Text>
+                                            ))}
+                                        </View>
+                                        {/* Calendar grid */}
+                                        <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                                            {getListingCalDays(listingCalMonth).map((dateStr, i) => {
+                                                if (!dateStr) return <View key={`e-${i}`} style={{ width: '14.28%', aspectRatio: 1 }} />;
+                                                const todayStr = new Date().toISOString().slice(0, 10);
+                                                const isPast = dateStr < todayStr;
+                                                const isBlocked = listingBlockedDates.includes(dateStr);
+                                                const dayNum = parseInt(dateStr.split('-')[2]);
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={dateStr}
+                                                        style={{
+                                                            width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center',
+                                                            borderRadius: 5,
+                                                            backgroundColor: isBlocked ? '#EF444422' : 'transparent',
+                                                            opacity: isPast ? 0.3 : 1,
+                                                        }}
+                                                        onPress={() => !isPast && setListingBlockedDates(prev =>
+                                                            prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr]
+                                                        )}
+                                                        disabled={isPast}
+                                                    >
+                                                        <Text style={{ fontSize: 12, fontWeight: '600', color: isBlocked ? '#EF4444' : dateStr === todayStr ? '#25D366' : '#FFFFFF' }}>
+                                                            {dayNum}
+                                                        </Text>
+                                                        {isBlocked && <View style={{ width: 3, height: 3, borderRadius: 2, backgroundColor: '#EF4444', marginTop: 1 }} />}
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                        {/* Legend + count */}
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 12 }}>
+                                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                                <View style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: '#EF444422', borderWidth: 1, borderColor: '#EF4444' }} />
+                                                <Text style={{ color: '#64748B', fontSize: 11 }}>Blocked</Text>
+                                            </View>
+                                            {listingBlockedDates.length > 0 && (
+                                                <>
+                                                    <Text style={{ color: '#64748B', fontSize: 11 }}>{listingBlockedDates.length} date{listingBlockedDates.length !== 1 ? 's' : ''} blocked</Text>
+                                                    <TouchableOpacity onPress={() => setListingBlockedDates([])} style={{ marginLeft: 'auto' }}>
+                                                        <Text style={{ color: '#64748B', fontSize: 11, textDecorationLine: 'underline' }}>Clear all</Text>
+                                                    </TouchableOpacity>
+                                                </>
+                                            )}
+                                        </View>
+                                        <TouchableOpacity
+                                            style={{ marginTop: 12, backgroundColor: '#25D366', borderRadius: 8, paddingVertical: 10, alignItems: 'center', opacity: savingListingAvail ? 0.6 : 1 }}
+                                            onPress={() => saveListingAvailability(selectedProduct.id)}
+                                            disabled={savingListingAvail}
+                                        >
+                                            {savingListingAvail
+                                                ? <ActivityIndicator size="small" color="#FFF" />
+                                                : <Text style={{ color: '#FFF', fontWeight: '600', fontSize: 13 }}>Save Availability</Text>
+                                            }
+                                        </TouchableOpacity>
+                                    </View>
+                                )}
 
                                 {/* Action Buttons */}
                                 <View style={styles.actionButtons}>
