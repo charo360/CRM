@@ -2700,6 +2700,32 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
 
     customer_id = str(uuid.uuid4())
     business_id = user.get("business_id", user["_id"])
+
+    # Check for duplicate phone number
+    existing = await db.customers.find_one({"user_id": business_id, "phone_number": clean_phone})
+    if existing:
+        if existing.get("is_customer"):
+            raise HTTPException(status_code=409, detail="A customer with this phone number already exists")
+        # Contact exists but not yet a customer — promote it
+        await db.customers.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"is_customer": True, "name": clean_name, "notes": clean_notes, "tags": clean_tags if clean_tags else ["New"]}}
+        )
+        return CustomerResponse(
+            id=existing["_id"],
+            user_id=business_id,
+            name=clean_name,
+            phone_number=clean_phone,
+            notes=clean_notes,
+            tags=clean_tags if clean_tags else ["New"],
+            purchase_count=existing.get("purchase_count", 0),
+            total_spent=existing.get("total_spent", 0.0),
+            last_message=existing.get("last_message"),
+            last_contacted=existing.get("last_contacted"),
+            created_at=existing.get("created_at", datetime.utcnow()),
+            is_customer=True,
+        )
+
     customer_doc = {
         "_id": customer_id,
         "user_id": business_id,
@@ -2714,21 +2740,26 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "created_at": datetime.utcnow(),
         "is_customer": True,
     }
-    
-    await db.customers.insert_one(customer_doc)
-    
+
+    try:
+        await db.customers.insert_one(customer_doc)
+    except Exception as e:
+        logging.error(f"create_customer insert failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create customer — please try again")
+
     return CustomerResponse(
         id=customer_id,
         user_id=business_id,
-        name=customer.name,
-        phone_number=customer.phone_number,
-        notes=customer.notes,
+        name=clean_name,
+        phone_number=clean_phone,
+        notes=clean_notes,
         tags=customer_doc["tags"],
         purchase_count=0,
         total_spent=0.0,
         last_message=None,
         last_contacted=None,
-        created_at=customer_doc["created_at"]
+        created_at=customer_doc["created_at"],
+        is_customer=True,
     )
 
 def _normalize_phone(phone: str) -> str:
