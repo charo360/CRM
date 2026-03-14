@@ -669,6 +669,27 @@ export default function ProductCatalogModal({
                                     placeholder={businessType === 'rental' ? 'e.g. Property, Vehicle, Equipment, Boat' : isServiceBusiness ? 'e.g. Hair, Nails, Massage, Fitness' : businessType === 'restaurant' ? 'e.g. Mains, Starters, Drinks, Desserts' : businessType === 'creator' ? 'e.g. Sponsored Post, Digital Product, Merch' : 'e.g. Clothing, Electronics, Food'}
                                     placeholderTextColor="#555"
                                 />
+                                {/* Quick-pick chips from existing categories */}
+                                {(() => {
+                                    const existingCats = [...new Set(
+                                        products
+                                            .filter(p => p.category && p.category !== 'Other' && p.id !== selectedProduct?.id)
+                                            .map(p => p.category!)
+                                    )].slice(0, 6);
+                                    return existingCats.length > 0 ? (
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }}>
+                                            {existingCats.map(cat => (
+                                                <TouchableOpacity
+                                                    key={cat}
+                                                    style={[styles.typeChip, editCategory === cat && styles.typeChipActive, { marginRight: 6 }]}
+                                                    onPress={() => setEditCategory(cat)}
+                                                >
+                                                    <Text style={[styles.typeChipText, editCategory === cat && styles.typeChipTextActive]}>{cat}</Text>
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+                                    ) : null;
+                                })()}
                             </View>
 
                             <View style={styles.formGroup}>

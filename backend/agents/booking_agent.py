@@ -295,28 +295,48 @@ class BookingAgent(BaseAgent):
                         else:
                             avail_listings.append(f"✅ *{s['name']}* — {price_str}{total_str}")
 
+                    # Build numbered list of available listings only
+                    avail_services = []
+                    for s in services:
+                        listing_blocked = set(s.get("listing_blocked_dates", []))
+                        all_blocked = global_blocked | listing_blocked
+                        conflict = [d for d in stay_dates if d in all_blocked]
+                        if not conflict:
+                            avail_services.append(s)
+
                     ci_str = ci_date.strftime("%d %b %Y")
                     co_str = co_date.strftime("%d %b %Y")
                     lines = [f"📅 *Availability: {ci_str} → {co_str} ({nights} night{'s' if nights != 1 else ''})*\n"]
                     if avail_listings:
-                        lines.append("*Available listings:*")
-                        lines.extend(avail_listings)
+                        lines.append("✅ *Available — select one to book:*")
+                        for idx, s in enumerate(avail_services, 1):
+                            price = s.get("price", 0)
+                            unit = s.get("price_unit", "night")
+                            unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
+                            price_str = f"{currency} {price:,.0f}/" + unit_label if price else "Contact for price"
+                            if unit == "week":
+                                period_total = price * max(1, round(nights / 7))
+                            elif unit == "month":
+                                period_total = price * max(1, round(nights / 30))
+                            elif unit == "year":
+                                period_total = price * max(1, round(nights / 365))
+                            elif unit == "person":
+                                period_total = price
+                            else:
+                                period_total = price * nights
+                            total_str = f" · Total: {currency} {period_total:,.0f}" if price else ""
+                            lines.append(f"{idx}\ufe0f\u20e3  *{s['name']}* — {price_str}{total_str}")
                     if unavail_listings:
-                        lines.append("\n*Unavailable:*")
+                        lines.append("\n❌ *Not available for these dates:*")
                         lines.extend(unavail_listings)
                     if avail_listings:
-                        lines.append("\n_Reply with the listing name or number to book_ 🏠")
+                        lines.append("\n_Reply with the number to book_ 🏠")
                     else:
                         lines.append("\n_Sorry, no listings are available for those dates. Try different dates!_")
                     messages_out.append({"text": "\n".join(lines)})
 
-                    # Pre-load listings into pending_catalogs for immediate booking
-                    bookable = [s for s in services if str(s["_id"]) not in {
-                        s2["_id"] for s2 in services
-                        if set((user_doc or {}).get("settings", {}).get("rental_availability", [])) | set(s2.get("listing_blocked_dates", []))
-                        & set(stay_dates)
-                    }]
-                    if customer_id and user_id and bookable:
+                    # Pre-load AVAILABLE listings into pending_catalogs for immediate booking
+                    if customer_id and user_id and avail_services:
                         try:
                             await self.db.pending_catalogs.update_one(
                                 {"customer_id": customer_id, "user_id": user_id},
@@ -325,12 +345,13 @@ class BookingAgent(BaseAgent):
                                         {"id": str(s["_id"]), "name": s["name"], "price": s.get("price", 0),
                                          "duration": None, "index": idx,
                                          "service_category": "rental",
+                                         "price_unit": s.get("price_unit", "night"),
                                          "addons": s.get("addons", []),
                                          "image_url": s.get("image_url", "")}
-                                        for idx, s in enumerate(services, 1)
+                                        for idx, s in enumerate(avail_services, 1)
                                     ],
                                     "action_context": "booking_service_select",
-                                    "catalog_all_ids": [str(s["_id"]) for s in services],
+                                    "catalog_all_ids": [str(s["_id"]) for s in avail_services],
                                     "catalog_page_offset": 0,
                                     "catalog_has_more": False,
                                     "created_at": datetime.utcnow(),

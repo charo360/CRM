@@ -7822,7 +7822,7 @@ async def evolution_webhook(request: Request):
                             )
                             return {"status": "ok", "handled_by": "booking_checkout_blocked"}
                         _nights = _nights_check
-                        _co_currency = user.get("settings", {}).get("currency", "USD")
+                        _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         _co_base_price = _co_state.get("booking_service_price", 0)
                         _co_addons = _co_state.get("booking_selected_addons", [])
                         _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
@@ -8936,7 +8936,7 @@ async def evolution_webhook(request: Request):
                         _bk_parts.append("Payment methods accepted:\n" + "\n".join(_pm_lines))
                 _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
 
-                currency = _user_settings.get("currency", "USD")
+                currency = user.get("currency") or _user_settings.get("currency", "USD")
                 # Build customer data dict for agents that need it
                 _customer_data = {}
                 if customer:
