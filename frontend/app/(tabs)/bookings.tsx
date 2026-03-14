@@ -19,6 +19,11 @@ import { apiClient, bookingsAPI, productsAPI } from '../../context/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface BookingAddon {
+  name: string;
+  price: number;
+}
+
 interface Booking {
   id: string;
   booking_number: string;
@@ -27,11 +32,17 @@ interface Booking {
   customer_phone?: string;
   service_id: string;
   service_name: string;
+  service_category?: string;
   staff_name?: string;
   date: string;
   time: string;
   end_time?: string;
   duration?: number;
+  checkin_date?: string;
+  checkout_date?: string;
+  nights?: number;
+  addons?: BookingAddon[];
+  total_price?: number;
   status: 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'no_show';
   payment_status: 'unpaid' | 'partial' | 'paid';
   price: number;
@@ -134,10 +145,24 @@ function BookingCard({ booking, onPress }: { booking: Booking; onPress: () => vo
         <Text style={styles.serviceName} numberOfLines={1}>{booking.service_name}</Text>
         <View style={styles.cardMetaRow}>
           <Ionicons name="calendar-outline" size={12} color="#94A3B8" />
-          <Text style={styles.metaText}>{formatDisplayDate(booking.date)}</Text>
-          <Ionicons name="time-outline" size={12} color="#94A3B8" style={{ marginLeft: 8 }} />
-          <Text style={styles.metaText}>{booking.time}{booking.end_time ? ` – ${booking.end_time}` : ''}</Text>
+          {booking.service_category === 'rental' && booking.checkin_date ? (
+            <Text style={styles.metaText}>
+              {formatDisplayDate(booking.checkin_date)}{booking.checkout_date ? ` → ${formatDisplayDate(booking.checkout_date)}` : ''}
+              {booking.nights ? ` · ${booking.nights}n` : ''}
+            </Text>
+          ) : (
+            <>
+              <Text style={styles.metaText}>{formatDisplayDate(booking.date)}</Text>
+              <Ionicons name="time-outline" size={12} color="#94A3B8" style={{ marginLeft: 8 }} />
+              <Text style={styles.metaText}>{booking.time}{booking.end_time ? ` – ${booking.end_time}` : ''}</Text>
+            </>
+          )}
         </View>
+        {booking.addons && booking.addons.length > 0 && (
+          <Text style={styles.addonsText} numberOfLines={1}>
+            +{booking.addons.map(a => a.name).join(', ')}
+          </Text>
+        )}
       </View>
       <View style={styles.cardRight}>
         <View style={[styles.statusChip, { backgroundColor: statusColor + '22' }]}>
@@ -670,19 +695,44 @@ export default function BookingsScreen() {
                 )}
               </View>
 
-              {/* Time */}
+              {/* Time / Rental Dates */}
               <View style={styles.detailCard}>
-                <DetailRow icon="calendar-outline" label="Date" value={formatDisplayDate(selectedBooking.date)} />
-                <DetailRow
-                  icon="time-outline"
-                  label="Time"
-                  value={`${selectedBooking.time}${selectedBooking.end_time ? ` – ${selectedBooking.end_time}` : ''}${selectedBooking.duration ? ` (${selectedBooking.duration} min)` : ''}`}
-                />
+                {selectedBooking.service_category === 'rental' ? (
+                  <>
+                    <DetailRow icon="log-in-outline" label="Check-in" value={formatDisplayDate(selectedBooking.checkin_date || selectedBooking.date)} />
+                    {selectedBooking.checkout_date && (
+                      <DetailRow icon="log-out-outline" label="Check-out" value={formatDisplayDate(selectedBooking.checkout_date)} />
+                    )}
+                    {selectedBooking.nights ? (
+                      <DetailRow icon="moon-outline" label="Nights" value={`${selectedBooking.nights} night(s)`} />
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <DetailRow icon="calendar-outline" label="Date" value={formatDisplayDate(selectedBooking.date)} />
+                    <DetailRow
+                      icon="time-outline"
+                      label="Time"
+                      value={`${selectedBooking.time}${selectedBooking.end_time ? ` – ${selectedBooking.end_time}` : ''}${selectedBooking.duration ? ` (${selectedBooking.duration} min)` : ''}`}
+                    />
+                  </>
+                )}
               </View>
+
+              {/* Add-ons */}
+              {selectedBooking.addons && selectedBooking.addons.length > 0 && (
+                <View style={styles.detailCard}>
+                  <DetailRow
+                    icon="add-circle-outline"
+                    label="Add-ons"
+                    value={selectedBooking.addons.map(a => `${a.name}${a.price > 0 ? ` (+${a.price.toLocaleString()})` : ''}`).join(', ')}
+                  />
+                </View>
+              )}
 
               {/* Price */}
               <View style={styles.detailCard}>
-                <DetailRow icon="cash-outline" label="Price" value={`${selectedBooking.price > 0 ? selectedBooking.price.toLocaleString() : 'Not set'}`} />
+                <DetailRow icon="cash-outline" label="Price" value={`${(selectedBooking.total_price || selectedBooking.price) > 0 ? (selectedBooking.total_price || selectedBooking.price).toLocaleString() : 'Not set'}`} />
               </View>
 
               {selectedBooking.notes && (
@@ -823,6 +873,7 @@ const styles = StyleSheet.create({
   serviceName: { color: '#94A3B8', fontSize: 13, marginBottom: 4 },
   cardMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { color: '#64748B', fontSize: 12 },
+  addonsText: { color: '#4A90D9', fontSize: 11, marginTop: 2 },
   cardRight: { alignItems: 'flex-end', gap: 4 },
   statusChip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
   statusChipText: { fontSize: 11, fontWeight: '600' },

@@ -24,6 +24,11 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_GAP = 10;
 const CARD_WIDTH = (SCREEN_WIDTH - 48 - CARD_GAP) / 2;
 
+interface Addon {
+    name: string;
+    price: number;
+}
+
 interface Product {
     id: string;
     name: string;
@@ -38,6 +43,8 @@ interface Product {
     created_at: string;
     offering_type?: string;
     duration?: number;
+    service_category?: string;
+    addons?: Addon[];
 }
 
 interface ProductCatalogModalProps {
@@ -73,6 +80,8 @@ export default function ProductCatalogModal({
     const [editStockQuantity, setEditStockQuantity] = useState('');
     const [editOfferingType, setEditOfferingType] = useState('product');
     const [editDuration, setEditDuration] = useState('');
+    const [editServiceCategory, setEditServiceCategory] = useState<'appointment' | 'rental'>('appointment');
+    const [editAddons, setEditAddons] = useState<Addon[]>([]);
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
     const [addingPhotos, setAddingPhotos] = useState(false);
@@ -275,6 +284,8 @@ export default function ProductCatalogModal({
         setEditStockQuantity(product.stock_quantity?.toString() || '');
         setEditOfferingType(product.offering_type || 'product');
         setEditDuration(product.duration?.toString() || '');
+        setEditServiceCategory((product.service_category as 'appointment' | 'rental') || 'appointment');
+        setEditAddons(product.addons || []);
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -295,6 +306,8 @@ export default function ProductCatalogModal({
         setEditStockQuantity('');
         setEditOfferingType(isServiceBusiness ? 'service' : businessType === 'restaurant' ? 'menu_item' : businessType === 'creator' ? 'digital' : 'product');
         setEditDuration(isServiceBusiness ? '60' : '');
+        setEditServiceCategory('appointment');
+        setEditAddons([]);
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -337,6 +350,8 @@ export default function ProductCatalogModal({
                     stock_quantity: stockQuantity,
                     offering_type: editOfferingType,
                     duration: editDuration.trim() ? parseInt(editDuration) : undefined,
+                    service_category: editServiceCategory,
+                    addons: editAddons.filter(a => a.name.trim()),
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -358,6 +373,8 @@ export default function ProductCatalogModal({
                     stock_quantity: stockQuantity,
                     offering_type: editOfferingType,
                     duration: editDuration.trim() ? parseInt(editDuration) : undefined,
+                    service_category: editServiceCategory,
+                    addons: editAddons.filter(a => a.name.trim()),
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -704,6 +721,71 @@ export default function ProductCatalogModal({
                                         keyboardType="numeric"
                                     />
                                     <Text style={styles.stockHint}>Used for booking slot calculation</Text>
+                                </View>
+                            )}
+
+                            {(isServiceBusiness || ['service','class','appointment','consultation','package','rental'].includes(editOfferingType)) && (
+                                <View style={styles.formGroup}>
+                                    <Text style={styles.formLabel}>Booking Type</Text>
+                                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                                        {[{ id: 'appointment', label: '📅 Appointment' }, { id: 'rental', label: '🏠 Rental' }].map(opt => (
+                                            <TouchableOpacity
+                                                key={opt.id}
+                                                style={[
+                                                    styles.typeChip,
+                                                    editServiceCategory === opt.id && styles.typeChipActive,
+                                                    { flex: 1, justifyContent: 'center' }
+                                                ]}
+                                                onPress={() => setEditServiceCategory(opt.id as 'appointment' | 'rental')}
+                                            >
+                                                <Text style={[styles.typeChipText, editServiceCategory === opt.id && styles.typeChipTextActive]}>{opt.label}</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+                                    <Text style={styles.stockHint}>
+                                        {editServiceCategory === 'rental' ? 'Customer picks check-in & check-out dates' : 'Customer picks a date & time slot'}
+                                    </Text>
+                                </View>
+                            )}
+
+                            {(isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
+                                <View style={styles.formGroup}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                        <Text style={styles.formLabel}>Add-ons ({editAddons.length}/4)</Text>
+                                        {editAddons.length < 4 && (
+                                            <TouchableOpacity
+                                                onPress={() => setEditAddons(prev => [...prev, { name: '', price: 0 }])}
+                                                style={{ backgroundColor: '#1A3A2A', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 }}
+                                            >
+                                                <Text style={{ color: '#25D366', fontSize: 13 }}>+ Add</Text>
+                                            </TouchableOpacity>
+                                        )}
+                                    </View>
+                                    {editAddons.map((addon, idx) => (
+                                        <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 2, marginBottom: 0 }]}
+                                                value={addon.name}
+                                                onChangeText={v => setEditAddons(prev => prev.map((a, i) => i === idx ? { ...a, name: v } : a))}
+                                                placeholder="e.g. Braids, Parking"
+                                                placeholderTextColor="#555"
+                                            />
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                                                value={addon.price === 0 ? '' : addon.price.toString()}
+                                                onChangeText={v => setEditAddons(prev => prev.map((a, i) => i === idx ? { ...a, price: parseFloat(v) || 0 } : a))}
+                                                placeholder="Price"
+                                                placeholderTextColor="#555"
+                                                keyboardType="numeric"
+                                            />
+                                            <TouchableOpacity onPress={() => setEditAddons(prev => prev.filter((_, i) => i !== idx))}>
+                                                <Ionicons name="close-circle" size={22} color="#FF6B6B" />
+                                            </TouchableOpacity>
+                                        </View>
+                                    ))}
+                                    {editAddons.length === 0 && (
+                                        <Text style={styles.stockHint}>Optional extras customers can add to their booking</Text>
+                                    )}
                                 </View>
                             )}
 

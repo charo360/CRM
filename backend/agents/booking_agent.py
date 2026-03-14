@@ -148,7 +148,10 @@ class BookingAgent(BaseAgent):
                     {"$set": {
                         "products": [
                             {"id": str(s["_id"]), "name": s["name"], "price": s.get("price", 0),
-                             "duration": s.get("duration"), "index": idx}
+                             "duration": s.get("duration"), "index": idx,
+                             "service_category": s.get("service_category", "appointment"),
+                             "addons": s.get("addons", []),
+                             "image_url": s.get("image_url", "")}
                             for idx, s in enumerate(first_page, 1)
                         ],
                         "action_context": "booking_service_select",
@@ -220,10 +223,16 @@ class BookingAgent(BaseAgent):
                         {"$set": {
                             "products": [
                                 {"id": str(s["_id"]), "name": s["name"], "price": s.get("price", 0),
-                                 "duration": s.get("duration"), "index": idx}
+                                 "duration": s.get("duration"), "index": idx,
+                                 "service_category": s.get("service_category", "appointment"),
+                                 "addons": s.get("addons", []),
+                                 "image_url": s.get("image_url", "")}
                                 for idx, s in enumerate(first_page, 1)
                             ],
                             "action_context": "booking_service_select",
+                            "catalog_all_ids": [str(s["_id"]) for s in services],
+                            "catalog_page_offset": 0,
+                            "catalog_has_more": len(services) > PAGE_SIZE,
                             "created_at": datetime.utcnow(),
                         }},
                         upsert=True

@@ -5032,6 +5032,8 @@ class ProductResponse(BaseModel):
     digital: Optional[bool] = False
     download_url: Optional[str] = None
     preview_url: Optional[str] = None
+    service_category: Optional[str] = "appointment"  # appointment | rental
+    addons: Optional[List[dict]] = []               # [{name, price}] max 4
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
@@ -5064,6 +5066,8 @@ async def get_products(user = Depends(get_current_user)):
             digital=p.get("digital", False),
             download_url=p.get("download_url"),
             preview_url=p.get("preview_url"),
+            service_category=p.get("service_category", "appointment"),
+            addons=p.get("addons", []),
         ))
     return result
 
@@ -5085,6 +5089,8 @@ class ProductCreate(BaseModel):
     digital: Optional[bool] = False
     download_url: Optional[str] = None
     preview_url: Optional[str] = None
+    service_category: Optional[str] = "appointment"
+    addons: Optional[List[dict]] = []
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -5104,6 +5110,8 @@ class ProductUpdate(BaseModel):
     digital: Optional[bool] = None
     download_url: Optional[str] = None
     preview_url: Optional[str] = None
+    service_category: Optional[str] = None
+    addons: Optional[List[dict]] = None
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -5180,6 +5188,8 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "digital": product.digital or False,
         "download_url": product.download_url,
         "preview_url": product.preview_url,
+        "service_category": product.service_category or "appointment",
+        "addons": (product.addons or [])[:4],
         "created_at": datetime.utcnow()
     }
     
@@ -5204,6 +5214,8 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         digital=product_doc["digital"],
         download_url=product_doc["download_url"],
         preview_url=product_doc["preview_url"],
+        service_category=product_doc["service_category"],
+        addons=product_doc["addons"],
     )
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
@@ -5269,6 +5281,8 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         digital=result.get("digital", False),
         download_url=result.get("download_url"),
         preview_url=result.get("preview_url"),
+        service_category=result.get("service_category", "appointment"),
+        addons=result.get("addons", []),
     )
 
 @api_router.post("/products/{product_id}/images")
@@ -7254,29 +7268,99 @@ async def evolution_webhook(request: Request):
                                     _bk_sel = next((s for s in _bk_services if s.get("index") == _reply_num), None)
                                     if _bk_sel:
                                         _bk_price_str = f"{_bk_currency} {_bk_sel.get('price', 0):,.0f}" if _bk_sel.get("price") else "Contact for price"
-                                        _bk_duration = _bk_sel.get("duration")  # minutes, may be None
-                                        await db.pending_catalogs.update_one(
-                                            {"customer_id": customer_id, "user_id": user["_id"]},
-                                            {"$set": {
-                                                "action_context": "booking_date_input",
-                                                "booking_service_id": _bk_sel["id"],
-                                                "booking_service_name": _bk_sel["name"],
-                                                "booking_service_price": _bk_sel.get("price", 0),
-                                                "booking_service_duration": _bk_duration,
-                                                "updated_at": datetime.utcnow()
-                                            }}
-                                        )
+                                        _bk_duration = _bk_sel.get("duration")
+                                        _bk_svc_id = _bk_sel["id"]
+                                        _bk_svc_name = _bk_sel["name"]
+                                        # Fetch full service doc for image, addons, service_category
+                                        _bk_full_svc = await db.products.find_one({"_id": _bk_svc_id, "user_id": user.get("business_id", user["_id"])})
+                                        _bk_image_url = (_bk_full_svc or {}).get("image_url") or ""
+                                        _bk_addons = (_bk_full_svc or {}).get("addons", []) or []
+                                        _bk_svc_cat = (_bk_full_svc or {}).get("service_category", "appointment")
+                                        _bk_description = (_bk_full_svc or {}).get("description", "")
                                         ws = get_whatsapp_service(db)
-                                        await ws.send_message(
-                                            user_id=user["_id"], to_number=from_number,
-                                            message=(
-                                                f"Great choice! You selected *{_bk_sel['name']}* ({_bk_price_str}).\n\n"
-                                                f"📅 *What date would you like?*\n"
-                                                f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_"
-                                            ),
-                                            customer_name=customer_name, send_context="booking_flow"
-                                        )
-                                        logging.info(f"[Booking] Service selected: {_bk_sel['name']} for customer {customer_id}")
+                                        # Send service image if available
+                                        if _bk_image_url:
+                                            try:
+                                                import httpx as _httpx_bk
+                                                _inst_doc = await db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1})
+                                                _inst_name = (_inst_doc or {}).get("whatsapp", {}).get("instance_name", "")
+                                                if _inst_name:
+                                                    _caption = f"*{_bk_svc_name}* — {_bk_price_str}"
+                                                    if _bk_description:
+                                                        _caption += f"\n_{_bk_description[:120]}_"
+                                                    async with _httpx_bk.AsyncClient(timeout=15) as _hc:
+                                                        await _hc.post(
+                                                            f"{ws.base_url}/message/sendMedia/{_inst_name}",
+                                                            json={"number": from_number.lstrip("+"), "mediatype": "image",
+                                                                  "media": _bk_image_url, "caption": _caption},
+                                                            headers=ws._headers(),
+                                                        )
+                                            except Exception as _img_err:
+                                                logging.warning(f"[Booking] Service image send failed: {_img_err}")
+
+                                        # Store core booking fields in pending_catalogs
+                                        _base_ctx = {
+                                            "booking_service_id": _bk_svc_id,
+                                            "booking_service_name": _bk_svc_name,
+                                            "booking_service_price": _bk_sel.get("price", 0),
+                                            "booking_service_duration": _bk_duration,
+                                            "booking_service_category": _bk_svc_cat,
+                                            "booking_addons_available": _bk_addons,
+                                            "booking_selected_addons": [],
+                                            "updated_at": datetime.utcnow(),
+                                        }
+
+                                        if _bk_addons:
+                                            # Step: show add-ons menu before date
+                                            _addon_lines = [f"✅ *{_bk_svc_name}* selected ({_bk_price_str})\n"]
+                                            _addon_lines.append("🔧 *Optional Add-ons:*\n")
+                                            for _ai, _ad in enumerate(_bk_addons[:4], 1):
+                                                _ad_price = _ad.get("price", 0)
+                                                _ad_str = f"+{_bk_currency} {_ad_price:,.0f}" if _ad_price else "Free"
+                                                _addon_lines.append(f"{_ai}️⃣  {_ad.get('name', '')} — {_ad_str}")
+                                            _addon_lines.append(f"0️⃣  No extras")
+                                            _addon_lines.append("\n_Reply with numbers separated by spaces (e.g. *1 3*) or *0* to skip_")
+                                            _base_ctx["action_context"] = "booking_addon_select"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message="\n".join(_addon_lines),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        elif _bk_svc_cat == "rental":
+                                            _base_ctx["action_context"] = "booking_checkin_input"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=(
+                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}/night).\n\n"
+                                                    f"📅 *Check-in date?*\n"
+                                                    f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
+                                                ),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        else:
+                                            _base_ctx["action_context"] = "booking_date_input"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=(
+                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}).\n\n"
+                                                    f"📅 *What date would you like?*\n"
+                                                    f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_"
+                                                ),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        logging.info(f"[Booking] Service selected: {_bk_svc_name} (cat={_bk_svc_cat}, addons={len(_bk_addons)}) for customer {customer_id}")
                                         return {"status": "ok", "handled_by": "booking_service_select"}
 
                                 elif _ctx == "booking_time_select":
@@ -7505,6 +7589,200 @@ async def evolution_webhook(request: Request):
                                 logging.info(f"[Order] Cancelled via NO reply for customer={customer_id}")
                                 return {"status": "ok", "handled_by": "order_confirm_no"}
 
+                # BOOKING ADDON SELECT HANDLER — customer picks add-ons (or 0 to skip)
+                if not button_action and not from_me and body:
+                    _addon_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_addon_select"
+                    })
+                    if _addon_state:
+                        import re as _re_addon
+                        _addon_available = _addon_state.get("booking_addons_available", [])
+                        _addon_body = body.strip().lower()
+                        _selected_addons = []
+                        if _addon_body != "0" and _addon_body not in ("no", "skip", "none"):
+                            _nums = [int(x) for x in _re_addon.findall(r'\d+', body) if int(x) > 0 and int(x) <= len(_addon_available)]
+                            for _n in _nums:
+                                _selected_addons.append(_addon_available[_n - 1])
+                        _bk_svc_cat = _addon_state.get("booking_service_category", "appointment")
+                        _bk_currency_ad = user.get("settings", {}).get("currency", "USD")
+                        _bk_svc_name_ad = _addon_state.get("booking_service_name", "Service")
+                        _bk_price_ad = _addon_state.get("booking_service_price", 0)
+                        _addon_total = _bk_price_ad + sum(a.get("price", 0) for a in _selected_addons)
+                        _addon_total_str = f"{_bk_currency_ad} {_addon_total:,.0f}" if _addon_total else ""
+                        ws = get_whatsapp_service(db)
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "booking_selected_addons": _selected_addons,
+                                "action_context": "booking_checkin_input" if _bk_svc_cat == "rental" else "booking_date_input",
+                                "updated_at": datetime.utcnow(),
+                            }}
+                        )
+                        if _bk_svc_cat == "rental":
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    (f"Got it — added: {', '.join(a['name'] for a in _selected_addons)}\n\n" if _selected_addons else "No extras added.\n\n")
+                                    + f"📅 *Check-in date?*\n_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                        else:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    (f"Got it — added: {', '.join(a['name'] for a in _selected_addons)}\n\n" if _selected_addons else "No extras added.\n\n")
+                                    + (f"💰 Total: *{_addon_total_str}*\n\n" if _addon_total_str else "")
+                                    + f"📅 *What date would you like?*\n_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                        logging.info(f"[Booking] Addons selected: {_selected_addons} for customer {customer_id}")
+                        return {"status": "ok", "handled_by": "booking_addon_select"}
+
+                # BOOKING CHECK-IN DATE HANDLER — for rental services
+                if not button_action and not from_me and body:
+                    _ci_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_checkin_input"
+                    })
+                    if _ci_state:
+                        import re as _re_ci
+                        _ci_body = body.strip()
+                        _ci_lower = _ci_body.lower()
+                        _today_ci = datetime.utcnow().date()
+                        _parsed_ci = None
+                        try:
+                            if _ci_lower == "today": _parsed_ci = _today_ci
+                            elif _ci_lower == "tomorrow": _parsed_ci = _today_ci + timedelta(days=1)
+                            elif _ci_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_ci_lower]
+                                _parsed_ci = _today_ci + timedelta(days=(_wd - _today_ci.weekday()) % 7 or 7)
+                            else:
+                                _m = _re_ci.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _ci_body)
+                                if _m: _parsed_ci = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                                else:
+                                    _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                           "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                    _m2 = _re_ci.match(r"(\d{1,2})\s+([a-z]+)", _ci_lower)
+                                    _m3 = _re_ci.match(r"([a-z]+)\s+(\d{1,2})", _ci_lower)
+                                    if _m2 and _m2.group(2) in _mm:
+                                        _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
+                                        _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
+                                    elif _m3 and _m3.group(1) in _mm:
+                                        _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
+                                        _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
+                                    else:
+                                        _m4 = _re_ci.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _ci_body)
+                                        if _m4: _parsed_ci = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                        except Exception: _parsed_ci = None
+                        ws = get_whatsapp_service(db)
+                        if not _parsed_ci or _parsed_ci < _today_ci:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="I didn't catch that. Please reply with a check-in date like *tomorrow*, *Monday*, or *15 March* 📅",
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_checkin_invalid"}
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {"booking_checkin_date": str(_parsed_ci), "action_context": "booking_checkout_input", "updated_at": datetime.utcnow()}}
+                        )
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=(
+                                f"✅ Check-in: *{_parsed_ci.strftime('%A %d %B %Y')}*\n\n"
+                                f"📅 *Check-out date?*\n_Reply with a date after your check-in_"
+                            ),
+                            customer_name=customer_name, send_context="booking_flow"
+                        )
+                        return {"status": "ok", "handled_by": "booking_checkin_input"}
+
+                # BOOKING CHECK-OUT DATE HANDLER — completes rental date range
+                if not button_action and not from_me and body:
+                    _co_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_checkout_input"
+                    })
+                    if _co_state:
+                        import re as _re_co
+                        _co_body = body.strip()
+                        _co_lower = _co_body.lower()
+                        _today_co = datetime.utcnow().date()
+                        _ci_date_str = _co_state.get("booking_checkin_date", "")
+                        try: _ci_date = datetime.strptime(_ci_date_str, "%Y-%m-%d").date()
+                        except Exception: _ci_date = _today_co
+                        _parsed_co = None
+                        try:
+                            if _co_lower == "tomorrow": _parsed_co = _today_co + timedelta(days=1)
+                            elif _co_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_co_lower]
+                                _parsed_co = _today_co + timedelta(days=(_wd - _today_co.weekday()) % 7 or 7)
+                            else:
+                                _m = _re_co.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _co_body)
+                                if _m: _parsed_co = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                                else:
+                                    _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                           "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                    _m2 = _re_co.match(r"(\d{1,2})\s+([a-z]+)", _co_lower)
+                                    _m3 = _re_co.match(r"([a-z]+)\s+(\d{1,2})", _co_lower)
+                                    if _m2 and _m2.group(2) in _mm:
+                                        _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
+                                        _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
+                                    elif _m3 and _m3.group(1) in _mm:
+                                        _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
+                                        _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
+                                    else:
+                                        _m4 = _re_co.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _co_body)
+                                        if _m4: _parsed_co = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                        except Exception: _parsed_co = None
+                        ws = get_whatsapp_service(db)
+                        if not _parsed_co or _parsed_co <= _ci_date:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=f"Check-out must be after check-in (*{_ci_date_str}*). Please reply with a valid check-out date 📅",
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_checkout_invalid"}
+                        _nights = (_parsed_co - _ci_date).days
+                        _co_currency = user.get("settings", {}).get("currency", "USD")
+                        _co_base_price = _co_state.get("booking_service_price", 0)
+                        _co_addons = _co_state.get("booking_selected_addons", [])
+                        _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
+                        _co_total = (_co_base_price * _nights) + _co_addon_total
+                        _co_svc_name = _co_state.get("booking_service_name", "Service")
+                        _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
+                        _co_summary = (
+                            f"📋 *Booking Summary*\n\n"
+                            f"🏠 *{_co_svc_name}*\n"
+                            f"📅 Check-in: *{_ci_date_str}*\n"
+                            f"📅 Check-out: *{str(_parsed_co)}*\n"
+                            f"🌙 Duration: *{_nights} night(s)*\n"
+                        )
+                        if _co_addons:
+                            _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
+                        if _co_price_str:
+                            _co_summary += f"💰 Total: *{_co_price_str}*\n"
+                        _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "action_context": "booking_confirm",
+                                "booking_checkout_date": str(_parsed_co),
+                                "booking_nights": _nights,
+                                "booking_total_price": _co_total,
+                                "booking_time": "check-in",
+                                "booking_date": _ci_date_str,
+                                "updated_at": datetime.utcnow(),
+                            }}
+                        )
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=_co_summary, customer_name=customer_name, send_context="booking_flow"
+                        )
+                        return {"status": "ok", "handled_by": "booking_checkout_input"}
+
                 # BOOKING DATE INPUT HANDLER — customer types a date for a pending booking
                 if not button_action and not from_me and body:
                     _bk_date_state = await db.pending_catalogs.find_one({
@@ -7710,6 +7988,11 @@ async def evolution_webhook(request: Request):
                                     # NEW BOOKING — insert
                                     _bkc_id = str(uuid.uuid4())
                                     _bkc_number = _generate_booking_number()
+                                    _bkc_selected_addons = _bkc_state.get("booking_selected_addons", [])
+                                    _bkc_checkout = _bkc_state.get("booking_checkout_date", "")
+                                    _bkc_nights = _bkc_state.get("booking_nights", 0)
+                                    _bkc_total = _bkc_state.get("booking_total_price") or _bkc_price
+                                    _bkc_svc_cat = _bkc_state.get("booking_service_category", "appointment")
                                     await db.bookings.insert_one({
                                         "_id": _bkc_id,
                                         "booking_number": _bkc_number,
@@ -7719,24 +8002,45 @@ async def evolution_webhook(request: Request):
                                         "customer_phone": from_number,
                                         "service_id": _bkc_svc_id,
                                         "service_name": _bkc_svc_name,
+                                        "service_category": _bkc_svc_cat,
                                         "date": _bkc_date_str,
                                         "time": _bkc_time_str,
+                                        "checkin_date": _bkc_date_str if _bkc_svc_cat == "rental" else None,
+                                        "checkout_date": _bkc_checkout or None,
+                                        "nights": _bkc_nights or None,
+                                        "addons": _bkc_selected_addons,
                                         "status": "pending",
                                         "payment_status": "unpaid",
                                         "price": _bkc_price,
+                                        "total_price": _bkc_total,
                                         "source": "whatsapp",
                                         "created_at": _bkc_now,
                                         "updated_at": _bkc_now,
                                     })
-                                    _bkc_conf_msg = (
-                                        f"✅ *Booking Confirmed!*\n\n"
-                                        f"🔖 Ref: *{_bkc_number}*\n"
-                                        f"📋 Service: *{_bkc_svc_name}*\n"
-                                        f"📅 Date: *{_bkc_date_str}*\n"
-                                        f"🕐 Time: *{_bkc_time_str}*\n"
-                                        + (f"💰 Price: *{_bkc_price_str}*\n" if _bkc_price_str else "")
-                                        + f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*."
-                                    )
+                                    _bkc_total_str = f"{_bkc_currency} {_bkc_total:,.0f}" if _bkc_total else _bkc_price_str
+                                    if _bkc_svc_cat == "rental":
+                                        _bkc_conf_msg = (
+                                            f"✅ *Booking Confirmed!*\n\n"
+                                            f"🔖 Ref: *{_bkc_number}*\n"
+                                            f"🏠 *{_bkc_svc_name}*\n"
+                                            f"📅 Check-in: *{_bkc_date_str}*\n"
+                                            f"📅 Check-out: *{_bkc_checkout}*\n"
+                                            f"🌙 {_bkc_nights} night(s)\n"
+                                            + ("🔧 Add-ons: " + ", ".join(a["name"] for a in _bkc_selected_addons) + "\n" if _bkc_selected_addons else "")
+                                            + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
+                                            + f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*."
+                                        )
+                                    else:
+                                        _bkc_conf_msg = (
+                                            f"✅ *Booking Confirmed!*\n\n"
+                                            f"🔖 Ref: *{_bkc_number}*\n"
+                                            f"📋 Service: *{_bkc_svc_name}*\n"
+                                            + ("🔧 Add-ons: " + ", ".join(a["name"] for a in _bkc_selected_addons) + "\n" if _bkc_selected_addons else "")
+                                            + f"📅 Date: *{_bkc_date_str}*\n"
+                                            f"🕐 Time: *{_bkc_time_str}*\n"
+                                            + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
+                                            + f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*."
+                                        )
                                     _bkc_push_title = "📅 New Booking!"
                                     _bkc_push_body = f"{customer_name} booked {_bkc_svc_name} on {_bkc_date_str} at {_bkc_time_str}"
                                     _bkc_push_type = "new_booking"
