@@ -202,24 +202,25 @@ class BookingAgent(BaseAgent):
 
         messages_out = []
 
-        # Schedule block
-        if business_hours:
-            lines = ["\U0001f5d3\ufe0f *Our Availability*\n"]
-            today = date.today()
-            for i in range(7):
-                d = today + timedelta(days=i)
-                key = weekday_map[d.weekday()]
-                day_info = business_hours.get(key, {})
-                label = d.strftime("%A %d %b")
-                if day_info.get("closed", False) or not day_info:
-                    lines.append(f"\u2022 {label}: _Closed_")
-                else:
-                    open_t = day_info.get("open", "09:00")
-                    close_t = day_info.get("close", "17:00")
-                    lines.append(f"\u2022 {label}: {open_t} \u2013 {close_t}")
-            messages_out.append({"text": "\n".join(lines)})
-        else:
-            messages_out.append({"text": "We're available Monday to Saturday. Contact us to confirm exact times."})
+        # Schedule block — skip for rental businesses (they don't have open/close hours)
+        if not is_rental:
+            if business_hours:
+                lines = ["\U0001f5d3\ufe0f *Our Availability*\n"]
+                today = date.today()
+                for i in range(7):
+                    d = today + timedelta(days=i)
+                    key = weekday_map[d.weekday()]
+                    day_info = business_hours.get(key, {})
+                    label = d.strftime("%A %d %b")
+                    if day_info.get("closed", False) or not day_info:
+                        lines.append(f"\u2022 {label}: _Closed_")
+                    else:
+                        open_t = day_info.get("open", "09:00")
+                        close_t = day_info.get("close", "17:00")
+                        lines.append(f"\u2022 {label}: {open_t} \u2013 {close_t}")
+                messages_out.append({"text": "\n".join(lines)})
+            else:
+                messages_out.append({"text": "We're available Monday to Saturday. Contact us to confirm exact times."})
 
         # Numbered listings/services list — customer can select to book immediately
         if services:

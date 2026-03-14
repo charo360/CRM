@@ -7217,6 +7217,8 @@ async def evolution_webhook(request: Request):
                                     # Customer picked a service number from booking menu
                                     _bk_services = _pending_cat.get("products", [])
                                     _bk_currency = user.get("settings", {}).get("currency", "USD")
+                                    _bk_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                                    _bk_is_rental_biz = _bk_biz_type == "rental"
 
                                     # Reply 9 = see more services (pagination)
                                     if _reply_num == 9 and _pending_cat.get("catalog_has_more"):
@@ -7233,15 +7235,24 @@ async def evolution_webhook(request: Request):
                                                 if _sd:
                                                     _next_svcs.append(_sd)
                                             if _next_svcs:
-                                                _pg_lines = ["📋 *More Services*\n"]
-                                                for _pi, _ps in enumerate(_next_svcs, 1):
-                                                    _pp = _ps.get("price", 0)
-                                                    _pd = _ps.get("duration")
-                                                    _pp_str = f"{_bk_currency} {_pp:,.0f}" if _pp else "Contact for price"
-                                                    _pd_str = f" · {_pd} min" if _pd else ""
-                                                    _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}{_pd_str}")
-                                                if _more_svc_has_more:
-                                                    _pg_lines.append("9️⃣  ➡️ *See more services*")
+                                                if _bk_is_rental_biz:
+                                                    _pg_lines = ["🏠 *More Listings*\n"]
+                                                    for _pi, _ps in enumerate(_next_svcs, 1):
+                                                        _pp = _ps.get("price", 0)
+                                                        _pp_str = f"{_bk_currency} {_pp:,.0f}/night" if _pp else "Contact for price"
+                                                        _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}")
+                                                    if _more_svc_has_more:
+                                                        _pg_lines.append("9️⃣  ➡️ *See more listings*")
+                                                else:
+                                                    _pg_lines = ["📋 *More Services*\n"]
+                                                    for _pi, _ps in enumerate(_next_svcs, 1):
+                                                        _pp = _ps.get("price", 0)
+                                                        _pd = _ps.get("duration")
+                                                        _pp_str = f"{_bk_currency} {_pp:,.0f}" if _pp else "Contact for price"
+                                                        _pd_str = f" · {_pd} min" if _pd else ""
+                                                        _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}{_pd_str}")
+                                                    if _more_svc_has_more:
+                                                        _pg_lines.append("9️⃣  ➡️ *See more services*")
                                                 _pg_lines.append("\n_Reply with the number to book_")
                                                 await db.pending_catalogs.update_one(
                                                     {"customer_id": customer_id, "user_id": user["_id"]},
@@ -7275,7 +7286,8 @@ async def evolution_webhook(request: Request):
                                         _bk_full_svc = await db.products.find_one({"_id": _bk_svc_id, "user_id": user.get("business_id", user["_id"])})
                                         _bk_image_url = (_bk_full_svc or {}).get("image_url") or ""
                                         _bk_addons = (_bk_full_svc or {}).get("addons", []) or []
-                                        _bk_svc_cat = (_bk_full_svc or {}).get("service_category", "appointment")
+                                        # If whole business is rental, treat all listings as rental regardless of stored service_category
+                                        _bk_svc_cat = "rental" if _bk_is_rental_biz else (_bk_full_svc or {}).get("service_category", "appointment")
                                         _bk_description = (_bk_full_svc or {}).get("description", "")
                                         ws = get_whatsapp_service(db)
                                         # Send service image if available
