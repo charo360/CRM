@@ -334,6 +334,9 @@ async def fix_team_members_index():
     except Exception as e:
         logging.warning(f"[StartupPurge] Failed to start purge task: {e}")
 
+    # Start keep-alive pinger to prevent Render free-tier sleep
+    asyncio.create_task(run_keep_alive_scheduler())
+
     # Start automation scheduler in background
     asyncio.create_task(run_automation_scheduler())
 
@@ -382,6 +385,30 @@ async def _startup_purge_invalid_contacts():
     except Exception as e:
         logging.error(f"[StartupPurge] Failed: {e}")
 
+
+async def run_keep_alive_scheduler():
+    """Ping Evolution API and self every 14 min to prevent Render free-tier sleep."""
+    await asyncio.sleep(30)  # wait for server to fully start
+    evolution_url = os.environ.get('EVOLUTION_API_URL', '').rstrip('/')
+    self_url = os.environ.get('RENDER_EXTERNAL_URL', '').rstrip('/')
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                if evolution_url:
+                    try:
+                        r = await client.get(f"{evolution_url}/")
+                        logging.info(f"[KeepAlive] Evolution API ping: {r.status_code}")
+                    except Exception as e:
+                        logging.warning(f"[KeepAlive] Evolution API ping failed: {e}")
+                if self_url:
+                    try:
+                        r = await client.get(f"{self_url}/api/health")
+                        logging.info(f"[KeepAlive] Self ping: {r.status_code}")
+                    except Exception as e:
+                        logging.warning(f"[KeepAlive] Self ping failed: {e}")
+        except Exception as e:
+            logging.warning(f"[KeepAlive] Scheduler error: {e}")
+        await asyncio.sleep(840)  # 14 minutes
 
 async def run_automation_scheduler():
     """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
