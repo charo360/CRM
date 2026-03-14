@@ -27,6 +27,8 @@ class BookingAgent(BaseAgent):
         history = context.get("history", [])
         customer_id = context.get("customer_id")
         conv_state = context.get("conversation_state_data", {})
+        business_type = (context.get("business_type") or "").lower().strip()
+        is_rental = business_type == "rental"
 
         # ── Handle pending_booking_action: 1=Cancel / 2=Reschedule pick ──────
         pending_booking_action_id = conv_state.get("pending_booking_action")
@@ -84,23 +86,23 @@ class BookingAgent(BaseAgent):
 
         if intent == "AVAILABILITY_CHECK":
             return await self._handle_availability(
-                services, business_hours, booking_settings, customer_name, language, currency, message, customer_id, user_id
+                services, business_hours, booking_settings, customer_name, language, currency, message, customer_id, user_id, is_rental
             )
 
         if intent in ("BOOKING_STATUS", "RESCHEDULE"):
             return await self._handle_booking_status(
-                customer_id, user_id, customer_name, language, currency
+                customer_id, user_id, customer_name, language, currency, is_rental
             )
 
         if intent == "BOOKING_CANCEL":
             return await self._handle_booking_cancel(
-                customer_id, user_id, customer_name, language, message
+                customer_id, user_id, customer_name, language, message, is_rental
             )
 
         # Default: BOOKING_REQUEST
         return await self._handle_booking_request(
             services, business_hours, booking_settings, customer_name, language, currency,
-            message, business_knowledge, history, customer_id, user_id
+            message, business_knowledge, history, customer_id, user_id, is_rental
         )
 
     # ── Booking Request ────────────────────────────────────────────────────────
@@ -108,33 +110,50 @@ class BookingAgent(BaseAgent):
     async def _handle_booking_request(
         self, services, business_hours, booking_settings,
         customer_name, language, currency, message,
-        business_knowledge, history, customer_id, user_id
+        business_knowledge, history, customer_id, user_id, is_rental=False
     ) -> Dict[str, Any]:
         if not services:
+            no_listing_msg = (
+                "We don't have any listings available yet. Please check back soon or contact us directly!"
+                if is_rental else
+                "We don't have any services listed yet. Please check back soon or contact us directly!"
+            )
             return {
                 "handled": True,
-                "messages": [{"text": "We don't have any services listed yet. Please check back soon or contact us directly!"}],
+                "messages": [{"text": no_listing_msg}],
                 "escalate": False,
             }
 
         first_page = services[:PAGE_SIZE]
         has_more = len(services) > PAGE_SIZE
 
-        # Build numbered services list
-        lines = ["📋 *Our Services*\n"]
-        for i, s in enumerate(first_page, 1):
-            price = s.get("price", 0)
-            duration = s.get("duration")
-            price_str = f"{currency} {price:,.0f}" if price else "Contact for price"
-            dur_str = f" · {duration} min" if duration else ""
-            lines.append(f"{i}️⃣  *{s['name']}* — {price_str}{dur_str}")
-        if has_more:
-            lines.append(f"9️⃣  ➡️ *See more services*")
-        lines.append("\n_Reply with the number of the service you'd like to book_")
+        # Build numbered listing/services list
+        if is_rental:
+            lines = ["🏠 *Our Listings*\n"]
+            for i, s in enumerate(first_page, 1):
+                price = s.get("price", 0)
+                price_str = f"{currency} {price:,.0f}/night" if price else "Contact for price"
+                desc = s.get("description", "")
+                desc_str = f" · {desc[:50]}" if desc else ""
+                lines.append(f"{i}️⃣  *{s['name']}* — {price_str}{desc_str}")
+            if has_more:
+                lines.append(f"9️⃣  ➡️ *See more listings*")
+            lines.append("\n_Reply with the number of the listing you'd like to book_")
+        else:
+            lines = ["📋 *Our Services*\n"]
+            for i, s in enumerate(first_page, 1):
+                price = s.get("price", 0)
+                duration = s.get("duration")
+                price_str = f"{currency} {price:,.0f}" if price else "Contact for price"
+                dur_str = f" · {duration} min" if duration else ""
+                lines.append(f"{i}️⃣  *{s['name']}* — {price_str}{dur_str}")
+            if has_more:
+                lines.append(f"9️⃣  ➡️ *See more services*")
+            lines.append("\n_Reply with the number of the service you'd like to book_")
         services_text = "\n".join(lines)
 
         # AI intro
-        intro = await self._ai_intro(message, customer_name, language, business_knowledge, history)
+        intro = await self._ai_intro(message, customer_name, language, business_knowledge, history, is_rental)
         messages_out = []
         if intro:
             messages_out.append({"text": intro})
@@ -177,7 +196,7 @@ class BookingAgent(BaseAgent):
     async def _handle_availability(
         self, services, business_hours, booking_settings,
         customer_name, language, currency, message,
-        customer_id=None, user_id=None
+        customer_id=None, user_id=None, is_rental=False
     ) -> Dict[str, Any]:
         weekday_map = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -202,16 +221,23 @@ class BookingAgent(BaseAgent):
         else:
             messages_out.append({"text": "We're available Monday to Saturday. Contact us to confirm exact times."})
 
-        # Numbered services list — customer can select to book immediately
+        # Numbered listings/services list — customer can select to book immediately
         if services:
             first_page = services[:PAGE_SIZE]
-            svc_lines = ["\n\U0001f4cb *Select a service to book:*\n"]
-            for i, s in enumerate(first_page, 1):
-                price = s.get("price", 0)
-                dur = s.get("duration")
-                price_str = f"{currency} {price:,.0f}" if price else "Contact for price"
-                dur_str = f" · {dur} min" if dur else ""
-                svc_lines.append(f"{i}\ufe0f\u20e3  *{s['name']}* \u2014 {price_str}{dur_str}")
+            if is_rental:
+                svc_lines = ["\n🏠 *Our Listings — select one to book:*\n"]
+                for i, s in enumerate(first_page, 1):
+                    price = s.get("price", 0)
+                    price_str = f"{currency} {price:,.0f}/night" if price else "Contact for price"
+                    svc_lines.append(f"{i}\ufe0f\u20e3  *{s['name']}* \u2014 {price_str}")
+            else:
+                svc_lines = ["\n\U0001f4cb *Select a service to book:*\n"]
+                for i, s in enumerate(first_page, 1):
+                    price = s.get("price", 0)
+                    dur = s.get("duration")
+                    price_str = f"{currency} {price:,.0f}" if price else "Contact for price"
+                    dur_str = f" · {dur} min" if dur else ""
+                    svc_lines.append(f"{i}\ufe0f\u20e3  *{s['name']}* \u2014 {price_str}{dur_str}")
             svc_lines.append("\n_Reply with the number to book_")
             messages_out.append({"text": "\n".join(svc_lines)})
 
@@ -240,7 +266,11 @@ class BookingAgent(BaseAgent):
                 except Exception as e:
                     logger.error(f"[BookingAgent] availability catalog upsert: {e}")
         else:
-            messages_out.append({"text": "_Reply with the service you'd like to book and we'll sort out a time!_ \U0001f4c5"})
+            messages_out.append({"text": (
+                "_Reply with the listing you're interested in and we'll sort out your stay!_ 🏠"
+                if is_rental else
+                "_Reply with the service you'd like to book and we'll sort out a time!_ \U0001f4c5"
+            )})
 
         return {
             "handled": True,
@@ -252,7 +282,7 @@ class BookingAgent(BaseAgent):
     # ── Booking Status ───────────────────────────────────────────────────────────
 
     async def _handle_booking_status(
-        self, customer_id, user_id, customer_name, language, currency
+        self, customer_id, user_id, customer_name, language, currency, is_rental=False
     ) -> Dict[str, Any]:
         if not customer_id:
             return {
@@ -271,18 +301,27 @@ class BookingAgent(BaseAgent):
             bookings = []
 
         if not bookings:
+            no_bk_msg = (
+                f"Hi {customer_name}! \U0001f44b You don't have any upcoming reservations. Would you like to book a listing?"
+                if is_rental else
+                f"Hi {customer_name}! \U0001f44b You don't have any upcoming bookings. Would you like to book a service?"
+            )
             return {
                 "handled": True,
-                "messages": [{"text": f"Hi {customer_name}! \U0001f44b You don't have any upcoming bookings. Would you like to book a service?"}],
+                "messages": [{"text": no_bk_msg}],
                 "escalate": False,
             }
 
-        lines = [f"\U0001f4c5 *Your Upcoming Bookings*\n"]
+        lines = [f"\U0001f4c5 *Your Upcoming {'Reservations' if is_rental else 'Bookings'}*\n"]
         for i, b in enumerate(bookings, 1):
             status_emoji = "\u2705" if b.get("status") == "confirmed" else "\u23f3"
+            if is_rental and b.get("checkin_date"):
+                date_str = f"Check-in: {b.get('checkin_date', '')}" + (f" → {b.get('checkout_date', '')}" if b.get('checkout_date') else "")
+            else:
+                date_str = f"{b.get('date', '')} at {b.get('time', '')}"
             lines.append(
-                f"*{i}.* {status_emoji} *{b.get('service_name', 'Service')}*\n"
-                f"   \U0001f4c6 {b.get('date', '')} at {b.get('time', '')}\n"
+                f"*{i}.* {status_emoji} *{b.get('service_name', 'Listing')}*\n"
+                f"   \U0001f4c6 {date_str}\n"
                 f"   Ref: *{b.get('booking_number', '')}*  |  Status: {b.get('status', '').title()}"
             )
 
@@ -307,7 +346,7 @@ class BookingAgent(BaseAgent):
     # ── Booking Cancel / Reschedule ─────────────────────────────────────────────────────
 
     async def _handle_booking_cancel(
-        self, customer_id, user_id, customer_name, language, message
+        self, customer_id, user_id, customer_name, language, message, is_rental=False
     ) -> Dict[str, Any]:
         if not customer_id:
             return {
@@ -326,17 +365,26 @@ class BookingAgent(BaseAgent):
             bookings = []
 
         if not bookings:
+            no_cancel_msg = (
+                f"Hi {customer_name}! You don't have any active reservations to cancel. Would you like to book a new listing?"
+                if is_rental else
+                f"Hi {customer_name}! You don't have any active bookings to cancel. Would you like to book a new service?"
+            )
             return {
                 "handled": True,
-                "messages": [{"text": f"Hi {customer_name}! You don't have any active bookings to cancel. Would you like to book a new service?"}],
+                "messages": [{"text": no_cancel_msg}],
                 "escalate": False,
             }
 
-        lines = [f"Which booking would you like to change?\n"]
+        lines = [f"Which {'reservation' if is_rental else 'booking'} would you like to change?\n"]
         for i, b in enumerate(bookings, 1):
+            if is_rental and b.get("checkin_date"):
+                date_str = f"Check-in: {b.get('checkin_date', '')}" + (f" → {b.get('checkout_date', '')}" if b.get('checkout_date') else "")
+            else:
+                date_str = f"{b.get('date', '')} at {b.get('time', '')}"
             lines.append(
-                f"*{i}.* \U0001f4cc *{b.get('service_name', 'Service')}*\n"
-                f"   \U0001f4c6 {b.get('date', '')} at {b.get('time', '')}\n"
+                f"*{i}.* \U0001f4cc *{b.get('service_name', 'Listing')}*\n"
+                f"   \U0001f4c6 {date_str}\n"
                 f"   Ref: *{b.get('booking_number', '')}*"
             )
         lines.append("\n_Reply with the number (e.g. *1*) to select_")
@@ -453,15 +501,21 @@ class BookingAgent(BaseAgent):
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
 
-    async def _ai_intro(self, message, customer_name, language, business_knowledge, history) -> Optional[str]:
+    async def _ai_intro(self, message, customer_name, language, business_knowledge, history, is_rental=False) -> Optional[str]:
         try:
             from ai_service import get_drafter
             ai = get_drafter()
             bk = (business_knowledge or "")[:300]
-            prompt = (
-                f"Customer wants to book a service. Business: {bk}. "
-                f"Write 1 warm short line in {language} (WhatsApp tone, no bullet points). Reply:"
-            )
+            if is_rental:
+                prompt = (
+                    f"Customer is looking to book a rental/property. Business: {bk}. "
+                    f"Write 1 warm short line in {language} welcoming them to browse listings (WhatsApp tone, no bullet points). Reply:"
+                )
+            else:
+                prompt = (
+                    f"Customer wants to book a service. Business: {bk}. "
+                    f"Write 1 warm short line in {language} (WhatsApp tone, no bullet points). Reply:"
+                )
             intro = await ai._call_llm(prompt, model_pref="standard")
             if intro and len(intro.strip()) < 120:
                 return intro.strip()
