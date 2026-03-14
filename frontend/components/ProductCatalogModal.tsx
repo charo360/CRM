@@ -46,6 +46,7 @@ interface Product {
     service_category?: string;
     addons?: Addon[];
     listing_blocked_dates?: string[];
+    deposit_percent?: number;
 }
 
 interface ProductCatalogModalProps {
@@ -83,6 +84,7 @@ export default function ProductCatalogModal({
     const [editDuration, setEditDuration] = useState('');
     const [editServiceCategory, setEditServiceCategory] = useState<'appointment' | 'rental'>('appointment');
     const [editAddons, setEditAddons] = useState<Addon[]>([]);
+    const [editDepositPercent, setEditDepositPercent] = useState<string>('0');
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
 
@@ -324,6 +326,7 @@ export default function ProductCatalogModal({
         setEditDuration(product.duration?.toString() || '');
         setEditServiceCategory((product.service_category as 'appointment' | 'rental') || 'appointment');
         setEditAddons(product.addons || []);
+        setEditDepositPercent((product.deposit_percent ?? 0).toString());
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -346,6 +349,7 @@ export default function ProductCatalogModal({
         setEditDuration(isServiceBusiness ? '60' : '');
         setEditServiceCategory('appointment');
         setEditAddons([]);
+        setEditDepositPercent('0');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -390,6 +394,7 @@ export default function ProductCatalogModal({
                     duration: editDuration.trim() ? parseInt(editDuration) : undefined,
                     service_category: editServiceCategory,
                     addons: editAddons.filter(a => a.name.trim()),
+                    deposit_percent: parseInt(editDepositPercent) || 0,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -413,6 +418,7 @@ export default function ProductCatalogModal({
                     duration: editDuration.trim() ? parseInt(editDuration) : undefined,
                     service_category: editServiceCategory,
                     addons: editAddons.filter(a => a.name.trim()),
+                    deposit_percent: parseInt(editDepositPercent) || 0,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -829,6 +835,28 @@ export default function ProductCatalogModal({
                                         <Text style={styles.stockHint}>Optional extras customers can add to their booking</Text>
                                     )}
                                 </View>
+
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Deposit Required (%)</Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                                        value={editDepositPercent === '0' ? '' : editDepositPercent}
+                                        onChangeText={v => setEditDepositPercent(v.replace(/[^0-9]/g, ''))}
+                                        placeholder="0 = no deposit"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    {parseInt(editDepositPercent) > 0 && (
+                                        <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>{editDepositPercent}% upfront</Text>
+                                    )}
+                                </View>
+                                <Text style={styles.stockHint}>
+                                    {parseInt(editDepositPercent) > 0
+                                        ? `Customer must pay ${editDepositPercent}% deposit to secure booking`
+                                        : 'Leave at 0 for no deposit (full payment on arrival)'}
+                                </Text>
+                            </View>
 
                             {(addMode || selectedProduct) && (
                                 <>

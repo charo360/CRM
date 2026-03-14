@@ -5037,6 +5037,7 @@ class ProductResponse(BaseModel):
     service_category: Optional[str] = "appointment"  # appointment | rental
     addons: Optional[List[dict]] = []               # [{name, price}] max 4
     listing_blocked_dates: Optional[List[str]] = []  # per-listing blocked YYYY-MM-DD dates
+    deposit_percent: Optional[int] = 0               # 0=none, 1-100 = required deposit %
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
@@ -5072,6 +5073,7 @@ async def get_products(user = Depends(get_current_user)):
             service_category=p.get("service_category", "appointment"),
             addons=p.get("addons", []),
             listing_blocked_dates=p.get("listing_blocked_dates", []),
+            deposit_percent=p.get("deposit_percent", 0),
         ))
     return result
 
@@ -5096,6 +5098,7 @@ class ProductCreate(BaseModel):
     service_category: Optional[str] = "appointment"
     addons: Optional[List[dict]] = []
     listing_blocked_dates: Optional[List[str]] = []
+    deposit_percent: Optional[int] = 0
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -5118,6 +5121,7 @@ class ProductUpdate(BaseModel):
     service_category: Optional[str] = None
     addons: Optional[List[dict]] = None
     listing_blocked_dates: Optional[List[str]] = None
+    deposit_percent: Optional[int] = None
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -5197,6 +5201,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "service_category": product.service_category or "appointment",
         "addons": (product.addons or [])[:4],
         "listing_blocked_dates": product.listing_blocked_dates or [],
+        "deposit_percent": product.deposit_percent or 0,
         "created_at": datetime.utcnow()
     }
     
@@ -5224,6 +5229,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         service_category=product_doc["service_category"],
         addons=product_doc["addons"],
         listing_blocked_dates=product_doc.get("listing_blocked_dates", []),
+        deposit_percent=product_doc.get("deposit_percent", 0),
     )
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
@@ -5292,6 +5298,7 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         service_category=result.get("service_category", "appointment"),
         addons=result.get("addons", []),
         listing_blocked_dates=result.get("listing_blocked_dates", []),
+        deposit_percent=result.get("deposit_percent", 0),
     )
 
 @api_router.post("/products/{product_id}/images")
@@ -8050,6 +8057,11 @@ async def evolution_webhook(request: Request):
                                     _bkc_nights = _bkc_state.get("booking_nights", 0)
                                     _bkc_total = _bkc_state.get("booking_total_price") or _bkc_price
                                     _bkc_svc_cat = _bkc_state.get("booking_service_category", "appointment")
+                                    # Fetch deposit_percent from product doc
+                                    _bkc_listing_doc = await db.products.find_one({"_id": _bkc_svc_id}) if _bkc_svc_id else None
+                                    _bkc_deposit_pct = (_bkc_listing_doc or {}).get("deposit_percent", 0) or 0
+                                    _bkc_deposit_amt = round((_bkc_total or _bkc_price) * _bkc_deposit_pct / 100, 2) if _bkc_deposit_pct > 0 else 0
+                                    _bkc_payment_status = "deposit_pending" if _bkc_deposit_pct > 0 else "unpaid"
                                     await db.bookings.insert_one({
                                         "_id": _bkc_id,
                                         "booking_number": _bkc_number,
@@ -8067,7 +8079,9 @@ async def evolution_webhook(request: Request):
                                         "nights": _bkc_nights or None,
                                         "addons": _bkc_selected_addons,
                                         "status": "pending",
-                                        "payment_status": "unpaid",
+                                        "payment_status": _bkc_payment_status,
+                                        "deposit_percent": _bkc_deposit_pct,
+                                        "deposit_amount": _bkc_deposit_amt,
                                         "price": _bkc_price,
                                         "total_price": _bkc_total,
                                         "source": "whatsapp",
@@ -8075,6 +8089,24 @@ async def evolution_webhook(request: Request):
                                         "updated_at": _bkc_now,
                                     })
                                     _bkc_total_str = f"{_bkc_currency} {_bkc_total:,.0f}" if _bkc_total else _bkc_price_str
+                                    _bkc_deposit_str = f"{_bkc_currency} {_bkc_deposit_amt:,.0f}" if _bkc_deposit_amt else ""
+                                    # Build payment methods snippet for deposit instructions
+                                    _bkc_pm_doc = await db.users.find_one({"_id": _bkc_biz_id})
+                                    _bkc_raw_pm = (_bkc_pm_doc or {}).get("payment_methods", [])
+                                    _bkc_pm_lines = []
+                                    for _pm in _bkc_raw_pm:
+                                        if isinstance(_pm, dict) and _pm.get("name"):
+                                            _line = f"  • *{_pm['name']}*"
+                                            if _pm.get("details"): _line += f": {_pm['details']}"
+                                            _bkc_pm_lines.append(_line)
+                                        elif isinstance(_pm, str):
+                                            _bkc_pm_lines.append(f"  • *{_pm}*")
+                                    _bkc_deposit_block = (
+                                        f"\n💳 *Deposit Required ({_bkc_deposit_pct}%)*\n"
+                                        f"Please send *{_bkc_deposit_str}* to secure your booking:\n"
+                                        + ("\n".join(_bkc_pm_lines) + "\n" if _bkc_pm_lines else "")
+                                        + f"\nSend proof of payment once done. Remaining balance due on arrival."
+                                    ) if _bkc_deposit_pct > 0 else ""
                                     if _bkc_svc_cat == "rental":
                                         _bkc_conf_msg = (
                                             f"✅ *Booking Confirmed!*\n\n"
@@ -8085,7 +8117,8 @@ async def evolution_webhook(request: Request):
                                             f"🌙 {_bkc_nights} night(s)\n"
                                             + ("🔧 Add-ons: " + ", ".join(a["name"] for a in _bkc_selected_addons) + "\n" if _bkc_selected_addons else "")
                                             + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
-                                            + f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*."
+                                            + _bkc_deposit_block
+                                            + (f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*." if not _bkc_deposit_block else "")
                                         )
                                     else:
                                         _bkc_conf_msg = (
@@ -8096,7 +8129,8 @@ async def evolution_webhook(request: Request):
                                             + f"📅 Date: *{_bkc_date_str}*\n"
                                             f"🕐 Time: *{_bkc_time_str}*\n"
                                             + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
-                                            + f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*."
+                                            + _bkc_deposit_block
+                                            + (f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*." if not _bkc_deposit_block else "")
                                         )
                                     _bkc_push_title = "📅 New Booking!"
                                     _bkc_push_body = f"{customer_name} booked {_bkc_svc_name} on {_bkc_date_str} at {_bkc_time_str}"

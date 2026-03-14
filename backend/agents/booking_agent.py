@@ -193,6 +193,59 @@ class BookingAgent(BaseAgent):
 
     # ── Availability Check ────────────────────────────────────────────────────────
 
+    def _parse_dates_from_message(self, message: str):
+        """Extract up to two dates from a free-text message. Returns list of date objects."""
+        import re
+        found = []
+        today = date.today()
+        msg = message.lower()
+
+        # ISO / dd-mm-yyyy / dd/mm/yyyy patterns first
+        iso_pat = re.findall(r'\b(\d{4}-\d{2}-\d{2})\b', msg)
+        for s in iso_pat:
+            try: found.append(date.fromisoformat(s))
+            except: pass
+
+        dmy_pat = re.findall(r'\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b', msg)
+        for d, m, y in dmy_pat:
+            try:
+                yr = int(y) + 2000 if len(y) == 2 else int(y)
+                found.append(date(yr, int(m), int(d)))
+            except: pass
+
+        # Month-name patterns e.g. "20 march", "march 20"
+        month_names = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+                       "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                       "january":1,"february":2,"march":3,"april":4,"june":6,
+                       "july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+        for mname, mnum in month_names.items():
+            m1 = re.search(rf'\b(\d{{1,2}})\s+{mname}\b', msg)
+            m2 = re.search(rf'\b{mname}\s+(\d{{1,2}})\b', msg)
+            m3 = re.search(rf'\b{mname}\s+(\d{{1,2}}),?\s*(\d{{4}})\b', msg)
+            for pat in [m1, m2]:
+                if pat:
+                    try:
+                        yr = today.year if date(today.year, mnum, int(pat.group(1))) >= today else today.year + 1
+                        found.append(date(yr, mnum, int(pat.group(1))))
+                    except: pass
+            if m3:
+                try: found.append(date(int(m3.group(2)), mnum, int(m3.group(1))))
+                except: pass
+
+        # Relative words
+        if "tomorrow" in msg: found.append(today + timedelta(days=1))
+        if "today" in msg: found.append(today)
+        for kw, delta in [("next week", 7), ("this weekend", (5 - today.weekday()) % 7 or 7)]:
+            if kw in msg: found.append(today + timedelta(days=delta))
+
+        # Deduplicate and sort
+        seen = set()
+        result = []
+        for d in sorted(found):
+            if d not in seen and d >= today:
+                seen.add(d); result.append(d)
+        return result[:2]
+
     async def _handle_availability(
         self, services, business_hours, booking_settings,
         customer_name, language, currency, message,
@@ -201,6 +254,84 @@ class BookingAgent(BaseAgent):
         weekday_map = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
         messages_out = []
+
+        # ── Rental: date-specific availability check ──────────────────────────
+        if is_rental and services:
+            parsed_dates = self._parse_dates_from_message(message)
+            if len(parsed_dates) >= 2:
+                ci_date, co_date = parsed_dates[0], parsed_dates[1]
+                if co_date > ci_date:
+                    nights = (co_date - ci_date).days
+                    stay_dates = [str(ci_date + timedelta(days=i)) for i in range(nights)]
+                    # Fetch global blocked dates
+                    user_doc = await self.db.users.find_one({"_id": user_id})
+                    global_blocked = set((user_doc or {}).get("settings", {}).get("rental_availability", []))
+
+                    avail_listings = []
+                    unavail_listings = []
+                    for s in services:
+                        listing_blocked = set(s.get("listing_blocked_dates", []))
+                        all_blocked = global_blocked | listing_blocked
+                        conflict = [d for d in stay_dates if d in all_blocked]
+                        price = s.get("price", 0)
+                        price_str = f"{currency} {price:,.0f}/night" if price else "Contact for price"
+                        total_str = f" · Total: {currency} {price * nights:,.0f}" if price else ""
+                        if conflict:
+                            unavail_listings.append(f"❌ *{s['name']}* — not available ({', '.join(conflict[:2])}{'...' if len(conflict) > 2 else ''})")
+                        else:
+                            avail_listings.append(f"✅ *{s['name']}* — {price_str}{total_str}")
+
+                    ci_str = ci_date.strftime("%d %b %Y")
+                    co_str = co_date.strftime("%d %b %Y")
+                    lines = [f"📅 *Availability: {ci_str} → {co_str} ({nights} night{'s' if nights != 1 else ''})*\n"]
+                    if avail_listings:
+                        lines.append("*Available listings:*")
+                        lines.extend(avail_listings)
+                    if unavail_listings:
+                        lines.append("\n*Unavailable:*")
+                        lines.extend(unavail_listings)
+                    if avail_listings:
+                        lines.append("\n_Reply with the listing name or number to book_ 🏠")
+                    else:
+                        lines.append("\n_Sorry, no listings are available for those dates. Try different dates!_")
+                    messages_out.append({"text": "\n".join(lines)})
+
+                    # Pre-load listings into pending_catalogs for immediate booking
+                    bookable = [s for s in services if str(s["_id"]) not in {
+                        s2["_id"] for s2 in services
+                        if set((user_doc or {}).get("settings", {}).get("rental_availability", [])) | set(s2.get("listing_blocked_dates", []))
+                        & set(stay_dates)
+                    }]
+                    if customer_id and user_id and bookable:
+                        try:
+                            await self.db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user_id},
+                                {"$set": {
+                                    "products": [
+                                        {"id": str(s["_id"]), "name": s["name"], "price": s.get("price", 0),
+                                         "duration": None, "index": idx,
+                                         "service_category": "rental",
+                                         "addons": s.get("addons", []),
+                                         "image_url": s.get("image_url", "")}
+                                        for idx, s in enumerate(services, 1)
+                                    ],
+                                    "action_context": "booking_service_select",
+                                    "catalog_all_ids": [str(s["_id"]) for s in services],
+                                    "catalog_page_offset": 0,
+                                    "catalog_has_more": False,
+                                    "created_at": datetime.utcnow(),
+                                }},
+                                upsert=True
+                            )
+                        except Exception as e:
+                            logger.error(f"[BookingAgent] availability catalog upsert: {e}")
+
+                    return {
+                        "handled": True,
+                        "messages": messages_out,
+                        "escalate": False,
+                        "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+                    }
 
         # Schedule block — skip for rental businesses (they don't have open/close hours)
         if not is_rental:
