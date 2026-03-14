@@ -631,7 +631,7 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editName}
                                     onChangeText={setEditName}
-                                    placeholder={isServiceBusiness ? 'e.g. Haircut, Deep Tissue Massage' : businessType === 'restaurant' ? 'e.g. Grilled Chicken, Jollof Rice' : businessType === 'creator' ? 'e.g. Brand Deal Package, E-Book' : 'e.g. Chocolate Cake, T-Shirt'}
+                                    placeholder={businessType === 'rental' ? 'e.g. Beachfront Villa, Toyota Corolla, Camera Kit' : isServiceBusiness ? 'e.g. Haircut, Deep Tissue Massage' : businessType === 'restaurant' ? 'e.g. Grilled Chicken, Jollof Rice' : businessType === 'creator' ? 'e.g. Brand Deal Package, E-Book' : 'e.g. Chocolate Cake, T-Shirt'}
                                     placeholderTextColor="#555"
                                 />
                             </View>
@@ -666,7 +666,7 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editCategory}
                                     onChangeText={setEditCategory}
-                                    placeholder={isServiceBusiness ? 'e.g. Hair, Nails, Massage, Fitness' : businessType === 'restaurant' ? 'e.g. Mains, Starters, Drinks, Desserts' : businessType === 'creator' ? 'e.g. Sponsored Post, Digital Product, Merch' : 'e.g. Clothing, Electronics, Food'}
+                                    placeholder={businessType === 'rental' ? 'e.g. Property, Vehicle, Equipment, Boat' : isServiceBusiness ? 'e.g. Hair, Nails, Massage, Fitness' : businessType === 'restaurant' ? 'e.g. Mains, Starters, Drinks, Desserts' : businessType === 'creator' ? 'e.g. Sponsored Post, Digital Product, Merch' : 'e.g. Clothing, Electronics, Food'}
                                     placeholderTextColor="#555"
                                 />
                             </View>
@@ -677,7 +677,7 @@ export default function ProductCatalogModal({
                                     style={[styles.formInput, { height: 80, textAlignVertical: 'top' }]}
                                     value={editDescription}
                                     onChangeText={setEditDescription}
-                                    placeholder={isServiceBusiness ? 'What does this service include? Any preparation needed?' : businessType === 'restaurant' ? 'Ingredients, allergens, portion size...' : `Describe your ${itemLabel.toLowerCase()}...`}
+                                    placeholder={businessType === 'rental' ? 'Bedrooms, amenities, location, rules...' : isServiceBusiness ? 'What does this service include? Any preparation needed?' : businessType === 'restaurant' ? 'Ingredients, allergens, portion size...' : `Describe your ${itemLabel.toLowerCase()}...`}
                                     placeholderTextColor="#555"
                                     multiline
                                     numberOfLines={3}
