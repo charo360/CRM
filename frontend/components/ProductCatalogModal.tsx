@@ -848,6 +848,7 @@ export default function ProductCatalogModal({
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                                     {[
                                         { id: 'night',  label: '🌙 Per Night' },
+                                        { id: 'day',    label: '☀️ Per Day' },
                                         { id: 'week',   label: '📅 Per Week' },
                                         { id: 'month',  label: '🗓 Per Month' },
                                         { id: 'year',   label: '📆 Per Year' },

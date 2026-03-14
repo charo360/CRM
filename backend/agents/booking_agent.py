@@ -133,7 +133,7 @@ class BookingAgent(BaseAgent):
             for i, s in enumerate(first_page, 1):
                 price = s.get("price", 0)
                 unit = s.get("price_unit", "night")
-                unit_label = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
+                unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
                 price_str = f"{currency} {price:,.0f}/" + unit_label if price else "Contact for price"
                 desc = s.get("description", "")
                 desc_str = f" · {desc[:50]}" if desc else ""
@@ -277,7 +277,7 @@ class BookingAgent(BaseAgent):
                         conflict = [d for d in stay_dates if d in all_blocked]
                         price = s.get("price", 0)
                         unit = s.get("price_unit", "night")
-                        unit_label = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
+                        unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
                         price_str = f"{currency} {price:,.0f}/" + unit_label if price else "Contact for price"
                         if unit == "week":
                             period_total = price * max(1, round(nights / 7))
@@ -287,7 +287,7 @@ class BookingAgent(BaseAgent):
                             period_total = price * max(1, round(nights / 365))
                         elif unit == "person":
                             period_total = price  # base of 1 person
-                        else:  # night
+                        else:  # night or day — use days count
                             period_total = price * nights
                         total_str = f" · Total: {currency} {period_total:,.0f}" if price else ""
                         if conflict:
@@ -375,7 +375,7 @@ class BookingAgent(BaseAgent):
                 for i, s in enumerate(first_page, 1):
                     price = s.get("price", 0)
                     unit = s.get("price_unit", "night")
-                    unit_label = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
+                    unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
                     price_str = f"{currency} {price:,.0f}/" + unit_label if price else "Contact for price"
                     svc_lines.append(f"{i}\ufe0f\u20e3  *{s['name']}* \u2014 {price_str}")
             else:

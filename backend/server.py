@@ -5038,7 +5038,7 @@ class ProductResponse(BaseModel):
     addons: Optional[List[dict]] = []               # [{name, price}] max 4
     listing_blocked_dates: Optional[List[str]] = []  # per-listing blocked YYYY-MM-DD dates
     deposit_percent: Optional[int] = 0               # 0=none, 1-100 = required deposit %
-    price_unit: Optional[str] = "night"               # night | week | month | year | person
+    price_unit: Optional[str] = "night"               # night | day | week | month | year | person
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
@@ -7263,7 +7263,7 @@ async def evolution_webhook(request: Request):
                                                     for _pi, _ps in enumerate(_next_svcs, 1):
                                                         _pp = _ps.get("price", 0)
                                                         _pu = _ps.get("price_unit", "night")
-                                                        _pu_lbl = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_pu, "night")
+                                                        _pu_lbl = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_pu, "night")
                                                         _pp_str = f"{_bk_currency} {_pp:,.0f}/{_pu_lbl}" if _pp else "Contact for price"
                                                         _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}")
                                                     if _more_svc_has_more:
@@ -7336,7 +7336,7 @@ async def evolution_webhook(request: Request):
                                                 logging.warning(f"[Booking] Service image send failed: {_img_err}")
 
                                         _bk_price_unit = (_bk_full_svc or {}).get("price_unit", "night")
-                                        _bk_unit_label = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_bk_price_unit, "night")
+                                        _bk_unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_bk_price_unit, "night")
                                         # Store core booking fields in pending_catalogs
                                         _base_ctx = {
                                             "booking_service_id": _bk_svc_id,
@@ -7828,7 +7828,7 @@ async def evolution_webhook(request: Request):
                         _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
                         _co_price_unit = _co_state.get("booking_price_unit", "night")
                         # Calculate period count based on unit
-                        _co_unit_labels = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}
+                        _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
                         _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
                         if _co_price_unit == "week":
                             _co_periods = max(1, round(_nights / 7))
