@@ -329,7 +329,10 @@ async def fix_team_members_index():
         logging.warning(f"[Migration] offering_type backfill failed: {e}")
 
     # Startup: purge invalid contacts for all existing users (one-time cleanup + permanent gate)
-    asyncio.create_task(_startup_purge_invalid_contacts())
+    try:
+        asyncio.create_task(_startup_purge_invalid_contacts())
+    except Exception as e:
+        logging.warning(f"[StartupPurge] Failed to start purge task: {e}")
 
     # Start automation scheduler in background
     asyncio.create_task(run_automation_scheduler())
