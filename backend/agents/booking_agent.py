@@ -195,6 +195,44 @@ class BookingAgent(BaseAgent):
 
     # ── Availability Check ────────────────────────────────────────────────────────
 
+    def _parse_month_from_message(self, message: str):
+        """Extract (year, month) from message. Returns tuple or None."""
+        import re
+        msg = message.lower()
+        today = date.today()
+        month_names = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+            "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+            "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+        }
+        if "next month" in msg:
+            d = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+            return (d.year, d.month)
+        if "this month" in msg:
+            return (today.year, today.month)
+        for mname, mnum in month_names.items():
+            if re.search(rf'\b{mname}\b', msg):
+                yr_m = re.search(r'\b(202\d)\b', msg)
+                yr = int(yr_m.group(1)) if yr_m else (today.year if mnum >= today.month else today.year + 1)
+                return (yr, mnum)
+        return None
+
+    @staticmethod
+    def _compress_to_ranges(days: list) -> str:
+        """Convert sorted list of ints to compact range string e.g. '1–7, 10–14'."""
+        if not days:
+            return ""
+        ranges, start, end = [], days[0], days[0]
+        for d in days[1:]:
+            if d == end + 1:
+                end = d
+            else:
+                ranges.append(str(start) if start == end else f"{start}–{end}")
+                start = end = d
+        ranges.append(str(start) if start == end else f"{start}–{end}")
+        return ", ".join(ranges)
+
     def _parse_dates_from_message(self, message: str):
         """Extract up to two dates from a free-text message. Returns list of date objects."""
         import re
@@ -367,6 +405,82 @@ class BookingAgent(BaseAgent):
                         "escalate": False,
                         "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
                     }
+
+            # ── Rental: month-calendar availability view ──────────────────────
+            import calendar as _cal
+            month_result = self._parse_month_from_message(message)
+            today = date.today()
+            yr, mo = month_result if month_result else (today.year, today.month)
+            days_in_month = _cal.monthrange(yr, mo)[1]
+            month_label = date(yr, mo, 1).strftime("%B %Y")
+            user_doc = await self.db.users.find_one({"_id": user_id})
+            global_blocked = set((user_doc or {}).get("settings", {}).get("rental_availability", []))
+
+            cal_lines = [f"📅 *Available Days — {month_label}*\n"]
+            for s in services:
+                listing_blocked = set(s.get("listing_blocked_dates", []))
+                all_blocked = global_blocked | listing_blocked
+                price = s.get("price", 0)
+                unit = s.get("price_unit", "night")
+                unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
+                price_str = f"{currency} {price:,.0f}/{unit_label}" if price else "Contact for price"
+                cal_lines.append(f"🏠 *{s['name']}* — {price_str}")
+                blocked_days = [d for d in range(1, days_in_month + 1)
+                                if f"{yr:04d}-{mo:02d}-{d:02d}" in all_blocked]
+                free_days = [d for d in range(1, days_in_month + 1)
+                             if d not in blocked_days and date(yr, mo, d) >= today]
+                if not blocked_days:
+                    cal_lines.append("✅ Fully available this month!")
+                else:
+                    if free_days:
+                        cal_lines.append(f"✅ Free: {self._compress_to_ranges(free_days)}")
+                    if blocked_days:
+                        cal_lines.append(f"❌ Blocked: {self._compress_to_ranges(blocked_days)}")
+                cal_lines.append("")
+
+            # Also show numbered listings for direct booking
+            cal_lines.append("*Select a listing to book:*")
+            for idx, s in enumerate(services, 1):
+                price = s.get("price", 0)
+                unit = s.get("price_unit", "night")
+                unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(unit, "night")
+                price_str = f"{currency} {price:,.0f}/{unit_label}" if price else "Contact for price"
+                cal_lines.append(f"{idx}\ufe0f\u20e3  *{s['name']}* — {price_str}")
+            cal_lines.append("\n_Reply with a number to book, or send check-in & check-out dates to check a specific range_ 🏠")
+            messages_out.append({"text": "\n".join(cal_lines)})
+
+            # Pre-load all listings for direct booking after calendar view
+            if customer_id and user_id:
+                try:
+                    await self.db.pending_catalogs.update_one(
+                        {"customer_id": customer_id, "user_id": user_id},
+                        {"$set": {
+                            "products": [
+                                {"id": str(s["_id"]), "name": s["name"], "price": s.get("price", 0),
+                                 "duration": None, "index": idx,
+                                 "service_category": "rental",
+                                 "price_unit": s.get("price_unit", "night"),
+                                 "addons": s.get("addons", []),
+                                 "image_url": s.get("image_url", "")}
+                                for idx, s in enumerate(services, 1)
+                            ],
+                            "action_context": "booking_service_select",
+                            "catalog_all_ids": [str(s["_id"]) for s in services],
+                            "catalog_page_offset": 0,
+                            "catalog_has_more": False,
+                            "created_at": datetime.utcnow(),
+                        }},
+                        upsert=True
+                    )
+                except Exception as e:
+                    logger.error(f"[BookingAgent] month-cal catalog upsert: {e}")
+
+            return {
+                "handled": True,
+                "messages": messages_out,
+                "escalate": False,
+                "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+            }
 
         # Schedule block — skip for rental businesses (they don't have open/close hours)
         if not is_rental:

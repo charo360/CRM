@@ -7310,30 +7310,39 @@ async def evolution_webhook(request: Request):
                                         # Fetch full service doc for image, addons, service_category
                                         _bk_full_svc = await db.products.find_one({"_id": _bk_svc_id, "user_id": user.get("business_id", user["_id"])})
                                         _bk_image_url = (_bk_full_svc or {}).get("image_url") or ""
+                                        _bk_all_images = [u for u in ((_bk_full_svc or {}).get("images") or []) if u]
+                                        # Ensure primary image is first; deduplicate
+                                        if _bk_image_url and _bk_image_url not in _bk_all_images:
+                                            _bk_all_images = [_bk_image_url] + _bk_all_images
+                                        elif not _bk_all_images and _bk_image_url:
+                                            _bk_all_images = [_bk_image_url]
                                         _bk_addons = (_bk_full_svc or {}).get("addons", []) or []
                                         # If whole business is rental, treat all listings as rental regardless of stored service_category
                                         _bk_svc_cat = "rental" if _bk_is_rental_biz else (_bk_full_svc or {}).get("service_category", "appointment")
                                         _bk_description = (_bk_full_svc or {}).get("description", "")
                                         ws = get_whatsapp_service(db)
-                                        # Send service image if available
-                                        if _bk_image_url:
+                                        # Send listing images (up to 3)
+                                        if _bk_all_images:
                                             try:
                                                 import httpx as _httpx_bk
                                                 _inst_doc = await db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1})
                                                 _inst_name = (_inst_doc or {}).get("whatsapp", {}).get("instance_name", "")
                                                 if _inst_name:
-                                                    _caption = f"*{_bk_svc_name}* — {_bk_price_str}"
-                                                    if _bk_description:
-                                                        _caption += f"\n_{_bk_description[:120]}_"
                                                     async with _httpx_bk.AsyncClient(timeout=15) as _hc:
-                                                        await _hc.post(
-                                                            f"{ws.base_url}/message/sendMedia/{_inst_name}",
-                                                            json={"number": from_number.lstrip("+"), "mediatype": "image",
-                                                                  "media": _bk_image_url, "caption": _caption},
-                                                            headers=ws._headers(),
-                                                        )
+                                                        for _img_idx, _img_u in enumerate(_bk_all_images[:3]):
+                                                            _caption = ""
+                                                            if _img_idx == 0:
+                                                                _caption = f"*{_bk_svc_name}* — {_bk_price_str}"
+                                                                if _bk_description:
+                                                                    _caption += f"\n_{_bk_description[:120]}_"
+                                                            await _hc.post(
+                                                                f"{ws.base_url}/message/sendMedia/{_inst_name}",
+                                                                json={"number": from_number.lstrip("+"), "mediatype": "image",
+                                                                      "media": _img_u, "caption": _caption},
+                                                                headers=ws._headers(),
+                                                            )
                                             except Exception as _img_err:
-                                                logging.warning(f"[Booking] Service image send failed: {_img_err}")
+                                                logging.warning(f"[Booking] Listing image send failed: {_img_err}")
 
                                         _bk_price_unit = (_bk_full_svc or {}).get("price_unit", "night")
                                         _bk_unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_bk_price_unit, "night")
