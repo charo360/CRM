@@ -47,6 +47,7 @@ interface Product {
     addons?: Addon[];
     listing_blocked_dates?: string[];
     deposit_percent?: number;
+    price_unit?: string;
 }
 
 interface ProductCatalogModalProps {
@@ -85,6 +86,7 @@ export default function ProductCatalogModal({
     const [editServiceCategory, setEditServiceCategory] = useState<'appointment' | 'rental'>('appointment');
     const [editAddons, setEditAddons] = useState<Addon[]>([]);
     const [editDepositPercent, setEditDepositPercent] = useState<string>('0');
+    const [editPriceUnit, setEditPriceUnit] = useState<string>('night');
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
 
@@ -327,6 +329,7 @@ export default function ProductCatalogModal({
         setEditServiceCategory((product.service_category as 'appointment' | 'rental') || 'appointment');
         setEditAddons(product.addons || []);
         setEditDepositPercent((product.deposit_percent ?? 0).toString());
+        setEditPriceUnit(product.price_unit || 'night');
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -350,6 +353,7 @@ export default function ProductCatalogModal({
         setEditServiceCategory('appointment');
         setEditAddons([]);
         setEditDepositPercent('0');
+        setEditPriceUnit('night');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -395,6 +399,7 @@ export default function ProductCatalogModal({
                     service_category: editServiceCategory,
                     addons: editAddons.filter(a => a.name.trim()),
                     deposit_percent: parseInt(editDepositPercent) || 0,
+                    price_unit: editPriceUnit,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -419,6 +424,7 @@ export default function ProductCatalogModal({
                     service_category: editServiceCategory,
                     addons: editAddons.filter(a => a.name.trim()),
                     deposit_percent: parseInt(editDepositPercent) || 0,
+                    price_unit: editPriceUnit,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -835,6 +841,33 @@ export default function ProductCatalogModal({
                                         <Text style={styles.stockHint}>Optional extras customers can add to their booking</Text>
                                     )}
                                 </View>
+
+                            {(businessType === 'rental' || editServiceCategory === 'rental') && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Pricing Unit</Text>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                    {[
+                                        { id: 'night',  label: '🌙 Per Night' },
+                                        { id: 'week',   label: '📅 Per Week' },
+                                        { id: 'month',  label: '🗓 Per Month' },
+                                        { id: 'year',   label: '📆 Per Year' },
+                                        { id: 'person', label: '👤 Per Person' },
+                                    ].map(u => (
+                                        <TouchableOpacity
+                                            key={u.id}
+                                            style={[
+                                                styles.typeChip,
+                                                editPriceUnit === u.id && styles.typeChipActive,
+                                            ]}
+                                            onPress={() => setEditPriceUnit(u.id)}
+                                        >
+                                            <Text style={[styles.typeChipText, editPriceUnit === u.id && styles.typeChipTextActive]}>{u.label}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </ScrollView>
+                                <Text style={styles.stockHint}>How the price is charged to the customer</Text>
+                            </View>
+                            )}
 
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Deposit Required (%)</Text>

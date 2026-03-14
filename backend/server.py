@@ -5038,6 +5038,7 @@ class ProductResponse(BaseModel):
     addons: Optional[List[dict]] = []               # [{name, price}] max 4
     listing_blocked_dates: Optional[List[str]] = []  # per-listing blocked YYYY-MM-DD dates
     deposit_percent: Optional[int] = 0               # 0=none, 1-100 = required deposit %
+    price_unit: Optional[str] = "night"               # night | week | month | year | person
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
@@ -5074,6 +5075,7 @@ async def get_products(user = Depends(get_current_user)):
             addons=p.get("addons", []),
             listing_blocked_dates=p.get("listing_blocked_dates", []),
             deposit_percent=p.get("deposit_percent", 0),
+            price_unit=p.get("price_unit", "night"),
         ))
     return result
 
@@ -5099,6 +5101,7 @@ class ProductCreate(BaseModel):
     addons: Optional[List[dict]] = []
     listing_blocked_dates: Optional[List[str]] = []
     deposit_percent: Optional[int] = 0
+    price_unit: Optional[str] = "night"
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -5122,6 +5125,7 @@ class ProductUpdate(BaseModel):
     addons: Optional[List[dict]] = None
     listing_blocked_dates: Optional[List[str]] = None
     deposit_percent: Optional[int] = None
+    price_unit: Optional[str] = None
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -5202,6 +5206,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "addons": (product.addons or [])[:4],
         "listing_blocked_dates": product.listing_blocked_dates or [],
         "deposit_percent": product.deposit_percent or 0,
+        "price_unit": product.price_unit or "night",
         "created_at": datetime.utcnow()
     }
     
@@ -5230,6 +5235,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         addons=product_doc["addons"],
         listing_blocked_dates=product_doc.get("listing_blocked_dates", []),
         deposit_percent=product_doc.get("deposit_percent", 0),
+        price_unit=product_doc.get("price_unit", "night"),
     )
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
@@ -5299,6 +5305,7 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         addons=result.get("addons", []),
         listing_blocked_dates=result.get("listing_blocked_dates", []),
         deposit_percent=result.get("deposit_percent", 0),
+        price_unit=result.get("price_unit", "night"),
     )
 
 @api_router.post("/products/{product_id}/images")
@@ -7255,7 +7262,9 @@ async def evolution_webhook(request: Request):
                                                     _pg_lines = ["🏠 *More Listings*\n"]
                                                     for _pi, _ps in enumerate(_next_svcs, 1):
                                                         _pp = _ps.get("price", 0)
-                                                        _pp_str = f"{_bk_currency} {_pp:,.0f}/night" if _pp else "Contact for price"
+                                                        _pu = _ps.get("price_unit", "night")
+                                                        _pu_lbl = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_pu, "night")
+                                                        _pp_str = f"{_bk_currency} {_pp:,.0f}/{_pu_lbl}" if _pp else "Contact for price"
                                                         _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}")
                                                     if _more_svc_has_more:
                                                         _pg_lines.append("9️⃣  ➡️ *See more listings*")
@@ -7326,6 +7335,8 @@ async def evolution_webhook(request: Request):
                                             except Exception as _img_err:
                                                 logging.warning(f"[Booking] Service image send failed: {_img_err}")
 
+                                        _bk_price_unit = (_bk_full_svc or {}).get("price_unit", "night")
+                                        _bk_unit_label = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_bk_price_unit, "night")
                                         # Store core booking fields in pending_catalogs
                                         _base_ctx = {
                                             "booking_service_id": _bk_svc_id,
@@ -7333,6 +7344,7 @@ async def evolution_webhook(request: Request):
                                             "booking_service_price": _bk_sel.get("price", 0),
                                             "booking_service_duration": _bk_duration,
                                             "booking_service_category": _bk_svc_cat,
+                                            "booking_price_unit": _bk_price_unit,
                                             "booking_addons_available": _bk_addons,
                                             "booking_selected_addons": [],
                                             "updated_at": datetime.utcnow(),
@@ -7367,7 +7379,7 @@ async def evolution_webhook(request: Request):
                                             await ws.send_message(
                                                 user_id=user["_id"], to_number=from_number,
                                                 message=(
-                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}/night).\n\n"
+                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}/{_bk_unit_label}).\n\n"
                                                     f"📅 *Check-in date?*\n"
                                                     f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
                                                 ),
@@ -7814,15 +7826,30 @@ async def evolution_webhook(request: Request):
                         _co_base_price = _co_state.get("booking_service_price", 0)
                         _co_addons = _co_state.get("booking_selected_addons", [])
                         _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
-                        _co_total = (_co_base_price * _nights) + _co_addon_total
+                        _co_price_unit = _co_state.get("booking_price_unit", "night")
+                        # Calculate period count based on unit
+                        _co_unit_labels = {"night": "night", "week": "week", "month": "month", "year": "year", "person": "person"}
+                        _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
+                        if _co_price_unit == "week":
+                            _co_periods = max(1, round(_nights / 7))
+                        elif _co_price_unit == "month":
+                            _co_periods = max(1, round(_nights / 30))
+                        elif _co_price_unit == "year":
+                            _co_periods = max(1, round(_nights / 365))
+                        elif _co_price_unit == "person":
+                            _co_periods = 1  # owner bills per person; AI can't know headcount, use 1 as base
+                        else:  # night — use days count
+                            _co_periods = _nights
+                        _co_total = (_co_base_price * _co_periods) + _co_addon_total
                         _co_svc_name = _co_state.get("booking_service_name", "Service")
                         _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
+                        _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
                         _co_summary = (
                             f"📋 *Booking Summary*\n\n"
                             f"🏠 *{_co_svc_name}*\n"
                             f"📅 Check-in: *{_ci_date_str}*\n"
                             f"📅 Check-out: *{str(_parsed_co)}*\n"
-                            f"🌙 Duration: *{_nights} night(s)*\n"
+                            f"⏱ Duration: *{_co_dur_label}*\n"
                         )
                         if _co_addons:
                             _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
