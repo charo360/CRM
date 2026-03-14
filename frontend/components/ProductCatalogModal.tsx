@@ -754,7 +754,7 @@ export default function ProductCatalogModal({
                                 </ScrollView>
                             </View>
 
-                            {(isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
+                            {businessType !== 'rental' && editServiceCategory !== 'rental' && (isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
                                 <View style={[styles.formGroup, isServiceBusiness && { borderLeftWidth: 3, borderLeftColor: '#25D366', paddingLeft: 12 }]}>
                                     <Text style={styles.formLabel}>Duration (minutes) {isServiceBusiness && '*'}</Text>
                                     <TextInput
@@ -809,7 +809,7 @@ export default function ProductCatalogModal({
                                                 style={[styles.formInput, { flex: 2, marginBottom: 0 }]}
                                                 value={addon.name}
                                                 onChangeText={v => setEditAddons(prev => prev.map((a, i) => i === idx ? { ...a, name: v } : a))}
-                                                placeholder="e.g. Braids, Parking"
+                                                placeholder={businessType === 'rental' || editServiceCategory === 'rental' ? 'e.g. Parking, Pool, WiFi' : 'e.g. Braids, Parking'}
                                                 placeholderTextColor="#555"
                                             />
                                             <TextInput
