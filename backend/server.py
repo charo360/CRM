@@ -332,7 +332,6 @@ async def fix_team_members_index():
     asyncio.create_task(_startup_purge_invalid_contacts())
 
     # Start automation scheduler in background
-    import asyncio
     asyncio.create_task(run_automation_scheduler())
 
 async def _purge_invalid_contacts_for_user(user_id: str) -> int:
