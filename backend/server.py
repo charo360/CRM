@@ -8144,23 +8144,36 @@ async def evolution_webhook(request: Request):
                                     })
                                     _bkc_total_str = f"{_bkc_currency} {_bkc_total:,.0f}" if _bkc_total else _bkc_price_str
                                     _bkc_deposit_str = f"{_bkc_currency} {_bkc_deposit_amt:,.0f}" if _bkc_deposit_amt else ""
-                                    # Build payment methods snippet for deposit instructions
+                                    # Build payment methods snippet (full details incl. multi-field format)
                                     _bkc_pm_doc = await db.users.find_one({"_id": _bkc_biz_id})
-                                    _bkc_raw_pm = (_bkc_pm_doc or {}).get("payment_methods", [])
+                                    _bkc_raw_pm = (_bkc_pm_doc or {}).get("payment_methods", []) or []
                                     _bkc_pm_lines = []
                                     for _pm in _bkc_raw_pm:
                                         if isinstance(_pm, dict) and _pm.get("name"):
                                             _line = f"  • *{_pm['name']}*"
-                                            if _pm.get("details"): _line += f": {_pm['details']}"
+                                            if _pm.get("fields"):
+                                                _fparts = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                if _fparts: _line += " — " + ", ".join(_fparts)
+                                            elif _pm.get("details"):
+                                                _line += f": {_pm['details']}"
                                             _bkc_pm_lines.append(_line)
-                                        elif isinstance(_pm, str):
+                                        elif isinstance(_pm, str) and _pm.strip():
                                             _bkc_pm_lines.append(f"  • *{_pm}*")
-                                    _bkc_deposit_block = (
-                                        f"\n💳 *Deposit Required ({_bkc_deposit_pct}%)*\n"
-                                        f"Please send *{_bkc_deposit_str}* to secure your booking:\n"
-                                        + ("\n".join(_bkc_pm_lines) + "\n" if _bkc_pm_lines else "")
-                                        + f"\nSend proof of payment once done. Remaining balance due on arrival."
-                                    ) if _bkc_deposit_pct > 0 else ""
+                                    _bkc_pm_block = ("\n".join(_bkc_pm_lines) + "\n") if _bkc_pm_lines else ""
+                                    if _bkc_deposit_pct > 0:
+                                        _bkc_deposit_block = (
+                                            f"\n💳 *Deposit Required ({_bkc_deposit_pct}%)*\n"
+                                            f"Please send *{_bkc_deposit_str}* to secure your booking:\n"
+                                            + _bkc_pm_block
+                                            + f"\nSend proof of payment once done. Remaining balance due on arrival."
+                                        )
+                                    elif _bkc_pm_block:
+                                        _bkc_deposit_block = (
+                                            f"\n💳 *Payment Details:*\n"
+                                            + _bkc_pm_block
+                                        )
+                                    else:
+                                        _bkc_deposit_block = ""
                                     if _bkc_svc_cat == "rental":
                                         _bkc_conf_msg = (
                                             f"✅ *Booking Confirmed!*\n\n"
@@ -8186,6 +8199,21 @@ async def evolution_webhook(request: Request):
                                             + _bkc_deposit_block
                                             + (f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*." if not _bkc_deposit_block else "")
                                         )
+                                    # Auto-block confirmed rental booking dates on the listing
+                                    if _bkc_svc_cat == "rental" and _bkc_svc_id and _bkc_checkout and _bkc_date_str:
+                                        try:
+                                            from datetime import date as _date_cls
+                                            _bl_ci = datetime.strptime(_bkc_date_str, "%Y-%m-%d").date()
+                                            _bl_co = datetime.strptime(_bkc_checkout, "%Y-%m-%d").date()
+                                            _bl_range = [str(_bl_ci + timedelta(days=i)) for i in range((_bl_co - _bl_ci).days)]
+                                            if _bl_range:
+                                                await db.products.update_one(
+                                                    {"_id": _bkc_svc_id},
+                                                    {"$addToSet": {"listing_blocked_dates": {"$each": _bl_range}}}
+                                                )
+                                                logging.info(f"[Booking] Auto-blocked dates {_bl_range[0]}→{_bl_range[-1]} on listing {_bkc_svc_id}")
+                                        except Exception as _bl_err:
+                                            logging.warning(f"[Booking] Auto-block dates failed: {_bl_err}")
                                     _bkc_push_title = "📅 New Booking!"
                                     _bkc_push_body = f"{customer_name} booked {_bkc_svc_name} on {_bkc_date_str} at {_bkc_time_str}"
                                     _bkc_push_type = "new_booking"

@@ -951,18 +951,19 @@ class WhatsAppService:
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("settings", {}).get("currency", "USD")
+        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         price = product.get('price', 0)
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
-        stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
+        _is_rental = (product.get('service_category') == 'rental' or product.get('offering_type') == 'rental')
+        stock_label = "" if _is_rental else ("✅ In Stock" if in_stock else "❌ Out of Stock")
         desc = product.get('description', '') or ''
         if desc.strip().lower() == 'add product description':
             desc = ''
 
-        caption = f"🌟 *{product['name']}*\n💰 {price_str}\n{stock_label}"
+        caption = f"🌟 *{product['name']}*\n💰 {price_str}" + (f"\n{stock_label}" if stock_label else "")
         if desc.strip():
             caption += f"\n\n{desc}"
 
@@ -1065,7 +1066,7 @@ class WhatsAppService:
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("settings", {}).get("currency", "USD")
+        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         # Show max 8 products as options 1-8
@@ -1073,9 +1074,10 @@ class WhatsAppService:
         lines = [f"🛍️ *{title}{page_label}*\n"]
         for i, p in enumerate(products[:8], 1):
             price = p.get('price', 0)
-            stock = "✅" if p.get('in_stock', True) else "❌"
+            _p_is_rental = (p.get('service_category') == 'rental' or p.get('offering_type') == 'rental')
+            stock = "" if _p_is_rental else ("✅" if p.get('in_stock', True) else "❌")
             price_str = f"{currency} {price:,.0f}" if price else "POA"
-            lines.append(f"{i}\ufe0f\u20e3  *{p['name']}* — {price_str} {stock}")
+            lines.append(f"{i}️⃣  *{p['name']}* — {price_str}" + (f" {stock}" if stock else ""))
         if has_more:
             lines.append(f"9\ufe0f\u20e3  ➡️ *See more products*")
         lines.append("\n_Reply with a number to select_")
@@ -1152,13 +1154,15 @@ class WhatsAppService:
         price = product.get('price', 0)
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
-        stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
+        _is_rental = (product.get('service_category') == 'rental' or product.get('offering_type') == 'rental')
+        stock_label = "" if _is_rental else ("✅ In Stock" if in_stock else "❌ Out of Stock")
         parts = [
             f"🛍️ *{product['name'].upper()}*",
             "",
             f"💰 *Price:* {price_str}",
-            stock_label,
         ]
+        if stock_label:
+            parts.append(stock_label)
         if product.get('description'):
             parts.extend(["", "📝 *Description:*", product['description']])
         return "\n".join(parts)
