@@ -1186,7 +1186,7 @@ export default function ProductCatalogModal({
 
                                 {/* Action Buttons */}
                                 <View style={styles.actionButtons}>
-                                    {(selectedProduct.service_category !== 'rental' && selectedProduct.offering_type !== 'rental') && (
+                                    {!isServiceBusiness && (
                                     <TouchableOpacity
                                         style={styles.actionBtn}
                                         onPress={() => handleToggleStock(selectedProduct)}
