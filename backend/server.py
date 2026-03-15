@@ -8811,7 +8811,7 @@ async def evolution_webhook(request: Request):
                             # Customer wants to see similar/related products
                             _biz_id_sim = user.get("business_id", user["_id"])
                             _sim_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_sim})
-                            _sim_currency = user.get("settings", {}).get("currency", "USD")
+                            _sim_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                             if _sim_product:
                                 _sim_category = _sim_product.get("category", "")
                                 _sim_name = _sim_product["name"]
