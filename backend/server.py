@@ -7701,15 +7701,68 @@ async def evolution_webhook(request: Request):
                         import re as _re_ci
                         _ci_body = body.strip()
                         _ci_lower = _ci_body.lower()
-                        # ── Escape hatch: cancel/restart/greetings/availability ──
-                        _ci_cancel_kws = ("cancel", "stop", "exit", "quit", "reset", "restart",
-                                          "start afresh", "start over", "start again", "start fresh",
-                                          "hello", "hi", "hey", "good morning", "good evening",
-                                          "good afternoon", "good night", "availability",
-                                          "check availability", "what's available", "what is available")
-                        if any(_ci_lower == kw or _ci_lower.startswith(kw) for kw in _ci_cancel_kws):
+                        # ── Escape hatch ──
+                        _ci_true_cancel_kws = ("cancel", "stop", "exit", "quit", "reset", "restart",
+                                               "start afresh", "start over", "start again", "start fresh",
+                                               "hello", "hi", "hey", "good morning", "good evening",
+                                               "good afternoon", "good night")
+                        _ci_avail_kws = ("availability", "check availability", "what's available",
+                                         "what is available", "available dates", "give me the dates",
+                                         "show dates", "show availability", "see the dates",
+                                         "see dates", "available days", "what days", "what days are",
+                                         "i want to see", "dates available", "give dates",
+                                         "what dates", "available?", "when is it available")
+                        _ci_is_cancel = any(_ci_lower == kw or _ci_lower.startswith(kw) for kw in _ci_true_cancel_kws)
+                        _ci_is_avail = any(_ci_lower == kw or _ci_lower.startswith(kw) for kw in _ci_avail_kws)
+
+                        if _ci_is_cancel:
                             await db.pending_catalogs.delete_one({"_id": _ci_state["_id"]})
-                            # Fall through — do not return, let agent pipeline handle the message
+                            # Fall through — let agent pipeline handle
+                        elif _ci_is_avail:
+                            # Show the listing's availability calendar and KEEP booking state
+                            import calendar as _cal_ci
+                            _avail_ws = get_whatsapp_service(db)
+                            _avail_today = datetime.utcnow().date()
+                            _avail_yr, _avail_mo = _avail_today.year, _avail_today.month
+                            _avail_days_in_month = _cal_ci.monthrange(_avail_yr, _avail_mo)[1]
+                            _avail_month_label = _avail_today.strftime("%B %Y")
+                            _avail_svc_id = _ci_state.get("booking_service_id", "")
+                            _avail_svc_name = _ci_state.get("booking_service_name", "this listing")
+                            _avail_user_doc = await db.users.find_one({"_id": user["_id"]})
+                            _avail_global_blocked = set((_avail_user_doc or {}).get("settings", {}).get("rental_availability") or [])
+                            _avail_listing_doc = await db.products.find_one({"_id": _avail_svc_id}) if _avail_svc_id else None
+                            _avail_listing_blocked = set((_avail_listing_doc or {}).get("listing_blocked_dates") or [])
+                            _avail_all_blocked = _avail_global_blocked | _avail_listing_blocked
+                            _avail_blocked_days = [d for d in range(1, _avail_days_in_month + 1)
+                                                   if f"{_avail_yr:04d}-{_avail_mo:02d}-{d:02d}" in _avail_all_blocked]
+                            _avail_free_days = [d for d in range(1, _avail_days_in_month + 1)
+                                                if d not in _avail_blocked_days and _avail_today.replace(day=d) >= _avail_today]
+
+                            def _compress_ranges(days):
+                                if not days: return ""
+                                ranges, s, e = [], days[0], days[0]
+                                for d in days[1:]:
+                                    if d == e + 1: e = d
+                                    else:
+                                        ranges.append(str(s) if s == e else f"{s}–{e}")
+                                        s = e = d
+                                ranges.append(str(s) if s == e else f"{s}–{e}")
+                                return ", ".join(ranges)
+
+                            _avail_lines = [f"📅 *{_avail_svc_name} — {_avail_month_label}*\n"]
+                            if not _avail_blocked_days:
+                                _avail_lines.append("✅ Fully available this month!")
+                            else:
+                                if _avail_free_days:
+                                    _avail_lines.append(f"✅ *Available:* {_compress_ranges(_avail_free_days)}")
+                                _avail_lines.append(f"❌ *Blocked:* {_compress_ranges(_avail_blocked_days)}")
+                            _avail_lines.append(f"\n_Reply with your preferred check-in date to continue booking_ 📅")
+                            await _avail_ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="\n".join(_avail_lines),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_checkin_avail_view"}
                         else:
                             _today_ci = datetime.utcnow().date()
                             _parsed_ci = None
