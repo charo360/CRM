@@ -8305,9 +8305,14 @@ async def evolution_webhook(request: Request):
                                         _bkc_deposit_block = (
                                             f"\n💳 *Payment Details:*\n"
                                             + _bkc_pm_block
+                                            + f"\nFull amount of *{_bkc_total_str}* is due on arrival. "
+                                            f"You may also send payment in advance via the above details and share proof of payment."
                                         )
                                     else:
-                                        _bkc_deposit_block = ""
+                                        _bkc_deposit_block = (
+                                            f"\n💰 Full amount of *{_bkc_total_str}* is due on arrival." if _bkc_total_str else ""
+                                        )
+                                    _bkc_closing = "\n\nWe look forward to having you! 😊 If you need to change anything, just say *reschedule*."
                                     if _bkc_svc_cat == "rental":
                                         _bkc_conf_msg = (
                                             f"✅ *Booking Confirmed!*\n\n"
@@ -8319,7 +8324,7 @@ async def evolution_webhook(request: Request):
                                             + ("🔧 Add-ons: " + ", ".join(a["name"] for a in _bkc_selected_addons) + "\n" if _bkc_selected_addons else "")
                                             + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
                                             + _bkc_deposit_block
-                                            + (f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*." if not _bkc_deposit_block else "")
+                                            + _bkc_closing
                                         )
                                     else:
                                         _bkc_conf_msg = (
@@ -8331,7 +8336,7 @@ async def evolution_webhook(request: Request):
                                             f"🕐 Time: *{_bkc_time_str}*\n"
                                             + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
                                             + _bkc_deposit_block
-                                            + (f"\nWe'll see you then! 😊 If you need to change anything, just say *reschedule*." if not _bkc_deposit_block else "")
+                                            + _bkc_closing
                                         )
                                     # Auto-block confirmed rental booking dates on the listing
                                     if _bkc_svc_cat == "rental" and _bkc_svc_id and _bkc_checkout and _bkc_date_str:
