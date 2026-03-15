@@ -7746,10 +7746,10 @@ async def evolution_webhook(request: Request):
                                 )
                                 return {"status": "ok", "handled_by": "booking_checkin_invalid"}
                             _ci_user_doc = await db.users.find_one({"_id": user["_id"]})
-                            _ci_blocked_global = (_ci_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                            _ci_blocked_global = (_ci_user_doc or {}).get("settings", {}).get("rental_availability") or []
                             _ci_svc_id = _ci_state.get("booking_service_id", "")
                             _ci_listing_doc = await db.products.find_one({"_id": _ci_svc_id}) if _ci_svc_id else None
-                            _ci_blocked_listing = (_ci_listing_doc or {}).get("listing_blocked_dates", [])
+                            _ci_blocked_listing = (_ci_listing_doc or {}).get("listing_blocked_dates") or []
                             _ci_all_blocked = set(_ci_blocked_global) | set(_ci_blocked_listing)
                             if str(_parsed_ci) in _ci_all_blocked:
                                 await ws.send_message(
@@ -7832,10 +7832,10 @@ async def evolution_webhook(request: Request):
                                 )
                                 return {"status": "ok", "handled_by": "booking_checkout_invalid"}
                             _co_user_doc = await db.users.find_one({"_id": user["_id"]})
-                            _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                            _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability") or []
                             _co_svc_id = _co_state.get("booking_service_id", "")
                             _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
-                            _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates", [])
+                            _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates") or []
                             _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
                             _nights_check = (_parsed_co - _ci_date).days
                             _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
