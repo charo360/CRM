@@ -6976,7 +6976,7 @@ async def evolution_webhook(request: Request):
                                             if _np:
                                                 _next_products.append(_np)
                                         if _next_products:
-                                            _currency_pg = user.get("settings", {}).get("currency", "KES")
+                                            _currency_pg = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                             _next_with_curr = [{"currency": _currency_pg, **_np} for _np in _next_products]
                                             ws = get_whatsapp_service(db)
                                             await ws.send_product_list(
@@ -7043,7 +7043,7 @@ async def evolution_webhook(request: Request):
                                     _dup_items = _pending_cat.get("pending_cart_items", [])
                                     _dup_total = _pending_cat.get("pending_cart_total", 0)
                                     _biz_id_dup = user.get("business_id", user["_id"])
-                                    _currency_dup = user.get("settings", {}).get("currency", "USD")
+                                    _currency_dup = user.get("currency") or user.get("settings", {}).get("currency", "USD")
 
                                     if _reply_num == 1:
                                         # Create new order (double order)
@@ -7239,7 +7239,7 @@ async def evolution_webhook(request: Request):
                                 elif _ctx == "booking_service_select":
                                     # Customer picked a service number from booking menu
                                     _bk_services = _pending_cat.get("products", [])
-                                    _bk_currency = user.get("settings", {}).get("currency", "USD")
+                                    _bk_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                     _bk_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
                                     _bk_is_rental_biz = _bk_biz_type == "rental"
 
@@ -7418,7 +7418,7 @@ async def evolution_webhook(request: Request):
                                     _bk_slots = _pending_cat.get("time_slots", [])
                                     _bk_slot = next((s for s in _bk_slots if s.get("index") == _reply_num), None)
                                     if _bk_slot:
-                                        _bk_currency = user.get("settings", {}).get("currency", "USD")
+                                        _bk_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                         _bk_price = _pending_cat.get("booking_service_price", 0)
                                         _bk_price_str = f"{_bk_currency} {_bk_price:,.0f}" if _bk_price else ""
                                         _bk_summary = (
@@ -7524,7 +7524,7 @@ async def evolution_webhook(request: Request):
                                 # Customer confirmed — create order and send payment details
                                 _conf_product = await db.products.find_one({"_id": _conf_product_id, "user_id": _biz_id_conf}) if _conf_product_id else None
                                 if _conf_product:
-                                    _currency_conf = user.get("settings", {}).get("currency", "KES")
+                                    _currency_conf = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                     _price_conf = _conf_product.get("price", 0)
                                     _now_conf = datetime.utcnow()
                                     _order_id_conf = str(uuid.uuid4())
@@ -7655,7 +7655,7 @@ async def evolution_webhook(request: Request):
                             for _n in _nums:
                                 _selected_addons.append(_addon_available[_n - 1])
                         _bk_svc_cat = _addon_state.get("booking_service_category", "appointment")
-                        _bk_currency_ad = user.get("settings", {}).get("currency", "USD")
+                        _bk_currency_ad = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         _bk_svc_name_ad = _addon_state.get("booking_service_name", "Service")
                         _bk_price_ad = _addon_state.get("booking_service_price", 0)
                         _addon_total = _bk_price_ad + sum(a.get("price", 0) for a in _selected_addons)
@@ -8062,7 +8062,7 @@ async def evolution_webhook(request: Request):
                         })
                         if _bkc_state:
                             _bkc_biz_id = user.get("business_id", user["_id"])
-                            _bkc_currency = user.get("settings", {}).get("currency", "USD")
+                            _bkc_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                             if _bkc_body in _bkc_yes:
                                 _bkc_now = datetime.utcnow()
                                 _bkc_svc_name = _bkc_state.get("booking_service_name", "Service")
@@ -8241,7 +8241,7 @@ async def evolution_webhook(request: Request):
                             _biz_id = user.get("business_id", user["_id"])
                             product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id})
                             if product:
-                                currency = user.get("settings", {}).get("currency", "KES")
+                                currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 _price = product.get("price", 0)
                                 confirm_req = (
                                     f"📦 *Please confirm your order:*\n\n"
@@ -8276,7 +8276,7 @@ async def evolution_webhook(request: Request):
                             product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
                             if product:
                                 ws = get_whatsapp_service(db)
-                                _details_currency = user.get("settings", {}).get("currency", "USD")
+                                _details_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 detailed_msg = ws.format_product_message(product, currency=_details_currency)
                                 await ws.send_message(
                                     user_id=user["_id"],
@@ -8293,7 +8293,7 @@ async def evolution_webhook(request: Request):
                             product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
                             if product:
                                 # Send full product showcase with buttons
-                                currency = user.get("settings", {}).get("currency", "USD")
+                                currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 product_data = {"currency": currency, **product}
                                 
                                 ws = get_whatsapp_service(db)
@@ -8329,7 +8329,7 @@ async def evolution_webhook(request: Request):
                             _biz_id = user.get("business_id", user["_id"])
                             product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id})
                             if product:
-                                currency = user.get("settings", {}).get("currency", "USD")
+                                currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 await db.carts.update_one(
                                     {"customer_id": customer_id, "user_id": _biz_id, "status": "active"},
                                     {
@@ -8398,7 +8398,7 @@ async def evolution_webhook(request: Request):
                                 _items = _cart["items"]
                                 _total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _items)
                                 _now = datetime.utcnow()
-                                _currency = user.get("settings", {}).get("currency", "USD")
+                                _currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 
                                 # ── Check for duplicate unpaid orders with same items ──────────────
                                 _existing_orders = await db.orders.find({
