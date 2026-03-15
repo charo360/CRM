@@ -67,67 +67,64 @@ class PaymentAgent:
             "messages": [],
         }
 
+    # Keywords/patterns that indicate a genuine payment transaction message
+    _TRANSACTION_SIGNALS = [
+        "mpesa", "m-pesa", "airtel", "mtn", "orange money", "paypal",
+        "transaction", "ref", "reference", "confirmation code", "receipt",
+        "transfer", "sent", "deposited", "ksh", "kes", "usd", "eur", "ngn",
+        "amount", "paid", "payment of", "i have paid", "i've paid",
+        "check your", "see attached", "screenshot",
+    ]
+
+    @staticmethod
+    def _looks_like_transaction(message: str) -> bool:
+        """Return True if the message contains signals of a real payment notification."""
+        msg = message.lower()
+        hits = sum(1 for sig in PaymentAgent._TRANSACTION_SIGNALS if sig in msg)
+        return hits >= 1
+
     async def _handle_payment_confirm(
         self, user_id, customer_id, message, customer_name, language,
         business_knowledge, payment_methods, history, entities
     ) -> Dict[str, Any]:
-        """Customer says they've paid. Acknowledge and note — don't confirm what we can't verify."""
-        try:
-            from ai_service import get_drafter
-            ai = get_drafter()
+        """
+        Customer says they've paid.
+        - Always ask for screenshot/proof (never confirm what cannot be verified)
+        - Tell them confirmation will be done after verification
+        """
+        amounts = entities.get("amounts", [])
+        amount_text = f" of {amounts[0]}" if amounts else ""
 
-            amounts = entities.get("amounts", [])
-            amount_text = f" of {amounts[0]}" if amounts else ""
+        looks_like_txn = self._looks_like_transaction(message)
 
-            bk = (business_knowledge or "")[:400]
-            methods_text = ", ".join(payment_methods) if payment_methods else "our accepted methods"
+        if looks_like_txn:
+            # Message already contains transaction details — ask for screenshot to confirm
+            reply = (
+                f"Thank you for the payment notification{amount_text}! 🙏\n\n"
+                f"Please send a *screenshot* or forward the *transaction confirmation message* "
+                f"so we can verify and confirm your booking. ✅\n\n"
+                f"_Confirmation will be done once payment is verified._"
+            )
+        else:
+            # Message doesn't clearly look like a payment — ask them to share proof
+            reply = (
+                f"Got it! To confirm your payment, please send us a *screenshot* or "
+                f"forward the *transaction confirmation message* from your payment app. 📸\n\n"
+                f"_We'll verify and confirm your booking shortly._"
+            )
 
-            history_snippet = self._format_history(history)
-
-            prompt = f"""You are a payment acknowledgement assistant for a WhatsApp business.
-
-Business info: {bk}
-Accepted payment methods: {methods_text}
-
-Customer name: {customer_name}
-Customer message: "{message}"
-Payment amount mentioned: {amount_text if amount_text else "not specified"}
-
-Recent conversation:
-{history_snippet}
-
-Write a short, warm reply in {language} that:
-1. Acknowledges that you've received their payment notification
-2. Tells them the business will verify and confirm shortly
-3. Does NOT confirm the payment as received (you cannot verify it here)
-4. Does NOT promise delivery timelines
-5. Is 1-2 sentences, WhatsApp-natural
-
-Reply only:"""
-
-            reply = await ai._call_llm(prompt, model_pref="standard")
-
-            # Flag for human to verify payment
-            return {
-                "handled": True,
-                "messages": [{"text": reply}],
-                "escalate": False,
-                "context_update": {
-                    "state": "ongoing",
-                    "last_intent": "PAYMENT_CONFIRM",
-                    "pending_question": f"Verify payment{amount_text} from {customer_name}",
-                },
-                "flag_for_human": True,
-                "flag_reason": f"Customer reported payment{amount_text} — needs verification",
-            }
-        except Exception as e:
-            logger.error(f"[PaymentAgent] payment confirm error: {e}")
-            return {
-                "handled": True,
-                "escalate": True,
-                "escalate_reason": f"PaymentAgent failed to build confirmation reply: {e}",
-                "messages": [],
-            }
+        return {
+            "handled": True,
+            "messages": [{"text": reply}],
+            "escalate": False,
+            "context_update": {
+                "state": "ongoing",
+                "last_intent": "PAYMENT_CONFIRM",
+                "pending_question": f"Verify payment{amount_text} from {customer_name}",
+            },
+            "flag_for_human": True,
+            "flag_reason": f"Customer reported payment{amount_text} — needs screenshot verification",
+        }
 
     async def _handle_payment_method_question(
         self, message, customer_name, language, business_knowledge, payment_methods, structured_pm, history

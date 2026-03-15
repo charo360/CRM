@@ -169,6 +169,52 @@ def format_threaded_history(threaded: Dict[str, Any]) -> str:
     return "\n\n".join(parts) if parts else "(no prior history)"
 
 
+_AVAILABILITY_EXACT_KEYWORDS = {
+    "availability", "available", "available?", "availability?",
+    "check availability", "what's available", "whats available",
+    "what is available", "available dates", "check available",
+    "show availability", "see availability",
+}
+
+_PAYMENT_CONFIRM_KEYWORDS = {
+    "i've paid", "i have paid", "i paid", "payment done", "payment made",
+    "sent the money", "money sent", "mpesa sent", "i sent", "transferred",
+    "i transferred", "done paying", "check your mpesa", "paid",
+    "i've made the payment", "payment complete", "transaction done",
+}
+
+def _deterministic_intent_override(message: str) -> dict | None:
+    """
+    Fast rules-only pre-check before the LLM is called.
+    Returns a result dict if the intent is unambiguous, else None.
+    """
+    msg = message.strip().lower()
+    # Availability keywords → always AVAILABILITY_CHECK, never misrouted to payment
+    if msg in _AVAILABILITY_EXACT_KEYWORDS or msg.startswith("availability") or msg.startswith("check availability"):
+        return {
+            "intent": "AVAILABILITY_CHECK",
+            "sentiment": "neutral",
+            "language": "English",
+            "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+            "conversation_state": "ongoing",
+            "confidence": 1.0,
+            "needs_escalation": False,
+            "escalation_reason": None,
+            "keywords": ["availability"],
+        }
+    # Only classify as PAYMENT_CONFIRM if the message actually looks like one
+    # Prevent short ambiguous words from being misrouted to PaymentAgent
+    _has_payment_kw = any(msg == kw or msg.startswith(kw) for kw in _PAYMENT_CONFIRM_KEYWORDS)
+    _looks_like_payment = _has_payment_kw or any(
+        w in msg for w in ["paid", "mpesa", "transferred", "sent money", "payment", "transaction"]
+    )
+    if not _looks_like_payment and len(msg.split()) <= 3:
+        # Very short message with no payment keywords — never route to PAYMENT_CONFIRM
+        # Let LLM handle it with full context instead
+        return None
+    return None
+
+
 async def analyze_intent(
     message: str,
     history: list,
@@ -183,6 +229,11 @@ async def analyze_intent(
     Uses threaded-context: focuses on the immediate thread + relationship signal
     so the AI knows whether this is a follow-up or a new conversation.
     """
+    # Fast deterministic override before calling LLM
+    _override = _deterministic_intent_override(message)
+    if _override:
+        return _override
+
     try:
         from ai_service import get_drafter
         ai = get_drafter()
