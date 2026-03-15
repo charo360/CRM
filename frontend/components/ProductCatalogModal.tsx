@@ -1186,6 +1186,7 @@ export default function ProductCatalogModal({
 
                                 {/* Action Buttons */}
                                 <View style={styles.actionButtons}>
+                                    {(selectedProduct.service_category !== 'rental' && selectedProduct.offering_type !== 'rental') && (
                                     <TouchableOpacity
                                         style={styles.actionBtn}
                                         onPress={() => handleToggleStock(selectedProduct)}
@@ -1199,6 +1200,7 @@ export default function ProductCatalogModal({
                                             {selectedProduct.in_stock === false ? 'Mark In Stock' : 'Mark Out of Stock'}
                                         </Text>
                                     </TouchableOpacity>
+                                    )}
 
                                     <TouchableOpacity
                                         style={styles.actionBtn}

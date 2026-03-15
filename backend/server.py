@@ -7766,30 +7766,79 @@ async def evolution_webhook(request: Request):
                         else:
                             _today_ci = datetime.utcnow().date()
                             _parsed_ci = None
+                            _parsed_co_inline = None  # checkout parsed from same message (range)
+
+                            _mm_ci = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                      "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+
+                            def _parse_single_date_ci(txt, ref_today):
+                                """Parse a single date token into a date object, or return None."""
+                                txt = txt.strip().lower().rstrip("stndrh")  # strip ordinal suffixes (1st→1)
+                                if txt == "today": return ref_today
+                                if txt == "tomorrow": return ref_today + timedelta(days=1)
+                                if txt in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                    _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[txt]
+                                    return ref_today + timedelta(days=(_wd - ref_today.weekday()) % 7 or 7)
+                                # plain day number like "27"
+                                if _re_ci.fullmatch(r"\d{1,2}", txt):
+                                    d = int(txt)
+                                    mo, yr = ref_today.month, ref_today.year
+                                    try:
+                                        candidate = datetime(yr, mo, d).date()
+                                        if candidate < ref_today:
+                                            mo += 1
+                                            if mo > 12: mo, yr = 1, yr + 1
+                                        return datetime(yr, mo, d).date()
+                                    except Exception: return None
+                                # YYYY-MM-DD
+                                _m = _re_ci.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", txt)
+                                if _m:
+                                    try: return datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                                    except Exception: return None
+                                # DD/MM/YYYY or DD-MM-YYYY
+                                _m4 = _re_ci.fullmatch(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", txt)
+                                if _m4:
+                                    try: return datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                                    except Exception: return None
+                                # "15 march" or "march 15"
+                                _m2 = _re_ci.fullmatch(r"(\d{1,2})\s+([a-z]+)", txt)
+                                _m3 = _re_ci.fullmatch(r"([a-z]+)\s+(\d{1,2})", txt)
+                                if _m2 and _m2.group(2) in _mm_ci:
+                                    d, mo = int(_m2.group(1)), _mm_ci[_m2.group(2)]
+                                    yr = ref_today.year if (mo, d) >= (ref_today.month, ref_today.day) else ref_today.year + 1
+                                    try: return datetime(yr, mo, d).date()
+                                    except Exception: return None
+                                if _m3 and _m3.group(1) in _mm_ci:
+                                    d, mo = int(_m3.group(2)), _mm_ci[_m3.group(1)]
+                                    yr = ref_today.year if (mo, d) >= (ref_today.month, ref_today.day) else ref_today.year + 1
+                                    try: return datetime(yr, mo, d).date()
+                                    except Exception: return None
+                                return None
+
                             try:
-                                if _ci_lower == "today": _parsed_ci = _today_ci
-                                elif _ci_lower == "tomorrow": _parsed_ci = _today_ci + timedelta(days=1)
-                                elif _ci_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
-                                    _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_ci_lower]
-                                    _parsed_ci = _today_ci + timedelta(days=(_wd - _today_ci.weekday()) % 7 or 7)
-                                else:
-                                    _m = _re_ci.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _ci_body)
-                                    if _m: _parsed_ci = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
-                                    else:
-                                        _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
-                                               "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
-                                        _m2 = _re_ci.match(r"(\d{1,2})\s+([a-z]+)", _ci_lower)
-                                        _m3 = _re_ci.match(r"([a-z]+)\s+(\d{1,2})", _ci_lower)
-                                        if _m2 and _m2.group(2) in _mm:
-                                            _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
-                                            _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
-                                        elif _m3 and _m3.group(1) in _mm:
-                                            _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
-                                            _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
-                                        else:
-                                            _m4 = _re_ci.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _ci_body)
-                                            if _m4: _parsed_ci = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                                # ── Range detection: "27-31", "27 to 31", "27 – 31",
+                                #    "march 27-31", "27 march to 31 march", "27th to 31st" ──
+                                _range_m = _re_ci.search(
+                                    r"(\d{1,2}(?:st|nd|rd|th)?\s*(?:[a-z]*)?)\s*(?:to|-|–|till|until|thru|through)\s*(\d{1,2}(?:st|nd|rd|th)?\s*(?:[a-z]*)?)",
+                                    _ci_lower
+                                )
+                                if _range_m:
+                                    _tok_a = _range_m.group(1).strip()
+                                    _tok_b = _range_m.group(2).strip()
+                                    _d_a = _parse_single_date_ci(_tok_a, _today_ci)
+                                    _d_b = _parse_single_date_ci(_tok_b, _today_ci)
+                                    # If only day numbers, they share the same month
+                                    if _d_a and _d_b and _d_b <= _d_a:
+                                        # e.g. "27-31" both in same month: recalculate _d_b with _d_a's month
+                                        try: _d_b = _d_a.replace(day=int(_re_ci.sub(r"[^0-9]", "", _tok_b)))
+                                        except Exception: pass
+                                    if _d_a and _d_b and _d_b > _d_a:
+                                        _parsed_ci = _d_a
+                                        _parsed_co_inline = _d_b
+                                if not _parsed_ci:
+                                    _parsed_ci = _parse_single_date_ci(_ci_lower, _today_ci)
                             except Exception: _parsed_ci = None
+
                             ws = get_whatsapp_service(db)
                             if not _parsed_ci or _parsed_ci < _today_ci:
                                 await ws.send_message(
@@ -7814,19 +7863,51 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "booking_checkin_blocked"}
-                            await db.pending_catalogs.update_one(
-                                {"customer_id": customer_id, "user_id": user["_id"]},
-                                {"$set": {"booking_checkin_date": str(_parsed_ci), "action_context": "booking_checkout_input", "updated_at": datetime.utcnow()}}
-                            )
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=(
-                                    f"✅ Check-in: *{_parsed_ci.strftime('%A %d %B %Y')}*\n\n"
-                                    f"📅 *Check-out date?*\n_Reply with a date after your check-in_"
-                                ),
-                                customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_checkin_input"}
+
+                            if _parsed_co_inline and _parsed_co_inline > _parsed_ci:
+                                # Range given in one message (e.g. "27-31") — check checkout date too
+                                _co_also_blocked = any(
+                                    f"{_parsed_ci + timedelta(days=i)}" in _ci_all_blocked
+                                    for i in range((_parsed_co_inline - _parsed_ci).days)
+                                )
+                                if _co_also_blocked:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=(
+                                            f"Some dates in *{_parsed_ci.strftime('%d %b')} – {_parsed_co_inline.strftime('%d %b %Y')}* "
+                                            f"are not available. Please choose a different range. 📅"
+                                        ),
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_checkin_range_blocked"}
+                                # Both dates good — store both and jump to checkout handler
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "booking_checkin_date": str(_parsed_ci),
+                                        "booking_checkout_date": str(_parsed_co_inline),
+                                        "action_context": "booking_checkout_input",
+                                        "updated_at": datetime.utcnow()
+                                    }}
+                                )
+                                # Re-use the checkout confirmation message by falling through to checkout handler
+                                # Inject a synthetic body so the checkout handler processes the stored date
+                                body = str(_parsed_co_inline)
+                                # Fall through — checkout handler will pick up the stored checkout date
+                            else:
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"booking_checkin_date": str(_parsed_ci), "action_context": "booking_checkout_input", "updated_at": datetime.utcnow()}}
+                                )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=(
+                                        f"✅ Check-in: *{_parsed_ci.strftime('%A %d %B %Y')}*\n\n"
+                                        f"📅 *Check-out date?*\n_Reply with a date after your check-in_"
+                                    ),
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkin_input"}
 
                 # BOOKING CHECK-OUT DATE HANDLER — completes rental date range
                 if not button_action and not from_me and body:
