@@ -244,15 +244,11 @@ export default function BusinessKnowledgeModal({
                 setSelectedPlatforms(
                     data.creator_platforms ? data.creator_platforms.split(',').map((s: string) => s.trim()).filter(Boolean) : []
                 );
-                // Load payment methods — skip empty defaults (Sales uses them for categorisation only)
+                // Load payment methods — keep all entries that have a name
                 if (data.payment_methods && data.payment_methods.length > 0) {
                     const loaded = data.payment_methods
                         .map((m: any) => typeof m === 'string' ? { name: m } : m)
-                        .filter((m: any) => {
-                            const hasDetails = m.details && String(m.details).trim();
-                            const hasFields = m.fields && m.fields.some((f: any) => f.value && String(f.value).trim());
-                            return hasDetails || hasFields;
-                        });
+                        .filter((m: any) => m.name && String(m.name).trim());
                     setPaymentMethods(loaded);
                 }
                 setProductItems(stringToItems(data.products_services));

@@ -28,7 +28,7 @@ class BookingAgent(BaseAgent):
         customer_id = context.get("customer_id")
         conv_state = context.get("conversation_state_data", {})
         business_type = (context.get("business_type") or "").lower().strip()
-        is_rental = business_type == "rental"
+        is_rental = business_type == "rental"  # will also check services below after fetch
 
         # ── Handle pending_booking_action: 1=Cancel / 2=Reschedule pick ──────
         pending_booking_action_id = conv_state.get("pending_booking_action")
@@ -83,6 +83,10 @@ class BookingAgent(BaseAgent):
             logger.error(f"[BookingAgent] DB error fetching user: {e}")
             business_hours = {}
             booking_settings = {}
+
+        # Upgrade is_rental if any fetched service is a rental listing
+        if not is_rental and any(s.get("service_category") == "rental" for s in services):
+            is_rental = True
 
         if intent == "AVAILABILITY_CHECK":
             return await self._handle_availability(

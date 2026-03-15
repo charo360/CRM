@@ -547,7 +547,8 @@ export default function ProductCatalogModal({
 
     const renderProductCard = (product: Product) => {
         const imageUri = getImageUri(product);
-        const isOutOfStock = product.in_stock === false;
+        const isRentalListing = product.service_category === 'rental' || product.offering_type === 'rental';
+        const isOutOfStock = !isRentalListing && product.in_stock === false;
 
         return (
             <TouchableOpacity
@@ -564,7 +565,7 @@ export default function ProductCatalogModal({
                     </View>
                 )}
 
-                {isOutOfStock && (
+                {isOutOfStock && !isRentalListing && (
                     <View style={styles.outOfStockBadge}>
                         <Text style={styles.outOfStockText}>Out of Stock</Text>
                     </View>
@@ -586,7 +587,7 @@ export default function ProductCatalogModal({
                         <View style={[styles.categoryBadge]}>
                             <Text style={styles.categoryBadgeText} numberOfLines={1}>{product.category || 'Other'}</Text>
                         </View>
-                        <View style={[styles.stockDot, isOutOfStock ? styles.stockDotRed : styles.stockDotGreen]} />
+                        {!isRentalListing && <View style={[styles.stockDot, isOutOfStock ? styles.stockDotRed : styles.stockDotGreen]} />}
                     </View>
                 </View>
             </TouchableOpacity>
@@ -1064,11 +1065,13 @@ export default function ProductCatalogModal({
                             <View style={styles.detailBody}>
                                 <View style={styles.detailNameRow}>
                                     <Text style={styles.detailName}>{selectedProduct.name}</Text>
-                                    <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
-                                        <Text style={styles.stockBadgeText}>
-                                            {selectedProduct.in_stock === false ? (isServiceBusiness ? 'Unavailable' : 'Out of Stock') : (isServiceBusiness ? 'Available' : 'In Stock')}
-                                        </Text>
-                                    </View>
+                                    {(selectedProduct.service_category !== 'rental' && selectedProduct.offering_type !== 'rental') && (
+                                        <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
+                                            <Text style={styles.stockBadgeText}>
+                                                {selectedProduct.in_stock === false ? (isServiceBusiness ? 'Unavailable' : 'Out of Stock') : (isServiceBusiness ? 'Available' : 'In Stock')}
+                                            </Text>
+                                        </View>
+                                    )}
                                 </View>
 
                                 <Text style={styles.detailPrice}>{currency} {selectedProduct.price.toLocaleString()}</Text>
