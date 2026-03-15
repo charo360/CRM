@@ -7701,70 +7701,79 @@ async def evolution_webhook(request: Request):
                         import re as _re_ci
                         _ci_body = body.strip()
                         _ci_lower = _ci_body.lower()
-                        _today_ci = datetime.utcnow().date()
-                        _parsed_ci = None
-                        try:
-                            if _ci_lower == "today": _parsed_ci = _today_ci
-                            elif _ci_lower == "tomorrow": _parsed_ci = _today_ci + timedelta(days=1)
-                            elif _ci_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
-                                _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_ci_lower]
-                                _parsed_ci = _today_ci + timedelta(days=(_wd - _today_ci.weekday()) % 7 or 7)
-                            else:
-                                _m = _re_ci.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _ci_body)
-                                if _m: _parsed_ci = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                        # ── Escape hatch: cancel/restart/greetings/availability ──
+                        _ci_cancel_kws = ("cancel", "stop", "exit", "quit", "reset", "restart",
+                                          "start afresh", "start over", "start again", "start fresh",
+                                          "hello", "hi", "hey", "good morning", "good evening",
+                                          "good afternoon", "good night", "availability",
+                                          "check availability", "what's available", "what is available")
+                        if any(_ci_lower == kw or _ci_lower.startswith(kw) for kw in _ci_cancel_kws):
+                            await db.pending_catalogs.delete_one({"_id": _ci_state["_id"]})
+                            # Fall through — do not return, let agent pipeline handle the message
+                        else:
+                            _today_ci = datetime.utcnow().date()
+                            _parsed_ci = None
+                            try:
+                                if _ci_lower == "today": _parsed_ci = _today_ci
+                                elif _ci_lower == "tomorrow": _parsed_ci = _today_ci + timedelta(days=1)
+                                elif _ci_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                    _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_ci_lower]
+                                    _parsed_ci = _today_ci + timedelta(days=(_wd - _today_ci.weekday()) % 7 or 7)
                                 else:
-                                    _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
-                                           "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
-                                    _m2 = _re_ci.match(r"(\d{1,2})\s+([a-z]+)", _ci_lower)
-                                    _m3 = _re_ci.match(r"([a-z]+)\s+(\d{1,2})", _ci_lower)
-                                    if _m2 and _m2.group(2) in _mm:
-                                        _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
-                                        _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
-                                    elif _m3 and _m3.group(1) in _mm:
-                                        _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
-                                        _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
+                                    _m = _re_ci.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _ci_body)
+                                    if _m: _parsed_ci = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
                                     else:
-                                        _m4 = _re_ci.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _ci_body)
-                                        if _m4: _parsed_ci = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
-                        except Exception: _parsed_ci = None
-                        ws = get_whatsapp_service(db)
-                        if not _parsed_ci or _parsed_ci < _today_ci:
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message="I didn't catch that. Please reply with a check-in date like *tomorrow*, *Monday*, or *15 March* 📅",
-                                customer_name=customer_name, send_context="booking_flow"
+                                        _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                               "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                        _m2 = _re_ci.match(r"(\d{1,2})\s+([a-z]+)", _ci_lower)
+                                        _m3 = _re_ci.match(r"([a-z]+)\s+(\d{1,2})", _ci_lower)
+                                        if _m2 and _m2.group(2) in _mm:
+                                            _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
+                                            _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
+                                        elif _m3 and _m3.group(1) in _mm:
+                                            _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
+                                            _parsed_ci = datetime(_today_ci.year if (_mo,_d)>=(_today_ci.month,_today_ci.day) else _today_ci.year+1, _mo, _d).date()
+                                        else:
+                                            _m4 = _re_ci.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _ci_body)
+                                            if _m4: _parsed_ci = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                            except Exception: _parsed_ci = None
+                            ws = get_whatsapp_service(db)
+                            if not _parsed_ci or _parsed_ci < _today_ci:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="I didn't catch that. Please reply with a check-in date like *tomorrow*, *Monday*, or *15 March* 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkin_invalid"}
+                            _ci_user_doc = await db.users.find_one({"_id": user["_id"]})
+                            _ci_blocked_global = (_ci_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                            _ci_svc_id = _ci_state.get("booking_service_id", "")
+                            _ci_listing_doc = await db.products.find_one({"_id": _ci_svc_id}) if _ci_svc_id else None
+                            _ci_blocked_listing = (_ci_listing_doc or {}).get("listing_blocked_dates", [])
+                            _ci_all_blocked = set(_ci_blocked_global) | set(_ci_blocked_listing)
+                            if str(_parsed_ci) in _ci_all_blocked:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=(
+                                        f"Sorry, *{_parsed_ci.strftime('%A %d %B %Y')}* is not available for check-in. \n\n"
+                                        f"📅 Please reply with a different check-in date."
+                                    ),
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkin_blocked"}
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {"booking_checkin_date": str(_parsed_ci), "action_context": "booking_checkout_input", "updated_at": datetime.utcnow()}}
                             )
-                            return {"status": "ok", "handled_by": "booking_checkin_invalid"}
-                        # Check against owner-blocked dates (global) and listing-specific blocked dates
-                        _ci_user_doc = await db.users.find_one({"_id": user["_id"]})
-                        _ci_blocked_global = (_ci_user_doc or {}).get("settings", {}).get("rental_availability", [])
-                        _ci_svc_id = _ci_state.get("booking_service_id", "")
-                        _ci_listing_doc = await db.products.find_one({"_id": _ci_svc_id}) if _ci_svc_id else None
-                        _ci_blocked_listing = (_ci_listing_doc or {}).get("listing_blocked_dates", [])
-                        _ci_all_blocked = set(_ci_blocked_global) | set(_ci_blocked_listing)
-                        if str(_parsed_ci) in _ci_all_blocked:
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
                                 message=(
-                                    f"Sorry, *{_parsed_ci.strftime('%A %d %B %Y')}* is not available for check-in. \n\n"
-                                    f"📅 Please reply with a different check-in date."
+                                    f"✅ Check-in: *{_parsed_ci.strftime('%A %d %B %Y')}*\n\n"
+                                    f"📅 *Check-out date?*\n_Reply with a date after your check-in_"
                                 ),
                                 customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "booking_checkin_blocked"}
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {"booking_checkin_date": str(_parsed_ci), "action_context": "booking_checkout_input", "updated_at": datetime.utcnow()}}
-                        )
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=(
-                                f"✅ Check-in: *{_parsed_ci.strftime('%A %d %B %Y')}*\n\n"
-                                f"📅 *Check-out date?*\n_Reply with a date after your check-in_"
-                            ),
-                            customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "booking_checkin_input"}
+                            return {"status": "ok", "handled_by": "booking_checkin_input"}
 
                 # BOOKING CHECK-OUT DATE HANDLER — completes rental date range
                 if not button_action and not from_me and body:
@@ -7776,113 +7785,121 @@ async def evolution_webhook(request: Request):
                         import re as _re_co
                         _co_body = body.strip()
                         _co_lower = _co_body.lower()
-                        _today_co = datetime.utcnow().date()
-                        _ci_date_str = _co_state.get("booking_checkin_date", "")
-                        try: _ci_date = datetime.strptime(_ci_date_str, "%Y-%m-%d").date()
-                        except Exception: _ci_date = _today_co
-                        _parsed_co = None
-                        try:
-                            if _co_lower == "tomorrow": _parsed_co = _today_co + timedelta(days=1)
-                            elif _co_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
-                                _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_co_lower]
-                                _parsed_co = _today_co + timedelta(days=(_wd - _today_co.weekday()) % 7 or 7)
-                            else:
-                                _m = _re_co.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _co_body)
-                                if _m: _parsed_co = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                        # ── Escape hatch: cancel/restart/greetings/availability ──
+                        _co_cancel_kws = ("cancel", "stop", "exit", "quit", "reset", "restart",
+                                          "start afresh", "start over", "start again", "start fresh",
+                                          "hello", "hi", "hey", "good morning", "good evening",
+                                          "good afternoon", "good night", "availability",
+                                          "check availability", "what's available", "what is available")
+                        if any(_co_lower == kw or _co_lower.startswith(kw) for kw in _co_cancel_kws):
+                            await db.pending_catalogs.delete_one({"_id": _co_state["_id"]})
+                            # Fall through — let agent pipeline handle the message
+                        else:
+                            _today_co = datetime.utcnow().date()
+                            _ci_date_str = _co_state.get("booking_checkin_date", "")
+                            try: _ci_date = datetime.strptime(_ci_date_str, "%Y-%m-%d").date()
+                            except Exception: _ci_date = _today_co
+                            _parsed_co = None
+                            try:
+                                if _co_lower == "tomorrow": _parsed_co = _today_co + timedelta(days=1)
+                                elif _co_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                    _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_co_lower]
+                                    _parsed_co = _today_co + timedelta(days=(_wd - _today_co.weekday()) % 7 or 7)
                                 else:
-                                    _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
-                                           "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
-                                    _m2 = _re_co.match(r"(\d{1,2})\s+([a-z]+)", _co_lower)
-                                    _m3 = _re_co.match(r"([a-z]+)\s+(\d{1,2})", _co_lower)
-                                    if _m2 and _m2.group(2) in _mm:
-                                        _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
-                                        _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
-                                    elif _m3 and _m3.group(1) in _mm:
-                                        _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
-                                        _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
+                                    _m = _re_co.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _co_body)
+                                    if _m: _parsed_co = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
                                     else:
-                                        _m4 = _re_co.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _co_body)
-                                        if _m4: _parsed_co = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
-                        except Exception: _parsed_co = None
-                        ws = get_whatsapp_service(db)
-                        if not _parsed_co or _parsed_co <= _ci_date:
+                                        _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                               "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                        _m2 = _re_co.match(r"(\d{1,2})\s+([a-z]+)", _co_lower)
+                                        _m3 = _re_co.match(r"([a-z]+)\s+(\d{1,2})", _co_lower)
+                                        if _m2 and _m2.group(2) in _mm:
+                                            _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
+                                            _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
+                                        elif _m3 and _m3.group(1) in _mm:
+                                            _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
+                                            _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
+                                        else:
+                                            _m4 = _re_co.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _co_body)
+                                            if _m4: _parsed_co = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                            except Exception: _parsed_co = None
+                            ws = get_whatsapp_service(db)
+                            if not _parsed_co or _parsed_co <= _ci_date:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"Check-out must be after check-in (*{_ci_date_str}*). Please reply with a valid check-out date 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkout_invalid"}
+                            _co_user_doc = await db.users.find_one({"_id": user["_id"]})
+                            _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability", [])
+                            _co_svc_id = _co_state.get("booking_service_id", "")
+                            _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
+                            _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates", [])
+                            _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
+                            _nights_check = (_parsed_co - _ci_date).days
+                            _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
+                            if _blocked_in_range:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=(
+                                        f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
+                                        f"📅 Please reply with a different check-out date."
+                                    ),
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkout_blocked"}
+                            _nights = _nights_check
+                            _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            _co_base_price = _co_state.get("booking_service_price", 0)
+                            _co_addons = _co_state.get("booking_selected_addons", [])
+                            _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
+                            _co_price_unit = _co_state.get("booking_price_unit", "night")
+                            _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
+                            _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
+                            if _co_price_unit == "week":
+                                _co_periods = max(1, round(_nights / 7))
+                            elif _co_price_unit == "month":
+                                _co_periods = max(1, round(_nights / 30))
+                            elif _co_price_unit == "year":
+                                _co_periods = max(1, round(_nights / 365))
+                            elif _co_price_unit == "person":
+                                _co_periods = 1
+                            else:
+                                _co_periods = _nights
+                            _co_total = (_co_base_price * _co_periods) + _co_addon_total
+                            _co_svc_name = _co_state.get("booking_service_name", "Service")
+                            _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
+                            _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
+                            _co_summary = (
+                                f"📋 *Booking Summary*\n\n"
+                                f"🏠 *{_co_svc_name}*\n"
+                                f"📅 Check-in: *{_ci_date_str}*\n"
+                                f"📅 Check-out: *{str(_parsed_co)}*\n"
+                                f"⏱ Duration: *{_co_dur_label}*\n"
+                            )
+                            if _co_addons:
+                                _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
+                            if _co_price_str:
+                                _co_summary += f"💰 Total: *{_co_price_str}*\n"
+                            _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "action_context": "booking_confirm",
+                                    "booking_checkout_date": str(_parsed_co),
+                                    "booking_nights": _nights,
+                                    "booking_total_price": _co_total,
+                                    "booking_time": "check-in",
+                                    "booking_date": _ci_date_str,
+                                    "updated_at": datetime.utcnow(),
+                                }}
+                            )
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message=f"Check-out must be after check-in (*{_ci_date_str}*). Please reply with a valid check-out date 📅",
-                                customer_name=customer_name, send_context="booking_flow"
+                                message=_co_summary, customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "booking_checkout_invalid"}
-                        # Check if any date in the stay range is blocked (global + listing-specific)
-                        _co_user_doc = await db.users.find_one({"_id": user["_id"]})
-                        _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability", [])
-                        _co_svc_id = _co_state.get("booking_service_id", "")
-                        _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
-                        _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates", [])
-                        _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
-                        _nights_check = (_parsed_co - _ci_date).days
-                        _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
-                        if _blocked_in_range:
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=(
-                                    f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
-                                    f"📅 Please reply with a different check-out date."
-                                ),
-                                customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_checkout_blocked"}
-                        _nights = _nights_check
-                        _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-                        _co_base_price = _co_state.get("booking_service_price", 0)
-                        _co_addons = _co_state.get("booking_selected_addons", [])
-                        _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
-                        _co_price_unit = _co_state.get("booking_price_unit", "night")
-                        # Calculate period count based on unit
-                        _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
-                        _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
-                        if _co_price_unit == "week":
-                            _co_periods = max(1, round(_nights / 7))
-                        elif _co_price_unit == "month":
-                            _co_periods = max(1, round(_nights / 30))
-                        elif _co_price_unit == "year":
-                            _co_periods = max(1, round(_nights / 365))
-                        elif _co_price_unit == "person":
-                            _co_periods = 1  # owner bills per person; AI can't know headcount, use 1 as base
-                        else:  # night — use days count
-                            _co_periods = _nights
-                        _co_total = (_co_base_price * _co_periods) + _co_addon_total
-                        _co_svc_name = _co_state.get("booking_service_name", "Service")
-                        _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
-                        _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
-                        _co_summary = (
-                            f"📋 *Booking Summary*\n\n"
-                            f"🏠 *{_co_svc_name}*\n"
-                            f"📅 Check-in: *{_ci_date_str}*\n"
-                            f"📅 Check-out: *{str(_parsed_co)}*\n"
-                            f"⏱ Duration: *{_co_dur_label}*\n"
-                        )
-                        if _co_addons:
-                            _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
-                        if _co_price_str:
-                            _co_summary += f"💰 Total: *{_co_price_str}*\n"
-                        _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "action_context": "booking_confirm",
-                                "booking_checkout_date": str(_parsed_co),
-                                "booking_nights": _nights,
-                                "booking_total_price": _co_total,
-                                "booking_time": "check-in",
-                                "booking_date": _ci_date_str,
-                                "updated_at": datetime.utcnow(),
-                            }}
-                        )
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=_co_summary, customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "booking_checkout_input"}
+                            return {"status": "ok", "handled_by": "booking_checkout_input"}
 
                 # BOOKING DATE INPUT HANDLER — customer types a date for a pending booking
                 if not button_action and not from_me and body:
