@@ -116,8 +116,8 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { load(); }, [load]);
 
   const config = TYPE_CONFIGS[businessType] ?? DEFAULT_CONFIG;
-  const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental'].includes(businessType);
-  const isRetailBusiness  = ['retail', 'restaurant', 'creator'].includes(businessType);
+  const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental', 'restaurant', 'creator'].includes(businessType);
+  const isRetailBusiness  = ['retail'].includes(businessType);
 
   return (
     <BusinessContext.Provider value={{
