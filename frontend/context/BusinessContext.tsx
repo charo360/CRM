@@ -54,8 +54,8 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
   restaurant: {
     catalogLabel: 'Menu', catalogItemLabel: 'Item',
     showDuration: false, showStock: false,
-    bookingsTabVisible: false, salesTabLabel: 'Sales',
-    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingsTabVisible: true, salesTabLabel: 'Sales',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
   },
   healthcare: {
     catalogLabel: 'Services', catalogItemLabel: 'Service',
@@ -66,8 +66,8 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
   creator: {
     catalogLabel: 'Products', catalogItemLabel: 'Product',
     showDuration: false, showStock: false,
-    bookingsTabVisible: false, salesTabLabel: 'Sales',
-    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingsTabVisible: true, salesTabLabel: 'Sales',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
   },
   rental: {
     catalogLabel: 'Listings', catalogItemLabel: 'Listing',
