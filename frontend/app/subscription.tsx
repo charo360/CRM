@@ -14,6 +14,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as RNIap from 'react-native-iap';
 
+// These must match exactly what you create in Google Play Console
 const SUBSCRIPTION_SKUS = [
   'crm_starter_monthly',
   'crm_starter_yearly',
@@ -23,163 +24,146 @@ const SUBSCRIPTION_SKUS = [
   'crm_pro_yearly',
 ];
 
-interface SubscriptionPlan {
-  id: string;
-  tier: string;
-  period: string;
+interface Plan {
+  id: string;          // 'starter' | 'standard' | 'pro'
   name: string;
-  description: string;
-  price?: string;
-  limits: {
-    max_customers: number;
-    max_products: number;
-    max_team_members: number;
-    ai_messages_per_month: number;
-    features: string[];
-  };
+  amount: number;
+  currency: string;
+  amount_display: string;
+  interval: string;
+  features: string[];
+}
+
+interface SubStatus {
+  subscription_plan: string | null;
+  subscription_active: boolean;
+  subscription_date: string | null;
+  subscription_expiry: string | null;
+  auto_renewing: boolean;
+  extra_credits: number;
+  limits: Record<string, any>;
 }
 
 export default function SubscriptionScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [purchasing, setPurchasing] = useState(false);
-  const [currentSubscription, setCurrentSubscription] = useState<any>(null);
-  const [products, setProducts] = useState<RNIap.Subscription[]>([]);
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [purchasing, setPurchasing] = useState<string | null>(null);
+  const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
+  const [iapProducts, setIapProducts] = useState<RNIap.Subscription[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]);
 
   useEffect(() => {
     initIAP();
-    loadSubscriptionStatus();
-    loadPlans();
-
-    return () => {
-      RNIap.endConnection();
-    };
+    loadData();
+    return () => { RNIap.endConnection(); };
   }, []);
 
   const initIAP = async () => {
     try {
       await RNIap.initConnection();
-      console.log('IAP connection initialized');
-
       if (Platform.OS === 'android') {
         await RNIap.flushFailedPurchasesCachedAsPendingAndroid();
       }
-
       const subs = await RNIap.getSubscriptions({ skus: SUBSCRIPTION_SKUS });
-      setProducts(subs);
-      console.log('Subscriptions loaded:', subs.length);
-    } catch (error) {
-      console.error('Error initializing IAP:', error);
+      setIapProducts(subs);
+    } catch (err) {
+      console.error('IAP init error:', err);
     }
   };
 
-  const loadSubscriptionStatus = async () => {
+  const loadData = async () => {
     try {
       const token = await AsyncStorage.getItem('token');
-      const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+      const base = process.env.EXPO_PUBLIC_BACKEND_URL;
+      const headers = { Authorization: `Bearer ${token}` };
 
-      const response = await fetch(`${backendUrl}/api/billing/subscription-status`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const [statusRes, plansRes] = await Promise.all([
+        fetch(`${base}/api/subscription/status`, { headers }),
+        fetch(`${base}/api/subscription/plans`, { headers }),
+      ]);
 
-      if (response.ok) {
-        const data = await response.json();
-        setCurrentSubscription(data);
-      }
-    } catch (error) {
-      console.error('Error loading subscription:', error);
+      if (statusRes.ok) setSubStatus(await statusRes.json());
+      if (plansRes.ok) setPlans(await plansRes.json());
+    } catch (err) {
+      console.error('Error loading subscription data:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  const loadPlans = async () => {
-    try {
-      const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
-      const response = await fetch(`${backendUrl}/api/billing/subscription-products`);
-
-      if (response.ok) {
-        const data = await response.json();
-        setPlans(data.products);
-      }
-    } catch (error) {
-      console.error('Error loading plans:', error);
-    }
+  // Get the Play Store price for a given SKU (e.g. crm_starter_monthly)
+  const getStorePrice = (planId: string, yearly = false) => {
+    const sku = `crm_${planId}_${yearly ? 'yearly' : 'monthly'}`;
+    const product = iapProducts.find((p) => p.productId === sku);
+    return product?.localizedPrice ?? null;
   };
 
-  const handlePurchase = async (productId: string) => {
-    setPurchasing(true);
-
+  const handlePurchase = async (planId: string, yearly = false) => {
+    const sku = `crm_${planId}_${yearly ? 'yearly' : 'monthly'}`;
+    setPurchasing(sku);
     try {
-      const purchase = await RNIap.requestSubscription({ sku: productId });
-
+      const purchase = await RNIap.requestSubscription({ sku });
       if (purchase) {
-        await verifyPurchase(productId, purchase.purchaseToken);
+        await verifyPurchaseWithServer(purchase.productId, purchase.purchaseToken, 'android');
+        await RNIap.finishTransaction({ purchase } as any);
       }
-    } catch (error: any) {
-      if (error.code !== 'E_USER_CANCELLED') {
-        Alert.alert('Purchase Failed', error.message || 'An error occurred');
+    } catch (err: any) {
+      if (err.code !== 'E_USER_CANCELLED') {
+        Alert.alert('Purchase Failed', err.message || 'An error occurred');
       }
     } finally {
-      setPurchasing(false);
+      setPurchasing(null);
     }
   };
 
-  const verifyPurchase = async (productId: string, purchaseToken: string) => {
+  const verifyPurchaseWithServer = async (
+    productId: string,
+    purchaseToken: string,
+    platform: string,
+  ) => {
     try {
       const token = await AsyncStorage.getItem('token');
-      const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+      const base = process.env.EXPO_PUBLIC_BACKEND_URL;
+      // Extract plan_id from product ID e.g. crm_pro_monthly -> pro
+      const plan_id = productId.replace('crm_', '').replace('_monthly', '').replace('_yearly', '');
 
-      const response = await fetch(`${backendUrl}/api/billing/verify-purchase`, {
+      const res = await fetch(`${base}/api/subscription/verify-purchase`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          product_id: productId,
-          purchase_token: purchaseToken,
-        }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ plan_id, purchase_token: purchaseToken, platform }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setCurrentSubscription(data.subscription);
-        Alert.alert('Success', 'Subscription activated!');
-        await RNIap.finishTransaction({ purchase: { productId, purchaseToken } as any });
+      if (res.ok) {
+        Alert.alert('Success! 🎉', 'Your subscription is now active.');
+        await loadData();
       } else {
-        Alert.alert('Verification Failed', 'Could not verify your purchase');
+        const err = await res.json();
+        Alert.alert('Verification Failed', err.detail || 'Could not verify purchase');
       }
-    } catch (error) {
-      console.error('Error verifying purchase:', error);
-      Alert.alert('Error', 'Failed to verify purchase');
+    } catch (err) {
+      console.error('Verify error:', err);
+      Alert.alert('Error', 'Failed to verify purchase with server');
     }
   };
 
   const handleRestorePurchases = async () => {
     setLoading(true);
-
     try {
-      const availablePurchases = await RNIap.getAvailablePurchases();
-
-      if (availablePurchases.length === 0) {
-        Alert.alert('No Purchases', 'No previous purchases found');
-        setLoading(false);
+      const available = await RNIap.getAvailablePurchases();
+      if (!available.length) {
+        Alert.alert('Nothing to Restore', 'No previous purchases found on this account.');
         return;
       }
 
-      const purchases = availablePurchases.map((p) => ({
-        product_id: p.productId,
+      const token = await AsyncStorage.getItem('token');
+      const base = process.env.EXPO_PUBLIC_BACKEND_URL;
+      const purchases = available.map((p: any) => ({
         purchase_token: p.purchaseToken,
+        plan_id: p.productId.replace('crm_', '').replace('_monthly', '').replace('_yearly', ''),
+        platform: 'android',
       }));
 
-      const token = await AsyncStorage.getItem('token');
-      const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
-
-      const response = await fetch(`${backendUrl}/api/billing/restore-purchases`, {
+      const res = await fetch(`${base}/api/subscription/restore-purchases`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -188,95 +172,66 @@ export default function SubscriptionScreen() {
         body: JSON.stringify({ purchases }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
+      if (res.ok) {
+        const data = await res.json();
         if (data.restored > 0) {
-          setCurrentSubscription(data.subscription);
-          Alert.alert('Success', `Restored ${data.restored} subscription(s)`);
+          await loadData();
+          Alert.alert('Restored!', `Plan "${data.plan}" has been restored.`);
         } else {
-          Alert.alert('No Active Subscriptions', 'No active subscriptions found');
+          Alert.alert('Nothing Found', data.message || 'No active subscriptions found.');
         }
       }
-    } catch (error) {
-      console.error('Error restoring purchases:', error);
+    } catch (err) {
       Alert.alert('Error', 'Failed to restore purchases');
     } finally {
       setLoading(false);
     }
   };
 
-  const getProductPrice = (productId: string) => {
-    const product = products.find((p) => p.productId === productId);
-    return product?.localizedPrice || 'Loading...';
-  };
+  const renderPlanRow = (plan: Plan, yearly = false) => {
+    const sku = `crm_${plan.id}_${yearly ? 'yearly' : 'monthly'}`;
+    const storePrice = getStorePrice(plan.id, yearly);
+    const isCurrentPlan = subStatus?.subscription_plan === plan.id && subStatus?.subscription_active;
+    const isPurchasing = purchasing === sku;
 
-  const renderPlanCard = (plan: SubscriptionPlan) => {
-    const isCurrentPlan =
-      currentSubscription?.tier === plan.tier &&
-      currentSubscription?.billing_period === plan.period;
-    const isActive = currentSubscription?.status === 'active';
+    // For yearly, double the monthly amount as estimate (store price overrides this)
+    const displayPrice = storePrice
+      ? `${storePrice}/${yearly ? 'yr' : 'mo'}`
+      : `${plan.currency} ${yearly ? (plan.amount * 10).toLocaleString() : plan.amount.toLocaleString()}/${yearly ? 'yr' : 'mo'}`;
 
     return (
-      <View
-        key={plan.id}
-        style={[styles.planCard, isCurrentPlan && styles.currentPlanCard]}
-      >
+      <View key={sku} style={[styles.planCard, isCurrentPlan && styles.currentPlanCard]}>
         <View style={styles.planHeader}>
-          <Text style={styles.planName}>{plan.name}</Text>
-          {isCurrentPlan && isActive && (
-            <View style={styles.currentBadge}>
-              <Text style={styles.currentBadgeText}>Current</Text>
+          <View>
+            <Text style={styles.planName}>{plan.name}</Text>
+            {yearly && <Text style={styles.saveBadge}>Save ~17%</Text>}
+          </View>
+          {isCurrentPlan && (
+            <View style={styles.activeBadge}>
+              <Text style={styles.activeBadgeText}>✓ Active</Text>
             </View>
           )}
         </View>
 
-        <Text style={styles.planDescription}>{plan.description}</Text>
+        <Text style={styles.planPrice}>{displayPrice}</Text>
 
-        <Text style={styles.planPrice}>{getProductPrice(plan.id)}</Text>
-
-        <View style={styles.limitsContainer}>
-          <LimitItem
-            icon="people-outline"
-            text={
-              plan.limits.max_customers === -1
-                ? 'Unlimited customers'
-                : `Up to ${plan.limits.max_customers} customers`
-            }
-          />
-          <LimitItem
-            icon="cube-outline"
-            text={
-              plan.limits.max_products === -1
-                ? 'Unlimited products'
-                : `Up to ${plan.limits.max_products} products`
-            }
-          />
-          <LimitItem
-            icon="chatbubbles-outline"
-            text={
-              plan.limits.ai_messages_per_month === -1
-                ? 'Unlimited AI messages'
-                : `${plan.limits.ai_messages_per_month} AI messages/month`
-            }
-          />
-          <LimitItem
-            icon="people-circle-outline"
-            text={
-              plan.limits.max_team_members === -1
-                ? 'Unlimited team members'
-                : `Up to ${plan.limits.max_team_members} team members`
-            }
-          />
+        <View style={styles.featureList}>
+          {plan.features.map((f, i) => (
+            <View key={i} style={styles.featureRow}>
+              <Ionicons name="checkmark-circle" size={16} color="#25D366" />
+              <Text style={styles.featureText}>{f}</Text>
+            </View>
+          ))}
         </View>
 
         {!isCurrentPlan && (
           <TouchableOpacity
-            style={styles.subscribeButton}
-            onPress={() => handlePurchase(plan.id)}
-            disabled={purchasing}
+            style={[styles.subscribeButton, isPurchasing && styles.subscribeButtonDisabled]}
+            onPress={() => handlePurchase(plan.id, yearly)}
+            disabled={!!purchasing}
           >
-            {purchasing ? (
-              <ActivityIndicator color="#fff" />
+            {isPurchasing ? (
+              <ActivityIndicator color="#fff" size="small" />
             ) : (
               <Text style={styles.subscribeButtonText}>Subscribe</Text>
             )}
@@ -290,9 +245,13 @@ export default function SubscriptionScreen() {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#25D366" />
+        <Text style={styles.loadingText}>Loading plans...</Text>
       </View>
     );
   }
+
+  const isActive = subStatus?.subscription_active;
+  const currentPlan = subStatus?.subscription_plan;
 
   return (
     <View style={styles.container}>
@@ -307,47 +266,41 @@ export default function SubscriptionScreen() {
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {currentSubscription && currentSubscription.tier !== 'free' && (
+        {/* Current subscription banner */}
+        {isActive && currentPlan && (
           <View style={styles.currentSubCard}>
-            <Text style={styles.currentSubTitle}>Current Plan</Text>
-            <Text style={styles.currentSubTier}>
-              {currentSubscription.tier.toUpperCase()} -{' '}
-              {currentSubscription.billing_period}
-            </Text>
-            <Text style={styles.currentSubStatus}>
-              Status: {currentSubscription.status}
-            </Text>
-            {currentSubscription.expiry_date && (
+            <Text style={styles.currentSubLabel}>Your Active Plan</Text>
+            <Text style={styles.currentSubPlan}>{currentPlan.toUpperCase()}</Text>
+            {subStatus?.subscription_expiry && (
               <Text style={styles.currentSubExpiry}>
-                {currentSubscription.auto_renewing ? 'Renews' : 'Expires'} on:{' '}
-                {new Date(currentSubscription.expiry_date).toLocaleDateString()}
+                {subStatus.auto_renewing ? 'Auto-renews' : 'Expires'} on{' '}
+                {new Date(subStatus.subscription_expiry).toLocaleDateString()}
               </Text>
             )}
           </View>
         )}
 
+        {/* Free plan notice */}
+        {!isActive && (
+          <View style={styles.freePlanBanner}>
+            <Ionicons name="information-circle-outline" size={20} color="#666" />
+            <Text style={styles.freePlanText}>
+              You're on the Free plan. Upgrade to unlock more features.
+            </Text>
+          </View>
+        )}
+
         <Text style={styles.sectionTitle}>Monthly Plans</Text>
+        {plans.map((plan) => renderPlanRow(plan, false))}
 
-        {plans
-          .filter((p) => p.period === 'monthly')
-          .map((plan) => renderPlanCard(plan))}
-
-        <Text style={styles.sectionTitle}>Yearly Plans (Save 17%)</Text>
-
-        {plans
-          .filter((p) => p.period === 'yearly')
-          .map((plan) => renderPlanCard(plan))}
+        <Text style={styles.sectionTitle}>Yearly Plans (Best Value)</Text>
+        {plans.map((plan) => renderPlanRow(plan, true))}
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            • Subscriptions auto-renew unless canceled
-          </Text>
-          <Text style={styles.footerText}>
-            • Cancel anytime from Google Play Store
-          </Text>
-          <Text style={styles.footerText}>
-            • All prices in your local currency
-          </Text>
+          <Text style={styles.footerText}>• Prices shown in your local currency via Google Play</Text>
+          <Text style={styles.footerText}>• Subscriptions renew automatically unless canceled</Text>
+          <Text style={styles.footerText}>• Cancel anytime in Google Play Store → Subscriptions</Text>
+          <Text style={styles.footerText}>• Countries not listed use USD pricing</Text>
         </View>
       </ScrollView>
     </View>
@@ -362,15 +315,9 @@ const LimitItem = ({ icon, text }: { icon: any; text: string }) => (
 );
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingText: { marginTop: 12, color: '#666', fontSize: 14 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -381,133 +328,86 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
-  backButton: {
-    padding: 8,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-  },
-  restoreText: {
-    fontSize: 14,
-    color: '#25D366',
-    fontWeight: '500',
-  },
-  content: {
-    flex: 1,
-    padding: 16,
-  },
+  backButton: { padding: 8 },
+  headerTitle: { fontSize: 18, fontWeight: '600', color: '#333' },
+  restoreText: { fontSize: 14, color: '#25D366', fontWeight: '500' },
+  content: { flex: 1, padding: 16 },
   currentSubCard: {
     backgroundColor: '#25D366',
     borderRadius: 12,
     padding: 16,
-    marginBottom: 24,
+    marginBottom: 20,
   },
-  currentSubTitle: {
-    fontSize: 14,
-    color: '#fff',
-    opacity: 0.9,
+  currentSubLabel: { fontSize: 13, color: '#fff', opacity: 0.85 },
+  currentSubPlan: { fontSize: 22, fontWeight: '700', color: '#fff', marginTop: 4 },
+  currentSubExpiry: { fontSize: 12, color: '#fff', opacity: 0.8, marginTop: 6 },
+  freePlanBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 20,
+    gap: 8,
   },
-  currentSubTier: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#fff',
-    marginTop: 4,
-  },
-  currentSubStatus: {
-    fontSize: 14,
-    color: '#fff',
-    marginTop: 8,
-  },
-  currentSubExpiry: {
-    fontSize: 12,
-    color: '#fff',
-    opacity: 0.8,
-    marginTop: 4,
-  },
+  freePlanText: { flex: 1, fontSize: 13, color: '#555' },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
     color: '#333',
-    marginBottom: 16,
+    marginBottom: 12,
     marginTop: 8,
   },
   planCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
     padding: 16,
-    marginBottom: 16,
+    marginBottom: 14,
     borderWidth: 2,
     borderColor: '#e0e0e0',
   },
-  currentPlanCard: {
-    borderColor: '#25D366',
-  },
+  currentPlanCard: { borderColor: '#25D366' },
   planHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
+    alignItems: 'flex-start',
+    marginBottom: 6,
   },
-  planName: {
-    fontSize: 18,
+  planName: { fontSize: 17, fontWeight: '700', color: '#222' },
+  saveBadge: {
+    fontSize: 11,
+    color: '#25D366',
     fontWeight: '600',
-    color: '#333',
+    marginTop: 2,
   },
-  currentBadge: {
-    backgroundColor: '#25D366',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
+  activeBadge: {
+    backgroundColor: '#e6f9ef',
+    borderColor: '#25D366',
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 10,
   },
-  currentBadgeText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  planDescription: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 12,
-  },
+  activeBadgeText: { color: '#25D366', fontSize: 12, fontWeight: '700' },
   planPrice: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '700',
     color: '#25D366',
-    marginBottom: 16,
+    marginBottom: 12,
   },
-  limitsContainer: {
-    marginBottom: 16,
-  },
-  limitItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  limitText: {
-    fontSize: 14,
-    color: '#666',
-    marginLeft: 8,
-  },
+  featureList: { marginBottom: 14 },
+  featureRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 6 },
+  featureText: { fontSize: 13, color: '#555', flex: 1 },
   subscribeButton: {
     backgroundColor: '#25D366',
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: 'center',
   },
-  subscribeButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  footer: {
-    marginTop: 24,
-    marginBottom: 32,
-  },
-  footerText: {
-    fontSize: 12,
-    color: '#999',
-    marginBottom: 4,
-  },
+  subscribeButtonDisabled: { backgroundColor: '#a8d5bb' },
+  subscribeButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  footer: { marginTop: 24, marginBottom: 40 },
+  footerText: { fontSize: 12, color: '#aaa', marginBottom: 5 },
+  limitItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  limitText: { fontSize: 14, color: '#666', marginLeft: 8 },
 });
