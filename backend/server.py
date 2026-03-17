@@ -7937,22 +7937,66 @@ async def evolution_webhook(request: Request):
                         "action_context": "booking_checkin_input"
                     })
                     if _ci_state:
+                        # ── FlowJudge: AI reads message before rigid date parser ──
+                        _ci_fj_skip = False
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_ci
+                            _fj_ci = _get_fj_ci()
+                            _fj_ci_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                            _fj_ci_result = await _fj_ci.understand(
+                                message=body,
+                                current_step="waiting for rental check-in date",
+                                waiting_for="a check-in date (today, tomorrow, Monday, 15 March, 2026-03-15)",
+                                pending_state=_ci_state,
+                                language="English",
+                                currency=_fj_ci_cur,
+                            )
+                            _fj_ci_action = _fj_ci_result.get("action", "continue")
+                            _fj_ci_ws = get_whatsapp_service(db)
+                            _ci_svc = _ci_state.get("booking_service_name", "your rental")
+                            if _fj_ci_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_service_select", "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! Which listing would you like? Reply with the number 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_go_back"}
+                            elif _fj_ci_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _ci_state["_id"]})
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_ci_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_cancelled"}
+                            elif _fj_ci_action == "tangent":
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_ci_result.get("reply") or f"Hey! 😊 We were picking your check-in date for *{_ci_svc}* — what date works for you? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_tangent"}
+                            elif _fj_ci_action == "unclear":
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_ci_result.get("reply") or "What date would you like to check in? 📅\n_e.g. tomorrow, Monday, 15 March_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_unclear"}
+                            if _fj_ci_result.get("extracted_value"):
+                                body = _fj_ci_result["extracted_value"]
+                        except Exception as _fj_ci_err:
+                            logging.warning(f"[FlowJudge/checkin] {_fj_ci_err}")
+
                         import re as _re_ci
                         _ci_body = body.strip()
                         _ci_lower = _ci_body.lower()
-                        # ── Escape hatch ──
-                        _ci_true_cancel_kws = ("cancel", "stop", "exit", "quit", "reset", "restart",
-                                               "start afresh", "start over", "start again", "start fresh",
-                                               "hello", "hi", "hey", "good morning", "good evening",
-                                               "good afternoon", "good night")
-                        _ci_avail_kws = ("availability", "check availability", "what's available",
-                                         "what is available", "available dates", "give me the dates",
-                                         "show dates", "show availability", "see the dates",
-                                         "see dates", "available days", "what days", "what days are",
-                                         "i want to see", "dates available", "give dates",
-                                         "what dates", "available?", "when is it available")
-                        _ci_is_cancel = any(_ci_lower == kw or _ci_lower.startswith(kw) for kw in _ci_true_cancel_kws)
-                        _ci_is_avail = any(_ci_lower == kw or _ci_lower.startswith(kw) for kw in _ci_avail_kws)
+                        _ci_is_cancel = False
+                        _ci_is_avail = any(_ci_lower.startswith(kw) for kw in ("availability", "check availability", "available dates", "show dates", "what dates", "when is it available"))
 
                         if _ci_is_cancel:
                             await db.pending_catalogs.delete_one({"_id": _ci_state["_id"]})
@@ -8155,18 +8199,66 @@ async def evolution_webhook(request: Request):
                         "action_context": "booking_checkout_input"
                     })
                     if _co_state:
+                        # ── FlowJudge: AI reads message before rigid date parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_co
+                            _fj_co = _get_fj_co()
+                            _fj_co_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                            _fj_co_result = await _fj_co.understand(
+                                message=body,
+                                current_step="waiting for rental check-out date",
+                                waiting_for="a check-out date (must be after check-in)",
+                                pending_state=_co_state,
+                                language="English",
+                                currency=_fj_co_cur,
+                            )
+                            _fj_co_action = _fj_co_result.get("action", "continue")
+                            _fj_co_ws = get_whatsapp_service(db)
+                            _co_svc = _co_state.get("booking_service_name", "your rental")
+                            _co_ci = _co_state.get("booking_checkin_date", "")
+                            if _fj_co_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_checkin_input", "booking_checkin_date": None, "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"No problem! What check-in date would you like for *{_co_svc}*? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_go_back"}
+                            elif _fj_co_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _co_state["_id"]})
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_co_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_cancelled"}
+                            elif _fj_co_action == "tangent":
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_co_result.get("reply") or f"Hey! 😊 Check-in: *{_co_ci}* is set. What date would you like to check out? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_tangent"}
+                            elif _fj_co_action == "unclear":
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_co_result.get("reply") or f"What date would you like to check out? 📅\n_Check-in is {_co_ci}_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_unclear"}
+                            if _fj_co_result.get("extracted_value"):
+                                body = _fj_co_result["extracted_value"]
+                        except Exception as _fj_co_err:
+                            logging.warning(f"[FlowJudge/checkout] {_fj_co_err}")
+
                         import re as _re_co
                         _co_body = body.strip()
                         _co_lower = _co_body.lower()
-                        # ── Escape hatch: cancel/restart/greetings/availability ──
-                        _co_cancel_kws = ("cancel", "stop", "exit", "quit", "reset", "restart",
-                                          "start afresh", "start over", "start again", "start fresh",
-                                          "hello", "hi", "hey", "good morning", "good evening",
-                                          "good afternoon", "good night", "availability",
-                                          "check availability", "what's available", "what is available")
-                        if any(_co_lower == kw or _co_lower.startswith(kw) for kw in _co_cancel_kws):
-                            await db.pending_catalogs.delete_one({"_id": _co_state["_id"]})
-                            # Fall through — let agent pipeline handle the message
+                        if False:
+                            pass
                         else:
                             _today_co = datetime.utcnow().date()
                             _ci_date_str = _co_state.get("booking_checkin_date", "")
@@ -8281,6 +8373,96 @@ async def evolution_webhook(request: Request):
                         "action_context": "booking_date_input"
                     })
                     if _bk_date_state:
+                        # ── FlowJudge: AI reads message before rigid date parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_bkd
+                            _fj_bkd = _get_fj_bkd()
+                            _fj_bkd_lang = _bk_date_state.get("preferred_language") or "English"
+                            _fj_bkd_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                            _fj_bkd_result = await _fj_bkd.understand(
+                                message=body,
+                                current_step="waiting for booking date",
+                                waiting_for="a date (today, tomorrow, Monday, 15 March, 2026-03-15)",
+                                pending_state=_bk_date_state,
+                                language=_fj_bkd_lang,
+                                currency=_fj_bkd_cur,
+                            )
+                            _fj_bkd_action = _fj_bkd_result.get("action", "continue")
+                            _fj_bkd_ws = get_whatsapp_service(db)
+                            _bkd_svc = _bk_date_state.get("booking_service_name", "your service")
+                            if _fj_bkd_action == "go_back":
+                                # Resend service list
+                                _go_back_svcs = await db.products.find({
+                                    "user_id": user["_id"], "in_stock": True,
+                                    "offering_type": {"$in": ["service","class","appointment","consultation","rental","equipment","package"]}
+                                }).to_list(20)
+                                if not _go_back_svcs:
+                                    _go_back_svcs = await db.products.find({"user_id": user["_id"], "in_stock": True}).to_list(20)
+                                if _go_back_svcs:
+                                    _gb_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                                    _gb_lines = ["📋 *Our Services*\n"]
+                                    for _gb_i, _gb_s in enumerate(_go_back_svcs[:8], 1):
+                                        _gb_price = _gb_s.get("price", 0)
+                                        _gb_dur = _gb_s.get("duration")
+                                        _gb_ps = f"{_gb_cur} {_gb_price:,.0f}" if _gb_price else "Contact for price"
+                                        _gb_ds = f" · {_gb_dur} min" if _gb_dur else ""
+                                        _gb_lines.append(f"{_gb_i}️⃣  *{_gb_s['name']}* — {_gb_ps}{_gb_ds}")
+                                    _gb_lines.append("\n_Reply with the number of the service you'd like to book_")
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "action_context": "booking_service_select",
+                                            "products": [{"id": str(_gb_s["_id"]), "name": _gb_s["name"], "price": _gb_s.get("price", 0),
+                                                          "duration": _gb_s.get("duration"), "index": _gb_i,
+                                                          "service_category": _gb_s.get("service_category", "appointment")}
+                                                         for _gb_i, _gb_s in enumerate(_go_back_svcs[:8], 1)],
+                                            "updated_at": datetime.utcnow(),
+                                        }},
+                                        upsert=True
+                                    )
+                                    await _fj_bkd_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="No problem! Here are the services again 😊\n\n" + "\n".join(_gb_lines),
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                else:
+                                    await _fj_bkd_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="No problem! What service would you like to book? 😊",
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                return {"status": "ok", "handled_by": "booking_date_go_back"}
+                            elif _fj_bkd_action == "cancel":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_bkd_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_bkd_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_cancelled"}
+                            elif _fj_bkd_action == "tangent":
+                                await _fj_bkd_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_bkd_result.get("reply") or f"Hey! 😊 We were just picking a date for *{_bkd_svc}* — what day works for you? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_tangent"}
+                            elif _fj_bkd_action == "unclear":
+                                await _fj_bkd_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_bkd_result.get("reply") or f"What date would you like for *{_bkd_svc}*? 📅\n_e.g. tomorrow, Monday, 15 March_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_unclear"}
+                            # continue — use extracted_value as cleaner date input for parser
+                            if _fj_bkd_result.get("extracted_value"):
+                                body = _fj_bkd_result["extracted_value"]
+                        except Exception as _fj_bkd_err:
+                            logging.warning(f"[FlowJudge/booking_date] {_fj_bkd_err}")
+
                         import re as _re_bk
                         _body_bk = body.strip()
                         _body_lower_bk = _body_bk.lower()
@@ -8430,6 +8612,58 @@ async def evolution_webhook(request: Request):
                         "action_context": "restaurant_party_size_input"
                     })
                     if _rest_party_state:
+                        # ── FlowJudge: AI reads message before rigid number parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_rp
+                            _fj_rp = _get_fj_rp()
+                            _fj_rp_result = await _fj_rp.understand(
+                                message=body,
+                                current_step="waiting for restaurant party size",
+                                waiting_for="a number of people (1-50)",
+                                pending_state=_rest_party_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_rp_action = _fj_rp_result.get("action", "continue")
+                            _fj_rp_ws = get_whatsapp_service(db)
+                            if _fj_rp_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _rest_party_state["_id"]})
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rp_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_cancelled"}
+                            elif _fj_rp_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_time_select", "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! Reply with the time slot number to pick a different time 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_go_back"}
+                            elif _fj_rp_action == "tangent":
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rp_result.get("reply") or "Hey! 😊 How many people will be dining? 👥",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_tangent"}
+                            elif _fj_rp_action == "unclear":
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rp_result.get("reply") or "How many people will be joining? (e.g. reply *2* for 2 people) 👥",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_unclear"}
+                            if _fj_rp_result.get("extracted_value"):
+                                body = _fj_rp_result["extracted_value"]
+                        except Exception as _fj_rp_err:
+                            logging.warning(f"[FlowJudge/party_size] {_fj_rp_err}")
+
                         _party_body = body.strip()
                         _party_size = None
                         try:
@@ -8523,6 +8757,59 @@ async def evolution_webhook(request: Request):
                         "action_context": "creator_timeline_input"
                     })
                     if _cr_timeline_state:
+                        # ── FlowJudge: AI reads message before rigid timeline parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_cr
+                            _fj_cr = _get_fj_cr()
+                            _fj_cr_result = await _fj_cr.understand(
+                                message=body,
+                                current_step="waiting for project deadline/timeline",
+                                waiting_for="a deadline or timeframe (e.g. in 2 weeks, next Friday, 15 March)",
+                                pending_state=_cr_timeline_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_cr_action = _fj_cr_result.get("action", "continue")
+                            _fj_cr_ws = get_whatsapp_service(db)
+                            _cr_svc = _cr_timeline_state.get("booking_service_name", "your project")
+                            if _fj_cr_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_service_select", "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! Which service would you like instead? Reply with the number 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_go_back"}
+                            elif _fj_cr_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _cr_timeline_state["_id"]})
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cr_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_cancelled"}
+                            elif _fj_cr_action == "tangent":
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cr_result.get("reply") or f"Hey! 😊 We were setting a timeline for *{_cr_svc}* — when would you need it by? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_tangent"}
+                            elif _fj_cr_action == "unclear":
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cr_result.get("reply") or "When do you need *{_cr_svc}* completed? 📅\n_e.g. in 2 weeks, next Friday, 15 March_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_unclear"}
+                            if _fj_cr_result.get("extracted_value"):
+                                body = _fj_cr_result["extracted_value"]
+                        except Exception as _fj_cr_err:
+                            logging.warning(f"[FlowJudge/creator_timeline] {_fj_cr_err}")
+
                         import re as _re_cr
                         _timeline_body = body.strip()
                         _timeline_lower = _timeline_body.lower()
@@ -8686,11 +8973,99 @@ async def evolution_webhook(request: Request):
                         )
                         return {"status": "ok", "handled_by": "creator_details_input"}
 
+                # BOOKING CONFIRMATION — FlowJudge for ambiguous messages (not clear YES/NO)
+                if not button_action and not from_me and body:
+                    _bkc_pre_body = body.strip().lower()
+                    _bkc_pre_yes = {"yes","yeah","yep","sure","ok","okay","confirm","ndio","sawa","yes please",
+                                    "sounds good","let's do it","go ahead","book it","great","perfect","done"}
+                    _bkc_pre_no  = {"no","nope","cancel","hapana","nah","no thanks","no thank you",
+                                    "never mind","forget it","don't","dont","stop","acha"}
+                    if _bkc_pre_body not in _bkc_pre_yes and _bkc_pre_body not in _bkc_pre_no:
+                        _bkc_fj_state = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"],
+                            "action_context": "booking_confirm"
+                        })
+                        if _bkc_fj_state:
+                            try:
+                                from agents.flow_judge import get_flow_judge as _get_fj_bc
+                                _fj_bc = _get_fj_bc()
+                                _fj_bc_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                                _fj_bc_result = await _fj_bc.understand(
+                                    message=body,
+                                    current_step="waiting for booking confirmation",
+                                    waiting_for="YES to confirm or NO to cancel",
+                                    pending_state=_bkc_fj_state,
+                                    language="English",
+                                    currency=_fj_bc_cur,
+                                )
+                                _fj_bc_action = _fj_bc_result.get("action", "unclear")
+                                _bc_ws = get_whatsapp_service(db)
+                                _bc_svc = _bkc_fj_state.get("booking_service_name", "your service")
+                                _bc_date = _bkc_fj_state.get("booking_date", "")
+                                _bc_time = _bkc_fj_state.get("booking_time", "")
+                                if _fj_bc_action == "continue":
+                                    # AI extracted a yes/no intent — map to body for existing handler
+                                    _ext_bc = (_fj_bc_result.get("extracted_value") or "").lower()
+                                    _bkc_pre_body = "yes" if _ext_bc in ("yes","confirm","y","sure","ok","ndio","sawa","agree","book","proceed") else "no"
+                                    # Fall through to YES/NO handler below with updated _bkc_pre_body
+                                    # We need to re-route to the handler — set body to the extracted value
+                                    body = _bkc_pre_body
+                                elif _fj_bc_action == "go_back":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "booking_date_input",
+                                                  "booking_time": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=f"No problem! Let's pick a new date for *{_bc_svc}* 📅\n_Reply with a date, e.g. tomorrow, Monday, 15 March_",
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_go_back"}
+                                elif _fj_bc_action == "cancel":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_fj_bc_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_cancelled"}
+                                elif _fj_bc_action == "tangent":
+                                    _summary_hint = (f" for *{_bc_svc}*" + (f" on {_bc_date} at {_bc_time}" if _bc_date and _bc_time else ""))
+                                    _tangent_msg = _fj_bc_result.get("reply") or (
+                                        f"Hey! 😊 We were just confirming your booking{_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_tangent_msg, customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_tangent"}
+                                else:  # unclear
+                                    _bkc_re_summary = (
+                                        f"Just to confirm your booking:\n"
+                                        f"📋 *{_bc_svc}*\n"
+                                        + (f"📅 {_bc_date}" if _bc_date else "")
+                                        + (f" at {_bc_time}" if _bc_time else "")
+                                        + f"\n\nReply *YES* to confirm or *NO* to cancel 😊"
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_bkc_re_summary, customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_unclear"}
+                            except Exception as _fj_bc_err:
+                                logging.warning(f"[FlowJudge/booking_confirm] {_fj_bc_err}")
+
                 # BOOKING CONFIRMATION HANDLER — customer said YES or NO to booking summary
                 if not button_action and not from_me and body:
                     _bkc_body = body.strip().lower()
-                    _bkc_yes = {"yes","yeah","yep","sure","ok","okay","confirm","ndio","sawa","yes please"}
-                    _bkc_no  = {"no","nope","cancel","hapana","nah","no thanks","no thank you"}
+                    _bkc_yes = {"yes","yeah","yep","sure","ok","okay","confirm","ndio","sawa","yes please",
+                                "sounds good","let's do it","go ahead","book it","great","perfect","done"}
+                    _bkc_no  = {"no","nope","cancel","hapana","nah","no thanks","no thank you",
+                                "never mind","forget it","don't","dont","stop","acha"}
                     if _bkc_body in _bkc_yes or _bkc_body in _bkc_no:
                         _bkc_state = await db.pending_catalogs.find_one({
                             "customer_id": customer_id, "user_id": user["_id"],

@@ -10,3 +10,4 @@ from .conversation_state import load_state, save_state, mark_escalated
 from .reply_validator import validate_reply, RESULT_APPROVE, RESULT_REJECT, RESULT_ESCALATE
 from .tools import find_product_matches, normalize_url, format_product_catalog
 from .session_summarizer import maybe_summarize, format_summary_for_prompt
+from .flow_judge import FlowJudge, get_flow_judge
