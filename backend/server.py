@@ -873,6 +873,7 @@ class CustomerUpdate(BaseModel):
     tags: Optional[List[str]] = None
     auto_reply: Optional[bool] = None
     is_personal: Optional[bool] = None
+    ai_enabled: Optional[bool] = None
     stage: Optional[str] = None
 
 class CustomerResponse(BaseModel):
@@ -884,6 +885,8 @@ class CustomerResponse(BaseModel):
     tags: List[str] = []
     auto_reply: Optional[bool] = None
     is_personal: bool = False
+    ai_enabled: bool = True
+    contact_type: str = "UNKNOWN"
     is_customer: bool = False
     stage: str = "lead"
     purchase_count: int = 0
@@ -3176,6 +3179,8 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         profile_picture=customer.get("profile_picture"),
         auto_reply=customer.get("auto_reply"),
         is_personal=customer.get("is_personal", False),
+        ai_enabled=customer.get("ai_enabled", not customer.get("is_personal", False)),
+        contact_type=customer.get("contact_type", "UNKNOWN"),
         is_customer=customer.get("is_customer", False),
         created_at=customer["created_at"]
     )
@@ -3213,6 +3218,17 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["auto_reply"] = update.auto_reply
     if update.is_personal is not None:
         update_data["is_personal"] = update.is_personal
+        # 16.5: Personal contacts have AI silent by default unless owner explicitly enables it
+        if update.is_personal is True and update.ai_enabled is None:
+            update_data["ai_enabled"] = False
+            update_data["contact_type"] = "KNOWN_PERSONAL"
+            update_data["contact_type_source"] = "owner_tagged"
+        elif update.is_personal is False and update.ai_enabled is None:
+            update_data["ai_enabled"] = True
+            update_data["contact_type"] = "KNOWN_CUSTOMER"
+            update_data["contact_type_source"] = "owner_tagged"
+    if update.ai_enabled is not None:
+        update_data["ai_enabled"] = update.ai_enabled
     if update.stage is not None:
         valid_stages = ["lead", "contacted", "negotiating", "won", "lost"]
         if update.stage in valid_stages:
@@ -3232,6 +3248,8 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         tags=updated.get("tags", []),
         auto_reply=updated.get("auto_reply"),
         is_personal=updated.get("is_personal", False),
+        ai_enabled=updated.get("ai_enabled", not updated.get("is_personal", False)),
+        contact_type=updated.get("contact_type", "UNKNOWN"),
         is_customer=updated.get("is_customer", False),
         stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
@@ -3239,6 +3257,33 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         profile_picture=updated.get("profile_picture"),
         created_at=updated["created_at"]
     )
+
+
+@api_router.post("/customers/{customer_id}/toggle-ai")
+async def toggle_ai_for_contact(customer_id: str, user = Depends(get_current_user)):
+    """16.5: Toggle AI on/off for a contact. Personal contacts are silent by default.
+    This is the personal/business switch button endpoint."""
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    current_ai_enabled = customer.get("ai_enabled", not customer.get("is_personal", False))
+    new_ai_enabled = not current_ai_enabled
+
+    await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$set": {
+            "ai_enabled": new_ai_enabled,
+            "contact_type_source": "owner_tagged",
+        }}
+    )
+    return {
+        "status": "success",
+        "ai_enabled": new_ai_enabled,
+        "message": "AI enabled for this contact" if new_ai_enabled else "AI silenced for this contact",
+    }
+
 
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, user = Depends(get_current_user)):

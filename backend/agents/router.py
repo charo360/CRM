@@ -49,9 +49,59 @@ def _get_model_for_intent(intent: str, sentiment: str) -> str:
     return "standard"
 
 
+# 16.3: Business-critical intents that warrant owner notification
+_BUSINESS_CRITICAL_INTENTS = {
+    "COMPLAINT", "LEGAL_THREAT", "FRAUD_CLAIM",
+    "PAYMENT_ISSUE", "REFUND_REQUEST", "ESCALATION",
+    "DAMAGED_ITEM", "WRONG_ITEM",
+}
+
+
+def should_notify_owner(contact_signal: dict, intent: str) -> bool:
+    """16.3: Only notify for business-critical situations. Never for personal contacts."""
+    if contact_signal.get("type") == "personal":
+        return False
+    if intent in _BUSINESS_CRITICAL_INTENTS:
+        return True
+    return False
+
+
 class Router:
     def __init__(self, db: Any):
         self.db = db
+
+    async def _get_contact_state(self, customer_id: str, user_id: str) -> dict:
+        """16.4: Load contact classification state from customer document."""
+        if not customer_id or self.db is None:
+            return {"contact_type": "UNKNOWN", "message_count": 0, "ai_enabled": True}
+        try:
+            doc = await self.db.customers.find_one(
+                {"_id": customer_id, "user_id": user_id},
+                {"contact_type": 1, "contact_type_source": 1, "message_count": 1, "ai_enabled": 1, "is_personal": 1}
+            )
+            if doc:
+                return {
+                    "contact_type": doc.get("contact_type", "UNKNOWN"),
+                    "contact_type_source": doc.get("contact_type_source", "unknown"),
+                    "message_count": doc.get("message_count", 0),
+                    "ai_enabled": doc.get("ai_enabled", not doc.get("is_personal", False)),
+                }
+        except Exception as e:
+            logger.error(f"[Router] _get_contact_state error: {e}")
+        return {"contact_type": "UNKNOWN", "message_count": 0, "ai_enabled": True}
+
+    async def _update_contact_state(self, customer_id: str, user_id: str, updates: dict) -> None:
+        """16.4: Persist contact classification state on customer document."""
+        if not customer_id or self.db is None:
+            return
+        try:
+            updates["contact_state_updated_at"] = datetime.now(timezone.utc)
+            await self.db.customers.update_one(
+                {"_id": customer_id, "user_id": user_id},
+                {"$set": updates}
+            )
+        except Exception as e:
+            logger.error(f"[Router] _update_contact_state error: {e}")
 
     async def route_and_process(
         self, user_id: str, message: str, context: Dict[str, Any]
@@ -61,9 +111,10 @@ class Router:
           1. Build threaded context (relationship detection)
           2. Load conversation state (auto-resets if stale)
           3. Analyze intent (1 AI call, threaded context)
-          4. Dispatch to correct agent
-          5. Validate reply (fast rules, no LLM)
-          6. Save state + flag for human if needed
+          4. Contact classification gate (16.2)
+          5. Dispatch to correct agent
+          6. Validate reply (fast rules, no LLM)
+          7. Save state + flag for human if needed
         """
         customer_id = context.get("customer_id")
         is_personal = context.get("is_personal", False)
@@ -110,6 +161,72 @@ class Router:
         relationship = classification.get("_relationship", "new_conversation")
         entities = classification.get("entities", {})
         alternative_intents = classification.get("alternative_intents", [])
+        contact_signal = classification.get("contact_signal", {"type": "unclear", "confidence": 0.0, "reason": ""})
+
+        # ── 3.5: Contact classification gate (16.2) ────────────────────────
+        contact_state = await self._get_contact_state(str(customer_id) if customer_id else "", user_id)
+        msg_count = contact_state.get("message_count", 0) + 1
+        current_contact_type = contact_state.get("contact_type", "UNKNOWN")
+        ai_enabled = contact_state.get("ai_enabled", True)
+
+        # 16.5: If ai_enabled is False (personal contact, owner toggled off) → complete silence
+        if not ai_enabled:
+            logger.info(f"[Router] AI disabled for customer={customer_id} (personal contact)")
+            await self._update_contact_state(str(customer_id) if customer_id else "", user_id, {"message_count": msg_count})
+            return None
+
+        sig_type = contact_signal.get("type", "unclear")
+        sig_conf = float(contact_signal.get("confidence", 0.0))
+
+        if current_contact_type == "UNKNOWN":
+            if sig_type == "customer" and sig_conf >= 0.65:
+                # Auto-tag as customer, continue pipeline normally
+                logger.info(f"[Router] Auto-tagged customer={customer_id} as KNOWN_CUSTOMER")
+                await self._update_contact_state(
+                    str(customer_id) if customer_id else "", user_id,
+                    {"contact_type": "KNOWN_CUSTOMER", "contact_type_source": "auto_detected",
+                     "auto_detected_at_message": msg_count, "message_count": msg_count, "ai_enabled": True}
+                )
+                is_personal = False
+                context["is_personal"] = False
+            elif sig_type == "personal" and sig_conf >= 0.65:
+                # Auto-tag as personal, go silent
+                logger.info(f"[Router] Auto-tagged customer={customer_id} as KNOWN_PERSONAL — going silent")
+                await self._update_contact_state(
+                    str(customer_id) if customer_id else "", user_id,
+                    {"contact_type": "KNOWN_PERSONAL", "contact_type_source": "auto_detected",
+                     "auto_detected_at_message": msg_count, "message_count": msg_count,
+                     "ai_enabled": False, "is_personal": True}
+                )
+                return None
+            else:
+                # Still unclear
+                await self._update_contact_state(
+                    str(customer_id) if customer_id else "", user_id,
+                    {"message_count": msg_count}
+                )
+                # After 3 messages still unclear → ask one natural clarifying question
+                if msg_count >= 3 and sig_type == "unclear":
+                    logger.info(f"[Router] Unknown contact after 3 msgs — sending clarifying question")
+                    return {
+                        "handled": True,
+                        "escalated": False,
+                        "messages": [{"text": "What are you looking for today? 😊"}],
+                    }
+                # Within first 3 messages — respond naturally, continue pipeline
+        else:
+            # Known contact type — just update message count
+            await self._update_contact_state(
+                str(customer_id) if customer_id else "", user_id,
+                {"message_count": msg_count}
+            )
+            # KNOWN_PERSONAL with ai_enabled=False already caught above
+            if current_contact_type == "KNOWN_PERSONAL":
+                is_personal = True
+                context["is_personal"] = True
+
+        # Expose contact_signal to downstream agents
+        context["contact_signal"] = contact_signal
 
         # 1.6: Careful mode for low-confidence classifications
         careful_instruction = ""

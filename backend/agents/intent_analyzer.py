@@ -330,6 +330,14 @@ NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est t
 7. LEGAL_THREAT, FRAUD_CLAIM always → needs_escalation=true
 8. List up to 2 alternative_intents if confidence < 0.85 and there are other plausible intents
 
+══ CONTACT SIGNAL RULES ══
+For contact_signal.type:
+- "customer": ANY product/price/order/delivery/booking/payment question, "how much", "do you have", "I want", "bei gani", "catalog", "stock", "available"
+- "personal": casual greeting with no business follow-up, mentions owner by name, "it's me", "tuongee", "call me", emotional/social context only, emojis with no business intent
+- "unclear": cannot determine from this message alone
+For contact_signal.confidence: how certain you are (0.0-1.0)
+For contact_signal.reason: brief explanation in 5 words or fewer
+
 Return ONLY valid JSON with these exact keys:
 {{
   "intent": "<INTENT>",
@@ -346,7 +354,12 @@ Return ONLY valid JSON with these exact keys:
   "confidence": <0.0-1.0>,
   "needs_escalation": <true|false>,
   "escalation_reason": "<reason or null>",
-  "keywords": []
+  "keywords": [],
+  "contact_signal": {{
+    "type": "<customer|personal|unclear>",
+    "confidence": <0.0-1.0>,
+    "reason": "<brief reason>"
+  }}
 }}
 
 JSON only, no markdown:"""
@@ -367,6 +380,20 @@ JSON only, no markdown:"""
         # Ensure alternative_intents field exists (1.2)
         if "alternative_intents" not in result:
             result["alternative_intents"] = []
+
+        # 16.1: Ensure contact_signal field exists
+        if "contact_signal" not in result:
+            result["contact_signal"] = {"type": "unclear", "confidence": 0.0, "reason": "not classified"}
+        # If intent is clearly business → upgrade contact_signal to customer if not already
+        _biz_intents = {
+            "PRODUCT_INQUIRY", "CATALOG_REQUEST", "PRICE_NEGOTIATION",
+            "ORDER_STATUS", "ORDER_CANCEL", "ORDER_UPDATE",
+            "PAYMENT_CONFIRM", "PAYMENT_METHOD_QUESTION", "PAYMENT_ISSUE",
+            "COMPLAINT", "REFUND_REQUEST", "DAMAGED_ITEM", "WRONG_ITEM",
+            "BOOKING_REQUEST", "BOOKING_CANCEL", "BOOKING_RESCHEDULE",
+        }
+        if result.get("intent") in _biz_intents and result["contact_signal"]["type"] != "customer":
+            result["contact_signal"] = {"type": "customer", "confidence": 0.95, "reason": "business intent detected"}
 
         # Enforce escalation on always-escalate intents
         intent = result.get("intent", "UNKNOWN")
@@ -416,6 +443,7 @@ JSON only, no markdown:"""
             "needs_escalation": True,
             "escalation_reason": f"Intent analysis failed: {e}",
             "keywords": [],
+            "contact_signal": {"type": "unclear", "confidence": 0.0, "reason": "analysis failed"},
             "_relationship": "new_conversation",
             "_hours_since_last": None,
         }
