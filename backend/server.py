@@ -101,6 +101,7 @@ from fastapi import UploadFile, File, Body, Form
 from fastapi.staticfiles import StaticFiles
 from daily_scheduler import start_daily_scheduler
 from mongo_http_client import AsyncMongoHTTPClient
+from google_play_billing import GooglePlayBilling, check_feature_access, check_limit, SUBSCRIPTION_LIMITS
 
 
 
@@ -12755,6 +12756,266 @@ async def startup_tasks():
         logging.error(f"Failed to start booking reminder scheduler: {e}")
 
 logger = logging.getLogger(__name__)
+
+# Initialize Google Play Billing service
+google_play_billing = GooglePlayBilling()
+
+# ============================================================================
+# GOOGLE PLAY BILLING ENDPOINTS
+# ============================================================================
+
+@api_router.post("/billing/verify-purchase")
+async def verify_purchase(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Verify a Google Play purchase and activate subscription"""
+    try:
+        user = await get_current_user(credentials)
+        data = await request.json()
+        
+        product_id = data.get('product_id')
+        purchase_token = data.get('purchase_token')
+        
+        if not product_id or not purchase_token:
+            raise HTTPException(status_code=400, detail="Missing product_id or purchase_token")
+        
+        # Verify with Google Play
+        subscription_status = await google_play_billing.get_subscription_status(product_id, purchase_token)
+        
+        if not subscription_status.get('valid'):
+            raise HTTPException(status_code=400, detail="Invalid purchase")
+        
+        # Get subscription tier and period
+        tier = google_play_billing.get_subscription_tier(product_id)
+        period = google_play_billing.get_billing_period(product_id)
+        
+        # Update user subscription in database
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {
+                "subscription": {
+                    "tier": tier,
+                    "product_id": product_id,
+                    "purchase_token": purchase_token,
+                    "status": subscription_status['status'],
+                    "expiry_date": subscription_status['expiry_date'],
+                    "auto_renewing": subscription_status['auto_renewing'],
+                    "billing_period": period,
+                    "activated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+            }}
+        )
+        
+        # Log transaction
+        await db.transactions.insert_one({
+            "user_id": user["_id"],
+            "product_id": product_id,
+            "purchase_token": purchase_token,
+            "tier": tier,
+            "billing_period": period,
+            "status": "completed",
+            "verified_at": datetime.utcnow(),
+            "expiry_date": subscription_status['expiry_date']
+        })
+        
+        logging.info(f"Subscription activated: {tier} ({period}) for user {user['_id']}")
+        
+        return {
+            "success": True,
+            "subscription": {
+                "tier": tier,
+                "product_id": product_id,
+                "status": subscription_status['status'],
+                "expiry_date": subscription_status['expiry_date'],
+                "auto_renewing": subscription_status['auto_renewing'],
+                "limits": SUBSCRIPTION_LIMITS.get(tier, SUBSCRIPTION_LIMITS['free'])
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error verifying purchase: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/billing/subscription-status")
+async def get_subscription_status(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Get current user's subscription status"""
+    try:
+        user = await get_current_user(credentials)
+        subscription = user.get('subscription', {})
+        
+        if not subscription or not subscription.get('purchase_token'):
+            return {
+                "tier": "free",
+                "status": "none",
+                "limits": SUBSCRIPTION_LIMITS['free']
+            }
+        
+        # Check with Google Play for latest status
+        product_id = subscription.get('product_id')
+        purchase_token = subscription.get('purchase_token')
+        
+        if product_id and purchase_token:
+            status = await google_play_billing.get_subscription_status(product_id, purchase_token)
+            
+            # Update database if status changed
+            if status.get('valid') and status['status'] != subscription.get('status'):
+                await db.users.update_one(
+                    {"_id": user["_id"]},
+                    {"$set": {
+                        "subscription.status": status['status'],
+                        "subscription.expiry_date": status['expiry_date'],
+                        "subscription.auto_renewing": status['auto_renewing'],
+                        "subscription.updated_at": datetime.utcnow().isoformat()
+                    }}
+                )
+                subscription['status'] = status['status']
+        
+        tier = subscription.get('tier', 'free')
+        
+        return {
+            "tier": tier,
+            "product_id": subscription.get('product_id'),
+            "status": subscription.get('status', 'none'),
+            "expiry_date": subscription.get('expiry_date'),
+            "auto_renewing": subscription.get('auto_renewing', False),
+            "billing_period": subscription.get('billing_period'),
+            "limits": SUBSCRIPTION_LIMITS.get(tier, SUBSCRIPTION_LIMITS['free'])
+        }
+        
+    except Exception as e:
+        logging.error(f"Error getting subscription status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/billing/restore-purchases")
+async def restore_purchases(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Restore previous purchases (for app reinstalls)"""
+    try:
+        user = await get_current_user(credentials)
+        data = await request.json()
+        
+        purchases = data.get('purchases', [])
+        
+        if not purchases:
+            return {"success": True, "restored": 0}
+        
+        restored_count = 0
+        latest_subscription = None
+        
+        for purchase in purchases:
+            product_id = purchase.get('product_id')
+            purchase_token = purchase.get('purchase_token')
+            
+            if not product_id or not purchase_token:
+                continue
+            
+            # Verify each purchase
+            status = await google_play_billing.get_subscription_status(product_id, purchase_token)
+            
+            if status.get('valid') and status['status'] in ['active', 'grace_period']:
+                tier = google_play_billing.get_subscription_tier(product_id)
+                period = google_play_billing.get_billing_period(product_id)
+                
+                if not latest_subscription or status['expiry_date'] > latest_subscription.get('expiry_date', ''):
+                    latest_subscription = {
+                        "tier": tier,
+                        "product_id": product_id,
+                        "purchase_token": purchase_token,
+                        "status": status['status'],
+                        "expiry_date": status['expiry_date'],
+                        "auto_renewing": status['auto_renewing'],
+                        "billing_period": period,
+                        "restored_at": datetime.utcnow().isoformat()
+                    }
+                    restored_count += 1
+        
+        if latest_subscription:
+            await db.users.update_one(
+                {"_id": user["_id"]},
+                {"$set": {"subscription": latest_subscription}}
+            )
+            
+            logging.info(f"Restored {restored_count} subscription(s) for user {user['_id']}")
+            
+            return {
+                "success": True,
+                "restored": restored_count,
+                "subscription": latest_subscription
+            }
+        
+        return {"success": True, "restored": 0}
+        
+    except Exception as e:
+        logging.error(f"Error restoring purchases: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/billing/subscription-products")
+async def get_subscription_products():
+    """Get available subscription products"""
+    return {
+        "products": [
+            {
+                "id": "crm_basic_monthly",
+                "tier": "basic",
+                "period": "monthly",
+                "name": "Basic Plan - Monthly",
+                "description": "Perfect for small businesses",
+                "limits": SUBSCRIPTION_LIMITS['basic']
+            },
+            {
+                "id": "crm_basic_yearly",
+                "tier": "basic",
+                "period": "yearly",
+                "name": "Basic Plan - Yearly",
+                "description": "Save 17% with annual billing",
+                "limits": SUBSCRIPTION_LIMITS['basic']
+            },
+            {
+                "id": "crm_pro_monthly",
+                "tier": "pro",
+                "period": "monthly",
+                "name": "Pro Plan - Monthly",
+                "description": "For growing businesses",
+                "limits": SUBSCRIPTION_LIMITS['pro']
+            },
+            {
+                "id": "crm_pro_yearly",
+                "tier": "pro",
+                "period": "yearly",
+                "name": "Pro Plan - Yearly",
+                "description": "Save 17% with annual billing",
+                "limits": SUBSCRIPTION_LIMITS['pro']
+            },
+            {
+                "id": "crm_enterprise_monthly",
+                "tier": "enterprise",
+                "period": "monthly",
+                "name": "Enterprise Plan - Monthly",
+                "description": "Unlimited everything",
+                "limits": SUBSCRIPTION_LIMITS['enterprise']
+            },
+            {
+                "id": "crm_enterprise_yearly",
+                "tier": "enterprise",
+                "period": "yearly",
+                "name": "Enterprise Plan - Yearly",
+                "description": "Save 17% with annual billing",
+                "limits": SUBSCRIPTION_LIMITS['enterprise']
+            }
+        ]
+    }
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
