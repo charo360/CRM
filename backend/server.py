@@ -7746,11 +7746,101 @@ async def evolution_webhook(request: Request):
                             button_product_id = _pending_cat["products"][0].get("id")
                             logging.info(f"Text option matched: action={_poll_matched}, product={button_product_id}")
                 
+                # ORDER CONFIRMATION — FlowJudge for ambiguous messages (not clear YES/NO)
+                if not button_action and not from_me and body:
+                    _oc_pre_body = body.strip().lower()
+                    _oc_pre_yes = {"yes","yeah","yep","sure","ok","okay","confirm","ndio","sawa","yes please","yep!","yes!",
+                                   "sounds good","order it","go ahead","let's do it","great","perfect","proceed"}
+                    _oc_pre_no  = {"no","nope","cancel","hapana","nah","no thanks","no thank you","cancel order",
+                                   "never mind","forget it","don't","dont","stop","acha"}
+                    if _oc_pre_body not in _oc_pre_yes and _oc_pre_body not in _oc_pre_no:
+                        _oc_fj_state = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"],
+                            "action_context": "order_confirm"
+                        })
+                        if _oc_fj_state:
+                            try:
+                                from agents.flow_judge import get_flow_judge as _get_fj_oc
+                                _fj_oc = _get_fj_oc()
+                                _fj_oc_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                                # Build a quick order summary for context
+                                _oc_product_id = _oc_fj_state.get("confirm_product_id")
+                                _oc_product = await db.products.find_one({"_id": _oc_product_id}) if _oc_product_id else None
+                                _oc_ctx = {
+                                    "booking_service_name": _oc_product["name"] if _oc_product else _oc_fj_state.get("product_name", ""),
+                                    "booking_service_price": _oc_product.get("price", 0) if _oc_product else _oc_fj_state.get("price", 0),
+                                }
+                                _fj_oc_result = await _fj_oc.understand(
+                                    message=body,
+                                    current_step="waiting for order confirmation",
+                                    waiting_for="YES to confirm order or NO to cancel",
+                                    pending_state=_oc_ctx,
+                                    language="English",
+                                    currency=_fj_oc_cur,
+                                )
+                                _fj_oc_action = _fj_oc_result.get("action", "unclear")
+                                _oc_ws = get_whatsapp_service(db)
+                                _oc_prod_name = _oc_ctx.get("booking_service_name", "this item")
+                                _oc_price = _oc_ctx.get("booking_service_price", 0)
+                                _oc_price_str = f"{_fj_oc_cur} {_oc_price:,.0f}" if _oc_price else ""
+                                if _fj_oc_action == "continue":
+                                    _ext_oc = (_fj_oc_result.get("extracted_value") or "").lower()
+                                    _oc_pre_body = "yes" if _ext_oc in ("yes","confirm","y","sure","ok","ndio","sawa","agree","order","proceed") else "no"
+                                    body = _oc_pre_body
+                                elif _fj_oc_action == "go_back":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="No problem! What else can I help you with? 😊",
+                                        customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_go_back"}
+                                elif _fj_oc_action == "cancel":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_fj_oc_result.get("reply") or "No worries! Let me know if you'd like to order anything else 😊",
+                                        customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_cancelled"}
+                                elif _fj_oc_action == "tangent":
+                                    _oc_summary_hint = f" for *{_oc_prod_name}*" + (f" ({_oc_price_str})" if _oc_price_str else "")
+                                    _oc_tangent_msg = _fj_oc_result.get("reply") or (
+                                        f"Hey! 😊 We were just confirming your order{_oc_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_oc_tangent_msg, customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_tangent"}
+                                else:  # unclear
+                                    _oc_re_summary = (
+                                        f"Just to confirm your order:\n"
+                                        f"🛍️ *{_oc_prod_name}*"
+                                        + (f" — {_oc_price_str}" if _oc_price_str else "")
+                                        + f"\n\nReply *YES* to confirm or *NO* to cancel 😊"
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_oc_re_summary, customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_unclear"}
+                            except Exception as _fj_oc_err:
+                                logging.warning(f"[FlowJudge/order_confirm] {_fj_oc_err}")
+
                 # ORDER CONFIRMATION HANDLER — customer replied YES or NO to an order confirmation request
                 if not button_action and not from_me and body:
                     _body_confirm = body.strip().lower()
-                    _yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "ndio", "sawa", "yes please", "yep!", "yes!"}
-                    _no_words = {"no", "nope", "cancel", "hapana", "nah", "no thanks", "no thank you", "cancel order"}
+                    _yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "ndio", "sawa", "yes please", "yep!", "yes!",
+                                  "sounds good", "order it", "go ahead", "let's do it", "great", "perfect", "proceed"}
+                    _no_words = {"no", "nope", "cancel", "hapana", "nah", "no thanks", "no thank you", "cancel order",
+                                 "never mind", "forget it", "don't", "dont", "stop", "acha"}
                     if _body_confirm in _yes_words or _body_confirm in _no_words:
                         _pending_confirm = await db.pending_catalogs.find_one({
                             "customer_id": customer_id, "user_id": user["_id"],
