@@ -222,10 +222,13 @@ class OrderAgent:
             }
 
         if not orders:
+            # 8.1: Friendly fallback + flag owner to follow up
             return {
                 "handled": True,
                 "messages": [{"text": self._no_orders_reply(language)}],
                 "escalate": False,
+                "flag_for_human": True,
+                "flag_reason": f"Customer asked about orders but none found — owner should follow up with {customer_name}",
             }
 
         # Single order — show it directly with action options
@@ -677,6 +680,8 @@ class OrderAgent:
         language: str,
         business_knowledge: str,
         currency: str = "",
+        confidence: float = 1.0,
+        careful_instruction: str = "",
     ) -> str:
         from ai_service import get_drafter
         ai = get_drafter()
@@ -710,32 +715,38 @@ class OrderAgent:
         orders_text = "\n".join(order_lines)
         bk = (business_knowledge or "")[:400]
 
+        intent_hint = (
+            f"Intent classified as: {intent} ({confidence:.0%} confidence)\n"
+            f"Customer message: \"{message}\"\n\n"
+            f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+        )
+        if careful_instruction:
+            intent_hint += f"\n{careful_instruction}\n"
+
         prompt = f"""You are a helpful order status assistant for a WhatsApp business.
 
+{intent_hint}
 Business info: {bk}
 
 Customer name: {customer_name}
-Customer asked: "{message}"
-Intent: {intent}
 
 Their recent orders:
 {orders_text}
 
-Write a clear, friendly reply in {language} that:
-1. Directly answers what they asked about their order(s)
-2. Always includes the order number (e.g. #ORD-XXXXXX) when mentioning an order
-3. States the current status and payment status clearly
-4. Does NOT invent delivery dates or promises
-5. Is brief (2-4 sentences max)
-6. Matches a natural WhatsApp tone
-7. CRITICAL: ONLY state facts from the order data above. NEVER invent delivery dates, tracking numbers, or order details.
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message.
 
-Reply only, no labels:"""
+Rules:
+1. Directly answer what they asked about their order(s)
+2. Always include the order number (e.g. #ORD-XXXXXX) when mentioning an order
+3. State current status and payment status clearly
+4. 8.3 DELIVERY RULE: ONLY state a delivery date if it is EXPLICITLY in the order data above. If not present, say \"our team will confirm delivery timing with you\" — NEVER estimate
+5. Brief (2-4 sentences max), natural WhatsApp tone
+6. CRITICAL: ONLY state facts from the order data above. NEVER invent delivery dates, tracking numbers, or order details."""
 
         return await ai._call_llm(prompt, model_pref="standard")
 
     def _no_record_reply(self, language: str) -> str:
-        return "I wasn't able to find your customer record to check your orders. Could you confirm the number you ordered with?"
+        return "Let me look into that for you! Could you confirm the number or name you used when placing the order? I want to make sure I'm checking the right account. 😊"
 
     def _no_orders_reply(self, language: str) -> str:
-        return "I don't see any orders linked to your account yet. Would you like to place one or browse our catalog?"
+        return "Let me check on that for you! I don't see any recent orders on your account just yet. If you've placed one recently, it may still be processing — I'll follow up shortly! 🙏"

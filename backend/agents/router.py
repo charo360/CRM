@@ -1,5 +1,7 @@
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from datetime import datetime, timezone
+from collections import defaultdict
 
 from .intent_analyzer import analyze_intent, route_intent_to_agent, build_threaded_context, format_threaded_history
 from .conversation_state import load_state, save_state, mark_escalated
@@ -10,10 +12,41 @@ from .payment_agent import PaymentAgent
 from .complaint_agent import ComplaintAgent
 from .chat_agent import ChatAgent
 from .booking_agent import BookingAgent
+from .session_summarizer import maybe_summarize, format_summary_for_prompt
 
 logger = logging.getLogger(__name__)
 
 MAX_VALIDATOR_RETRIES = 1
+
+# 12.1: Intents that benefit from a more capable model
+_HIGH_COMPLEXITY_INTENTS = {
+    "COMPLAINT", "LEGAL_THREAT", "FRAUD_CLAIM",
+    "NEGOTIATION", "DAMAGED_ITEM", "WRONG_ITEM",
+    "REFUND_REQUEST", "ESCALATION",
+}
+
+# 12.5: Simple in-memory rate limiter (per user+customer pair)
+_rate_store: Dict[str, List[float]] = defaultdict(list)
+_RATE_LIMIT_WINDOW = 60   # seconds
+_RATE_LIMIT_MAX = 5       # max messages per window
+
+
+def _is_rate_limited(user_id: str, customer_id: str) -> bool:
+    """Return True if this customer has sent too many messages recently."""
+    key = f"{user_id}:{customer_id}"
+    now = datetime.now(timezone.utc).timestamp()
+    _rate_store[key] = [t for t in _rate_store[key] if now - t < _RATE_LIMIT_WINDOW]
+    if len(_rate_store[key]) >= _RATE_LIMIT_MAX:
+        return True
+    _rate_store[key].append(now)
+    return False
+
+
+def _get_model_for_intent(intent: str, sentiment: str) -> str:
+    """12.1: Select model tier based on intent complexity and sentiment."""
+    if sentiment in ("angry", "frustrated") or intent in _HIGH_COMPLEXITY_INTENTS:
+        return "advanced"
+    return "standard"
 
 
 class Router:
@@ -48,7 +81,16 @@ class Router:
         conv_state = await load_state(self.db, user_id, str(customer_id) if customer_id else "")
         context["conversation_state_data"] = conv_state
 
-        # ── 3. Analyze intent ──────────────────────────────────────────────
+        # ── 2.5: Rate limiting ─────────────────────────────────────────────
+        if customer_id and _is_rate_limited(user_id, str(customer_id)):
+            logger.warning(f"[Router] Rate limited: user={user_id} customer={customer_id}")
+            return {
+                "handled": True,
+                "escalated": False,
+                "messages": [{"text": "You're sending messages very quickly. Please wait a moment before trying again."}],
+            }
+
+        # ── 3. Analyze intent ─────────────────────────────────────────────
         classification = await analyze_intent(
             message=message,
             history=history,
@@ -66,6 +108,52 @@ class Router:
         needs_escalation = classification.get("needs_escalation", False)
         escalation_reason = classification.get("escalation_reason", "")
         relationship = classification.get("_relationship", "new_conversation")
+        entities = classification.get("entities", {})
+        alternative_intents = classification.get("alternative_intents", [])
+
+        # 1.6: Careful mode for low-confidence classifications
+        careful_instruction = ""
+        if confidence < 0.65 and not needs_escalation:
+            context["careful_mode"] = True
+            careful_instruction = (
+                "Intent confidence is low. Read the customer message "
+                "very carefully. If unsure, ask ONE clarifying question "
+                "instead of assuming."
+            )
+            context["careful_instruction"] = careful_instruction
+
+        # 12.1: Select AI model based on complexity
+        selected_model = _get_model_for_intent(intent, sentiment)
+        context["ai_model"] = selected_model
+
+        # 14: Build business_config and inject into context
+        business_config = {
+            "business_id": user_id,
+            "name": context.get("business_name", ""),
+            "type": context.get("business_type", ""),
+            "country": context.get("country", ""),
+            "currency": context.get("currency", "USD"),
+            "currency_symbol": context.get("currency_symbol", "$"),
+            "primary_language": language,
+            "payment_methods": context.get("payment_methods", []),
+            "discount_policy": context.get("discount_policy", ""),
+            "timezone": context.get("timezone", "UTC"),
+            "escalation_contact": context.get("escalation_contact", ""),
+            "booking_or_catalog": "booking" if context.get("business_type", "") in {
+                "salon", "spa", "clinic", "gym", "hotel", "rental", "service"
+            } else "catalog",
+        }
+        context["business_config"] = business_config
+
+        # 15: Session summary every 5 messages
+        session_summary = await maybe_summarize(
+            history=history,
+            business_knowledge=business_knowledge,
+            customer_name=customer_name,
+            conv_state=conv_state,
+            user_id=user_id,
+        )
+        session_summary_text = format_summary_for_prompt(session_summary)
 
         # Enrich context with classification results
         context.update({
@@ -74,14 +162,18 @@ class Router:
             "language": language,
             "confidence": confidence,
             "keywords": classification.get("keywords", []),
-            "entities": classification.get("entities", {}),
+            "entities": entities,
+            "alternative_intents": alternative_intents,
+            "careful_instruction": careful_instruction,
+            "session_summary": session_summary,
+            "session_summary_text": session_summary_text,
         })
 
         logger.info(
             f"[Router] user={user_id} customer={customer_id} "
-            f"intent={intent} sentiment={sentiment} lang={language} "
-            f"conf={confidence:.2f} escalate={needs_escalation} "
-            f"relationship={relationship}"
+            f"intent={intent} alt={alternative_intents} sentiment={sentiment} "
+            f"lang={language} conf={confidence:.2f} model={selected_model} "
+            f"escalate={needs_escalation} relationship={relationship}"
         )
 
         # ── 4. Immediate escalation if analyzer says so ────────────────────
@@ -98,6 +190,11 @@ class Router:
         agent_name = route_intent_to_agent(intent)
         if is_personal:
             agent_name = "chat"
+
+        # 12.3: BookingAgent handling a complaint → ComplaintAgent
+        if agent_name == "booking" and sentiment in ("angry", "frustrated") and conv_state.get("complaint_count", 0) > 0:
+            logger.info(f"[Router] Booking+complaint sentiment → routing to complaint agent")
+            agent_name = "complaint"
 
         agent_result = await self._dispatch(agent_name, user_id, message, context)
 
@@ -170,7 +267,6 @@ class Router:
         # ── 8. Flag for human if agent requested soft flag ────────────────
         if agent_result.get("flag_for_human") and customer_id:
             try:
-                from datetime import datetime, timezone
                 await self.db.customers.update_one(
                     {"_id": customer_id},
                     {"$set": {

@@ -26,7 +26,8 @@ BOOKING_INTENTS = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "BOOKING_STATUS", "B
 # Intents that must always escalate — AI should never handle alone
 ALWAYS_ESCALATE_INTENTS = {"LEGAL_THREAT", "FRAUD_CLAIM", "ESCALATION"}
 
-ESCALATE_THRESHOLD = 0.40
+ESCALATE_THRESHOLD = 0.65   # needs_escalation: True below this confidence
+UNKNOWN_THRESHOLD = 0.50    # classify as UNKNOWN below this (non-chat intents)
 
 # Time thresholds for conversation threading
 THREAD_GAP_MINUTES = 30       # messages within 30 min = same thread
@@ -277,20 +278,64 @@ async def analyze_intent(
 
         prompt = f"""You are an AI intent classifier for a WhatsApp business assistant.
 
-Analyze the customer's LATEST message below and classify it accurately.
-Focus on what the customer wants RIGHT NOW — not what was discussed before unless it's a direct follow-up.{bk_snippet}{personal_note}{booking_bias}{state_hint}
+══ BUSINESS CONTEXT ══{bk_snippet}{booking_bias}
 
+══ CUSTOMER ══
+Name: {customer_name}{personal_note}{state_hint}
+
+══ CONVERSATION HISTORY ══
 {history_text}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CUSTOMER'S CURRENT MESSAGE (reply to THIS): "{message}"
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+══ CURRENT MESSAGE — classify THIS ══
+"{message}"
+
+══ INTENT EXAMPLES (multilingual) ══
+PRICE_INQUIRY: "bei gani", "how much", "ngapi", "price ya", "combien ça coûte", "क्या दाम है", "quanto custa", "what's the price", "cost?", "جاوب بالسعر"
+CATALOG_REQUEST: "show me what you have", "niambie mnayo", "send catalog", "what are you selling", "I want to order something", "let me see your products", "je veux voir vos produits", "kuna nini", "ما عندكم"
+PRODUCT_INQUIRY: "do you have red dresses?", "tell me about the iPhone", "nina haja ya", "je cherche", "¿tienen zapatos?", "क्या आपके पास है"
+ORDER_STATUS: "order yangu iko wapi", "when delivery", "nimewait sana", "où est ma commande", "dónde está mi pedido", "where is my order", "has it shipped", "طلبي فين"
+PAYMENT_METHOD: "nipe namba ya mpesa", "send payment method", "how do I pay", "comment payer", "account number please", "¿cómo pago?", "payment details please"
+PAYMENT_CONFIRM: "mpesa haikufika", "nililipa lakini", "payment failed", "le paiement a échoué", "i've paid", "sent the money", "check your mpesa", "nimesend"
+GREETING: "sasa", "niaje", "mambo", "hi", "habari", "bonjour", "hola", "नमस्ते", "salut", "wagwan", "sup", "ahlan"
+COMPLAINT: "bidhaa mbaya", "siko happy", "not what I ordered", "je ne suis pas satisfait", "I'm not happy", "poor quality", "this is wrong", "مشكلة"
+BOOKING_REQUEST: "I want to book", "naweza kuja lini", "je veux réserver", "quiero una cita", "book me in", "can I make an appointment", "احجز لي"
+AVAILABILITY_CHECK: "when are you available", "are you open Saturday", "do you have slots", "quand êtes-vous disponible", "متى تكونون متاحين"
+NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est trop cher", "any discount", "best price", "kuna offer"
+
+══ GLOBAL LANGUAGE RULES ══
+- Classify in ANY language — no language is default or assumed
+- Handle transliterated text (Arabic/Hindi/Swahili written in Latin script)
+- Handle code-switching (two languages in one message e.g. "haha crazy... btw order yangu iko wapi")
+- Detect language and store it — do not normalize to English
+- "Sheng", "Pidgin", "Hinglish", "Arabizi" are valid language values
+- Never correct the customer's language choice
+
+══ ENTITY RULES ══
+- Preserve original currency format (R500, ₦2000, $50, ¥3000, KES 500, NGN 2000) — do NOT normalize
+- Do NOT normalize dates — "5/6" means different things globally, store as-is
+- Store phone numbers with country code context if present
+- Pass raw entity strings — do not transform or convert
+
+══ TRANSITION RULE ══
+- If message contains BOTH small talk AND a business question, classify as the BUSINESS intent
+- Example: "haha crazy weather... btw when is my order?" → ORDER_STATUS
+
+══ CLASSIFICATION RULES ══
+1. Understand INTENT not exact words — "I want to order something else" = CATALOG_REQUEST
+2. Short follow-ups ("ok", "yes", "sure") inherit intent from RECENT THREAD context
+3. When unsure between two intents, pick the one that requires ACTION
+4. For personal contacts, prefer PERSONAL_CHAT unless clearly business
+5. Confidence < 0.65 on business messages → needs_escalation=true
+6. Confidence < 0.50 on business messages → intent should be "UNKNOWN"
+7. LEGAL_THREAT, FRAUD_CLAIM always → needs_escalation=true
+8. List up to 2 alternative_intents if confidence < 0.85 and there are other plausible intents
 
 Return ONLY valid JSON with these exact keys:
 {{
   "intent": "<INTENT>",
+  "alternative_intents": [],
   "sentiment": "<happy|neutral|frustrated|angry|urgent>",
-  "language": "<language name or code, e.g. English, Swahili, Sheng, Arabic>",
+  "language": "<language name or code, e.g. English, Swahili, Sheng, Arabic, Hinglish>",
   "entities": {{
     "products": [],
     "amounts": [],
@@ -303,65 +348,6 @@ Return ONLY valid JSON with these exact keys:
   "escalation_reason": "<reason or null>",
   "keywords": []
 }}
-
-Intent categories with examples:
-
-CATALOG_REQUEST - Customer wants to browse/see available products to choose from:
-  • "I want to order something", "Can I buy something?", "Show me what you have"
-  • "Let me see your products", "What are you selling?", "Send catalog"
-  • "I'd like to purchase", "I want to order something else", "Show me items"
-
-PRODUCT_INQUIRY - Asking about a SPECIFIC product/category:
-  • "Do you have red dresses?", "Tell me about the iPhone", "What sizes for shoes?"
-  • "How much is the laptop?", "Is the blue dress available?"
-
-PRICE_INQUIRY - Asking about pricing without mentioning specific product:
-  • "How much?", "What's the price?", "Cost?"
-
-ORDER_STATUS - Checking existing order:
-  • "Where is my order?", "Has it shipped?", "Order status?"
-
-PAYMENT_METHOD - Asking HOW to pay / requesting payment details (NOT confirming payment):
-  • "Send payment method", "How do I pay?", "What are your payment details?"
-  • "Send me your account number", "Which Mpesa number?", "Where do I send money?"
-  • "Payment details please", "How can I pay?", "Send payment info"
-
-PAYMENT_CONFIRM - Confirming payment ALREADY MADE (money already sent):
-  • "I've paid", "I have paid", "Sent the money", "Payment done", "Mpesa sent"
-  • "I already transferred", "Done paying", "Check your Mpesa", "I've made the payment"
-
-COMPLAINT - Expressing dissatisfaction:
-  • "This is wrong", "Not what I ordered", "Poor quality", "I'm not happy"
-
-GENERAL_CHAT - Casual conversation, greetings, thanks:
-  • "Thank you", "Ok", "Sure", "Hello", "How are you?"
-
-GREETING - Initial contact greeting:
-  • "Hi", "Hello", "Good morning", "Hey"
-
-BOOKING_REQUEST - Customer wants to book/schedule an appointment or service:
-  • "I want to book", "Can I make an appointment?", "Book me in", "I need a haircut"
-  • "Schedule me for Saturday", "I'd like to reserve a slot", "Can I get an appointment?"
-  • "I want to come in", "Can you fit me in?", "Book an appointment for me"
-
-AVAILABILITY_CHECK - Customer asking when business is open or what slots are free:
-  • "When are you available?", "What times do you have?", "Are you open Saturday?"
-  • "What's your schedule?", "Do you have slots this week?", "When can I come?"
-  • "What services do you offer?", "What do you do?", "Show me your services" (for service businesses)
-
-BOOKING_STATUS - Checking an existing appointment:
-  • "What time is my appointment?", "Is my booking confirmed?", "When is my session?"
-
-BOOKING_CANCEL - Cancelling or rescheduling:
-  • "I need to cancel", "Can I reschedule?", "I can't make it", "Change my appointment"
-
-Classification rules:
-1. Understand INTENT not exact words - "I want to order something else" = CATALOG_REQUEST even though it doesn't say "catalog"
-2. Short follow-ups ("ok", "yes", "sure") inherit intent from RECENT THREAD context
-3. When unsure between two intents, pick the one that requires ACTION (e.g., CATALOG_REQUEST over GENERAL_CHAT)
-4. For personal contacts, prefer PERSONAL_CHAT unless clearly business
-5. Low confidence (<0.4) on business messages → needs_escalation=true
-6. LEGAL_THREAT, FRAUD_CLAIM always → needs_escalation=true
 
 JSON only, no markdown:"""
 
@@ -378,6 +364,10 @@ JSON only, no markdown:"""
         result["_relationship"] = relationship
         result["_hours_since_last"] = threaded.get("hours_since_last")
 
+        # Ensure alternative_intents field exists (1.2)
+        if "alternative_intents" not in result:
+            result["alternative_intents"] = []
+
         # Enforce escalation on always-escalate intents
         intent = result.get("intent", "UNKNOWN")
         if intent in ALWAYS_ESCALATE_INTENTS:
@@ -385,8 +375,14 @@ JSON only, no markdown:"""
             if not result.get("escalation_reason"):
                 result["escalation_reason"] = f"Intent '{intent}' always requires human review"
 
-        # Enforce escalation on low confidence
+        # 1.1: Low confidence → UNKNOWN intent threshold
         confidence = float(result.get("confidence", 0.5))
+        if confidence < UNKNOWN_THRESHOLD and intent not in CHAT_INTENTS and intent != "UNKNOWN":
+            result["intent"] = "UNKNOWN"
+            intent = "UNKNOWN"
+            logger.info(f"[IntentAnalyzer] Low confidence ({confidence:.2f}) → reclassified to UNKNOWN")
+
+        # 1.1: Raise escalation threshold to 0.65
         if confidence < ESCALATE_THRESHOLD and intent not in CHAT_INTENTS:
             result["needs_escalation"] = True
             if not result.get("escalation_reason"):
@@ -401,9 +397,9 @@ JSON only, no markdown:"""
             logger.info(f"[IntentAnalyzer] Short UNKNOWN message reclassified as GENERAL_CHAT: '{message}'")
 
         logger.info(
-            f"[IntentAnalyzer] intent={result.get('intent')} sentiment={result.get('sentiment')} "
-            f"confidence={result.get('confidence')} escalate={result.get('needs_escalation')} "
-            f"relationship={relationship}"
+            f"[IntentAnalyzer] intent={result.get('intent')} alt={result.get('alternative_intents')} "
+            f"sentiment={result.get('sentiment')} confidence={result.get('confidence')} "
+            f"escalate={result.get('needs_escalation')} relationship={relationship}"
         )
         return result
 
@@ -416,6 +412,7 @@ JSON only, no markdown:"""
             "entities": {"products": [], "amounts": [], "dates": [], "other": []},
             "conversation_state": "new",
             "confidence": 0.0,
+            "alternative_intents": [],
             "needs_escalation": True,
             "escalation_reason": f"Intent analysis failed: {e}",
             "keywords": [],

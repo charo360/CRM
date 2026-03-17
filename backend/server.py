@@ -10841,12 +10841,12 @@ GOAL: Re-engage them with one short, genuine message.
         if relationship == "new_conversation" and last_incoming_text:
             history_block = f"\n\nLatest message from {customer_name}:\nCustomer: {last_incoming_text}"
         elif is_replying_to_incoming and last_incoming_text:
-            # When replying to a specific incoming message, ONLY show recent thread, not old context
+            # When replying, show last 8 messages for multi-turn context
             recent_only = []
-            for m in history[-4:]:
+            for m in history[-8:]:
                 role = "Customer" if m["direction"] == "incoming" else "You"
                 recent_only.append(f"{role}: {m['content']}")
-            history_block = f"\n\nRecent thread (FOCUS ON THIS):\n" + "\n".join(recent_only)
+            history_block = f"\n\nRecent thread (context only — reply to the LATEST message above):\n" + "\n".join(recent_only)
         elif threaded_history_text and threaded_history_text != "(no prior history)":
             history_block = f"\n\nConversation context:\n{threaded_history_text}"
         elif conversation_log:
@@ -10863,33 +10863,66 @@ GOAL: Re-engage them with one short, genuine message.
         elif is_replying_to_incoming:
             relationship_note = f"\n\n⚡ CRITICAL: Reply to their LATEST message: \"{last_incoming_text[:100]}\" — ignore any old topics from earlier in the conversation history."
 
-        # Anchor block — always shows the last few messages right before the instruction
-        # This is the most important context for the AI — what was JUST said
+        # Anchor block — moved to TOP of prompt so AI sees the most recent exchange FIRST
         recent_lines = []
-        for m in history[-6:]:
+        for m in history[-8:]:
             role = "Customer" if m["direction"] == "incoming" else "You"
             recent_lines.append(f"{role}: {m['content']}")
         recent_exchange = "\n".join(recent_lines) if recent_lines else ""
-        anchor_block = f"\n\nMOST RECENT EXCHANGE (reply is based on THIS):\n{recent_exchange}" if recent_exchange else ""
+        anchor_block = (
+            f"MOST RECENT EXCHANGE — your reply MUST address this directly:\n{recent_exchange}\n"
+            if recent_exchange else ""
+        )
 
-        # Full prompt
+        # Latest incoming message focus block — prominently signals what to reply to
+        if last_incoming_text:
+            latest_msg_block = (
+                f"CUSTOMER'S LATEST MESSAGE: \"{last_incoming_text}\"\n"
+                f"→ Reply to THIS. Not to old topics. Not to the full history. THIS message.\n"
+            )
+        else:
+            latest_msg_block = ""
+
+        # Session summary — structured understanding of what conversation is about
+        session_summary_block = ""
+        try:
+            from agents.session_summarizer import maybe_summarize, format_summary_for_prompt
+            from agents.conversation_state import load_state
+            _conv_state = await load_state(db, business_id, request.customer_id)
+            _session_summary = await maybe_summarize(
+                history=history,
+                user_id=business_id,
+                customer_id=request.customer_id,
+                db=db,
+                conv_state=_conv_state,
+            )
+            if _session_summary:
+                _summary_text = format_summary_for_prompt(_session_summary)
+                if _summary_text:
+                    session_summary_block = f"\nCONVERSATION SUMMARY (use this to understand context, but still reply to the LATEST message above):\n{_summary_text}\n"
+        except Exception:
+            pass
+
+        # Full prompt — anchor and latest message are at the TOP so the AI sees them first
         prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
+You are a real person — not a bot, not a marketing tool. Direct, warm, brief.
 
-You are a real person — not a bot, not a marketing tool. You write the way real business owners text their customers: direct, warm, brief.
-
-{scenario_block}{bk_block}{history_block}{anchor_block}{relationship_note}{repetition_block}{direction_block}{variety_block}
+{latest_msg_block}
+{anchor_block}
+{session_summary_block}
+{scenario_block}{bk_block}{history_block}{relationship_note}{repetition_block}{direction_block}{variety_block}
 
 WRITING RULES (non-negotiable):
-1. Output ONLY the message text. No labels, no "Message:", no quotes around it, no explanation.
+1. Output ONLY the message text. No labels, no quotes around it, no explanation.
 2. 1-3 sentences. Short is better. WhatsApp messages are not emails.
-3. YOUR REPLY MUST DIRECTLY ADDRESS the most recent exchange shown above — do NOT ignore it and talk about something else.
-4. USE REAL SPECIFICS: If business info is provided above, name actual products, actual prices, actual offers. Never say "we have great options" when you know exactly what they are.
+3. YOUR REPLY MUST DIRECTLY ADDRESS the customer's latest message shown at the top — do NOT ignore it and talk about something unrelated.
+4. USE REAL SPECIFICS: If business info is provided, name actual products, actual prices, actual offers — never say "we have great options".
 5. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
-6. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix — never translate the same thing twice.
+6. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix.
 7. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
 8. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
 
-Message:"""
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message."""
 
         # Call LLM directly
         from ai_service import get_drafter

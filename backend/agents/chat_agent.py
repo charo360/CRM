@@ -22,6 +22,22 @@ BUSINESS_MONEY_PATTERNS = [
     r'\breceipt\b',                                   # receipt is always business
 ]
 
+# 6.2: Sensitive info patterns that should never be shared
+SENSITIVE_INFO_PATTERNS = [
+    r'\b(password|pin|passcode)\b',
+    r'\b(account\s*number|bank\s*details|routing\s*number)\b',
+    r'\b(national\s*id|id\s*number|passport\s*number)\b',
+    r'\b(send\s*(me|us|your)\s*(money|cash|funds|payment))\b',
+    r'\b(wire\s*transfer|send\s*to\s*my)\b',
+]
+
+# 6.1: Personal contact asking about complaints/refunds/orders → escalate
+PERSONAL_COMPLAINT_PATTERNS = [
+    r'\b(complaint|complain|unhappy|angry|upset|frustrated)\b',
+    r'\b(refund|return|broken|damaged|wrong|missing)\b',
+    r'\b(my\s+order|delivery|invoice|receipt|payment)\b',
+]
+
 
 class ChatAgent(BaseAgent):
     async def process(self, user_id: str, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -35,6 +51,37 @@ class ChatAgent(BaseAgent):
         is_personal = context.get("is_personal", False)
         intent = context.get("intent", "GENERAL_CHAT")
         language = context.get("language", "English")
+        confidence = context.get("confidence", 1.0)
+        careful_instruction = context.get("careful_instruction", "")
+
+        # 7.2: UNKNOWN intent fallback — ask ONE clarifying question instead of guessing
+        if intent == "UNKNOWN":
+            return {
+                "handled": True,
+                "escalate": False,
+                "messages": [{"text": "Just to make sure I help you properly — could you tell me a bit more about what you need? 😊"}],
+                "context_update": {"state": "ongoing", "last_intent": "UNKNOWN"},
+            }
+
+        # 6.1: Personal contact asking about business complaints/orders → escalate
+        if is_personal and self._matches_patterns(message, PERSONAL_COMPLAINT_PATTERNS):
+            logger.info(f"[ChatAgent] Personal contact with business complaint, escalating")
+            return {
+                "handled": True,
+                "escalate": True,
+                "escalate_reason": "Personal contact raised business complaint — needs human review",
+                "messages": [],
+            }
+
+        # 6.2: Sensitive info guard — never let AI share or request sensitive information
+        if self._matches_patterns(message, SENSITIVE_INFO_PATTERNS):
+            logger.info(f"[ChatAgent] Sensitive info request detected, escalating")
+            return {
+                "handled": True,
+                "escalate": True,
+                "escalate_reason": "Possible sensitive info request or social engineering — needs human review",
+                "messages": [],
+            }
 
         # Silent escalate ONLY if message clearly asks the business about money/orders
         if not is_personal and self._is_business_money_request(message):
@@ -56,6 +103,15 @@ class ChatAgent(BaseAgent):
             history = context.get("history", [])
             if not history:
                 history = [{"direction": "incoming", "content": message}]
+
+            # Intent hint injection
+            intent_hint = (
+                f"Intent classified as: {intent} ({confidence:.0%} confidence)\n"
+                f"Customer message: \"{message}\"\n\n"
+                f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+            )
+            if careful_instruction:
+                intent_hint += f"\n{careful_instruction}\n"
 
             # Detect simple greeting — greet back naturally, no old context injected
             _GREETING_WORDS = {"hi", "hello", "hey", "hii", "habari", "mambo", "niaje", "sasa",
@@ -94,17 +150,22 @@ class ChatAgent(BaseAgent):
                 # Build persona instructions
                 if is_personal:
                     instructions = (
+                        f"{intent_hint}"
                         f"You're texting {customer_name} who is a friend or family of the business owner — NOT a customer. "
                         "Write exactly how a real person texts a close friend: casual, warm, sometimes informal. "
                         "MATCH THEIR LANGUAGE AND ENERGY — if they write in Sheng, Pidgin, Swahili, mixed, you match it exactly. "
                         "No corporate tone, no formality, no 'I hope this message finds you well'. "
                         "Help with whatever they ask — drafting something, answering a question, just chatting. "
                         "Keep it real, keep it short. Sound like a person, not a product. "
-                        "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details."
+                        "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details. "
+                        "NEVER share sensitive info (passwords, account numbers, IDs, payment details)."
                     )
                 else:
                     instructions = (
+                        f"{intent_hint}"
                         "The customer is making small talk or asking something off-topic. "
+                        # 7.1: If mixed small talk + business intent, answer the business part
+                        "If the message contains BOTH small talk AND a business question, answer the business question directly. "
                         "Reply like a real business owner would — friendly, natural, briefly. "
                         "MATCH THEIR LANGUAGE EXACTLY: English stays English, Swahili stays Swahili, mixed stays mixed. "
                         "Do NOT drag in products or pricing unless they bring it up first. "
@@ -150,6 +211,14 @@ class ChatAgent(BaseAgent):
         """Only returns True for CLEAR business money/order requests, not casual mentions."""
         msg_lower = message.lower()
         for pattern in BUSINESS_MONEY_PATTERNS:
+            if re.search(pattern, msg_lower):
+                return True
+        return False
+
+    def _matches_patterns(self, message: str, patterns: list) -> bool:
+        """Return True if message matches any pattern in the list."""
+        msg_lower = message.lower()
+        for pattern in patterns:
             if re.search(pattern, msg_lower):
                 return True
         return False

@@ -21,6 +21,10 @@ class SalesAgent(BaseAgent):
         keywords = context.get("keywords", [])
         entities = context.get("entities", {})
         conv_state = context.get("conversation_state_data", {})
+        confidence = context.get("confidence", 1.0)
+        careful_instruction = context.get("careful_instruction", "")
+        business_config = context.get("business_config", {})
+        discount_policy = business_config.get("discount_policy") or context.get("discount_policy", "")
 
         # Fetch all active products for this user
         try:
@@ -193,10 +197,13 @@ class SalesAgent(BaseAgent):
     ) -> Dict[str, Any]:
         """Send numbered catalog list with pagination (8 products per page, option 9 = more)."""
         if not products:
+            # 3.1: Friendly empty catalog fallback — never say "no products"
             return {
                 "handled": True,
-                "messages": [{"text": "We don't have any products listed yet. Please check back soon!"}],
+                "messages": [{"text": f"Thanks for reaching out, {customer_name}! Our full catalog is being updated right now. I'll personally send you our latest items shortly — stay tuned! 😊"}],
                 "escalate": False,
+                "flag_for_human": True,
+                "flag_reason": "Customer requested catalog but no products found — owner needs to follow up",
             }
 
         in_stock = [p for p in products if p.get("in_stock", True)]
@@ -284,25 +291,38 @@ class SalesAgent(BaseAgent):
             price = product.get("price", 0)
             in_stock = product.get("in_stock", True)
 
+            # 5.1: Extract discount policy
+            discount_hint = f"\nDiscount policy: {discount_policy}" if discount_policy else "\nDiscount policy: None stated — do NOT invent discounts."
+
+            # Intent hint injection
+            intent_hint = (
+                f"Intent classified as: NEGOTIATION ({confidence:.0%} confidence)\n"
+                f"Customer message: \"{message}\"\n\n"
+                f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+            )
+            if careful_instruction:
+                intent_hint += f"\n{careful_instruction}\n"
+
             prompt = f"""You are a sales assistant handling a price negotiation.
 
-Business info: {bk}
+{intent_hint}
+Business info: {bk}{discount_hint}
 Product: {product['name']} — {currency} {price:,.0f} {'(In stock)' if in_stock else '(Out of stock)'}
 Customer: {customer_name}
-Customer message: "{message}"
 
 Recent conversation:
 {history_snippet}
 
-Write a polite reply in {language} that:
-1. Acknowledges their request warmly
-2. Holds firm on the price politely OR mentions any genuine offer from the business info
-3. NEVER invents a lower price or discount not in the business info
-4. If no flexibility exists, suggest value (quality, service, etc.)
-5. Is conversational and WhatsApp-natural (2-3 sentences)
-6. CRITICAL: ONLY use facts from the business info and conversation above. NEVER invent details.
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message.
 
-Reply only:"""
+Rules:
+1. Acknowledge their request warmly
+2. Hold firm on the price politely OR mention any genuine offer from the business info above
+3. NEVER invent a lower price or discount not stated in the business info
+4. 5.2: If customer makes a counter-offer, acknowledge it specifically (e.g. "I hear you on the {currency} X ask") then explain why the price is fair
+5. If no flexibility exists, suggest value (quality, service, speed, etc.)
+6. Conversational, WhatsApp-natural, 2-3 sentences max
+7. CRITICAL: ONLY use facts above. NEVER invent prices, discounts, or offers."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
             return {
@@ -343,28 +363,38 @@ Reply only:"""
             else:
                 tone_rule = "Keep it short. No corporate opener."
 
-            if has_products:
-                catalog_hint = format_product_catalog(products[:5], "")
-                prompt = f"""You are a business owner replying on WhatsApp. A customer asked about something you don't have.
+            # Intent hint injection
+            intent_hint = (
+                f"Intent classified as: {intent} ({confidence:.0%} confidence)\n"
+                f"Customer message: \"{message}\"\n\n"
+                f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+            )
+            if careful_instruction:
+                intent_hint += f"\n{careful_instruction}\n"
 
+            if has_products:
+                # 4.1: No-match — show closest alternative specifically
+                catalog_hint = format_product_catalog(products[:5], "")
+                prompt = f"""You are a business owner replying on WhatsApp. A customer asked about something you don't carry.
+
+{intent_hint}
 Business info: {bk}
-Customer asked: "{message}"
 Available products:
 {catalog_hint}
 
 Recent conversation:
 {history_snippet}
 
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message.
+
 Rules:
 - {tone_rule}
-- If you don't carry it, say so simply in 1 sentence — like a real person would
-- If something in your catalog is close, mention it naturally (name it specifically)
-- NEVER say "I don't have specific details" — if info is missing, just say what you DO have
+- Acknowledge what they asked for in 1 short sentence
+- Then suggest the SINGLE most relevant product from your catalog by name — be specific (e.g. "We don't carry X but our Y might work for you")
+- NEVER say "I don't have specific details" — just say what you DO have
 - NEVER invent products or prices not in the catalog
-- Max 2 sentences. WhatsApp tone — not a help desk ticket.
-- Language: {language}
-
-Reply only:"""
+- Max 2 sentences. WhatsApp tone.
+- Language: {language}"""
             else:
                 prompt = f"""You are a business owner on WhatsApp. Customer asked: "{message}"
 You don't have a product catalog set up yet.
@@ -399,7 +429,7 @@ Write 1 short sentence in {language} saying you'll get back to them — sound li
             return context["_threaded_history_text"]
         if not history:
             return "(no prior history)"
-        recent = history[-6:]
+        recent = history[-15:]
         lines = [
             f"{'Customer' if m.get('direction')=='incoming' else 'Business'}: {m.get('content','')}"
             for m in recent

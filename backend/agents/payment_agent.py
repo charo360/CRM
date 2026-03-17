@@ -23,6 +23,31 @@ class PaymentAgent:
         history = context.get("history", [])
         entities = context.get("entities", {})
         customer_id = context.get("customer_id")
+        confidence = context.get("confidence", 1.0)
+        careful_instruction = context.get("careful_instruction", "")
+        business_config = context.get("business_config", {})
+        currency = business_config.get("currency") or context.get("currency", "")
+        currency_symbol = business_config.get("currency_symbol") or context.get("currency_symbol", "")
+
+        # 9.1: Social engineering protection — someone asking to send money TO them
+        _SOCIAL_ENGINEERING_PATTERNS = [
+            r"send\s*(me|my|the)\s*(money|payment|funds|cash)",
+            r"transfer\s*(to|into)\s*(my|this|the)\s*(account|number|wallet)",
+            r"(pay|send)\s*(me|us)\s*(directly|personally|privately)",
+            r"bypass\s*(the|your|our)\s*(system|process|verification)",
+            r"(my|the)\s*new\s*(account|number|details|bank)",
+        ]
+        import re as _re
+        _msg_lower = message.lower()
+        for _pat in _SOCIAL_ENGINEERING_PATTERNS:
+            if _re.search(_pat, _msg_lower):
+                logger.warning(f"[PaymentAgent] Social engineering pattern detected: '{message[:80]}'")
+                return {
+                    "handled": True,
+                    "escalate": True,
+                    "escalate_reason": "Possible social engineering — customer asked to send payment to a different account/person",
+                    "messages": [],
+                }
 
         # Use structured payment_methods from context (preferred — accurate, no regex guessing)
         structured_pm = context.get("payment_methods", [])
@@ -41,7 +66,9 @@ class PaymentAgent:
 
         if intent in ("PAYMENT_METHOD", "PAYMENT_ISSUE"):
             return await self._handle_payment_method_question(
-                message, customer_name, language, business_knowledge, payment_methods, structured_pm, history
+                message, customer_name, language, business_knowledge, payment_methods, structured_pm, history,
+                intent=intent, confidence=confidence, careful_instruction=careful_instruction,
+                currency=currency, currency_symbol=currency_symbol,
             )
 
         if intent == "REFUND_REQUEST":
@@ -56,7 +83,9 @@ class PaymentAgent:
         # Fallback: explain payment methods if we have them
         if payment_methods:
             return await self._handle_payment_method_question(
-                message, customer_name, language, business_knowledge, payment_methods, structured_pm, history
+                message, customer_name, language, business_knowledge, payment_methods, structured_pm, history,
+                intent=intent, confidence=confidence, careful_instruction=careful_instruction,
+                currency=currency, currency_symbol=currency_symbol,
             )
 
         # No payment info in business knowledge
@@ -127,15 +156,18 @@ class PaymentAgent:
         }
 
     async def _handle_payment_method_question(
-        self, message, customer_name, language, business_knowledge, payment_methods, structured_pm, history
+        self, message, customer_name, language, business_knowledge, payment_methods, structured_pm, history,
+        intent="PAYMENT_METHOD", confidence=1.0, careful_instruction="", currency="", currency_symbol="",
     ) -> Dict[str, Any]:
         """Customer asks how to pay."""
         if not payment_methods:
+            # 9.2: Friendly empty payment fallback — never say "not configured"
             return {
                 "handled": True,
-                "escalate": True,
-                "escalate_reason": "Customer asked about payment methods but none configured in business knowledge",
-                "messages": [],
+                "escalate": False,
+                "messages": [{"text": f"Hi {customer_name}! Let me get you our payment details. I'll send them over shortly. 😊"}],
+                "flag_for_human": True,
+                "flag_reason": "Customer asked for payment methods but none configured — owner needs to add payment details and respond",
             }
 
         try:
@@ -146,28 +178,41 @@ class PaymentAgent:
             # Build a structured payment methods block for the AI prompt
             pm_formatted = self._format_payment_methods_for_prompt(structured_pm)
 
+            # Intent hint injection
+            intent_hint = (
+                f"Intent classified as: {intent} ({confidence:.0%} confidence)\n"
+                f"Customer message: \"{message}\"\n\n"
+                f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+            )
+            if careful_instruction:
+                intent_hint += f"\n{careful_instruction}\n"
+
+            # 9.3: Currency clarity hint
+            currency_hint = f"\nAlways show amounts in {currency} ({currency_symbol})." if currency else ""
+
             prompt = f"""You are a business owner replying on WhatsApp. A customer asked how to pay.
 
+{intent_hint}
 Customer: {customer_name}
-Their message: "{message}"
 
 Your payment methods (ONLY share these — NEVER invent details):
-{pm_formatted}
+{pm_formatted}{currency_hint}
 
 Recent conversation:
 {history_snippet}
 
-Write a clear, natural reply in {language} that:
-1. Gives them exactly what they need to pay — name, number/account/details for each method
-2. For Paybill: say the Business No. and Account No. on separate lines clearly
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message.
+
+Rules:
+1. Give them exactly what they need to pay — name, number/account/details for each method
+2. For Paybill: state Business No. and Account No. on separate lines clearly
 3. For Till/Buy Goods: give the Till No.
 4. For phone-based payments (M-Pesa, Airtel Money, etc.): give the number
 5. For bank: give bank name and account number
-6. Format as a WhatsApp message — use line breaks between methods, bold the method name with *asterisks*
-7. 1 short sentence intro, then the payment details, then offer to help if they have questions
-8. CRITICAL: ONLY use the payment details listed above. NEVER invent numbers.
-
-Reply only:"""
+6. Format as WhatsApp message — line breaks between methods, bold method name with *asterisks*
+7. 1 short intro sentence, then payment details, then offer to help
+8. CRITICAL: ONLY use the payment details listed above. NEVER invent numbers or accounts.
+9. NEVER confirm a payment you cannot verify. NEVER instruct customer to send money to any other account."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
             return {
@@ -240,7 +285,7 @@ Reply only:"""
             return context["_threaded_history_text"]
         if not history:
             return "(no prior history)"
-        recent = history[-6:]
+        recent = history[-15:]
         lines = [
             f"{'Customer' if m.get('direction')=='incoming' else 'Business'}: {m.get('content','')}"
             for m in recent

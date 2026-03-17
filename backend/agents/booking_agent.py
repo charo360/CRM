@@ -29,6 +29,8 @@ class BookingAgent(BaseAgent):
         conv_state = context.get("conversation_state_data", {})
         business_type = (context.get("business_type") or "").lower().strip()
         is_rental = business_type == "rental"  # will also check services below after fetch
+        confidence = context.get("confidence", 1.0)
+        careful_instruction = context.get("careful_instruction", "")
 
         # ── Handle pending_booking_action: 1=Cancel / 2=Reschedule pick ──────
         pending_booking_action_id = conv_state.get("pending_booking_action")
@@ -106,7 +108,8 @@ class BookingAgent(BaseAgent):
         # Default: BOOKING_REQUEST
         return await self._handle_booking_request(
             services, business_hours, booking_settings, customer_name, language, currency,
-            message, business_knowledge, history, customer_id, user_id, is_rental
+            message, business_knowledge, history, customer_id, user_id, is_rental,
+            intent=intent, confidence=confidence, careful_instruction=careful_instruction,
         )
 
     # ── Booking Request ────────────────────────────────────────────────────────
@@ -114,7 +117,8 @@ class BookingAgent(BaseAgent):
     async def _handle_booking_request(
         self, services, business_hours, booking_settings,
         customer_name, language, currency, message,
-        business_knowledge, history, customer_id, user_id, is_rental=False
+        business_knowledge, history, customer_id, user_id, is_rental=False,
+        intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
     ) -> Dict[str, Any]:
         if not services:
             no_listing_msg = (
@@ -159,7 +163,10 @@ class BookingAgent(BaseAgent):
         services_text = "\n".join(lines)
 
         # AI intro
-        intro = await self._ai_intro(message, customer_name, language, business_knowledge, history, is_rental)
+        intro = await self._ai_intro(
+            message, customer_name, language, business_knowledge, history, is_rental,
+            intent=intent, confidence=confidence, careful_instruction=careful_instruction,
+        )
         messages_out = []
         if intro:
             messages_out.append({"text": intro})
@@ -374,7 +381,14 @@ class BookingAgent(BaseAgent):
                     if avail_listings:
                         lines.append("\n_Reply with the number to book_ 🏠")
                     else:
-                        lines.append("\n_Sorry, no listings are available for those dates. Try different dates!_")
+                        # 11.1: Fully booked — offer waitlist and next-available suggestion
+                        lines.append(
+                            "\n👋 *No listings are available for those exact dates.*\n"
+                            "You can:\n"
+                            "\u2022 Try *different dates* — reply with new check-in and check-out\n"
+                            "\u2022 *Join our waitlist* — reply with \"waitlist\" and we'll notify you if a slot opens\n"
+                            "\u2022 *Contact us directly* and we'll do our best to accommodate you 🙏"
+                        )
                     messages_out.append({"text": "\n".join(lines)})
 
                     # Pre-load AVAILABLE listings into pending_catalogs for immediate booking
@@ -553,8 +567,9 @@ class BookingAgent(BaseAgent):
                 except Exception as e:
                     logger.error(f"[BookingAgent] availability catalog upsert: {e}")
         else:
+            # 11.1: No services but still responding — soft CTA to contact
             messages_out.append({"text": (
-                "_Reply with the listing you're interested in and we'll sort out your stay!_ 🏠"
+                "_No slots are showing right now. Reply with \"waitlist\" to get notified when one opens, or contact us directly and we'll help you find the right time! 🙏_ "
                 if is_rental else
                 "_Reply with the service you'd like to book and we'll sort out a time!_ \U0001f4c5"
             )})
@@ -788,20 +803,34 @@ class BookingAgent(BaseAgent):
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
 
-    async def _ai_intro(self, message, customer_name, language, business_knowledge, history, is_rental=False) -> Optional[str]:
+    async def _ai_intro(
+        self, message, customer_name, language, business_knowledge, history,
+        is_rental=False, intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
+    ) -> Optional[str]:
         try:
             from ai_service import get_drafter
             ai = get_drafter()
             bk = (business_knowledge or "")[:300]
+            intent_hint = (
+                f"Intent classified as: {intent} ({confidence:.0%} confidence)\n"
+                f"Customer message: \"{message}\"\n\n"
+                f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+            )
+            if careful_instruction:
+                intent_hint += f"\n{careful_instruction}\n"
             if is_rental:
                 prompt = (
+                    f"{intent_hint}"
                     f"Customer is looking to book a rental/property. Business: {bk}. "
-                    f"Write 1 warm short line in {language} welcoming them to browse listings (WhatsApp tone, no bullet points). Reply:"
+                    f"Think one sentence about what this customer actually needs, then write 1 warm short line in {language} "
+                    f"welcoming them to browse listings (WhatsApp tone, no bullet points). Output only the customer-facing message."
                 )
             else:
                 prompt = (
+                    f"{intent_hint}"
                     f"Customer wants to book a service. Business: {bk}. "
-                    f"Write 1 warm short line in {language} (WhatsApp tone, no bullet points). Reply:"
+                    f"Think one sentence about what this customer actually needs, then write 1 warm short line in {language} "
+                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message."
                 )
             intro = await ai._call_llm(prompt, model_pref="standard")
             if intro and len(intro.strip()) < 120:
