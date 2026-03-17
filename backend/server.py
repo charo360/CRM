@@ -7084,15 +7084,40 @@ async def evolution_webhook(request: Request):
                         logging.info(f"Button click detected: action={action}, product_id={button_product_id}")
                         break
                 
-                # NUMBERED REPLY HANDLER — customer replies "1", "2", "3" to action text
+                # NUMBERED REPLY HANDLER — customer replies "1", "2", "3" / "One" / "moja" to action text
                 if not button_action and not from_me and body:
                     _body_stripped = body.strip()
-                    # Accept plain digits or emoji keycap digits (1️⃣ etc)
-                    _num_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
-                                "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
-                                "4\ufe0f\u20e3": 4, "5\ufe0f\u20e3": 5, "6\ufe0f\u20e3": 6,
-                                "7\ufe0f\u20e3": 7, "8\ufe0f\u20e3": 8, "9\ufe0f\u20e3": 9}
-                    _reply_num = _num_map.get(_body_stripped)
+                    _body_lower = _body_stripped.lower()
+                    # Accept plain digits, emoji keycap digits, written numbers (multilingual)
+                    _num_map = {
+                        # Digits
+                        "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+                        "6": 6, "7": 7, "8": 8, "9": 9,
+                        # Emoji keycap digits
+                        "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
+                        "4\ufe0f\u20e3": 4, "5\ufe0f\u20e3": 5, "6\ufe0f\u20e3": 6,
+                        "7\ufe0f\u20e3": 7, "8\ufe0f\u20e3": 8, "9\ufe0f\u20e3": 9,
+                        # English words
+                        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                        "six": 6, "seven": 7, "eight": 8, "nine": 9,
+                        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+                        "the first": 1, "the second": 2, "the third": 3,
+                        "first one": 1, "second one": 2, "third one": 3,
+                        "option 1": 1, "option 2": 2, "option 3": 3, "option 4": 4, "option 5": 5,
+                        "number 1": 1, "number 2": 2, "number 3": 3, "number 4": 4, "number 5": 5,
+                        "no 1": 1, "no 2": 2, "no 3": 3, "no. 1": 1, "no. 2": 2, "no. 3": 3,
+                        "#1": 1, "#2": 2, "#3": 3, "#4": 4, "#5": 5,
+                        # Swahili
+                        "moja": 1, "mbili": 2, "tatu": 3, "nne": 4, "tano": 5,
+                        "ya kwanza": 1, "ya pili": 2, "ya tatu": 3,
+                        "chaguo 1": 1, "chaguo 2": 2, "chaguo 3": 3,
+                        # French
+                        "un": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
+                        "premier": 1, "deuxième": 2, "troisième": 3,
+                        # Arabic numerals (common in mixed contexts)
+                        "١": 1, "٢": 2, "٣": 3, "٤": 4, "٥": 5,
+                    }
+                    _reply_num = _num_map.get(_body_lower) or _num_map.get(_body_stripped)
                     if _reply_num is not None:
                         # Check if customer has pending order list — if so, skip catalog handler and let OrderAgent handle it
                         _conv_state_check = await db.conversation_states.find_one({

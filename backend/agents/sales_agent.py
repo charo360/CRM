@@ -185,6 +185,21 @@ class SalesAgent(BaseAgent):
         context_update["state"] = "ongoing"
         context_update["last_intent"] = intent
 
+        # 17: Save menu state so router can intercept "One", "moja", "first" etc.
+        if len(to_send) > 1:
+            from datetime import timezone as _tz
+            context_update["active_menu"] = True
+            context_update["menu_type"] = "product_selection"
+            context_update["menu_items"] = {
+                str(i): {"name": p["name"], "price": p.get("price", 0), "id": str(p["_id"]), "type": "product"}
+                for i, p in enumerate(to_send, 1)
+            }
+            context_update["waiting_for_selection"] = True
+            context_update["menu_sent_at"] = datetime.utcnow().isoformat()
+        else:
+            context_update["waiting_for_selection"] = False
+            context_update["active_menu"] = False
+
         return {
             "messages": messages_out,
             "context_update": context_update,

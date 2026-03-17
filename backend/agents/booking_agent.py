@@ -197,11 +197,25 @@ class BookingAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[BookingAgent] pending_catalogs upsert error: {e}")
 
+        # 17: Save menu state so router can intercept "One", "moja", "first" etc.
+        _menu_items_bk = {
+            str(i): {"name": s["name"], "price": s.get("price", 0), "id": str(s["_id"]), "type": "service",
+                     "duration": s.get("duration"), "service_category": s.get("service_category", "appointment")}
+            for i, s in enumerate(first_page, 1)
+        }
         return {
             "handled": True,
             "messages": messages_out,
             "escalate": False,
-            "context_update": {"state": "ongoing", "last_intent": "BOOKING_REQUEST"},
+            "context_update": {
+                "state": "ongoing",
+                "last_intent": "BOOKING_REQUEST",
+                "active_menu": True,
+                "menu_type": "service_selection",
+                "menu_items": _menu_items_bk,
+                "waiting_for_selection": True,
+                "menu_sent_at": datetime.utcnow().isoformat(),
+            },
         }
 
     # ── Availability Check ────────────────────────────────────────────────────────

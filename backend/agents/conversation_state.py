@@ -181,4 +181,10 @@ def _default_state() -> Dict[str, Any]:
         "total_orders": 0,
         "last_complaint_resolved": None,
         "personality": None,
+        # 17: Menu state — tracks active numbered menus waiting for customer selection
+        "active_menu": False,
+        "menu_type": None,           # "product_selection" | "service_selection" | "booking_confirm"
+        "menu_items": {},            # {"1": {"name": ..., "price": ..., "type": ...}, ...}
+        "waiting_for_selection": False,
+        "menu_sent_at": None,
     }

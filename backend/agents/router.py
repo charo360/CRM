@@ -49,6 +49,37 @@ def _get_model_for_intent(intent: str, sentiment: str) -> str:
     return "standard"
 
 
+# 17: Multilingual word-to-number map for menu selection normalization
+_SELECTION_MAP = {
+    # Digits
+    "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+    # English words
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "the first": 1, "the second": 2, "the third": 3,
+    "first one": 1, "second one": 2, "third one": 3,
+    "option 1": 1, "option 2": 2, "option 3": 3, "option 4": 4, "option 5": 5,
+    "number 1": 1, "number 2": 2, "number 3": 3,
+    "no 1": 1, "no 2": 2, "no 3": 3, "no. 1": 1, "no. 2": 2, "no. 3": 3,
+    "#1": 1, "#2": 2, "#3": 3, "#4": 4, "#5": 5,
+    # Swahili
+    "moja": 1, "mbili": 2, "tatu": 3, "nne": 4, "tano": 5,
+    "ya kwanza": 1, "ya pili": 2, "ya tatu": 3,
+    "chaguo 1": 1, "chaguo 2": 2, "chaguo 3": 3,
+    # French
+    "un": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
+    # Arabic-Indic digits
+    "\u0661": 1, "\u0662": 2, "\u0663": 3, "\u0664": 4, "\u0665": 5,
+}
+
+
+def _normalize_selection(message: str):
+    """17: Normalize a customer reply to a menu item number. Returns int or None."""
+    cleaned = message.strip().lower()
+    return _SELECTION_MAP.get(cleaned)
+
+
 # 16.3: Business-critical intents that warrant owner notification
 _BUSINESS_CRITICAL_INTENTS = {
     "COMPLAINT", "LEGAL_THREAT", "FRAUD_CLAIM",
@@ -132,7 +163,52 @@ class Router:
         conv_state = await load_state(self.db, user_id, str(customer_id) if customer_id else "")
         context["conversation_state_data"] = conv_state
 
-        # ── 2.5: Rate limiting ─────────────────────────────────────────────
+        # ── 2.5: Menu selection gate (17) ─────────────────────────────────
+        # Check BEFORE intent analyzer — intercepts "One", "moja", "first", "ya kwanza" etc.
+        if conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
+            _sel = _normalize_selection(message)
+            _menu_items = conv_state.get("menu_items", {})
+            if _sel is not None and str(_sel) in _menu_items:
+                _selected = _menu_items[str(_sel)]
+                _menu_type = conv_state.get("menu_type", "product_selection")
+                _lang = conv_state.get("preferred_language", "English") or "English"
+                logger.info(f"[Router] Menu selection intercepted: '{message}' → {_sel} = {_selected.get('name')} (type={_menu_type})")
+                # Clear menu state immediately
+                if customer_id:
+                    await save_state(self.db, user_id, str(customer_id), {
+                        "active_menu": False, "waiting_for_selection": False,
+                        "menu_items": {}, "menu_type": None,
+                        "last_discussed_product": _selected.get("name"),
+                    })
+                # Build confirmation response based on menu type
+                _name = _selected.get("name", "")
+                _price = _selected.get("price", 0)
+                _currency = context.get("currency", "")
+                if _menu_type == "service_selection":
+                    _dur = _selected.get("duration")
+                    _dur_str = f" ({_dur} min)" if _dur else ""
+                    _reply = (
+                        f"Great choice! *{_name}*{_dur_str} — {_currency} {_price:,.0f}\n\n"
+                        f"When would you like to book? Reply with your preferred date and time."
+                    )
+                else:
+                    _reply = (
+                        f"Great choice! *{_name}* — {_currency} {_price:,.0f}\n\n"
+                        f"Would you like to:\n1️⃣  Order Now\n2️⃣  Ask a question\n\n_Reply with 1 or 2_"
+                    )
+                return {
+                    "handled": True, "escalated": False,
+                    "messages": [{"text": _reply}],
+                }
+            elif _sel is None:
+                # Unrelated reply — clear menu state, continue to intent analyzer
+                if customer_id:
+                    await save_state(self.db, user_id, str(customer_id), {
+                        "active_menu": False, "waiting_for_selection": False,
+                        "menu_items": {}, "menu_type": None,
+                    })
+
+        # ── 2.6: Rate limiting ─────────────────────────────────────────────
         if customer_id and _is_rate_limited(user_id, str(customer_id)):
             logger.warning(f"[Router] Rate limited: user={user_id} customer={customer_id}")
             return {
