@@ -15,12 +15,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as RNIap from 'react-native-iap';
 
 const SUBSCRIPTION_SKUS = [
-  'crm_basic_monthly',
-  'crm_basic_yearly',
+  'crm_starter_monthly',
+  'crm_starter_yearly',
+  'crm_standard_monthly',
+  'crm_standard_yearly',
   'crm_pro_monthly',
   'crm_pro_yearly',
-  'crm_enterprise_monthly',
-  'crm_enterprise_yearly',
 ];
 
 interface SubscriptionPlan {
@@ -326,13 +326,13 @@ export default function SubscriptionScreen() {
           </View>
         )}
 
-        <Text style={styles.sectionTitle}>Choose Your Plan</Text>
+        <Text style={styles.sectionTitle}>Monthly Plans</Text>
 
         {plans
           .filter((p) => p.period === 'monthly')
           .map((plan) => renderPlanCard(plan))}
 
-        <Text style={styles.sectionTitle}>Annual Plans (Save 17%)</Text>
+        <Text style={styles.sectionTitle}>Yearly Plans (Save 17%)</Text>
 
         {plans
           .filter((p) => p.period === 'yearly')

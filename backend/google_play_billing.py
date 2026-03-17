@@ -140,14 +140,14 @@ class GooglePlayBilling:
             product_id: e.g., 'crm_pro_monthly'
             
         Returns:
-            Tier name: 'basic', 'pro', or 'enterprise'
+            Tier name: 'starter', 'standard', or 'pro'
         """
-        if 'basic' in product_id.lower():
-            return 'basic'
+        if 'starter' in product_id.lower():
+            return 'starter'
+        elif 'standard' in product_id.lower():
+            return 'standard'
         elif 'pro' in product_id.lower():
             return 'pro'
-        elif 'enterprise' in product_id.lower():
-            return 'enterprise'
         return 'free'
     
     def get_billing_period(self, product_id: str) -> str:
@@ -174,29 +174,29 @@ SUBSCRIPTION_LIMITS = {
         'ai_messages_per_month': 100,
         'features': ['basic_crm', 'whatsapp_integration']
     },
-    'basic': {
+    'starter': {
         'max_customers': 500,
         'max_products': 100,
         'max_team_members': 3,
         'ai_messages_per_month': 1000,
         'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings']
     },
-    'pro': {
-        'max_customers': 5000,
-        'max_products': 1000,
-        'max_team_members': 10,
-        'ai_messages_per_month': 10000,
-        'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings', 
-                    'advanced_analytics', 'custom_branding', 'api_access']
+    'standard': {
+        'max_customers': 2000,
+        'max_products': 500,
+        'max_team_members': 7,
+        'ai_messages_per_month': 5000,
+        'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings',
+                    'advanced_analytics', 'custom_branding']
     },
-    'enterprise': {
+    'pro': {
         'max_customers': -1,  # unlimited
         'max_products': -1,   # unlimited
         'max_team_members': -1,  # unlimited
         'ai_messages_per_month': -1,  # unlimited
         'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings',
                     'advanced_analytics', 'custom_branding', 'api_access',
-                    'priority_support', 'custom_integrations', 'white_label']
+                    'priority_support', 'custom_integrations']
     }
 }
 

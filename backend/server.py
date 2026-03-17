@@ -12966,27 +12966,43 @@ async def get_subscription_products():
     return {
         "products": [
             {
-                "id": "crm_basic_monthly",
-                "tier": "basic",
+                "id": "crm_starter_monthly",
+                "tier": "starter",
                 "period": "monthly",
-                "name": "Basic Plan - Monthly",
-                "description": "Perfect for small businesses",
-                "limits": SUBSCRIPTION_LIMITS['basic']
+                "name": "Starter Plan - Monthly",
+                "description": "Perfect for small businesses just getting started",
+                "limits": SUBSCRIPTION_LIMITS['starter']
             },
             {
-                "id": "crm_basic_yearly",
-                "tier": "basic",
+                "id": "crm_starter_yearly",
+                "tier": "starter",
                 "period": "yearly",
-                "name": "Basic Plan - Yearly",
+                "name": "Starter Plan - Yearly",
                 "description": "Save 17% with annual billing",
-                "limits": SUBSCRIPTION_LIMITS['basic']
+                "limits": SUBSCRIPTION_LIMITS['starter']
+            },
+            {
+                "id": "crm_standard_monthly",
+                "tier": "standard",
+                "period": "monthly",
+                "name": "Standard Plan - Monthly",
+                "description": "For growing businesses with more customers",
+                "limits": SUBSCRIPTION_LIMITS['standard']
+            },
+            {
+                "id": "crm_standard_yearly",
+                "tier": "standard",
+                "period": "yearly",
+                "name": "Standard Plan - Yearly",
+                "description": "Save 17% with annual billing",
+                "limits": SUBSCRIPTION_LIMITS['standard']
             },
             {
                 "id": "crm_pro_monthly",
                 "tier": "pro",
                 "period": "monthly",
                 "name": "Pro Plan - Monthly",
-                "description": "For growing businesses",
+                "description": "Unlimited everything for power users",
                 "limits": SUBSCRIPTION_LIMITS['pro']
             },
             {
@@ -12996,22 +13012,6 @@ async def get_subscription_products():
                 "name": "Pro Plan - Yearly",
                 "description": "Save 17% with annual billing",
                 "limits": SUBSCRIPTION_LIMITS['pro']
-            },
-            {
-                "id": "crm_enterprise_monthly",
-                "tier": "enterprise",
-                "period": "monthly",
-                "name": "Enterprise Plan - Monthly",
-                "description": "Unlimited everything",
-                "limits": SUBSCRIPTION_LIMITS['enterprise']
-            },
-            {
-                "id": "crm_enterprise_yearly",
-                "tier": "enterprise",
-                "period": "yearly",
-                "name": "Enterprise Plan - Yearly",
-                "description": "Save 17% with annual billing",
-                "limits": SUBSCRIPTION_LIMITS['enterprise']
             }
         ]
     }
