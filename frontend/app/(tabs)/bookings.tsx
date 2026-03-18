@@ -435,15 +435,15 @@ export default function BookingsScreen() {
       </View>
 
       {/* Status filter chips */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll} contentContainerStyle={styles.filterContent}>
-        {STATUS_FILTERS.map(f => (
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterContent}>
+        {([['All','All'],['pending','Pending'],['confirmed','Confirmed'],['completed','Completed'],['cancelled','Cancelled']] as [string,string][]).map(([val, label]) => (
           <TouchableOpacity
-            key={f}
-            style={[styles.filterChip, statusFilter === f && styles.filterChipActive]}
-            onPress={() => setStatusFilter(f)}
+            key={val}
+            style={[styles.filterChip, statusFilter === val && styles.filterChipActive]}
+            onPress={() => setStatusFilter(val)}
           >
-            <Text style={[styles.filterChipText, statusFilter === f && styles.filterChipTextActive]}>
-              {f === 'All' ? 'All' : STATUS_LABELS[f]}
+            <Text style={[styles.filterChipText, statusFilter === val && styles.filterChipTextActive]}>
+              {label}
             </Text>
           </TouchableOpacity>
         ))}
@@ -855,14 +855,15 @@ const styles = StyleSheet.create({
   addBtn: { backgroundColor: '#25D366', borderRadius: 10, padding: 10, alignItems: 'center', justifyContent: 'center' },
 
   // Filters
-  filterScroll: { maxHeight: 48 },
-  filterContent: { paddingHorizontal: 12, gap: 8, paddingBottom: 8, alignItems: 'center' },
+  filterContent: {
+    flexDirection: 'row', paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2,
+  },
   filterChip: {
-    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
+    paddingHorizontal: 16, paddingVertical: 9, borderRadius: 20, marginRight: 8,
     backgroundColor: '#1E3050', borderWidth: 1.5, borderColor: '#3D5A80',
   },
-  filterChipActive: { backgroundColor: '#25D366', borderColor: '#25D366' },
-  filterChipText: { color: '#E2E8F0', fontSize: 13, fontWeight: '600' },
+  filterChipActive: { backgroundColor: '#25D366', borderColor: '#1DB954' },
+  filterChipText: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
   filterChipTextActive: { color: '#FFFFFF', fontWeight: '700' },
 
   // Booking card
