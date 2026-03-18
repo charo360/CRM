@@ -8749,7 +8749,16 @@ async def evolution_webhook(request: Request):
                                 _bk_cur += _bk_slot_mins
                         except Exception:
                             _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
-                        _bk_avail = _bk_avail[:8]
+                        
+                        # Show more slots for shorter intervals so customers see more availability
+                        # 15 min → 16 slots (4 hours), 30 min → 12 slots (6 hours), 60+ min → 8 slots
+                        if _bk_slot_mins <= 15:
+                            _bk_max_slots = 16
+                        elif _bk_slot_mins <= 30:
+                            _bk_max_slots = 12
+                        else:
+                            _bk_max_slots = 8
+                        _bk_avail = _bk_avail[:_bk_max_slots]
 
                         if not _bk_avail:
                             ws = get_whatsapp_service(db)
