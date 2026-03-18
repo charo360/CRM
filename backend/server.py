@@ -7493,11 +7493,11 @@ async def evolution_webhook(request: Request):
                                     _bk_sel = next((s for s in _bk_services if s.get("index") == _reply_num), None)
                                     if _bk_sel:
                                         _bk_price_str = f"{_bk_currency} {_bk_sel.get('price', 0):,.0f}" if _bk_sel.get("price") else "Contact for price"
-                                        _bk_duration = _bk_sel.get("duration")
                                         _bk_svc_id = _bk_sel["id"]
                                         _bk_svc_name = _bk_sel["name"]
-                                        # Fetch full service doc for image, addons, service_category
+                                        # Fetch full service doc for image, addons, service_category, AND fresh duration
                                         _bk_full_svc = await db.products.find_one({"_id": _bk_svc_id, "user_id": user.get("business_id", user["_id"])})
+                                        _bk_duration = (_bk_full_svc or {}).get("duration")  # Get fresh duration from DB, not cache
                                         _bk_image_url = (_bk_full_svc or {}).get("image_url") or ""
                                         # Build ordered image list: primary image always first, then extras
                                         _bk_all_images = []
