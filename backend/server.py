@@ -10611,6 +10611,21 @@ async def evolution_webhook(request: Request):
                             business_knowledge = (business_knowledge or "") + no_products_msg
                         
                         if not business_knowledge:
+                            business_knowledge = ""
+                        
+                        # Append business hours context
+                        business_hours = user_settings.get("business_hours", {})
+                        if business_hours:
+                            hours_lines = ["\nBUSINESS HOURS:"]
+                            for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]:
+                                h = business_hours.get(day, {})
+                                if h.get("closed"):
+                                    hours_lines.append(f"- {day.capitalize()}: CLOSED (Do NOT offer bookings or availability for this day)")
+                                elif h.get("open") and h.get("close"):
+                                    hours_lines.append(f"- {day.capitalize()}: {h.get('open')} to {h.get('close')}")
+                            business_knowledge += "\n".join(hours_lines)
+                        
+                        if not business_knowledge.strip():
                             business_knowledge = None
                         
                         from ai_service import get_drafter
