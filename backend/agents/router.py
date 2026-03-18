@@ -389,7 +389,9 @@ class Router:
             logger.info(f"[Router] Booking+complaint sentiment → routing to complaint agent")
             agent_name = "complaint"
 
+        logger.info(f"[Router] dispatching to agent={agent_name} for intent={intent} btype={context.get('business_type','')}")
         agent_result = await self._dispatch(agent_name, user_id, message, context)
+        logger.info(f"[Router] agent={agent_name} returned handled={agent_result.get('handled') if agent_result else None}")
 
         if not agent_result:
             agent_result = {"handled": False}

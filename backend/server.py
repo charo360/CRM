@@ -10345,10 +10345,20 @@ async def evolution_webhook(request: Request):
 
                 # Skip agent pipeline if button_action already set by numbered response handler
                 if not button_action:
+                    logging.info(
+                        f"[Webhook] ▶ agent pipeline: user_id={user['_id']} "
+                        f"biz_id={_biz_id_for_ctx} btype={_user_settings.get('business_type','')} "
+                        f"msg={repr(body[:80])}"
+                    )
                     agent_result = await router.route_and_process(
                         user_id=user["_id"],
                         message=body,
                         context=agent_context
+                    )
+                    logging.info(
+                        f"[Webhook] ◀ agent result: handled={agent_result.get('handled') if agent_result else None} "
+                        f"escalated={agent_result.get('escalated') if agent_result else None} "
+                        f"msgs={len(agent_result.get('messages',[])) if agent_result else 0}"
                     )
                 else:
                     agent_result = None

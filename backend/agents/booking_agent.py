@@ -89,6 +89,8 @@ class BookingAgent(BaseAgent):
             logger.error(f"[BookingAgent] DB error fetching services: {e}")
             return {"handled": False}
 
+        logger.info(f"[BookingAgent] biz_id={biz_id} user_id={user_id} services_found={len(services)} intent={context.get('intent')}")
+
         # Fetch user settings
         try:
             user_doc = await self.db.users.find_one({"_id": user_id})
