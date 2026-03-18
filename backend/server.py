@@ -9235,6 +9235,30 @@ async def evolution_webhook(request: Request):
                                     logging.info(f"[Booking] Rescheduled via WhatsApp: {_reschedule_id}")
                                 else:
                                     # NEW BOOKING — insert
+                                    # VALIDATE BUSINESS HOURS before creating booking
+                                    try:
+                                        from datetime import datetime as _dt_bkc
+                                        _bkc_date_obj = _dt_bkc.strptime(_bkc_date_str, "%Y-%m-%d").date()
+                                        _bkc_user_doc = await db.users.find_one({"_id": user["_id"]})
+                                        _bkc_settings = (_bkc_user_doc or {}).get("settings", {})
+                                        _bkc_biz_hours = _bkc_settings.get("business_hours", {})
+                                        _bkc_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
+                                        _bkc_day_key = _bkc_wd_keys[_bkc_date_obj.weekday()]
+                                        _bkc_day_hours = _bkc_biz_hours.get(_bkc_day_key, {})
+                                        
+                                        if _bkc_day_hours.get("closed"):
+                                            logging.warning(f"[Booking] Blocked booking on closed day: {_bkc_date_str} ({_bkc_day_key})")
+                                            ws = get_whatsapp_service(db)
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=f"Sorry, we're closed on {_bkc_date_obj.strftime('%A %d %B')}. Your booking was not created. Please choose another date 📅",
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                            await db.pending_catalogs.delete_one({"customer_id": customer_id, "user_id": user["_id"]})
+                                            return {"status": "ok", "handled_by": "booking_confirm_closed_day_blocked"}
+                                    except Exception as _bkc_val_err:
+                                        logging.error(f"[Booking] Business hours validation error: {_bkc_val_err}")
+                                    
                                     _bkc_id = str(uuid.uuid4())
                                     _bkc_number = _generate_booking_number()
                                     _bkc_selected_addons = _bkc_state.get("booking_selected_addons", [])
