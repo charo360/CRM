@@ -48,6 +48,7 @@ interface Product {
     listing_blocked_dates?: string[];
     deposit_percent?: number;
     price_unit?: string;
+    capacity?: number;
 }
 
 interface ProductCatalogModalProps {
@@ -87,6 +88,7 @@ export default function ProductCatalogModal({
     const [editAddons, setEditAddons] = useState<Addon[]>([]);
     const [editDepositPercent, setEditDepositPercent] = useState<string>('0');
     const [editPriceUnit, setEditPriceUnit] = useState<string>('night');
+    const [editCapacity, setEditCapacity] = useState<string>('1');
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
 
@@ -330,6 +332,7 @@ export default function ProductCatalogModal({
         setEditAddons(product.addons || []);
         setEditDepositPercent((product.deposit_percent ?? 0).toString());
         setEditPriceUnit(product.price_unit || 'night');
+        setEditCapacity((product.capacity ?? 1).toString());
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -354,6 +357,7 @@ export default function ProductCatalogModal({
         setEditAddons([]);
         setEditDepositPercent('0');
         setEditPriceUnit('night');
+        setEditCapacity('1');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -400,6 +404,7 @@ export default function ProductCatalogModal({
                     addons: editAddons.filter(a => a.name.trim()),
                     deposit_percent: parseInt(editDepositPercent) || 0,
                     price_unit: editPriceUnit,
+                    capacity: editCapacity.trim() ? parseInt(editCapacity) : 1,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -425,6 +430,7 @@ export default function ProductCatalogModal({
                     addons: editAddons.filter(a => a.name.trim()),
                     deposit_percent: parseInt(editDepositPercent) || 0,
                     price_unit: editPriceUnit,
+                    capacity: editCapacity.trim() ? parseInt(editCapacity) : 1,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -800,6 +806,21 @@ export default function ProductCatalogModal({
                                         keyboardType="numeric"
                                     />
                                     <Text style={styles.stockHint}>Used for booking slot calculation</Text>
+                                </View>
+                            )}
+
+                            {businessType !== 'rental' && editServiceCategory !== 'rental' && (isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
+                                <View style={styles.formGroup}>
+                                    <Text style={styles.formLabel}>Capacity per Time Slot</Text>
+                                    <TextInput
+                                        style={styles.formInput}
+                                        value={editCapacity}
+                                        onChangeText={setEditCapacity}
+                                        placeholder="e.g. 1, 5, 10"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <Text style={styles.stockHint}>How many appointments can be booked at the same time? (Default: 1)</Text>
                                 </View>
                             )}
 
