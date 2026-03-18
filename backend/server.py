@@ -9397,6 +9397,26 @@ async def evolution_webhook(request: Request):
                                             + _bkc_deposit_block
                                             + _bkc_closing
                                         )
+                                    # Append other available services to the confirmation message
+                                    try:
+                                        _bkc_other_svcs = await db.products.find(
+                                            {"user_id": _bkc_biz_id, "in_stock": {"$ne": False}},
+                                        ).to_list(20)
+                                        # Exclude the service they just booked
+                                        _bkc_other_svcs = [s for s in _bkc_other_svcs if str(s["_id"]) != str(_bkc_svc_id)]
+                                        if _bkc_other_svcs:
+                                            _bkc_currency_str = _bkc_currency
+                                            _bkc_other_lines = ["\n\n✨ *Our other services:*"]
+                                            for _os in _bkc_other_svcs[:5]:
+                                                _os_price = _os.get("price", 0)
+                                                _os_price_str = f"{_bkc_currency_str} {_os_price:,.0f}" if _os_price else "Contact for price"
+                                                _os_dur = f" · {_os['duration']} min" if _os.get("duration") else ""
+                                                _bkc_other_lines.append(f"  • *{_os['name']}* — {_os_price_str}{_os_dur}")
+                                            _bkc_other_lines.append("\n_Reply *book* anytime to make another appointment._")
+                                            _bkc_conf_msg += "\n".join(_bkc_other_lines)
+                                    except Exception as _bkc_other_err:
+                                        logging.warning(f"[Booking] Other services fetch failed: {_bkc_other_err}")
+
                                     # Auto-block confirmed rental booking dates on the listing
                                     if _bkc_svc_cat == "rental" and _bkc_svc_id and _bkc_checkout and _bkc_date_str:
                                         try:
@@ -10550,7 +10570,8 @@ async def evolution_webhook(request: Request):
                         
                         log_trace(f"Starting AI generation for {from_number}")
                         
-                        user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
+                        _ai_biz_id = user.get("business_id", user["_id"])
+                        user_products = await db.products.find({"user_id": _ai_biz_id}).to_list(50)
                         product_catalog_map = {}  # product_id -> image_url
                         product_name_map = {}     # lowercase product name -> {id, image_url, name}
                         if user_products:
