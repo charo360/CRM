@@ -4657,7 +4657,7 @@ class BookingResponse(BaseModel):
     customer_id: str
     customer_name: str
     customer_phone: Optional[str] = None
-    service_id: str
+    service_id: Optional[str] = None
     service_name: str
     staff_id: Optional[str] = None
     staff_name: Optional[str] = None
@@ -4811,7 +4811,7 @@ async def get_bookings(
             customer_id=d["customer_id"],
             customer_name=d.get("customer_name", ""),
             customer_phone=d.get("customer_phone"),
-            service_id=d["service_id"],
+            service_id=d.get("service_id"),
             service_name=d.get("service_name", ""),
             staff_id=d.get("staff_id"),
             staff_name=d.get("staff_name"),

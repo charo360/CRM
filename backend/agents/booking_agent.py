@@ -60,12 +60,13 @@ class BookingAgent(BaseAgent):
                     if bk:
                         return await self._show_booking_actions(bk, customer_name, language, user_id, customer_id)
 
-        # Fetch services - ONLY services/rentals/classes, NOT physical products
+        # Fetch services - exclude physical retail products only
+        # Products without offering_type are treated as services (backward compat)
         try:
             services = await self.db.products.find({
                 "user_id": user_id,
-                "in_stock": True,
-                "offering_type": {"$in": ["service", "class", "appointment", "consultation", "rental", "equipment", "package"]},
+                "in_stock": {"$ne": False},
+                "offering_type": {"$not": {"$in": ["physical", "retail", "product"]}},
             }).to_list(50)
         except Exception as e:
             logger.error(f"[BookingAgent] DB error fetching services: {e}")
