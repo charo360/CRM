@@ -855,15 +855,15 @@ const styles = StyleSheet.create({
   addBtn: { backgroundColor: '#25D366', borderRadius: 10, padding: 10, alignItems: 'center', justifyContent: 'center' },
 
   // Filters
-  filterScroll: { maxHeight: 44 },
-  filterContent: { paddingHorizontal: 12, gap: 8, paddingBottom: 8 },
+  filterScroll: { maxHeight: 48 },
+  filterContent: { paddingHorizontal: 12, gap: 8, paddingBottom: 8, alignItems: 'center' },
   filterChip: {
-    paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
-    backgroundColor: '#0F1E35', borderWidth: 1, borderColor: '#2A3D5C',
+    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
+    backgroundColor: '#1E3050', borderWidth: 1.5, borderColor: '#3D5A80',
   },
-  filterChipActive: { backgroundColor: '#25D36622', borderColor: '#25D366' },
-  filterChipText: { color: '#CBD5E1', fontSize: 13, fontWeight: '500' },
-  filterChipTextActive: { color: '#25D366' },
+  filterChipActive: { backgroundColor: '#25D366', borderColor: '#25D366' },
+  filterChipText: { color: '#E2E8F0', fontSize: 13, fontWeight: '600' },
+  filterChipTextActive: { color: '#FFFFFF', fontWeight: '700' },
 
   // Booking card
   card: {
