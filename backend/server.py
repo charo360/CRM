@@ -8630,43 +8630,48 @@ async def evolution_webhook(request: Request):
                         _today_bk = datetime.utcnow().date()
                         _parsed_bk_date = None
                         try:
-                            if _body_lower_bk == "today":
+                            # Check for common words first (exact match)
+                            if "today" in _body_lower_bk:
                                 _parsed_bk_date = _today_bk
-                            elif _body_lower_bk == "tomorrow":
+                            elif "tomorrow" in _body_lower_bk or "kesho" in _body_lower_bk:
                                 _parsed_bk_date = _today_bk + timedelta(days=1)
-                            elif _body_lower_bk in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
-                                _wd_map = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}
-                                _tgt_wd = _wd_map[_body_lower_bk]
-                                _days_ahead = (_tgt_wd - _today_bk.weekday()) % 7 or 7
-                                _parsed_bk_date = _today_bk + timedelta(days=_days_ahead)
                             else:
-                                # Try YYYY-MM-DD
-                                _m = _re_bk.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _body_bk)
-                                if _m:
-                                    _parsed_bk_date = datetime(_today_bk.year, 1, 1).date().replace(
-                                        year=int(_m.group(1)), month=int(_m.group(2)), day=int(_m.group(3))
-                                    )
-                                else:
-                                    # Try "15 March", "March 15", "May10" (no space), "May 10"
-                                    _month_map = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
-                                                  "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
-                                                  "january":1,"february":2,"march":3,"april":4,"june":6,
-                                                  "july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
-                                    _m2 = _re_bk.match(r"(\d{1,2})\s+([a-z]+)", _body_lower_bk)
-                                    _m3 = _re_bk.match(r"([a-z]+)\s*(\d{1,2})", _body_lower_bk)  # \s* allows no space
-                                    if _m2 and _m2.group(2) in _month_map:
-                                        _d, _mo = int(_m2.group(1)), _month_map[_m2.group(2)]
-                                        _yr = _today_bk.year if (_mo, _d) >= (_today_bk.month, _today_bk.day) else _today_bk.year + 1
-                                        _parsed_bk_date = datetime(_yr, _mo, _d).date()
-                                    elif _m3 and _m3.group(1) in _month_map:
-                                        _d, _mo = int(_m3.group(2)), _month_map[_m3.group(1)]
-                                        _yr = _today_bk.year if (_mo, _d) >= (_today_bk.month, _today_bk.day) else _today_bk.year + 1
-                                        _parsed_bk_date = datetime(_yr, _mo, _d).date()
+                                # Check for weekday names
+                                _wd_map = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6,
+                                          "mon":0,"tue":1,"wed":2,"thu":3,"fri":4,"sat":5,"sun":6}
+                                for _wd_name, _wd_num in _wd_map.items():
+                                    if _wd_name in _body_lower_bk:
+                                        _days_ahead = (_wd_num - _today_bk.weekday()) % 7 or 7
+                                        _parsed_bk_date = _today_bk + timedelta(days=_days_ahead)
+                                        break
+                                
+                                if not _parsed_bk_date:
+                                    # Try YYYY-MM-DD (search anywhere in message)
+                                    _m = _re_bk.search(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})", _body_bk)
+                                    if _m:
+                                        _parsed_bk_date = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
                                     else:
-                                        # Try DD/MM/YYYY or MM/DD/YYYY
-                                        _m4 = _re_bk.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _body_bk)
-                                        if _m4:
-                                            _parsed_bk_date = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                                        # Try "15 March", "March 15", "May10" (no space), "May 10"
+                                        _month_map = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+                                                      "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                                      "january":1,"february":2,"march":3,"april":4,"june":6,
+                                                      "july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                        # Search anywhere in message, not just start
+                                        _m2 = _re_bk.search(r"(\d{1,2})\s+([a-z]+)", _body_lower_bk)
+                                        _m3 = _re_bk.search(r"([a-z]+)\s*(\d{1,2})", _body_lower_bk)
+                                        if _m2 and _m2.group(2) in _month_map:
+                                            _d, _mo = int(_m2.group(1)), _month_map[_m2.group(2)]
+                                            _yr = _today_bk.year if (_mo, _d) >= (_today_bk.month, _today_bk.day) else _today_bk.year + 1
+                                            _parsed_bk_date = datetime(_yr, _mo, _d).date()
+                                        elif _m3 and _m3.group(1) in _month_map:
+                                            _d, _mo = int(_m3.group(2)), _month_map[_m3.group(1)]
+                                            _yr = _today_bk.year if (_mo, _d) >= (_today_bk.month, _today_bk.day) else _today_bk.year + 1
+                                            _parsed_bk_date = datetime(_yr, _mo, _d).date()
+                                        else:
+                                            # Try DD/MM/YYYY or MM/DD/YYYY
+                                            _m4 = _re_bk.search(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _body_bk)
+                                            if _m4:
+                                                _parsed_bk_date = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
                         except Exception:
                             _parsed_bk_date = None
 

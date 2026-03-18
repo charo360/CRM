@@ -41,11 +41,19 @@ Return ONLY a valid JSON object — no explanation, no code fences:
 }}
 
 Action rules (choose exactly one):
-- continue  : they answered what you asked — extract the raw value into extracted_value
-- go_back   : they want to change something already chosen.
-              Trigger words: "another", "change", "different", "actually", "wait",
+- continue  : they answered what you asked — extract the raw value into extracted_value.
+              Be VERY FLEXIBLE with formats:
+              • Dates: "March 23", "23 March", "23/3", "Monday", "tomorrow", "next week", "kesho"
+              • Times: "3pm", "15:00", "3 o'clock", "afternoon", "morning", "evening", "asubuhi"
+              • Numbers: "2", "two", "couple", "a few", "mbili"
+              • Names: any text that looks like a name
+              Extract the value AS-IS — don't try to normalize it, just pass it through.
+- go_back   : they EXPLICITLY want to change something already chosen.
+              Trigger words: "another", "change", "different", "actually no", "wait no",
               "wrong", "not that one", "other one", "choose again", "start over",
-              "ya nyingine", "badilisha", "tena", "la kwanza tena"
+              "ya nyingine", "badilisha", "tena", "la kwanza tena".
+              CRITICAL: DO NOT classify dates/times/numbers as go_back just because they're in
+              a different format than the example. "March 23" is NOT go_back when waiting for a date.
 - tangent   : unrelated / casual message ("hello", "thanks", "haha", "okay cool",
               "ngoja", "sawa").  Set reply = warm response + gentle re-ask.
 - cancel    : they explicitly want to stop ("never mind", "forget it", "cancel",
