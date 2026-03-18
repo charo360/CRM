@@ -454,6 +454,11 @@ async def send_booking_reminders():
             time_str = booking.get("time", "")
             if not date_str or not time_str:
                 continue
+            
+            # Skip rental bookings - they use "check-in" instead of time format
+            service_category = booking.get("service_category", "")
+            if service_category == "rental" or time_str in ("check-in", "check-out"):
+                continue
 
             booking_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
             diff_hours = (booking_dt - now).total_seconds() / 3600
