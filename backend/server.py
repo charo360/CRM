@@ -8642,7 +8642,8 @@ async def evolution_webhook(request: Request):
                             return {"status": "ok", "handled_by": "booking_date_invalid"}
 
                         # Fetch business hours to validate day + build slots
-                        _bk_user_doc = await db.users.find_one({"_id": user["_id"]})
+                        _bk_biz_id = user.get("business_id", user["_id"])
+                        _bk_user_doc = await db.users.find_one({"_id": _bk_biz_id})
                         _bk_settings = (_bk_user_doc or {}).get("settings", {})
                         _bk_biz_hours = _bk_settings.get("business_hours", {})
                         _bk_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
@@ -9263,7 +9264,8 @@ async def evolution_webhook(request: Request):
                                     try:
                                         from datetime import datetime as _dt_bkc
                                         _bkc_date_obj = _dt_bkc.strptime(_bkc_date_str, "%Y-%m-%d").date()
-                                        _bkc_user_doc = await db.users.find_one({"_id": user["_id"]})
+                                        _bkc_biz_id_check = user.get("business_id", user["_id"])
+                                        _bkc_user_doc = await db.users.find_one({"_id": _bkc_biz_id_check})
                                         _bkc_settings = (_bkc_user_doc or {}).get("settings", {})
                                         _bkc_biz_hours = _bkc_settings.get("business_hours", {})
                                         _bkc_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
