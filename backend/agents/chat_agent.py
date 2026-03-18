@@ -93,6 +93,19 @@ class ChatAgent(BaseAgent):
                 "messages": [],
             }
 
+        # Booking/order guardrail: ChatAgent must NEVER fake-confirm bookings or orders.
+        # If a customer sends a clear booking/order confirmation request and ChatAgent is
+        # the fallback, return unhandled so the proper agent can take over.
+        _BOOKING_CONFIRM_PATTERNS = [
+            r'\b(confirm|book|schedule|reserve|set\s+up|make)\b.*\b(appointment|booking|session|haircut|massage|service|slot)\b',
+            r'\b(i\s+want|i\'d\s+like|can\s+i\s+get|please\s+book|book\s+me)\b.*\b(haircut|massage|service|appointment|session)\b',
+            r'\bcan\s+you\s+confirm\b',
+            r'\bconfirm\s+that\s+for\s+me\b',
+        ]
+        if not is_personal and self._matches_patterns(message, _BOOKING_CONFIRM_PATTERNS):
+            logger.info(f"[ChatAgent] Booking confirmation request detected — returning unhandled to trigger BookingAgent")
+            return {"handled": False}
+
         try:
             from ai_service import get_drafter
             ai_service = get_drafter()

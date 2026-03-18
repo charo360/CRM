@@ -408,9 +408,26 @@ class Router:
             }
 
         if not agent_result.get("handled"):
-            # No agent could handle it — fallback to chat, then escalate
-            logger.warning(f"[Router] No agent handled intent={intent}, trying chat fallback")
-            agent_result = await self._dispatch("chat", user_id, message, context)
+            # For service/retail businesses, try the business-specific agent before chat fallback
+            # This ensures booking/catalog requests that slip through intent classification
+            # still reach the correct agent instead of ChatAgent generating fake confirmations
+            _btype_fb = context.get("business_type", "").lower()
+            _is_svc_fb = any(k in _btype_fb for k in (
+                "salon", "saloon", "barbershop", "spa", "clinic", "healthcare",
+                "fitness", "gym", "services", "restaurant", "hotel", "beauty",
+                "rental", "airbnb", "creator", "service",
+            ))
+            if _is_svc_fb and agent_name != "booking":
+                logger.info(f"[Router] Service biz: trying booking agent as fallback for intent={intent}")
+                agent_result = await self._dispatch("booking", user_id, message, context)
+            elif not _is_svc_fb and agent_name != "sales":
+                logger.info(f"[Router] Retail biz: trying sales agent as fallback for intent={intent}")
+                agent_result = await self._dispatch("sales", user_id, message, context)
+
+            if not agent_result or not agent_result.get("handled"):
+                # Final fallback: chat agent
+                logger.warning(f"[Router] No agent handled intent={intent}, trying chat fallback")
+                agent_result = await self._dispatch("chat", user_id, message, context)
             if not agent_result or not agent_result.get("handled"):
                 await self._do_escalate(user_id, customer_id, f"No agent handled intent={intent}")
                 return {"handled": True, "escalated": True, "messages": [], "escalation_reason": f"Unhandled intent: {intent}"}

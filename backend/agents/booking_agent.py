@@ -60,18 +60,31 @@ class BookingAgent(BaseAgent):
                     if bk:
                         return await self._show_booking_actions(bk, customer_name, language, user_id, customer_id)
 
+        # Use business_id from context (authoritative for product queries)
+        # Falls back to user_id for backward compatibility
+        biz_id = context.get("business_id", user_id)
+
         # Fetch services - exclude only explicitly physical/retail products
         # Safety net: also include any product with duration set (bookable service)
         # even if wrongly tagged as offering_type=product by the startup migration
         try:
             services = await self.db.products.find({
-                "user_id": user_id,
+                "user_id": biz_id,
                 "in_stock": {"$ne": False},
                 "$or": [
                     {"offering_type": {"$nin": ["physical", "retail", "product"]}},
                     {"offering_type": "product", "duration": {"$exists": True, "$ne": None}},
                 ],
             }).to_list(50)
+            # Fallback: if no services found (e.g. products saved without offering_type/duration),
+            # fetch ALL products so the booking flow always has something to show
+            if not services:
+                services = await self.db.products.find({
+                    "user_id": biz_id,
+                    "in_stock": {"$ne": False},
+                }).to_list(50)
+                if services:
+                    logger.info(f"[BookingAgent] Fallback: found {len(services)} products via all-products query for biz_id={biz_id}")
         except Exception as e:
             logger.error(f"[BookingAgent] DB error fetching services: {e}")
             return {"handled": False}

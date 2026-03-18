@@ -26,16 +26,19 @@ class SalesAgent(BaseAgent):
         business_config = context.get("business_config", {})
         discount_policy = business_config.get("discount_policy") or context.get("discount_policy", "")
 
+        # Use business_id from context (authoritative for product queries)
+        biz_id = context.get("business_id", user_id)
+
         # Fetch products - physical/digital products first
         try:
             products = await self.db.products.find({
-                "user_id": user_id,
+                "user_id": biz_id,
                 "offering_type": {"$in": ["product", "digital", "menu_item"]}
             }).to_list(100)
             # Fallback: if no physical products found (e.g. service business with empty/wrong
             # business_type routed here), show ALL products so catalog is never empty
             if not products:
-                products = await self.db.products.find({"user_id": user_id}).to_list(100)
+                products = await self.db.products.find({"user_id": biz_id}).to_list(100)
         except Exception as e:
             logger.error(f"[SalesAgent] DB error fetching products: {e}")
             return {"handled": False}
