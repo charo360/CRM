@@ -242,7 +242,8 @@ class AIMessageDrafter:
         customer_id: str = None,
         user_country: str = None,
         customer_phone: str = None,
-        model_pref: str = 'standard'
+        model_pref: str = 'standard',
+        closed_days: List[str] = None
     ) -> Dict[str, any]:
         """
         Draft a personalized follow-up message for a customer using learned user writing style
@@ -295,7 +296,7 @@ class AIMessageDrafter:
             language_context += f"\nBusiness is based in {user_country}."
         
         # Create AI prompt with personalized style
-        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions, past_answers_context, language_context)
+        prompt = self._create_personalized_prompt(context, business_name, tone, business_knowledge, user_style, custom_instructions, past_answers_context, language_context, closed_days=closed_days)
         
         # Call LLM Provider
         try:
@@ -557,7 +558,7 @@ Reply:"""
 
         return prompt
 
-    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None, past_answers_context: str = None, language_context: str = None) -> str:
+    def _create_personalized_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None, user_style: Dict = None, custom_instructions: str = None, past_answers_context: str = None, language_context: str = None, closed_days: List[str] = None) -> str:
         """Wrap the base prompt with user style and custom writing instructions."""
 
         base_prompt = self._create_prompt(context, business_name, tone, business_knowledge)
@@ -601,6 +602,16 @@ Reply:"""
             if style_instructions:
                 style_section = "\n\nOWNER STYLE (mirror this subtly):\n" + "\n".join(style_instructions)
                 base_prompt = base_prompt + style_section
+
+        # Hard closed-day override — appended LAST so it cannot be overridden by memory or history
+        if closed_days:
+            closed_str = ", ".join(closed_days)
+            base_prompt = base_prompt + (
+                f"\n\n⛔ ABSOLUTE RULE — CLOSED DAYS (this overrides everything above, including any chat history):\n"
+                f"The business is CLOSED on: {closed_str}.\n"
+                f"NEVER confirm, suggest, or imply availability on these days — regardless of what was said earlier in the conversation.\n"
+                f"If the customer asks about {closed_str}, reply: we are closed on that day and ask them to pick a weekday."
+            )
 
         return base_prompt
     

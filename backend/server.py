@@ -10613,14 +10613,16 @@ async def evolution_webhook(request: Request):
                         if not business_knowledge:
                             business_knowledge = ""
                         
-                        # Append business hours context
+                        # Append business hours context + build closed_days hard override list
                         business_hours = user_settings.get("business_hours", {})
+                        closed_days_list = []
                         if business_hours:
                             hours_lines = ["\nBUSINESS HOURS:"]
                             for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]:
                                 h = business_hours.get(day, {})
                                 if h.get("closed"):
                                     hours_lines.append(f"- {day.capitalize()}: CLOSED (Do NOT offer bookings or availability for this day)")
+                                    closed_days_list.append(day.capitalize())
                                 elif h.get("open") and h.get("close"):
                                     hours_lines.append(f"- {day.capitalize()}: {h.get('open')} to {h.get('close')}")
                             business_knowledge += "\n".join(hours_lines)
@@ -10646,7 +10648,8 @@ async def evolution_webhook(request: Request):
                             customer_id=customer_id,
                             user_country=user_country_code,
                             customer_phone=customer_phone,
-                            model_pref=user_settings.get("ai_model", "standard")
+                            model_pref=user_settings.get("ai_model", "standard"),
+                            closed_days=closed_days_list if closed_days_list else None
                         )
                         
                         reply_text = result.get("drafted_message", "")
