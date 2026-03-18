@@ -8993,13 +8993,21 @@ async def evolution_webhook(request: Request):
                             _bk_ts_jump_period = "evening"
 
                         if _bk_ts_nav_action == "next" and _bk_ts_all:
+                            # If a period is active, paginate within that period's slots only
+                            _bk_ts_cur_period = _bk_ts_nav_state.get("time_slots_period")
+                            if _bk_ts_cur_period:
+                                _pf = {"morning": (0, 12), "afternoon": (12, 17), "evening": (17, 24)}
+                                _ps, _pe = _pf.get(_bk_ts_cur_period, (0, 24))
+                                _bk_ts_pool = [s for s in _bk_ts_all if _ps <= int(s["time"].split(":")[0]) < _pe]
+                            else:
+                                _bk_ts_pool = _bk_ts_all
                             _bk_ts_next_page = _bk_ts_cur_page + 1
                             _bk_ts_offset = _bk_ts_next_page * _BK_TS_PAGE_SIZE
-                            _bk_ts_remaining_slots = _bk_ts_all[_bk_ts_offset:]
+                            _bk_ts_remaining_slots = _bk_ts_pool[_bk_ts_offset:]
                             if not _bk_ts_remaining_slots:
-                                # Wrap around to page 0
+                                # Wrap around to page 0 of same pool
                                 _bk_ts_next_page = 0
-                                _bk_ts_remaining_slots = _bk_ts_all
+                                _bk_ts_remaining_slots = _bk_ts_pool
                             _bk_ts_plabel = _bk_ts_period_of(_bk_ts_remaining_slots[0]["time"])
                             _bk_ts_msg, _bk_ts_objs, _ = _bk_ts_build_and_send(_bk_ts_remaining_slots, _bk_ts_plabel, _bk_ts_next_page, _bk_ts_all)
                             await db.pending_catalogs.update_one(
