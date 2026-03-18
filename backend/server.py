@@ -8624,6 +8624,9 @@ async def evolution_webhook(request: Request):
                         _bk_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
                         _bk_day_key = _bk_wd_keys[_parsed_bk_date.weekday()]
                         _bk_day_hours = _bk_biz_hours.get(_bk_day_key, {})
+                        
+                        # Debug logging for business hours validation
+                        logging.info(f"[Booking] Date={_parsed_bk_date.strftime('%A %Y-%m-%d')}, day_key={_bk_day_key}, day_hours={_bk_day_hours}, closed={_bk_day_hours.get('closed')}")
 
                         if _bk_day_hours.get("closed"):
                             ws = get_whatsapp_service(db)
