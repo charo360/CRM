@@ -367,18 +367,25 @@ export default function BookingsScreen() {
   const todayCount = bookings.filter(b => b.date === todayStr && b.status !== 'cancelled').length;
 
   const _now = new Date();
-  // Week: Monday of current week
+  // Week: Monday → Sunday of current week (includes future days)
   const _dow = _now.getDay(); // 0=Sun
   const _mondayOffset = (_dow === 0 ? -6 : 1 - _dow);
   const _weekStart = new Date(_now);
   _weekStart.setDate(_now.getDate() + _mondayOffset);
   _weekStart.setHours(0, 0, 0, 0);
+  const _weekEnd = new Date(_weekStart);
+  _weekEnd.setDate(_weekStart.getDate() + 6);
   const _weekStartStr = formatDate(_weekStart);
-  const thisWeekCount = bookings.filter(b => b.date >= _weekStartStr && b.date <= todayStr && b.status !== 'cancelled').length;
+  const _weekEndStr = formatDate(_weekEnd);
+  const thisWeekCount = bookings.filter(b => b.date >= _weekStartStr && b.date <= _weekEndStr && b.status !== 'cancelled').length;
 
-  // Month: 1st of current month
-  const _monthStartStr = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}-01`;
-  const thisMonthCount = bookings.filter(b => b.date >= _monthStartStr && b.date <= todayStr && b.status !== 'cancelled').length;
+  // Month: entire current calendar month (includes future dates)
+  const _curYear = _now.getFullYear();
+  const _curMonth = _now.getMonth() + 1;
+  const thisMonthCount = bookings.filter(b => {
+    const parts = b.date.split('-');
+    return Number(parts[0]) === _curYear && Number(parts[1]) === _curMonth && b.status !== 'cancelled';
+  }).length;
 
   const allTimeCount = bookings.filter(b => b.status !== 'cancelled').length;
 
@@ -852,10 +859,10 @@ const styles = StyleSheet.create({
   filterContent: { paddingHorizontal: 12, gap: 8, paddingBottom: 8 },
   filterChip: {
     paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
-    backgroundColor: '#0F1E35', borderWidth: 1, borderColor: '#1A2942',
+    backgroundColor: '#0F1E35', borderWidth: 1, borderColor: '#2A3D5C',
   },
   filterChipActive: { backgroundColor: '#25D36622', borderColor: '#25D366' },
-  filterChipText: { color: '#64748B', fontSize: 13, fontWeight: '500' },
+  filterChipText: { color: '#CBD5E1', fontSize: 13, fontWeight: '500' },
   filterChipTextActive: { color: '#25D366' },
 
   // Booking card
