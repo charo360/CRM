@@ -329,6 +329,27 @@ async def fix_team_members_index():
     except Exception as e:
         logging.warning(f"[Migration] offering_type backfill failed: {e}")
 
+    # Phase 1e migration: fix services wrongly tagged as offering_type=product by the previous migration.
+    # Products with duration set are bookable services, not physical retail products.
+    try:
+        r5b = await db.products.update_many(
+            {"offering_type": "product", "duration": {"$exists": True, "$ne": None}},
+            {"$set": {"offering_type": "service"}}
+        )
+        logging.info(f"[Migration] Fixed {r5b.modified_count} services wrongly tagged as offering_type=product → service")
+    except Exception as e:
+        logging.warning(f"[Migration] offering_type service fix failed: {e}")
+
+    # Phase 1f migration: fix products with service_category set — they are bookable services
+    try:
+        r5c = await db.products.update_many(
+            {"offering_type": "product", "service_category": {"$exists": True, "$not": {"$in": [None, ""]}}},
+            {"$set": {"offering_type": "service"}}
+        )
+        logging.info(f"[Migration] Fixed {r5c.modified_count} products with service_category → offering_type=service")
+    except Exception as e:
+        logging.warning(f"[Migration] service_category fix failed: {e}")
+
     # Startup: purge invalid contacts for all existing users (one-time cleanup + permanent gate)
     try:
         asyncio.create_task(_startup_purge_invalid_contacts())
@@ -10207,6 +10228,41 @@ async def evolution_webhook(request: Request):
                             _pm_lines.append(f"  - {_line}")
                     if _pm_lines:
                         _bk_parts.append("Payment methods accepted:\n" + "\n".join(_pm_lines))
+                # Inject actual product catalog from DB so all agents see real products/services
+                _biz_id_for_ctx = user.get("business_id", user["_id"])
+                _ctx_currency = user.get("currency") or _user_settings.get("currency", "USD")
+                try:
+                    _ctx_products = await db.products.find({"user_id": _biz_id_for_ctx}).to_list(50)
+                    if _ctx_products:
+                        _cat_lines = ["\nPRODUCTS/SERVICES CATALOG (use exact names and prices — do NOT invent):"]
+                        for _cp in _ctx_products:
+                            _cp_stock = "" if _cp.get("in_stock", True) else " [OUT OF STOCK]"
+                            _cp_price = f"{_ctx_currency} {_cp['price']:,.0f}" if _cp.get("price") is not None else "Price on request"
+                            _cp_dur = f" · {_cp['duration']} min" if _cp.get("duration") else ""
+                            _cp_desc = f" — {_cp['description'][:80]}" if _cp.get("description") else ""
+                            _cat_lines.append(f"  • {_cp['name']}: {_cp_price}{_cp_dur}{_cp_desc}{_cp_stock}")
+                        _cat_lines.append("IMPORTANT: Only mention products listed above. Never invent product names or prices.")
+                        _bk_parts.append("\n".join(_cat_lines))
+                    else:
+                        _bk_parts.append("No products/services in catalog yet. Do NOT make up product names or prices.")
+                except Exception as _ctx_cat_err:
+                    logging.warning(f"[Webhook] Failed to fetch products for agent context: {_ctx_cat_err}")
+
+                # Inject structured business hours from settings (not the text field)
+                _struct_bh = _user_settings.get("business_hours", {})
+                if _struct_bh:
+                    _bh_lines = ["Business Hours:"]
+                    _bh_day_names = {"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
+                                     "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}
+                    for _bh_key, _bh_label in _bh_day_names.items():
+                        _bh = _struct_bh.get(_bh_key, {})
+                        if _bh.get("closed"):
+                            _bh_lines.append(f"  {_bh_label}: CLOSED")
+                        elif _bh.get("open") and _bh.get("close"):
+                            _bh_lines.append(f"  {_bh_label}: {_bh['open']} – {_bh['close']}")
+                    if len(_bh_lines) > 1:
+                        _bk_parts.append("\n".join(_bh_lines))
+
                 _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
 
                 currency = user.get("currency") or _user_settings.get("currency", "USD")

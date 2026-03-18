@@ -60,13 +60,17 @@ class BookingAgent(BaseAgent):
                     if bk:
                         return await self._show_booking_actions(bk, customer_name, language, user_id, customer_id)
 
-        # Fetch services - exclude physical retail products only
-        # Products without offering_type are treated as services (backward compat)
+        # Fetch services - exclude only explicitly physical/retail products
+        # Safety net: also include any product with duration set (bookable service)
+        # even if wrongly tagged as offering_type=product by the startup migration
         try:
             services = await self.db.products.find({
                 "user_id": user_id,
                 "in_stock": {"$ne": False},
-                "offering_type": {"$not": {"$in": ["physical", "retail", "product"]}},
+                "$or": [
+                    {"offering_type": {"$nin": ["physical", "retail", "product"]}},
+                    {"offering_type": "product", "duration": {"$exists": True, "$ne": None}},
+                ],
             }).to_list(50)
         except Exception as e:
             logger.error(f"[BookingAgent] DB error fetching services: {e}")
