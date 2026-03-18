@@ -7930,9 +7930,29 @@ async def evolution_webhook(request: Request):
                                         "created_at": _now_conf,
                                         "source": "whatsapp_confirmed"
                                     })
+                                    # Create sales record so order appears in CRM sales tab
+                                    await db.sales.insert_one({
+                                        "_id": str(uuid.uuid4()),
+                                        "user_id": _biz_id_conf,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "product": _conf_product["name"],
+                                        "product_id": _conf_product["_id"],
+                                        "amount": _price_conf,
+                                        "quantity": 1,
+                                        "status": "pending_payment",
+                                        "payment_status": "unpaid",
+                                        "order_id": _order_id_conf,
+                                        "order_number": _order_number,
+                                        "source": "whatsapp_order",
+                                        "created_at": _now_conf,
+                                    })
                                     await db.customers.update_one(
                                         {"_id": customer_id},
-                                        {"$set": {"last_contacted": _now_conf}}
+                                        {
+                                            "$inc": {"purchase_count": 1, "total_spent": _price_conf},
+                                            "$set": {"last_contacted": _now_conf}
+                                        }
                                     )
                                     # Extract payment details from user.payment_methods (top-level)
                                     _user_conf_doc = await db.users.find_one({"_id": _biz_id_conf})
@@ -9356,6 +9376,33 @@ async def evolution_webhook(request: Request):
                                         "created_at": _bkc_now,
                                         "updated_at": _bkc_now,
                                     })
+                                    # Create sales record so booking appears in CRM sales/revenue tab
+                                    _bkc_sale_amount = _bkc_total or _bkc_price or 0
+                                    await db.sales.insert_one({
+                                        "_id": str(uuid.uuid4()),
+                                        "user_id": _bkc_biz_id,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "product": _bkc_svc_name,
+                                        "product_id": _bkc_svc_id,
+                                        "amount": _bkc_sale_amount,
+                                        "quantity": 1,
+                                        "type": "booking",
+                                        "status": "pending_payment",
+                                        "payment_status": _bkc_payment_status,
+                                        "booking_id": _bkc_id,
+                                        "booking_number": _bkc_number,
+                                        "source": "whatsapp_booking",
+                                        "created_at": _bkc_now,
+                                    })
+                                    # Update customer stats
+                                    await db.customers.update_one(
+                                        {"_id": customer_id},
+                                        {
+                                            "$inc": {"purchase_count": 1, "total_spent": _bkc_sale_amount},
+                                            "$set": {"last_contacted": _bkc_now}
+                                        }
+                                    )
                                     _bkc_total_str = f"{_bkc_currency} {_bkc_total:,.0f}" if _bkc_total else _bkc_price_str
                                     _bkc_deposit_str = f"{_bkc_currency} {_bkc_deposit_amt:,.0f}" if _bkc_deposit_amt else ""
                                     # Build payment methods snippet (full details incl. multi-field format)
