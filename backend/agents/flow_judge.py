@@ -28,74 +28,87 @@ Booking progress so far:
 
 Current step  : {current_step}
 Waiting for   : {waiting_for}
+Last bot msg  : {last_bot_message}
+Detected lang : {language}
 
 Customer just said: "{message}"
 
-MULTILINGUAL: Customers write in ANY language — English, Swahili, Sheng, French, Spanish, 
-Arabic, Hindi, Pidgin, Portuguese, Chinese, or any mix. Understand meaning regardless of 
-language. Extract values in whatever form they appear — do not require English format.
+═══ LANGUAGE RULE (CRITICAL) ═══
+You MUST reply in the EXACT same language the customer used.
+Detected customer language: {language}
+• If they wrote in English → reply ONLY in English
+• If they wrote in Swahili → reply ONLY in Swahili  
+• If they wrote in French → reply ONLY in French
+• NEVER switch languages. NEVER mix languages unless the customer did.
 
-Examples across languages:
-• "kesho asubuhi" → date=tomorrow, time=morning (Swahili)
-• "lunes" → Monday (Spanish)
-• "demain" → tomorrow (French)
-• "غداً" → tomorrow (Arabic)
-• "kal subah" → tomorrow morning (Hindi)
-• "2 pessoas" → 2 people (Portuguese)
-• "próxima semana" → next week (Spanish/Portuguese)
+═══ MULTILINGUAL INPUT ═══
+Customers write in ANY language. Understand meaning in ANY language:
+• "kesho asubuhi" → tomorrow morning (Swahili)
+• "lunes" → Monday (Spanish) | "demain" → tomorrow (French)
+• "غداً" → tomorrow (Arabic) | "kal subah" → tomorrow morning (Hindi)
+• "próxima semana" → next week | "mbili" → 2 (Swahili)
+
+═══ CONTEXT-AWARE NUMBER RULE ═══
+If the last bot message mentioned a specific date being CLOSED/UNAVAILABLE,
+and the customer replies with JUST A NUMBER (e.g. "26", "27"),
+that number is the DAY of the SAME MONTH they were discussing.
+Extract it as "[number] [month]" — action MUST be "continue".
+
+Example:
+  Last bot: "Sorry, we're closed on 25 March"
+  Customer: "26" → extracted_value: "26 March", action: "continue"
+  Customer: "27" → extracted_value: "27 March", action: "continue"
 
 Return ONLY a valid JSON object — no explanation, no code fences:
 {{
-  "action": "continue | go_back | tangent | cancel | unclear",
-  "extracted_value": "the value they provided (date/time/number/name) — or null",
+  "action": "continue | go_back | tangent | cancel | unclear | paginate_next | jump_period",
+  "extracted_value": "the value they provided — or null",
   "target_step": "service_selection | date | time | addon | confirm | null",
-  "reply": "your reply to the customer (ONLY for tangent/cancel/unclear — 1-2 short lines, warm WhatsApp tone, match their language)",
+  "period": "morning | afternoon | evening | null",
+  "reply": "your reply (ONLY for tangent/cancel/unclear — 1-2 lines, match their language)",
   "reasoning": "brief explanation"
 }}
 
-Action rules (choose exactly one):
-- continue  : they answered what you asked — extract the raw value into extracted_value.
-              Be EXTREMELY FLEXIBLE with formats in ANY language:
-              • Dates: "March 23", "23 March", "23/3", "Monday", "tomorrow", "next week", 
-                "kesho", "lunes", "demain", "الاثنين", "segunda-feira"
-              • Times: "3pm", "15:00", "3 o'clock", "afternoon", "morning", "evening", 
-                "asubuhi", "mañana", "soir", "صباحاً"
-              • Numbers: "2", "two", "couple", "a few", "mbili", "dos", "deux", "اثنان"
-              • Names: any text that looks like a name in any script
-              Extract the value AS-IS — don't normalize, just pass it through.
+═══ ACTION RULES ═══
 
-- go_back   : they EXPLICITLY want to change something already chosen.
-              Set target_step based on WHAT they want to change:
-              • "change the service" / "different service" → target_step: "service_selection"
-              • "different date" / "another day" → target_step: "date"
-              • "different time" / "another time" → target_step: "time"
-              • "change extras" / "no addons" → target_step: "addon"
-              • "start over" / "from beginning" → target_step: "service_selection"
-              
-              Trigger words (any language): "another", "change", "different", "actually no", 
-              "wait no", "wrong", "not that one", "other one", "choose again", "start over",
-              "ya nyingine", "badilisha", "tena", "cambiar", "changer", "outro", "تغيير"
-              
-              CRITICAL: DO NOT classify dates/times/numbers as go_back just because format differs.
+- continue  : they provided what was asked. BE EXTREMELY FLEXIBLE — any format, any language.
+              • Dates: "March 23", "23 March", "23/3", "Monday", "tomorrow", "kesho",
+                "lunes", "demain", "الاثنين", "26" (in date context), "next week"
+              • Times: "3pm", "15:00", "afternoon", "morning", "asubuhi", "soir", "3"
+              • Numbers/slots: "1", "2", "5" (selecting from a menu)
+              • Names: any text that could be a name
+              Extract value AS-IS. If they gave a date, extract the date.
+              ⚠ RULE: If you are waiting for a date and the customer provides ANY date-like
+              value (number, day name, month name, relative word) → action MUST be "continue".
+              ⚠ RULE: If you are waiting for a time slot number and the customer provides a
+              number → action MUST be "continue".
 
-- tangent   : unrelated message OR mid-flow question about something not asked.
-              Examples:
-              • Casual: "hello", "thanks", "haha", "okay cool", "ngoja", "sawa", "merci"
-              • Price inquiry mid-flow: "how much is that?", "what's the price?", "bei gani?"
-              • Hours inquiry: "what time do you close?", "are you open Sunday?"
-              • General question: "do you have parking?", "where are you located?"
-              
-              Set reply = answer their question briefly + gentle re-ask for what you need.
-              Example: "The massage is KES 1,400 😊 So what date works for you? 📅"
+- go_back   : ONLY when they EXPLICITLY say they want to change a PAST choice.
+              Required trigger words: "change", "different", "another", "wrong", "not that",
+              "actually no", "wait no", "start over", "badilisha", "tena", "ya nyingine",
+              "cambiar", "changer", "تغيير"
+              Set target_step to what they want to change.
+              ⚠ NEVER use go_back just because they sent a date/time/number.
+              ⚠ NEVER use go_back when you are WAITING for that type of input.
 
-- cancel    : they explicitly want to stop ("never mind", "forget it", "cancel",
-              "stop", "hapana", "acha", "no thanks", "skip", "cancelar", "annuler", "إلغاء").
+- tangent   : unrelated question mid-flow (price, hours, location, casual chat).
+              Set reply = brief answer + gentle re-ask. Match their language.
+
+- cancel    : explicit stop intent ("cancel", "never mind", "hapana", "acha", "stop").
               Set reply = friendly goodbye in their language.
 
-- unclear   : genuinely cannot tell what they mean. Set reply = ONE clarifying question only.
+- unclear   : ONLY if genuinely cannot tell. Set reply = one clarifying question.
+              ⚠ Do NOT use unclear when they sent a date/time/number that makes sense in context.
 
-Tone: natural WhatsApp — friendly, concise, never robotic. Match customer's language and energy.
-Never say "I'm an AI" or "I cannot" — always be helpful and human-like.
+- paginate_next : they want to see more time slots ("next", "more", "zaidi", "show more").
+
+- jump_period   : they want a specific time of day.
+                  "morning"/"asubuhi"/"mañana" → period: "morning"
+                  "afternoon"/"mchana"/"après-midi" → period: "afternoon"
+                  "evening"/"jioni"/"soir" → period: "evening"
+
+Tone: natural WhatsApp — friendly, concise, never robotic.
+Never say "I'm an AI" or "I cannot".
 """
 
 
@@ -120,6 +133,7 @@ class FlowJudge:
         language: str = "English",
         flow_type: str = "booking",
         currency: str = "",
+        last_bot_message: str = "",
     ) -> Dict[str, Any]:
         """
         Ask the AI what to do with this mid-flow message.
@@ -156,6 +170,7 @@ class FlowJudge:
             waiting_for=waiting_for,
             message=message,
             language=language,
+            last_bot_message=(last_bot_message[:120] if last_bot_message else "(none)"),
         )
 
         try:
@@ -172,7 +187,7 @@ class FlowJudge:
                     raw = raw[start:end]
             result = json.loads(raw)
             action = result.get("action", "continue")
-            if action not in ("continue", "go_back", "tangent", "cancel", "unclear"):
+            if action not in ("continue", "go_back", "tangent", "cancel", "unclear", "paginate_next", "jump_period"):
                 result["action"] = "continue"
             logger.info(
                 f"[FlowJudge] step='{current_step}' msg='{message[:50]}' "

@@ -7254,9 +7254,11 @@ async def evolution_webhook(request: Request):
                     _body_lower = _body_stripped.lower()
                     # Accept plain digits, emoji keycap digits, written numbers (multilingual)
                     _num_map = {
-                        # Digits
+                        # Digits 1-16 (extended for time slot menus)
                         "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
                         "6": 6, "7": 7, "8": 8, "9": 9,
+                        "10": 10, "11": 11, "12": 12, "13": 13,
+                        "14": 14, "15": 15, "16": 16,
                         # Emoji keycap digits
                         "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
                         "4\ufe0f\u20e3": 4, "5\ufe0f\u20e3": 5, "6\ufe0f\u20e3": 6,
@@ -8660,6 +8662,7 @@ async def evolution_webhook(request: Request):
                                 pending_state=_bk_date_state,
                                 language=_fj_bkd_lang,
                                 currency=_fj_bkd_cur,
+                                last_bot_message=_bk_date_state.get("last_bot_message", ""),
                             )
                             _fj_bkd_action = _fj_bkd_result.get("action", "continue")
                             _fj_bkd_ws = get_whatsapp_service(db)
@@ -8784,10 +8787,14 @@ async def evolution_webhook(request: Request):
 
                         if _bk_day_hours.get("closed"):
                             ws = get_whatsapp_service(db)
+                            _closed_msg = f"Sorry, we're closed on {_parsed_bk_date.strftime('%A %d %B')}. Please choose another date 📅"
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {"last_bot_message": _closed_msg, "updated_at": datetime.utcnow()}}
+                            )
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message=f"Sorry, we're closed on {_parsed_bk_date.strftime('%A %d %B')}. Please choose another date 📅",
-                                customer_name=customer_name, send_context="booking_flow"
+                                message=_closed_msg, customer_name=customer_name, send_context="booking_flow"
                             )
                             return {"status": "ok", "handled_by": "booking_date_closed"}
 
@@ -8838,16 +8845,6 @@ async def evolution_webhook(request: Request):
                         except Exception:
                             _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
                         
-                        # Show more slots for shorter intervals so customers see more availability
-                        # 15 min → 16 slots (4 hours), 30 min → 12 slots (6 hours), 60+ min → 8 slots
-                        if _bk_slot_mins <= 15:
-                            _bk_max_slots = 16
-                        elif _bk_slot_mins <= 30:
-                            _bk_max_slots = 12
-                        else:
-                            _bk_max_slots = 8
-                        _bk_avail = _bk_avail[:_bk_max_slots]
-
                         if not _bk_avail:
                             ws = get_whatsapp_service(db)
                             await ws.send_message(
@@ -8857,9 +8854,24 @@ async def evolution_webhook(request: Request):
                             )
                             return {"status": "ok", "handled_by": "booking_date_no_slots"}
 
-                        _bk_date_label = _parsed_bk_date.strftime("%A %d %B %Y")
-                        _bk_slot_lines = [f"🗓️ *Available times on {_bk_date_label}:*\n"]
-                        for _bk_i, _bk_slot in enumerate(_bk_avail, 1):
+                        # ── Paginated time slots: show 5 per page ──
+                        _BK_PAGE_SIZE = 5
+                        _bk_all_slots = [{"time": s["time"], "remaining": s["remaining"]} for s in _bk_avail]
+                        _bk_page_slots = _bk_all_slots[:_BK_PAGE_SIZE]
+                        _bk_has_more = len(_bk_all_slots) > _BK_PAGE_SIZE
+
+                        # Detect time-of-day period of first slot for header
+                        def _bk_slot_period(t):
+                            h = int(t.split(":")[0])
+                            if h < 12: return "Morning"
+                            if h < 17: return "Afternoon"
+                            return "Evening"
+
+                        _bk_date_label = _parsed_bk_date.strftime("%A %d %B")
+                        _bk_period_label = _bk_slot_period(_bk_page_slots[0]["time"])
+                        _bk_slot_lines = [f"🕐 *{_bk_period_label} — {_bk_date_label}:*\n"]
+                        _bk_page_objs = []
+                        for _bk_i, _bk_slot in enumerate(_bk_page_slots, 1):
                             _bk_time = _bk_slot["time"]
                             _bk_rem = _bk_slot["remaining"]
                             if _bk_capacity > 1 and _bk_rem > 1:
@@ -8868,15 +8880,29 @@ async def evolution_webhook(request: Request):
                                 _bk_slot_lines.append(f"{_bk_i}. {_bk_time} (1 spot left)")
                             else:
                                 _bk_slot_lines.append(f"{_bk_i}. {_bk_time}")
-                        _bk_slot_lines.append("\n_Reply with a number to select your time_")
+                            _bk_page_objs.append({"index": _bk_i, "time": _bk_time, "remaining": _bk_rem})
 
-                        _bk_slot_objs = [{"index": _i, "time": _s["time"], "remaining": _s["remaining"]} for _i, _s in enumerate(_bk_avail, 1)]
+                        _bk_nav_hints = ["_Reply with a number to select_"]
+                        if _bk_has_more:
+                            _bk_nav_hints.append('_"next" for more slots_')
+                        # Check if afternoon/evening slots exist
+                        _bk_has_afternoon = any(int(s["time"].split(":")[0]) >= 12 for s in _bk_all_slots)
+                        _bk_has_evening = any(int(s["time"].split(":")[0]) >= 17 for s in _bk_all_slots)
+                        if _bk_has_afternoon and _bk_period_label == "Morning":
+                            _bk_nav_hints.append('_"afternoon" for afternoon slots_')
+                        if _bk_has_evening and _bk_period_label != "Evening":
+                            _bk_nav_hints.append('_"evening" for evening slots_')
+                        _bk_slot_lines.append("\n" + " · ".join(_bk_nav_hints))
+
                         await db.pending_catalogs.update_one(
                             {"customer_id": customer_id, "user_id": user["_id"]},
                             {"$set": {
                                 "action_context": "booking_time_select",
                                 "booking_date": str(_parsed_bk_date),
-                                "time_slots": _bk_slot_objs,
+                                "all_slots": _bk_all_slots,
+                                "time_slots": _bk_page_objs,
+                                "time_slots_page": 0,
+                                "time_slots_period": None,
                                 "updated_at": datetime.utcnow()
                             }}
                         )
@@ -8885,8 +8911,127 @@ async def evolution_webhook(request: Request):
                             user_id=user["_id"], to_number=from_number,
                             message="\n".join(_bk_slot_lines), customer_name=customer_name, send_context="booking_flow"
                         )
-                        logging.info(f"[Booking] Date={_parsed_bk_date}, slots shown={len(_bk_avail)} for customer={customer_id}")
+                        logging.info(f"[Booking] Date={_parsed_bk_date}, total_slots={len(_bk_all_slots)}, page=0, shown={len(_bk_page_slots)} for customer={customer_id}")
                         return {"status": "ok", "handled_by": "booking_date_input"}
+
+                # TIME SLOT NAVIGATION HANDLER — handles "next", "morning", "afternoon", "evening"
+                # when customer is in booking_time_select state (navigating paginated slots)
+                if not button_action and not from_me and body:
+                    _bk_ts_nav_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_time_select"
+                    })
+                    if _bk_ts_nav_state:
+                        _bk_ts_body = body.strip().lower()
+                        _bk_ts_all = _bk_ts_nav_state.get("all_slots", [])
+                        _bk_ts_cur_page = _bk_ts_nav_state.get("time_slots_page", 0)
+                        _bk_ts_capacity = 1
+                        _BK_TS_PAGE_SIZE = 5
+
+                        def _bk_ts_period_of(t):
+                            h = int(t.split(":")[0])
+                            if h < 12: return "Morning"
+                            if h < 17: return "Afternoon"
+                            return "Evening"
+
+                        def _bk_ts_build_and_send(slots_subset, period_label, page_idx, total_all):
+                            """Build slot message lines and page objs for a given subset."""
+                            page_slots = slots_subset[:_BK_TS_PAGE_SIZE]
+                            has_more = len(slots_subset) > _BK_TS_PAGE_SIZE
+                            bk_date = _bk_ts_nav_state.get("booking_date", "")
+                            try:
+                                from datetime import date as _dt_date
+                                _d = datetime.strptime(bk_date, "%Y-%m-%d")
+                                date_label = _d.strftime("%A %d %B")
+                            except Exception:
+                                date_label = bk_date
+                            lines = [f"🕐 *{period_label} — {date_label}:*\n"]
+                            objs = []
+                            for idx, s in enumerate(page_slots, 1):
+                                t = s["time"]
+                                rem = s.get("remaining", 1)
+                                cap = _bk_ts_nav_state.get("booking_service_capacity", 1)
+                                if cap > 1 and rem > 1:
+                                    lines.append(f"{idx}. {t} ({rem} spots left)")
+                                elif cap > 1 and rem == 1:
+                                    lines.append(f"{idx}. {t} (1 spot left)")
+                                else:
+                                    lines.append(f"{idx}. {t}")
+                                objs.append({"index": idx, "time": t, "remaining": rem})
+                            nav_hints = ["_Reply with a number to select_"]
+                            if has_more:
+                                nav_hints.append('_"next" for more_')
+                            has_aft = any(int(s["time"].split(":")[0]) >= 12 for s in total_all)
+                            has_eve = any(int(s["time"].split(":")[0]) >= 17 for s in total_all)
+                            if has_aft and period_label == "Morning":
+                                nav_hints.append('_"afternoon" for afternoon_')
+                            if has_eve and period_label != "Evening":
+                                nav_hints.append('_"evening" for evening_')
+                            if period_label != "Morning":
+                                nav_hints.append('_"morning" for morning_')
+                            lines.append("\n" + " · ".join(nav_hints))
+                            return "\n".join(lines), objs, has_more
+
+                        # Navigation word detection
+                        _bk_ts_nav_action = None
+                        _bk_ts_jump_period = None
+                        _next_words = {"next", "more", "zaidi", "show more", "more slots", "siguiente", "suivant"}
+                        _morning_words = {"morning", "asubuhi", "mañana", "matin", "subah", "صباح"}
+                        _afternoon_words = {"afternoon", "mchana", "après-midi", "tarde", "dopogiorno", "بعد الظهر"}
+                        _evening_words = {"evening", "jioni", "soir", "noche", "sera", "مساء"}
+
+                        if _bk_ts_body in _next_words:
+                            _bk_ts_nav_action = "next"
+                        elif _bk_ts_body in _morning_words:
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "morning"
+                        elif _bk_ts_body in _afternoon_words:
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "afternoon"
+                        elif _bk_ts_body in _evening_words:
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "evening"
+
+                        if _bk_ts_nav_action == "next" and _bk_ts_all:
+                            _bk_ts_next_page = _bk_ts_cur_page + 1
+                            _bk_ts_offset = _bk_ts_next_page * _BK_TS_PAGE_SIZE
+                            _bk_ts_remaining_slots = _bk_ts_all[_bk_ts_offset:]
+                            if not _bk_ts_remaining_slots:
+                                # Wrap around to page 0
+                                _bk_ts_next_page = 0
+                                _bk_ts_remaining_slots = _bk_ts_all
+                            _bk_ts_plabel = _bk_ts_period_of(_bk_ts_remaining_slots[0]["time"])
+                            _bk_ts_msg, _bk_ts_objs, _ = _bk_ts_build_and_send(_bk_ts_remaining_slots, _bk_ts_plabel, _bk_ts_next_page, _bk_ts_all)
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {"time_slots": _bk_ts_objs, "time_slots_page": _bk_ts_next_page, "updated_at": datetime.utcnow()}}
+                            )
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_msg, customer_name=customer_name, send_context="booking_flow")
+                            return {"status": "ok", "handled_by": "booking_time_next_page"}
+
+                        elif _bk_ts_nav_action == "jump" and _bk_ts_all:
+                            _period_filter = {"morning": (0, 12), "afternoon": (12, 17), "evening": (17, 24)}
+                            _ph_start, _ph_end = _period_filter[_bk_ts_jump_period]
+                            _bk_ts_period_slots = [s for s in _bk_ts_all if _ph_start <= int(s["time"].split(":")[0]) < _ph_end]
+                            if not _bk_ts_period_slots:
+                                ws = get_whatsapp_service(db)
+                                _period_names = {"morning": "morning", "afternoon": "afternoon", "evening": "evening"}
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"No {_period_names[_bk_ts_jump_period]} slots available on that date. Reply with a number from the list above, or try another period.",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_time_period_empty"}
+                            _bk_ts_plabel = _bk_ts_jump_period.capitalize()
+                            _bk_ts_msg, _bk_ts_objs, _ = _bk_ts_build_and_send(_bk_ts_period_slots, _bk_ts_plabel, 0, _bk_ts_all)
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {"time_slots": _bk_ts_objs, "time_slots_page": 0, "time_slots_period": _bk_ts_jump_period, "updated_at": datetime.utcnow()}}
+                            )
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_msg, customer_name=customer_name, send_context="booking_flow")
+                            return {"status": "ok", "handled_by": "booking_time_jump_period"}
 
                 # RESTAURANT PARTY SIZE HANDLER — after time slot selection
                 if not button_action and not from_me and body:
