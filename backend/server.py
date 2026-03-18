@@ -237,6 +237,119 @@ else:
 
 router = Router(db) # specific router for agents
 
+
+async def _handle_flow_go_back(
+    target_step: Optional[str],
+    pending_state: Dict[str, Any],
+    customer_id: str,
+    user_id: str,
+    from_number: str,
+    customer_name: str,
+    default_step: str = "booking_service_select"
+) -> Dict[str, Any]:
+    """
+    Handle go_back action with dynamic target_step routing.
+    FlowJudge tells us what the customer wants to change, we route accordingly.
+    """
+    ws = get_whatsapp_service(db)
+    
+    # Map FlowJudge target_step to action_context
+    step_map = {
+        "service_selection": "booking_service_select",
+        "date": "booking_date_input",
+        "time": "booking_time_select",
+        "addon": "booking_addon_select",
+        "confirm": "booking_confirm",
+    }
+    
+    action_context = step_map.get(target_step, default_step) if target_step else default_step
+    
+    # Resend appropriate prompt based on target step
+    if action_context == "booking_service_select":
+        # Fetch and resend service list
+        _svcs = await db.products.find({
+            "user_id": user_id, "in_stock": True,
+            "offering_type": {"$in": ["service","class","appointment","consultation","rental","equipment","package"]}
+        }).to_list(20)
+        if not _svcs:
+            _svcs = await db.products.find({"user_id": user_id, "in_stock": True}).to_list(20)
+        
+        if _svcs:
+            user_doc = await db.users.find_one({"_id": user_id})
+            _cur = (user_doc or {}).get("currency", "")
+            _lines = ["📋 *Our Services*\n"]
+            for _i, _s in enumerate(_svcs[:8], 1):
+                _price = _s.get("price", 0)
+                _dur = _s.get("duration")
+                _ps = f"{_cur} {_price:,.0f}" if _price else "Contact for price"
+                _ds = f" · {_dur} min" if _dur else ""
+                _lines.append(f"{_i}️⃣  *{_s['name']}* — {_ps}{_ds}")
+            _lines.append("\n_Reply with the number of the service you'd like to book_")
+            
+            await db.pending_catalogs.update_one(
+                {"customer_id": customer_id, "user_id": user_id},
+                {"$set": {
+                    "action_context": action_context,
+                    "products": [{"id": str(_s["_id"]), "name": _s["name"], "price": _s.get("price", 0),
+                                  "duration": _s.get("duration"), "index": _i,
+                                  "service_category": _s.get("service_category", "appointment")}
+                                 for _i, _s in enumerate(_svcs[:8], 1)],
+                    "updated_at": datetime.utcnow(),
+                }},
+                upsert=True
+            )
+            await ws.send_message(
+                user_id=user_id, to_number=from_number,
+                message="No problem! Here are the services again 😊\n\n" + "\n".join(_lines),
+                customer_name=customer_name, send_context="booking_flow"
+            )
+        else:
+            await ws.send_message(
+                user_id=user_id, to_number=from_number,
+                message="No problem! What service would you like to book? 😊",
+                customer_name=customer_name, send_context="booking_flow"
+            )
+    
+    elif action_context == "booking_date_input":
+        svc_name = pending_state.get("booking_service_name", "your service")
+        await db.pending_catalogs.update_one(
+            {"customer_id": customer_id, "user_id": user_id},
+            {"$set": {"action_context": action_context, "booking_date": None, "updated_at": datetime.utcnow()}}
+        )
+        await ws.send_message(
+            user_id=user_id, to_number=from_number,
+            message=f"No problem! What date would you like for *{svc_name}*? 📅\n_e.g. tomorrow, Monday, 15 March_",
+            customer_name=customer_name, send_context="booking_flow"
+        )
+    
+    elif action_context == "booking_time_select":
+        svc_name = pending_state.get("booking_service_name", "your service")
+        bk_date = pending_state.get("booking_date", "")
+        await db.pending_catalogs.update_one(
+            {"customer_id": customer_id, "user_id": user_id},
+            {"$set": {"action_context": action_context, "booking_time": None, "updated_at": datetime.utcnow()}}
+        )
+        await ws.send_message(
+            user_id=user_id, to_number=from_number,
+            message=f"No problem! What time would you like for *{svc_name}* on {bk_date}? ⏰",
+            customer_name=customer_name, send_context="booking_flow"
+        )
+    
+    else:
+        # Generic fallback
+        await db.pending_catalogs.update_one(
+            {"customer_id": customer_id, "user_id": user_id},
+            {"$set": {"action_context": action_context, "updated_at": datetime.utcnow()}}
+        )
+        await ws.send_message(
+            user_id=user_id, to_number=from_number,
+            message="No problem! Let's adjust that 😊",
+            customer_name=customer_name, send_context="booking_flow"
+        )
+    
+    return {"status": "ok", "handled_by": f"go_back_to_{action_context}"}
+
+
 # WhatsApp via Evolution API (config in .env: EVOLUTION_API_URL, EVOLUTION_API_KEY)
 
 # JWT Config — enforce strong secret
@@ -8552,47 +8665,17 @@ async def evolution_webhook(request: Request):
                             _fj_bkd_ws = get_whatsapp_service(db)
                             _bkd_svc = _bk_date_state.get("booking_service_name", "your service")
                             if _fj_bkd_action == "go_back":
-                                # Resend service list
-                                _go_back_svcs = await db.products.find({
-                                    "user_id": user["_id"], "in_stock": True,
-                                    "offering_type": {"$in": ["service","class","appointment","consultation","rental","equipment","package"]}
-                                }).to_list(20)
-                                if not _go_back_svcs:
-                                    _go_back_svcs = await db.products.find({"user_id": user["_id"], "in_stock": True}).to_list(20)
-                                if _go_back_svcs:
-                                    _gb_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
-                                    _gb_lines = ["📋 *Our Services*\n"]
-                                    for _gb_i, _gb_s in enumerate(_go_back_svcs[:8], 1):
-                                        _gb_price = _gb_s.get("price", 0)
-                                        _gb_dur = _gb_s.get("duration")
-                                        _gb_ps = f"{_gb_cur} {_gb_price:,.0f}" if _gb_price else "Contact for price"
-                                        _gb_ds = f" · {_gb_dur} min" if _gb_dur else ""
-                                        _gb_lines.append(f"{_gb_i}️⃣  *{_gb_s['name']}* — {_gb_ps}{_gb_ds}")
-                                    _gb_lines.append("\n_Reply with the number of the service you'd like to book_")
-                                    await db.pending_catalogs.update_one(
-                                        {"customer_id": customer_id, "user_id": user["_id"]},
-                                        {"$set": {
-                                            "action_context": "booking_service_select",
-                                            "products": [{"id": str(_gb_s["_id"]), "name": _gb_s["name"], "price": _gb_s.get("price", 0),
-                                                          "duration": _gb_s.get("duration"), "index": _gb_i,
-                                                          "service_category": _gb_s.get("service_category", "appointment")}
-                                                         for _gb_i, _gb_s in enumerate(_go_back_svcs[:8], 1)],
-                                            "updated_at": datetime.utcnow(),
-                                        }},
-                                        upsert=True
-                                    )
-                                    await _fj_bkd_ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message="No problem! Here are the services again 😊\n\n" + "\n".join(_gb_lines),
-                                        customer_name=customer_name, send_context="booking_flow"
-                                    )
-                                else:
-                                    await _fj_bkd_ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message="No problem! What service would you like to book? 😊",
-                                        customer_name=customer_name, send_context="booking_flow"
-                                    )
-                                return {"status": "ok", "handled_by": "booking_date_go_back"}
+                                # Use dynamic routing based on what customer wants to change
+                                _target = _fj_bkd_result.get("target_step")
+                                return await _handle_flow_go_back(
+                                    target_step=_target,
+                                    pending_state=_bk_date_state,
+                                    customer_id=customer_id,
+                                    user_id=user["_id"],
+                                    from_number=from_number,
+                                    customer_name=customer_name,
+                                    default_step="booking_service_select"
+                                )
                             elif _fj_bkd_action == "cancel":
                                 await db.pending_catalogs.update_one(
                                     {"customer_id": customer_id, "user_id": user["_id"]},
