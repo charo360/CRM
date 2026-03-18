@@ -1969,10 +1969,29 @@ async def get_me(user = Depends(get_current_user)):
 
 # ============ USER SETTINGS ============
 
+_DEFAULT_BUSINESS_HOURS = {
+    "mon": {"open": "08:00", "close": "17:00", "closed": False},
+    "tue": {"open": "08:00", "close": "17:00", "closed": False},
+    "wed": {"open": "08:00", "close": "17:00", "closed": False},
+    "thu": {"open": "08:00", "close": "17:00", "closed": False},
+    "fri": {"open": "08:00", "close": "17:00", "closed": False},
+    "sat": {"open": "09:00", "close": "14:00", "closed": True},
+    "sun": {"open": "09:00", "close": "14:00", "closed": True},
+}
+
 @api_router.get("/settings")
 async def get_settings(user = Depends(get_current_user)):
     """Get current user settings"""
     s = user.get("settings", {})
+    # Auto-initialize business hours with defaults if not yet configured
+    business_hours = s.get("business_hours")
+    if not business_hours:
+        business_hours = _DEFAULT_BUSINESS_HOURS
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"settings.business_hours": business_hours}}
+        )
+        logging.info(f"[Settings] Auto-initialized business hours for user {user['_id']}")
     return {
         "auto_reply_enabled": s.get("auto_reply_enabled", False),
         "notification_enabled": s.get("notification_enabled", True),
@@ -1987,7 +2006,7 @@ async def get_settings(user = Depends(get_current_user)):
         "ai_model": s.get("ai_model", "standard"),
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
         "business_type": s.get("business_type", "retail"),
-        "business_hours": s.get("business_hours", {}),
+        "business_hours": business_hours,
         "booking_settings": s.get("booking_settings", {}),
         "timezone": s.get("timezone", "UTC"),
         "rental_availability": s.get("rental_availability", []),
