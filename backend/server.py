@@ -5085,6 +5085,7 @@ class ProductResponse(BaseModel):
     listing_blocked_dates: Optional[List[str]] = []  # per-listing blocked YYYY-MM-DD dates
     deposit_percent: Optional[int] = 0               # 0=none, 1-100 = required deposit %
     price_unit: Optional[str] = "night"               # night | day | week | month | year | person
+    capacity: Optional[int] = 1                      # max appointments per time slot (default 1)
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
@@ -5122,6 +5123,7 @@ async def get_products(user = Depends(get_current_user)):
             listing_blocked_dates=p.get("listing_blocked_dates", []),
             deposit_percent=p.get("deposit_percent", 0),
             price_unit=p.get("price_unit", "night"),
+            capacity=p.get("capacity", 1),
         ))
     return result
 
@@ -5148,6 +5150,7 @@ class ProductCreate(BaseModel):
     listing_blocked_dates: Optional[List[str]] = []
     deposit_percent: Optional[int] = 0
     price_unit: Optional[str] = "night"
+    capacity: Optional[int] = 1
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -5172,6 +5175,7 @@ class ProductUpdate(BaseModel):
     listing_blocked_dates: Optional[List[str]] = None
     deposit_percent: Optional[int] = None
     price_unit: Optional[str] = None
+    capacity: Optional[int] = None
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -5253,6 +5257,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "listing_blocked_dates": product.listing_blocked_dates or [],
         "deposit_percent": product.deposit_percent or 0,
         "price_unit": product.price_unit or "night",
+        "capacity": product.capacity or 1,
         "created_at": datetime.utcnow()
     }
     
@@ -5282,6 +5287,7 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         listing_blocked_dates=product_doc.get("listing_blocked_dates", []),
         deposit_percent=product_doc.get("deposit_percent", 0),
         price_unit=product_doc.get("price_unit", "night"),
+        capacity=product_doc.get("capacity", 1),
     )
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
@@ -8631,13 +8637,25 @@ async def evolution_webhook(request: Request):
                         _bk_open = _bk_day_hours.get("open", "08:00")
                         _bk_close = _bk_day_hours.get("close", "17:00")
 
-                        # Get taken slots for that date
+                        # Get existing bookings for that date and count per time slot
                         _bk_existing = await db.bookings.find({
                             "user_id": user["_id"],
                             "date": str(_parsed_bk_date),
                             "status": {"$nin": ["cancelled"]}
                         }).to_list(100)
-                        _bk_taken = {b.get("time") for b in _bk_existing}
+                        _bk_slot_counts = {}
+                        for _b in _bk_existing:
+                            _bt = _b.get("time")
+                            if _bt:
+                                _bk_slot_counts[_bt] = _bk_slot_counts.get(_bt, 0) + 1
+
+                        # Get service capacity (default 1 for backward compatibility)
+                        _bk_capacity = 1
+                        _bk_service_id = _bk_date_state.get("booking_service_id")
+                        if _bk_service_id:
+                            _bk_svc_doc = await db.products.find_one({"_id": _bk_service_id})
+                            if _bk_svc_doc:
+                                _bk_capacity = _bk_svc_doc.get("capacity", 1)
 
                         # Build slots using service duration (or default 60 min)
                         _bk_slot_mins = 60
@@ -8655,11 +8673,13 @@ async def evolution_webhook(request: Request):
                             _bk_avail = []
                             while _bk_cur + _bk_slot_mins <= _bk_end:
                                 _t = f"{_bk_cur // 60:02d}:{_bk_cur % 60:02d}"
-                                if _t not in _bk_taken:
-                                    _bk_avail.append(_t)
+                                _booked_count = _bk_slot_counts.get(_t, 0)
+                                if _booked_count < _bk_capacity:
+                                    _remaining = _bk_capacity - _booked_count
+                                    _bk_avail.append({"time": _t, "remaining": _remaining})
                                 _bk_cur += _bk_slot_mins
                         except Exception:
-                            _bk_avail = ["09:00","10:00","11:00","14:00","15:00","16:00"]
+                            _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
                         _bk_avail = _bk_avail[:8]
 
                         if not _bk_avail:
@@ -8673,11 +8693,18 @@ async def evolution_webhook(request: Request):
 
                         _bk_date_label = _parsed_bk_date.strftime("%A %d %B %Y")
                         _bk_slot_lines = [f"🗓️ *Available times on {_bk_date_label}:*\n"]
-                        for _bk_i, _bk_t in enumerate(_bk_avail, 1):
-                            _bk_slot_lines.append(f"{_bk_i}. {_bk_t}")
+                        for _bk_i, _bk_slot in enumerate(_bk_avail, 1):
+                            _bk_time = _bk_slot["time"]
+                            _bk_rem = _bk_slot["remaining"]
+                            if _bk_capacity > 1 and _bk_rem > 1:
+                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} ({_bk_rem} spots left)")
+                            elif _bk_capacity > 1 and _bk_rem == 1:
+                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} (1 spot left)")
+                            else:
+                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time}")
                         _bk_slot_lines.append("\n_Reply with a number to select your time_")
 
-                        _bk_slot_objs = [{"index": _i, "time": _t} for _i, _t in enumerate(_bk_avail, 1)]
+                        _bk_slot_objs = [{"index": _i, "time": _s["time"], "remaining": _s["remaining"]} for _i, _s in enumerate(_bk_avail, 1)]
                         await db.pending_catalogs.update_one(
                             {"customer_id": customer_id, "user_id": user["_id"]},
                             {"$set": {
@@ -12393,6 +12420,24 @@ async def update_product(
     
     if product_update.in_stock is not None:
         update_data["in_stock"] = product_update.in_stock
+    
+    if product_update.stock_quantity is not None:
+        update_data["stock_quantity"] = product_update.stock_quantity
+    
+    if product_update.offering_type is not None:
+        update_data["offering_type"] = product_update.offering_type
+    
+    if product_update.duration is not None:
+        update_data["duration"] = product_update.duration
+    
+    if product_update.service_category is not None:
+        update_data["service_category"] = product_update.service_category
+    
+    if product_update.addons is not None:
+        update_data["addons"] = product_update.addons
+    
+    if product_update.capacity is not None:
+        update_data["capacity"] = product_update.capacity
     
     await db.products.update_one(
         {"_id": product_id},
