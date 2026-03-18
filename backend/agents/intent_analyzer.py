@@ -263,17 +263,24 @@ async def analyze_intent(
 
         personal_note = "\nThis is a personal contact (friend/family), not a business customer." if is_personal else ""
 
-        # Business-type bias: service/rental businesses must use booking intents, never CATALOG_REQUEST
+        # Business-type context: inform AI what this business sells
         SERVICE_BUSINESS_TYPES = {"salon", "saloon", "barbershop", "spa", "clinic", "healthcare", "fitness", "gym", "services", "restaurant", "hotel", "beauty", "rental"}
         _btype = (business_type or "").lower().strip()
         booking_bias = ""
         if _btype in SERVICE_BUSINESS_TYPES or any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service", "rental", "airbnb")):
             booking_bias = (
-                f"\n🚫 CRITICAL RULE — This is a '{business_type}' business that sells SERVICES/RENTALS, NOT physical products."
-                f"\n   • NEVER classify as CATALOG_REQUEST or PRODUCT_INQUIRY."
-                f"\n   • Any message asking 'what do you offer', 'what services', 'what do you have', prices, availability = BOOKING_REQUEST."
-                f"\n   • Any message asking when open, free slots, availability = AVAILABILITY_CHECK."
-                f"\n   • CATALOG_REQUEST is FORBIDDEN for this business type. Use BOOKING_REQUEST instead."
+                f"\n� BUSINESS TYPE: '{business_type}' — This business offers SERVICES/APPOINTMENTS/RENTALS."
+                f"\n   • When customer asks 'what do you offer', 'show me services', 'what do you have' → classify naturally (CATALOG_REQUEST or BOOKING_REQUEST both acceptable)"
+                f"\n   • When customer asks about availability, times, dates → AVAILABILITY_CHECK"
+                f"\n   • When customer says 'I want to book', 'make appointment' → BOOKING_REQUEST"
+                f"\n   • Routing to correct agent happens automatically based on business type, so classify intent naturally."
+            )
+        else:
+            booking_bias = (
+                f"\n📋 BUSINESS TYPE: '{business_type}' — This business sells PHYSICAL PRODUCTS."
+                f"\n   • When customer asks 'what do you have', 'show catalog' → CATALOG_REQUEST"
+                f"\n   • When customer asks about specific products → PRODUCT_INQUIRY"
+                f"\n   • Routing to correct agent happens automatically based on business type."
             )
 
         prompt = f"""You are an AI intent classifier for a WhatsApp business assistant.
@@ -449,16 +456,41 @@ JSON only, no markdown:"""
         }
 
 
-def route_intent_to_agent(intent: str) -> str:
-    """Map an intent string to the agent name that should handle it."""
-    if intent in SALES_INTENTS:
-        return "sales"
+def route_intent_to_agent(intent: str, business_type: str = "") -> str:
+    """
+    Route to agent based on BUSINESS TYPE first, then intent.
+    Business type determines the workflow - customer's words don't matter.
+    """
+    _btype = (business_type or "").lower().strip()
+    
+    # Service/Rental/Restaurant businesses → ALWAYS use BookingAgent (except complaints/orders/payments)
+    SERVICE_BUSINESS_TYPES = {
+        "salon", "saloon", "barbershop", "spa", "clinic", "healthcare", 
+        "fitness", "gym", "services", "restaurant", "hotel", "beauty", 
+        "rental", "airbnb", "creator"
+    }
+    
+    is_service_business = (
+        _btype in SERVICE_BUSINESS_TYPES or 
+        any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service", "rental", "airbnb", "restaurant", "hotel"))
+    )
+    
+    # Complaints/Orders/Payments always go to their respective agents regardless of business type
+    if intent in COMPLAINT_INTENTS:
+        return "complaint"
     if intent in ORDER_INTENTS:
         return "order"
     if intent in PAYMENT_INTENTS:
         return "payment"
-    if intent in COMPLAINT_INTENTS:
-        return "complaint"
-    if intent in BOOKING_INTENTS:
-        return "booking"
+    
+    # Service businesses → BookingAgent for ALL catalog/sales/booking intents
+    if is_service_business:
+        if intent in (SALES_INTENTS | BOOKING_INTENTS):
+            return "booking"
+    
+    # Retail/Shop businesses → SalesAgent for ALL catalog/sales/booking intents
+    else:
+        if intent in (SALES_INTENTS | BOOKING_INTENTS):
+            return "sales"
+    
     return "chat"

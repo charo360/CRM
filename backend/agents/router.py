@@ -380,7 +380,7 @@ class Router:
             }
 
         # ── 5. Dispatch to agent ───────────────────────────────────────────
-        agent_name = route_intent_to_agent(intent)
+        agent_name = route_intent_to_agent(intent, context.get("business_type", ""))
         if is_personal:
             agent_name = "chat"
 

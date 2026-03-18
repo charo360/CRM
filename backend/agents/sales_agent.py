@@ -26,22 +26,18 @@ class SalesAgent(BaseAgent):
         business_config = context.get("business_config", {})
         discount_policy = business_config.get("discount_policy") or context.get("discount_policy", "")
 
-        # Fetch all active products for this user
+        # Fetch products - ONLY physical/digital products, NOT services/rentals
         try:
-            products = await self.db.products.find({"user_id": user_id}).to_list(100)
+            products = await self.db.products.find({
+                "user_id": user_id,
+                "offering_type": {"$in": ["product", "digital", "menu_item"]}
+            }).to_list(100)
         except Exception as e:
             logger.error(f"[SalesAgent] DB error fetching products: {e}")
             return {"handled": False}
 
-        # --- CATALOG REQUEST: redirect to booking for service/rental businesses ---
+        # --- CATALOG REQUEST ---
         if intent == "CATALOG_REQUEST":
-            _btype = (context.get("business_type") or "").lower().strip()
-            _SERVICE_TYPES = {"salon", "saloon", "services", "fitness", "healthcare", "rental", "barbershop", "spa", "clinic", "gym", "hotel", "beauty"}
-            _is_service = _btype in _SERVICE_TYPES or any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service", "rental", "airbnb"))
-            if _is_service:
-                from .booking_agent import BookingAgent
-                context["intent"] = "BOOKING_REQUEST"
-                return await BookingAgent("booking", self.db).process(user_id, message, context)
             relationship = context.get("_relationship", "new_conversation")
             return await self._handle_catalog_request(
                 products, currency, customer_name, language, business_knowledge, history, relationship
