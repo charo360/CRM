@@ -5742,7 +5742,7 @@ async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dic
     """Verify a Google Play purchase token with the Android Publisher API."""
     # Google Play product IDs follow the pattern: crm_{plan}_monthly
     product_id = f"crm_{plan_id}_monthly"
-    package_name = GOOGLE_PLAY_PACKAGE_NAME or 'com.charo360.whatsappcrm'
+    package_name = GOOGLE_PLAY_PACKAGE_NAME or 'com.charo360.zilo'
     # Default to the service account file saved in the backend directory
     sa_key_path = os.environ.get('GOOGLE_SA_KEY_PATH', 'google-service-account.json')
 
@@ -12345,7 +12345,7 @@ async def generate_daily_pulse_message(user_id: str) -> str:
     if tip:
         lines.append(f"\n🤖 *AI Tip:* _{tip}_")
     
-    lines.append("\n_Sent by Charo360 CRM_")
+    lines.append("\n_Sent by Zilo_")
     
     return "\n".join(lines)
 
