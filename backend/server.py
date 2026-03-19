@@ -5742,7 +5742,7 @@ async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dic
     """Verify a Google Play purchase token with the Android Publisher API."""
     # Google Play product IDs follow the pattern: crm_{plan}_monthly
     product_id = f"crm_{plan_id}_monthly"
-    package_name = GOOGLE_PLAY_PACKAGE_NAME or 'com.charo360.zilo'
+    package_name = GOOGLE_PLAY_PACKAGE_NAME or 'com.zilo.whatsap'
     # Default to the service account file saved in the backend directory
     sa_key_path = os.environ.get('GOOGLE_SA_KEY_PATH', 'google-service-account.json')
 
@@ -10592,6 +10592,32 @@ async def evolution_webhook(request: Request):
                     # (may differ from user["_id"] for sub-users)
                     "business_id": _biz_id_for_ctx,
                 }
+
+                # ESCAPE HATCH — detect when customer wants to break out of pending flows
+                # (cart, catalog, product selection) to switch context (e.g., check orders, cancel, etc.)
+                if not button_action and not from_me and body:
+                    _escape_body = body.strip().lower()
+                    _escape_keywords = {
+                        "order", "my order", "orders", "my orders", "order status", "check order",
+                        "cancel", "nevermind", "never mind", "forget it", "stop", "exit", "quit",
+                        "back", "go back", "start over", "reset", "help", "menu", "main menu",
+                        "booking", "book", "appointment", "my booking", "bookings",
+                        "payment", "pay", "mpesa", "receipt", "invoice",
+                    }
+                    _should_escape = any(kw in _escape_body for kw in _escape_keywords)
+                    # Also escape if message is a question (starts with what/which/where/when/how/why)
+                    _is_question = any(_escape_body.startswith(q) for q in ["what", "which", "where", "when", "how", "why", "who"])
+                    if _should_escape or _is_question:
+                        # Check if there's a pending catalog/cart state
+                        _pending_escape = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"]
+                        })
+                        if _pending_escape and _pending_escape.get("action_context") in ("cart", "catalog_select", "product"):
+                            # Clear the pending state to allow context switch
+                            await db.pending_catalogs.delete_one({
+                                "customer_id": customer_id, "user_id": user["_id"]
+                            })
+                            logging.info(f"[Escape Hatch] Cleared pending state for customer {customer_id} - detected context switch: {_escape_body[:50]}")
 
                 # Skip agent pipeline if button_action already set by numbered response handler
                 if not button_action:
