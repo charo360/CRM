@@ -10613,11 +10613,27 @@ async def evolution_webhook(request: Request):
                             "customer_id": customer_id, "user_id": user["_id"]
                         })
                         if _pending_escape and _pending_escape.get("action_context") in ("cart", "catalog_select", "product"):
-                            # Clear the pending state to allow context switch
+                            # Clear the pending catalog state to allow context switch
                             await db.pending_catalogs.delete_one({
                                 "customer_id": customer_id, "user_id": user["_id"]
                             })
-                            logging.info(f"[Escape Hatch] Cleared pending state for customer {customer_id} - detected context switch: {_escape_body[:50]}")
+                            logging.info(f"[Escape Hatch] Cleared pending_catalogs for customer {customer_id} - context switch: {_escape_body[:50]}")
+                        # Also clear conversation_states pending_update_step / pending_order_action
+                        # so the numbered reply handler stops intercepting future messages
+                        _conv_escape = await db.conversation_states.find_one({
+                            "customer_id": str(customer_id), "user_id": user["_id"]
+                        })
+                        if _conv_escape and (_conv_escape.get("pending_update_step") or _conv_escape.get("pending_order_action")):
+                            await db.conversation_states.update_one(
+                                {"customer_id": str(customer_id), "user_id": user["_id"]},
+                                {"$set": {
+                                    "pending_update_step": None,
+                                    "pending_order_action": None,
+                                    "pending_update_products": None,
+                                    "pending_update_selected_product": None,
+                                }}
+                            )
+                            logging.info(f"[Escape Hatch] Cleared pending_update_step for customer {customer_id} - context switch: {_escape_body[:50]}")
 
                 # Skip agent pipeline if button_action already set by numbered response handler
                 if not button_action:

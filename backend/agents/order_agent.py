@@ -561,9 +561,13 @@ class OrderAgent:
         elif step == "add_item_select_product":
             # Customer picked a product number from the catalog
             pick = PICK_NUMBER_RE.match(message.strip())
+            products_list = conv_state.get("pending_update_products") or []
+            if not products_list:
+                # Products list is empty/stale — clear state and fall through to normal routing
+                await _clear()
+                return {"handled": False, "escalate": False, "messages": []}
             if pick:
                 idx = int(pick.group(1)) - 1
-                products_list = conv_state.get("pending_update_products", [])
                 if 0 <= idx < len(products_list):
                     selected = products_list[idx]
                     # Ask for quantity
@@ -576,6 +580,19 @@ class OrderAgent:
                         f"How many *{selected['name']}* would you like to add?\n"
                         f"Reply with a number (e.g. *2*)."
                     )}]}
+            # Not a valid product number — check if customer wants to do something else
+            _msg_lower = message.strip().lower()
+            _escape_kw = {
+                "order", "orders", "my order", "my orders", "order status", "check order",
+                "cancel", "nevermind", "never mind", "forget it", "stop", "exit", "quit",
+                "back", "go back", "start over", "reset", "help", "menu",
+                "booking", "book", "appointment", "payment", "pay",
+            }
+            _is_escape = any(kw in _msg_lower for kw in _escape_kw)
+            _is_question = any(_msg_lower.startswith(q) for q in ["what", "which", "where", "when", "how", "why", "who"])
+            if _is_escape or _is_question:
+                await _clear()
+                return {"handled": False, "escalate": False, "messages": []}
             return {"handled": True, "escalate": False, "messages": [{"text": (
                 "Please reply with the product number."
             )}]}
