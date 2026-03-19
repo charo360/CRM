@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { apiClient, messageHelpers } from '../context/api';
+import { useBusiness } from '../context/BusinessContext';
 
 const TAGS = ['New', 'VIP', 'Returning', 'Wholesale'];
 
@@ -31,11 +32,13 @@ export default function CustomerProfileScreen() {
   const initialName = params.customerName || '';
   const customerPhone = params.customerPhone || '';
 
+  const { isServiceBusiness } = useBusiness();
   const [name, setName] = useState(initialName);
   const [notes, setNotes] = useState('');
   const [tags, setTags] = useState<string[]>([]);
   const [purchaseCount, setPurchaseCount] = useState(0);
   const [totalSpent, setTotalSpent] = useState(0);
+  const [bookingCount, setBookingCount] = useState(0);
   const [currency, setCurrency] = useState('USD');
   const [profilePicture, setProfilePicture] = useState<string | null>(null);
   const [imgError, setImgError] = useState(false);
@@ -65,6 +68,11 @@ export default function CustomerProfileScreen() {
       setTags(c.tags || []);
       setPurchaseCount(c.purchase_count || 0);
       setTotalSpent(c.total_spent || 0);
+      // Fetch booking count for service businesses
+      try {
+        const bkRes = await apiClient.get(`/bookings?customer_id=${customerId}`);
+        setBookingCount(Array.isArray(bkRes.data) ? bkRes.data.length : 0);
+      } catch (_) {}
       setProfilePicture(c.profile_picture || null);
       setImgError(false);
       if (settingsRes.data?.currency) setCurrency(settingsRes.data.currency);
@@ -193,10 +201,18 @@ export default function CustomerProfileScreen() {
             </View>
           )}
           <Text style={styles.phoneText}>{customerPhone}</Text>
-          {purchaseCount > 0 && (
-            <Text style={styles.statsText}>
-              {purchaseCount} {purchaseCount === 1 ? 'sale' : 'sales'} · {currency} {totalSpent.toLocaleString()}
-            </Text>
+          {isServiceBusiness ? (
+            bookingCount > 0 && (
+              <Text style={styles.statsText}>
+                {bookingCount} {bookingCount === 1 ? 'appointment' : 'appointments'}
+              </Text>
+            )
+          ) : (
+            purchaseCount > 0 && (
+              <Text style={styles.statsText}>
+                {purchaseCount} {purchaseCount === 1 ? 'sale' : 'sales'} · {currency} {totalSpent.toLocaleString()}
+              </Text>
+            )
           )}
         </View>
 

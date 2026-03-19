@@ -21,11 +21,13 @@ ORDER_INTENTS = {"ORDER_STATUS", "DELIVERY_INQUIRY", "TRACKING", "ORDER_CANCEL",
 PAYMENT_INTENTS = {"PAYMENT_CONFIRM", "PAYMENT_METHOD", "PAYMENT_ISSUE", "REFUND_REQUEST"}
 COMPLAINT_INTENTS = {"COMPLAINT", "NEGATIVE_FEEDBACK", "DAMAGED_ITEM", "WRONG_ITEM", "ESCALATION"}
 CHAT_INTENTS = {"GENERAL_CHAT", "PERSONAL_CHAT", "GREETING", "SMALL_TALK", "OFF_TOPIC"}
+BOOKING_INTENTS = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "BOOKING_STATUS", "BOOKING_CANCEL", "RESCHEDULE"}
 
 # Intents that must always escalate — AI should never handle alone
 ALWAYS_ESCALATE_INTENTS = {"LEGAL_THREAT", "FRAUD_CLAIM", "ESCALATION"}
 
-ESCALATE_THRESHOLD = 0.40
+ESCALATE_THRESHOLD = 0.65   # needs_escalation: True below this confidence
+UNKNOWN_THRESHOLD = 0.50    # classify as UNKNOWN below this (non-chat intents)
 
 # Time thresholds for conversation threading
 THREAD_GAP_MINUTES = 30       # messages within 30 min = same thread
@@ -168,6 +170,52 @@ def format_threaded_history(threaded: Dict[str, Any]) -> str:
     return "\n\n".join(parts) if parts else "(no prior history)"
 
 
+_AVAILABILITY_EXACT_KEYWORDS = {
+    "availability", "available", "available?", "availability?",
+    "check availability", "what's available", "whats available",
+    "what is available", "available dates", "check available",
+    "show availability", "see availability",
+}
+
+_PAYMENT_CONFIRM_KEYWORDS = {
+    "i've paid", "i have paid", "i paid", "payment done", "payment made",
+    "sent the money", "money sent", "mpesa sent", "i sent", "transferred",
+    "i transferred", "done paying", "check your mpesa", "paid",
+    "i've made the payment", "payment complete", "transaction done",
+}
+
+def _deterministic_intent_override(message: str) -> dict | None:
+    """
+    Fast rules-only pre-check before the LLM is called.
+    Returns a result dict if the intent is unambiguous, else None.
+    """
+    msg = message.strip().lower()
+    # Availability keywords → always AVAILABILITY_CHECK, never misrouted to payment
+    if msg in _AVAILABILITY_EXACT_KEYWORDS or msg.startswith("availability") or msg.startswith("check availability"):
+        return {
+            "intent": "AVAILABILITY_CHECK",
+            "sentiment": "neutral",
+            "language": "English",
+            "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+            "conversation_state": "ongoing",
+            "confidence": 1.0,
+            "needs_escalation": False,
+            "escalation_reason": None,
+            "keywords": ["availability"],
+        }
+    # Only classify as PAYMENT_CONFIRM if the message actually looks like one
+    # Prevent short ambiguous words from being misrouted to PaymentAgent
+    _has_payment_kw = any(msg == kw or msg.startswith(kw) for kw in _PAYMENT_CONFIRM_KEYWORDS)
+    _looks_like_payment = _has_payment_kw or any(
+        w in msg for w in ["paid", "mpesa", "transferred", "sent money", "payment", "transaction"]
+    )
+    if not _looks_like_payment and len(msg.split()) <= 3:
+        # Very short message with no payment keywords — never route to PAYMENT_CONFIRM
+        # Let LLM handle it with full context instead
+        return None
+    return None
+
+
 async def analyze_intent(
     message: str,
     history: list,
@@ -175,12 +223,18 @@ async def analyze_intent(
     conversation_state: dict,
     customer_name: str,
     is_personal: bool,
+    business_type: str = "",
 ) -> Dict[str, Any]:
     """
     Single AI call that returns full intent classification.
     Uses threaded-context: focuses on the immediate thread + relationship signal
     so the AI knows whether this is a follow-up or a new conversation.
     """
+    # Fast deterministic override before calling LLM
+    _override = _deterministic_intent_override(message)
+    if _override:
+        return _override
+
     try:
         from ai_service import get_drafter
         ai = get_drafter()
@@ -209,22 +263,94 @@ async def analyze_intent(
 
         personal_note = "\nThis is a personal contact (friend/family), not a business customer." if is_personal else ""
 
+        # Business-type context: inform AI what this business sells
+        SERVICE_BUSINESS_TYPES = {"salon", "saloon", "barbershop", "spa", "clinic", "healthcare", "fitness", "gym", "services", "restaurant", "hotel", "beauty", "rental"}
+        _btype = (business_type or "").lower().strip()
+        booking_bias = ""
+        if _btype in SERVICE_BUSINESS_TYPES or any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service", "rental", "airbnb")):
+            booking_bias = (
+                f"\n� BUSINESS TYPE: '{business_type}' — This business offers SERVICES/APPOINTMENTS/RENTALS."
+                f"\n   • When customer asks 'what do you offer', 'show me services', 'what do you have' → classify naturally (CATALOG_REQUEST or BOOKING_REQUEST both acceptable)"
+                f"\n   • When customer asks about availability, times, dates → AVAILABILITY_CHECK"
+                f"\n   • When customer says 'I want to book', 'make appointment' → BOOKING_REQUEST"
+                f"\n   • Routing to correct agent happens automatically based on business type, so classify intent naturally."
+            )
+        else:
+            booking_bias = (
+                f"\n📋 BUSINESS TYPE: '{business_type}' — This business sells PHYSICAL PRODUCTS."
+                f"\n   • When customer asks 'what do you have', 'show catalog' → CATALOG_REQUEST"
+                f"\n   • When customer asks about specific products → PRODUCT_INQUIRY"
+                f"\n   • Routing to correct agent happens automatically based on business type."
+            )
+
         prompt = f"""You are an AI intent classifier for a WhatsApp business assistant.
 
-Analyze the customer's LATEST message below and classify it accurately.
-Focus on what the customer wants RIGHT NOW — not what was discussed before unless it's a direct follow-up.{bk_snippet}{personal_note}{state_hint}
+══ BUSINESS CONTEXT ══{bk_snippet}{booking_bias}
 
+══ CUSTOMER ══
+Name: {customer_name}{personal_note}{state_hint}
+
+══ CONVERSATION HISTORY ══
 {history_text}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CUSTOMER'S CURRENT MESSAGE (reply to THIS): "{message}"
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+══ CURRENT MESSAGE — classify THIS ══
+"{message}"
+
+══ INTENT EXAMPLES (multilingual) ══
+PRICE_INQUIRY: "bei gani", "how much", "ngapi", "price ya", "combien ça coûte", "क्या दाम है", "quanto custa", "what's the price", "cost?", "جاوب بالسعر"
+CATALOG_REQUEST: "show me what you have", "niambie mnayo", "send catalog", "what are you selling", "I want to order something", "let me see your products", "je veux voir vos produits", "kuna nini", "ما عندكم"
+PRODUCT_INQUIRY: "do you have red dresses?", "tell me about the iPhone", "nina haja ya", "je cherche", "¿tienen zapatos?", "क्या आपके पास है"
+ORDER_STATUS: "order yangu iko wapi", "when delivery", "nimewait sana", "où est ma commande", "dónde está mi pedido", "where is my order", "has it shipped", "طلبي فين"
+PAYMENT_METHOD: "nipe namba ya mpesa", "send payment method", "how do I pay", "comment payer", "account number please", "¿cómo pago?", "payment details please"
+PAYMENT_CONFIRM: "mpesa haikufika", "nililipa lakini", "payment failed", "le paiement a échoué", "i've paid", "sent the money", "check your mpesa", "nimesend"
+GREETING: "sasa", "niaje", "mambo", "hi", "habari", "bonjour", "hola", "नमस्ते", "salut", "wagwan", "sup", "ahlan"
+COMPLAINT: "bidhaa mbaya", "siko happy", "not what I ordered", "je ne suis pas satisfait", "I'm not happy", "poor quality", "this is wrong", "مشكلة"
+BOOKING_REQUEST: "I want to book", "naweza kuja lini", "je veux réserver", "quiero una cita", "book me in", "can I make an appointment", "احجز لي"
+AVAILABILITY_CHECK: "when are you available", "are you open Saturday", "do you have slots", "quand êtes-vous disponible", "متى تكونون متاحين"
+NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est trop cher", "any discount", "best price", "kuna offer"
+
+══ GLOBAL LANGUAGE RULES ══
+- Classify in ANY language — no language is default or assumed
+- Handle transliterated text (Arabic/Hindi/Swahili written in Latin script)
+- Handle code-switching (two languages in one message e.g. "haha crazy... btw order yangu iko wapi")
+- Detect language and store it — do not normalize to English
+- "Sheng", "Pidgin", "Hinglish", "Arabizi" are valid language values
+- Never correct the customer's language choice
+
+══ ENTITY RULES ══
+- Preserve original currency format (R500, ₦2000, $50, ¥3000, KES 500, NGN 2000) — do NOT normalize
+- Do NOT normalize dates — "5/6" means different things globally, store as-is
+- Store phone numbers with country code context if present
+- Pass raw entity strings — do not transform or convert
+
+══ TRANSITION RULE ══
+- If message contains BOTH small talk AND a business question, classify as the BUSINESS intent
+- Example: "haha crazy weather... btw when is my order?" → ORDER_STATUS
+
+══ CLASSIFICATION RULES ══
+1. Understand INTENT not exact words — "I want to order something else" = CATALOG_REQUEST
+2. Short follow-ups ("ok", "yes", "sure") inherit intent from RECENT THREAD context
+3. When unsure between two intents, pick the one that requires ACTION
+4. For personal contacts, prefer PERSONAL_CHAT unless clearly business
+5. Confidence < 0.65 on business messages → needs_escalation=true
+6. Confidence < 0.50 on business messages → intent should be "UNKNOWN"
+7. LEGAL_THREAT, FRAUD_CLAIM always → needs_escalation=true
+8. List up to 2 alternative_intents if confidence < 0.85 and there are other plausible intents
+
+══ CONTACT SIGNAL RULES ══
+For contact_signal.type:
+- "customer": ANY product/price/order/delivery/booking/payment question, "how much", "do you have", "I want", "bei gani", "catalog", "stock", "available"
+- "personal": casual greeting with no business follow-up, mentions owner by name, "it's me", "tuongee", "call me", emotional/social context only, emojis with no business intent
+- "unclear": cannot determine from this message alone
+For contact_signal.confidence: how certain you are (0.0-1.0)
+For contact_signal.reason: brief explanation in 5 words or fewer
 
 Return ONLY valid JSON with these exact keys:
 {{
   "intent": "<INTENT>",
+  "alternative_intents": [],
   "sentiment": "<happy|neutral|frustrated|angry|urgent>",
-  "language": "<language name or code, e.g. English, Swahili, Sheng, Arabic>",
+  "language": "<language name or code, e.g. English, Swahili, Sheng, Arabic, Hinglish>",
   "entities": {{
     "products": [],
     "amounts": [],
@@ -235,28 +361,13 @@ Return ONLY valid JSON with these exact keys:
   "confidence": <0.0-1.0>,
   "needs_escalation": <true|false>,
   "escalation_reason": "<reason or null>",
-  "keywords": []
+  "keywords": [],
+  "contact_signal": {{
+    "type": "<customer|personal|unclear>",
+    "confidence": <0.0-1.0>,
+    "reason": "<brief reason>"
+  }}
 }}
-
-Intent MUST be one of:
-PRODUCT_INQUIRY, PRICE_INQUIRY, CATALOG_REQUEST, STOCK_CHECK, NEGOTIATION, BULK_ORDER,
-ORDER_STATUS, DELIVERY_INQUIRY, TRACKING, ORDER_CANCEL, ORDER_MODIFY,
-PAYMENT_CONFIRM, PAYMENT_METHOD, PAYMENT_ISSUE, REFUND_REQUEST,
-COMPLAINT, NEGATIVE_FEEDBACK, DAMAGED_ITEM, WRONG_ITEM,
-GENERAL_CHAT, PERSONAL_CHAT, GREETING, SMALL_TALK, OFF_TOPIC,
-LEGAL_THREAT, FRAUD_CLAIM, ESCALATION, UNKNOWN
-
-Rules:
-- The CURRENT MESSAGE is what you must classify — not the history
-- If the current message is a short follow-up ("ok", "sure", "yes", "send", "how much") — the intent comes from the RECENT THREAD above, not from the message alone
-- CRITICAL: If the customer says "can I see it/them/that/those/the product" and the RECENT THREAD shows the business JUST mentioned a specific product name, classify as PRODUCT_INQUIRY (NOT CATALOG_REQUEST) and extract that product name in keywords
-- CRITICAL: "Do you have X" where X is a specific product category (shoes, dresses, phones, laptops, etc) = PRODUCT_INQUIRY with X as keyword. CATALOG_REQUEST is ONLY for "show me everything", "what do you sell", "send catalog", "all products" — NOT for specific category requests
-- If this is a NEW CONVERSATION after a long gap, classify based on the current message only — ignore old topics
-- If you are not sure, use GENERAL_CHAT (not UNKNOWN) for messages under 10 words
-- If sentiment is angry AND confidence < 0.7, set needs_escalation=true
-- LEGAL_THREAT always needs_escalation=true
-- For personal contacts, prefer PERSONAL_CHAT or GENERAL_CHAT unless clearly business
-- keywords: 1-4 English keywords useful for product search (only for sales intents)
 
 JSON only, no markdown:"""
 
@@ -273,6 +384,24 @@ JSON only, no markdown:"""
         result["_relationship"] = relationship
         result["_hours_since_last"] = threaded.get("hours_since_last")
 
+        # Ensure alternative_intents field exists (1.2)
+        if "alternative_intents" not in result:
+            result["alternative_intents"] = []
+
+        # 16.1: Ensure contact_signal field exists
+        if "contact_signal" not in result:
+            result["contact_signal"] = {"type": "unclear", "confidence": 0.0, "reason": "not classified"}
+        # If intent is clearly business → upgrade contact_signal to customer if not already
+        _biz_intents = {
+            "PRODUCT_INQUIRY", "CATALOG_REQUEST", "PRICE_NEGOTIATION",
+            "ORDER_STATUS", "ORDER_CANCEL", "ORDER_UPDATE",
+            "PAYMENT_CONFIRM", "PAYMENT_METHOD_QUESTION", "PAYMENT_ISSUE",
+            "COMPLAINT", "REFUND_REQUEST", "DAMAGED_ITEM", "WRONG_ITEM",
+            "BOOKING_REQUEST", "BOOKING_CANCEL", "BOOKING_RESCHEDULE",
+        }
+        if result.get("intent") in _biz_intents and result["contact_signal"]["type"] != "customer":
+            result["contact_signal"] = {"type": "customer", "confidence": 0.95, "reason": "business intent detected"}
+
         # Enforce escalation on always-escalate intents
         intent = result.get("intent", "UNKNOWN")
         if intent in ALWAYS_ESCALATE_INTENTS:
@@ -280,8 +409,14 @@ JSON only, no markdown:"""
             if not result.get("escalation_reason"):
                 result["escalation_reason"] = f"Intent '{intent}' always requires human review"
 
-        # Enforce escalation on low confidence
+        # 1.1: Low confidence → UNKNOWN intent threshold
         confidence = float(result.get("confidence", 0.5))
+        if confidence < UNKNOWN_THRESHOLD and intent not in CHAT_INTENTS and intent != "UNKNOWN":
+            result["intent"] = "UNKNOWN"
+            intent = "UNKNOWN"
+            logger.info(f"[IntentAnalyzer] Low confidence ({confidence:.2f}) → reclassified to UNKNOWN")
+
+        # 1.1: Raise escalation threshold to 0.65
         if confidence < ESCALATE_THRESHOLD and intent not in CHAT_INTENTS:
             result["needs_escalation"] = True
             if not result.get("escalation_reason"):
@@ -296,9 +431,9 @@ JSON only, no markdown:"""
             logger.info(f"[IntentAnalyzer] Short UNKNOWN message reclassified as GENERAL_CHAT: '{message}'")
 
         logger.info(
-            f"[IntentAnalyzer] intent={result.get('intent')} sentiment={result.get('sentiment')} "
-            f"confidence={result.get('confidence')} escalate={result.get('needs_escalation')} "
-            f"relationship={relationship}"
+            f"[IntentAnalyzer] intent={result.get('intent')} alt={result.get('alternative_intents')} "
+            f"sentiment={result.get('sentiment')} confidence={result.get('confidence')} "
+            f"escalate={result.get('needs_escalation')} relationship={relationship}"
         )
         return result
 
@@ -311,22 +446,53 @@ JSON only, no markdown:"""
             "entities": {"products": [], "amounts": [], "dates": [], "other": []},
             "conversation_state": "new",
             "confidence": 0.0,
+            "alternative_intents": [],
             "needs_escalation": True,
             "escalation_reason": f"Intent analysis failed: {e}",
             "keywords": [],
+            "contact_signal": {"type": "unclear", "confidence": 0.0, "reason": "analysis failed"},
             "_relationship": "new_conversation",
             "_hours_since_last": None,
         }
 
 
-def route_intent_to_agent(intent: str) -> str:
-    """Map an intent string to the agent name that should handle it."""
-    if intent in SALES_INTENTS:
-        return "sales"
+def route_intent_to_agent(intent: str, business_type: str = "") -> str:
+    """
+    Route to agent based on BUSINESS TYPE first, then intent.
+    Business type determines the workflow - customer's words don't matter.
+    """
+    _btype = (business_type or "").lower().strip()
+    
+    # Service/Rental/Restaurant businesses → ALWAYS use BookingAgent (except complaints/orders/payments)
+    SERVICE_BUSINESS_TYPES = {
+        "salon", "saloon", "barbershop", "spa", "clinic", "healthcare", 
+        "fitness", "gym", "services", "restaurant", "hotel", "beauty", 
+        "rental", "airbnb", "creator"
+    }
+    
+    is_service_business = (
+        _btype in SERVICE_BUSINESS_TYPES or 
+        any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service", "rental", "airbnb", "restaurant", "hotel"))
+    )
+    
+    # Complaints/Orders/Payments always go to their respective agents regardless of business type
+    if intent in COMPLAINT_INTENTS:
+        return "complaint"
     if intent in ORDER_INTENTS:
         return "order"
     if intent in PAYMENT_INTENTS:
         return "payment"
-    if intent in COMPLAINT_INTENTS:
-        return "complaint"
+    
+    # Service businesses → BookingAgent for ALL catalog/sales/booking intents
+    # Also route GREETING to booking — at a salon/spa/clinic every "hi" is a booking inquiry
+    if is_service_business:
+        if intent in (SALES_INTENTS | BOOKING_INTENTS) or intent == "GREETING":
+            return "booking"
+    
+    # Retail/Shop businesses → SalesAgent for ALL catalog/sales/booking intents
+    # Also route GREETING to sales — first contact at a shop usually wants to see products
+    else:
+        if intent in (SALES_INTENTS | BOOKING_INTENTS) or intent == "GREETING":
+            return "sales"
+    
     return "chat"

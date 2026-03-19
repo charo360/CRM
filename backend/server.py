@@ -76,7 +76,7 @@ logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import uuid
 from datetime import datetime, timedelta
 import jwt
@@ -101,6 +101,7 @@ from fastapi import UploadFile, File, Body, Form
 from fastapi.staticfiles import StaticFiles
 from daily_scheduler import start_daily_scheduler
 from mongo_http_client import AsyncMongoHTTPClient
+from google_play_billing import check_feature_access, check_limit, SUBSCRIPTION_LIMITS
 
 
 
@@ -236,6 +237,119 @@ else:
 
 router = Router(db) # specific router for agents
 
+
+async def _handle_flow_go_back(
+    target_step: Optional[str],
+    pending_state: Dict[str, Any],
+    customer_id: str,
+    user_id: str,
+    from_number: str,
+    customer_name: str,
+    default_step: str = "booking_service_select"
+) -> Dict[str, Any]:
+    """
+    Handle go_back action with dynamic target_step routing.
+    FlowJudge tells us what the customer wants to change, we route accordingly.
+    """
+    ws = get_whatsapp_service(db)
+    
+    # Map FlowJudge target_step to action_context
+    step_map = {
+        "service_selection": "booking_service_select",
+        "date": "booking_date_input",
+        "time": "booking_time_select",
+        "addon": "booking_addon_select",
+        "confirm": "booking_confirm",
+    }
+    
+    action_context = step_map.get(target_step, default_step) if target_step else default_step
+    
+    # Resend appropriate prompt based on target step
+    if action_context == "booking_service_select":
+        # Fetch and resend service list
+        _svcs = await db.products.find({
+            "user_id": user_id, "in_stock": True,
+            "offering_type": {"$in": ["service","class","appointment","consultation","rental","equipment","package"]}
+        }).to_list(20)
+        if not _svcs:
+            _svcs = await db.products.find({"user_id": user_id, "in_stock": True}).to_list(20)
+        
+        if _svcs:
+            user_doc = await db.users.find_one({"_id": user_id})
+            _cur = (user_doc or {}).get("currency", "")
+            _lines = ["📋 *Our Services*\n"]
+            for _i, _s in enumerate(_svcs[:8], 1):
+                _price = _s.get("price", 0)
+                _dur = _s.get("duration")
+                _ps = f"{_cur} {_price:,.0f}" if _price else "Contact for price"
+                _ds = f" · {_dur} min" if _dur else ""
+                _lines.append(f"{_i}️⃣  *{_s['name']}* — {_ps}{_ds}")
+            _lines.append("\n_Reply with the number of the service you'd like to book_")
+            
+            await db.pending_catalogs.update_one(
+                {"customer_id": customer_id, "user_id": user_id},
+                {"$set": {
+                    "action_context": action_context,
+                    "products": [{"id": str(_s["_id"]), "name": _s["name"], "price": _s.get("price", 0),
+                                  "duration": _s.get("duration"), "index": _i,
+                                  "service_category": _s.get("service_category", "appointment")}
+                                 for _i, _s in enumerate(_svcs[:8], 1)],
+                    "updated_at": datetime.utcnow(),
+                }},
+                upsert=True
+            )
+            await ws.send_message(
+                user_id=user_id, to_number=from_number,
+                message="No problem! Here are the services again 😊\n\n" + "\n".join(_lines),
+                customer_name=customer_name, send_context="booking_flow"
+            )
+        else:
+            await ws.send_message(
+                user_id=user_id, to_number=from_number,
+                message="No problem! What service would you like to book? 😊",
+                customer_name=customer_name, send_context="booking_flow"
+            )
+    
+    elif action_context == "booking_date_input":
+        svc_name = pending_state.get("booking_service_name", "your service")
+        await db.pending_catalogs.update_one(
+            {"customer_id": customer_id, "user_id": user_id},
+            {"$set": {"action_context": action_context, "booking_date": None, "updated_at": datetime.utcnow()}}
+        )
+        await ws.send_message(
+            user_id=user_id, to_number=from_number,
+            message=f"No problem! What date would you like for *{svc_name}*? 📅\n_e.g. tomorrow, Monday, 15 March_",
+            customer_name=customer_name, send_context="booking_flow"
+        )
+    
+    elif action_context == "booking_time_select":
+        svc_name = pending_state.get("booking_service_name", "your service")
+        bk_date = pending_state.get("booking_date", "")
+        await db.pending_catalogs.update_one(
+            {"customer_id": customer_id, "user_id": user_id},
+            {"$set": {"action_context": action_context, "booking_time": None, "updated_at": datetime.utcnow()}}
+        )
+        await ws.send_message(
+            user_id=user_id, to_number=from_number,
+            message=f"No problem! What time would you like for *{svc_name}* on {bk_date}? ⏰",
+            customer_name=customer_name, send_context="booking_flow"
+        )
+    
+    else:
+        # Generic fallback
+        await db.pending_catalogs.update_one(
+            {"customer_id": customer_id, "user_id": user_id},
+            {"$set": {"action_context": action_context, "updated_at": datetime.utcnow()}}
+        )
+        await ws.send_message(
+            user_id=user_id, to_number=from_number,
+            message="No problem! Let's adjust that 😊",
+            customer_name=customer_name, send_context="booking_flow"
+        )
+    
+    return {"status": "ok", "handled_by": f"go_back_to_{action_context}"}
+
+
 # WhatsApp via Evolution API (config in .env: EVOLUTION_API_URL, EVOLUTION_API_KEY)
 
 # JWT Config — enforce strong secret
@@ -308,9 +422,128 @@ async def fix_team_members_index():
     except Exception as e:
         logging.warning(f"[Migration] auto_reply clear failed: {e}")
 
+    # Phase 1d migration: set business_type=retail on existing users that don't have it
+    try:
+        r4 = await db.users.update_many(
+            {"settings.business_type": {"$exists": False}},
+            {"$set": {"settings.business_type": "retail"}}
+        )
+        logging.info(f"[Migration] Set business_type=retail on {r4.modified_count} users")
+    except Exception as e:
+        logging.warning(f"[Migration] business_type backfill failed: {e}")
+
+    # Phase 1d migration: set offering_type=product on existing products that don't have it
+    try:
+        r5 = await db.products.update_many(
+            {"offering_type": {"$exists": False}},
+            {"$set": {"offering_type": "product"}}
+        )
+        logging.info(f"[Migration] Set offering_type=product on {r5.modified_count} products")
+    except Exception as e:
+        logging.warning(f"[Migration] offering_type backfill failed: {e}")
+
+    # Phase 1e migration: fix services wrongly tagged as offering_type=product by the previous migration.
+    # Products with duration set are bookable services, not physical retail products.
+    try:
+        r5b = await db.products.update_many(
+            {"offering_type": "product", "duration": {"$exists": True, "$ne": None}},
+            {"$set": {"offering_type": "service"}}
+        )
+        logging.info(f"[Migration] Fixed {r5b.modified_count} services wrongly tagged as offering_type=product → service")
+    except Exception as e:
+        logging.warning(f"[Migration] offering_type service fix failed: {e}")
+
+    # Phase 1f migration: fix products with service_category set — they are bookable services
+    try:
+        r5c = await db.products.update_many(
+            {"offering_type": "product", "service_category": {"$exists": True, "$not": {"$in": [None, ""]}}},
+            {"$set": {"offering_type": "service"}}
+        )
+        logging.info(f"[Migration] Fixed {r5c.modified_count} products with service_category → offering_type=service")
+    except Exception as e:
+        logging.warning(f"[Migration] service_category fix failed: {e}")
+
+    # Startup: purge invalid contacts for all existing users (one-time cleanup + permanent gate)
+    try:
+        asyncio.create_task(_startup_purge_invalid_contacts())
+    except Exception as e:
+        logging.warning(f"[StartupPurge] Failed to start purge task: {e}")
+
+    # Start keep-alive pinger to prevent Render free-tier sleep
+    asyncio.create_task(run_keep_alive_scheduler())
+
     # Start automation scheduler in background
-    import asyncio
     asyncio.create_task(run_automation_scheduler())
+
+async def _purge_invalid_contacts_for_user(user_id: str) -> int:
+    """
+    Remove auto-created contacts whose phone numbers are invalid:
+    - More than 15 digits (garbage from @lid JIDs)
+    - Fewer than 7 digits (not a real phone number)
+    - Matches the user's own phone number (self-contact)
+    Returns number of records deleted.
+    """
+    user = await db.users.find_one({"_id": user_id}, {"phone_number": 1})
+    own_digits = (user.get("phone_number") or "").lstrip("+").replace(" ", "").replace("-", "") if user else ""
+    deleted = 0
+    candidates = await db.customers.find(
+        {"user_id": user_id, "auto_created": True, "is_customer": {"$ne": True}},
+        {"_id": 1, "phone_number": 1}
+    ).to_list(None)
+    for c in candidates:
+        phone = c.get("phone_number", "")
+        digits = phone.lstrip("+").replace(" ", "").replace("-", "")
+        is_too_long = len(digits) > 15
+        is_too_short = len(digits) < 7
+        is_own = own_digits and digits == own_digits
+        if is_too_long or is_too_short or is_own:
+            await db.customers.delete_one({"_id": c["_id"]})
+            await db.messages.delete_many({"customer_id": c["_id"]})
+            deleted += 1
+    if deleted:
+        logging.info(f"[ContactPurge] Removed {deleted} invalid contacts for user {user_id}")
+    return deleted
+
+
+async def _startup_purge_invalid_contacts():
+    """Run once at startup: purge invalid contacts for every user in the DB."""
+    await asyncio.sleep(5)  # let server fully start
+    try:
+        users = await db.users.find({}, {"_id": 1}).to_list(None)
+        total = 0
+        for u in users:
+            try:
+                total += await _purge_invalid_contacts_for_user(u["_id"])
+            except Exception as e:
+                logging.warning(f"[StartupPurge] Failed for user {u['_id']}: {e}")
+        logging.info(f"[StartupPurge] Total invalid contacts removed across all users: {total}")
+    except Exception as e:
+        logging.error(f"[StartupPurge] Failed: {e}")
+
+
+async def run_keep_alive_scheduler():
+    """Ping Evolution API and self every 14 min to prevent Render free-tier sleep."""
+    await asyncio.sleep(30)  # wait for server to fully start
+    evolution_url = os.environ.get('EVOLUTION_API_URL', '').rstrip('/')
+    self_url = os.environ.get('RENDER_EXTERNAL_URL', '').rstrip('/')
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                if evolution_url:
+                    try:
+                        r = await client.get(f"{evolution_url}/")
+                        logging.info(f"[KeepAlive] Evolution API ping: {r.status_code}")
+                    except Exception as e:
+                        logging.warning(f"[KeepAlive] Evolution API ping failed: {e}")
+                if self_url:
+                    try:
+                        r = await client.get(f"{self_url}/api/health")
+                        logging.info(f"[KeepAlive] Self ping: {r.status_code}")
+                    except Exception as e:
+                        logging.warning(f"[KeepAlive] Self ping failed: {e}")
+        except Exception as e:
+            logging.warning(f"[KeepAlive] Scheduler error: {e}")
+        await asyncio.sleep(840)  # 14 minutes
 
 async def run_automation_scheduler():
     """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
@@ -322,6 +555,95 @@ async def run_automation_scheduler():
         except Exception as e:
             logging.error(f"Automation scheduler error: {e}")
         await asyncio.sleep(3600)  # check every hour
+
+async def run_booking_reminder_scheduler():
+    """Runs every 30 minutes — sends WhatsApp reminders for upcoming bookings (24h and 1h before)"""
+    import asyncio
+    await asyncio.sleep(60)  # brief delay on startup
+    while True:
+        try:
+            await send_booking_reminders()
+        except Exception as e:
+            logging.error(f"Booking reminder scheduler error: {e}")
+        await asyncio.sleep(1800)  # every 30 minutes
+
+async def send_booking_reminders():
+    """Find upcoming bookings and send WhatsApp reminders at 24h and 1h windows."""
+    from whatsapp_service import get_whatsapp_service
+    now = datetime.utcnow()
+
+    upcoming = await db.bookings.find({
+        "status": {"$in": ["pending", "confirmed"]},
+        "$or": [
+            {"reminder_sent_24h": {"$ne": True}},
+            {"reminder_sent_1h": {"$ne": True}},
+        ]
+    }).to_list(None)
+
+    ws = get_whatsapp_service(db)
+
+    for booking in upcoming:
+        try:
+            date_str = booking.get("date", "")
+            time_str = booking.get("time", "")
+            if not date_str or not time_str:
+                continue
+            
+            # Skip rental bookings - they use "check-in" instead of time format
+            service_category = booking.get("service_category", "")
+            if service_category == "rental" or time_str in ("check-in", "check-out"):
+                continue
+
+            booking_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            diff_hours = (booking_dt - now).total_seconds() / 3600
+
+            user_id         = booking.get("user_id")
+            customer_phone  = booking.get("customer_phone")
+            customer_name   = booking.get("customer_name", "there")
+            service_name    = booking.get("service_name", "appointment")
+            booking_number  = booking.get("booking_number", "")
+
+            if not user_id or not customer_phone:
+                continue
+
+            # 24h reminder window: 23–25 hours before
+            if not booking.get("reminder_sent_24h") and 23 <= diff_hours <= 25:
+                msg = (
+                    f"Hi {customer_name}! \U0001f44b Just a reminder that your *{service_name}* "
+                    f"is scheduled for *tomorrow at {time_str}* \U0001f4c5\n\n"
+                    f"Ref: *{booking_number}*\n"
+                    f"_Reply to reschedule or cancel_"
+                )
+                await ws.send_message(
+                    user_id=user_id, to_number=customer_phone,
+                    message=msg, customer_name=customer_name, send_context="booking_reminder"
+                )
+                await db.bookings.update_one(
+                    {"_id": booking["_id"]},
+                    {"$set": {"reminder_sent_24h": True, "reminder_sent_24h_at": now}}
+                )
+                logging.info(f"[BookingReminder] 24h reminder sent for booking {booking['_id']}")
+
+            # 1h reminder window: 45–90 minutes before
+            if not booking.get("reminder_sent_1h") and 0.75 <= diff_hours <= 1.5:
+                msg = (
+                    f"Hi {customer_name}! \u23f0 Your *{service_name}* starts in *1 hour* "
+                    f"at *{time_str}* today \U0001f4c5\n\n"
+                    f"Ref: *{booking_number}*\n"
+                    f"See you soon! \U0001f60a"
+                )
+                await ws.send_message(
+                    user_id=user_id, to_number=customer_phone,
+                    message=msg, customer_name=customer_name, send_context="booking_reminder"
+                )
+                await db.bookings.update_one(
+                    {"_id": booking["_id"]},
+                    {"$set": {"reminder_sent_1h": True, "reminder_sent_1h_at": now}}
+                )
+                logging.info(f"[BookingReminder] 1h reminder sent for booking {booking['_id']}")
+
+        except Exception as e:
+            logging.error(f"[BookingReminder] Error on booking {booking.get('_id')}: {e}")
 
 async def execute_broadcast_automations():
     """Find and execute all due broadcast automations"""
@@ -690,6 +1012,7 @@ class CustomerUpdate(BaseModel):
     tags: Optional[List[str]] = None
     auto_reply: Optional[bool] = None
     is_personal: Optional[bool] = None
+    ai_enabled: Optional[bool] = None
     stage: Optional[str] = None
 
 class CustomerResponse(BaseModel):
@@ -701,6 +1024,8 @@ class CustomerResponse(BaseModel):
     tags: List[str] = []
     auto_reply: Optional[bool] = None
     is_personal: bool = False
+    ai_enabled: bool = True
+    contact_type: str = "UNKNOWN"
     is_customer: bool = False
     stage: str = "lead"
     purchase_count: int = 0
@@ -768,6 +1093,7 @@ class SaleResponse(BaseModel):
     due_date: Optional[str] = None
     paid_date: Optional[str] = None
     created_at: datetime
+    source: str = "sale"  # "sale" | "booking"
 
 # Order Models
 class OrderCreate(BaseModel):
@@ -792,6 +1118,7 @@ class OrderResponse(BaseModel):
     total_amount: float
     payment_status: str
     delivery_status: str
+    status: Optional[str] = None
     notes: Optional[str] = None
     due_date: Optional[str] = None
     created_at: str
@@ -1354,6 +1681,11 @@ class UserSettingsUpdate(BaseModel):
     daily_pulse_time: Optional[str] = None  # e.g. '20:00'
     ai_model: Optional[str] = None  # standard, premium, claude-3.5, grok, etc.
     auto_reply_audience: Optional[str] = None  # 'everyone', 'customers_only', 'new_contacts_only'
+    business_type: Optional[str] = None  # retail, salon, restaurant, services, fitness, healthcare, creator
+    business_hours: Optional[Dict[str, Any]] = None  # {"mon": {"open": "09:00", "close": "18:00", "closed": false}, ...}
+    booking_settings: Optional[Dict[str, Any]] = None  # duration_default, buffer_minutes, advance_days, etc.
+    timezone: Optional[str] = None  # e.g. 'Africa/Nairobi', 'America/New_York'
+    rental_availability: Optional[List[str]] = None  # list of blocked date strings YYYY-MM-DD
 
 # Business Knowledge Model
 class BusinessKnowledge(BaseModel):
@@ -1379,6 +1711,7 @@ class BusinessKnowledge(BaseModel):
     creator_blacklisted_niches: Optional[str] = None
     creator_fan_dm_response: Optional[str] = None
     creator_media_kit_link: Optional[str] = None
+    payment_methods: Optional[List[Any]] = None
 
 # Product Catalog Models
 class Product(BaseModel):
@@ -1620,7 +1953,7 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
     user = await db.users.find_one({"_id": user_id})
     is_new_user = session["is_new_user"] or not user.get("setup_complete", True)
 
-    # Auto-trigger contact sync + profile pictures in background
+    # Auto-trigger contact sync + profile pictures + classification in background
     async def _auto_sync(uid):
         try:
             ws = get_whatsapp_service(db)
@@ -1630,6 +1963,12 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
             logging.info(f"Auto-sync complete for user {uid}")
         except Exception as e:
             logging.error(f"Auto-sync error for user {uid}: {e}")
+        try:
+            classifier = get_classifier(db)
+            await classifier.classify_all_contacts(uid)
+            logging.info(f"Auto-classification complete for user {uid}")
+        except Exception as e:
+            logging.error(f"Auto-classification error for user {uid}: {e}")
     asyncio.create_task(_auto_sync(user_id))
 
     return serialize_doc({
@@ -1764,10 +2103,29 @@ async def get_me(user = Depends(get_current_user)):
 
 # ============ USER SETTINGS ============
 
+_DEFAULT_BUSINESS_HOURS = {
+    "mon": {"open": "08:00", "close": "17:00", "closed": False},
+    "tue": {"open": "08:00", "close": "17:00", "closed": False},
+    "wed": {"open": "08:00", "close": "17:00", "closed": False},
+    "thu": {"open": "08:00", "close": "17:00", "closed": False},
+    "fri": {"open": "08:00", "close": "17:00", "closed": False},
+    "sat": {"open": "09:00", "close": "14:00", "closed": True},
+    "sun": {"open": "09:00", "close": "14:00", "closed": True},
+}
+
 @api_router.get("/settings")
 async def get_settings(user = Depends(get_current_user)):
     """Get current user settings"""
     s = user.get("settings", {})
+    # Auto-initialize business hours with defaults if not yet configured
+    business_hours = s.get("business_hours")
+    if not business_hours:
+        business_hours = _DEFAULT_BUSINESS_HOURS
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"settings.business_hours": business_hours}}
+        )
+        logging.info(f"[Settings] Auto-initialized business hours for user {user['_id']}")
     return {
         "auto_reply_enabled": s.get("auto_reply_enabled", False),
         "notification_enabled": s.get("notification_enabled", True),
@@ -1781,6 +2139,11 @@ async def get_settings(user = Depends(get_current_user)):
         "country_code": user.get("country_code", s.get("country_code", "")),
         "ai_model": s.get("ai_model", "standard"),
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
+        "business_type": s.get("business_type", "retail"),
+        "business_hours": business_hours,
+        "booking_settings": s.get("booking_settings", {}),
+        "timezone": s.get("timezone", "UTC"),
+        "rental_availability": s.get("rental_availability", []),
     }
 
 @api_router.put("/settings")
@@ -2427,11 +2790,16 @@ async def get_pending_classifications(user = Depends(get_current_user)):
     business_id = user.get("business_id", user["_id"])
     pending = await db.pending_classifications.find({
         "user_id": business_id,
-        "status": "pending"
+        "status": "pending",
+        "confidence": {"$gte": 0.4},
     }).sort("confidence", -1).to_list(50)
     
     for p in pending:
-        p["id"] = p["_id"] if isinstance(p["_id"], str) else str(p["_id"])
+        p["id"] = str(p["_id"])
+        p["customer_id"] = str(p["customer_id"]) if p.get("customer_id") else None
+    
+    # Drop entries where customer_id resolved to None (orphaned records)
+    pending = [p for p in pending if p.get("customer_id")]
     
     return serialize_doc(pending)
 
@@ -2523,6 +2891,32 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
 
     customer_id = str(uuid.uuid4())
     business_id = user.get("business_id", user["_id"])
+
+    # Check for duplicate phone number
+    existing = await db.customers.find_one({"user_id": business_id, "phone_number": clean_phone})
+    if existing:
+        if existing.get("is_customer"):
+            raise HTTPException(status_code=409, detail="A customer with this phone number already exists")
+        # Contact exists but not yet a customer — promote it
+        await db.customers.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"is_customer": True, "name": clean_name, "notes": clean_notes, "tags": clean_tags if clean_tags else ["New"]}}
+        )
+        return CustomerResponse(
+            id=existing["_id"],
+            user_id=business_id,
+            name=clean_name,
+            phone_number=clean_phone,
+            notes=clean_notes,
+            tags=clean_tags if clean_tags else ["New"],
+            purchase_count=existing.get("purchase_count", 0),
+            total_spent=existing.get("total_spent", 0.0),
+            last_message=existing.get("last_message"),
+            last_contacted=existing.get("last_contacted"),
+            created_at=existing.get("created_at", datetime.utcnow()),
+            is_customer=True,
+        )
+
     customer_doc = {
         "_id": customer_id,
         "user_id": business_id,
@@ -2537,21 +2931,26 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "created_at": datetime.utcnow(),
         "is_customer": True,
     }
-    
-    await db.customers.insert_one(customer_doc)
-    
+
+    try:
+        await db.customers.insert_one(customer_doc)
+    except Exception as e:
+        logging.error(f"create_customer insert failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create customer — please try again")
+
     return CustomerResponse(
         id=customer_id,
         user_id=business_id,
-        name=customer.name,
-        phone_number=customer.phone_number,
-        notes=customer.notes,
+        name=clean_name,
+        phone_number=clean_phone,
+        notes=clean_notes,
         tags=customer_doc["tags"],
         purchase_count=0,
         total_spent=0.0,
         last_message=None,
         last_contacted=None,
-        created_at=customer_doc["created_at"]
+        created_at=customer_doc["created_at"],
+        is_customer=True,
     )
 
 def _normalize_phone(phone: str) -> str:
@@ -2622,16 +3021,20 @@ async def get_contacts(search: str = "", user = Depends(get_current_user)):
     result = []
     for c in contacts:
         pending = pending_map.get(c["_id"])
+        raw_confidence = pending["confidence"] if pending else c.get("suggestion_confidence", 0)
+        raw_suggested_type = pending["suggested_type"] if pending else c.get("suggested_type")
+        # Only surface suggestions with meaningful confidence (>= 40%) so empty/0% entries never show confirm buttons
+        suggested_type = raw_suggested_type if (raw_suggested_type and raw_confidence >= 0.4) else None
         result.append({
-            "id": c["_id"],
+            "id": str(c["_id"]),
             "name": c.get("name", ""),
             "phone_number": c.get("phone_number", ""),
             "profile_picture": c.get("profile_picture"),
             "last_message": c.get("last_message", ""),
             "last_contacted": c.get("last_contacted"),
-            "suggested_type": pending["suggested_type"] if pending else c.get("suggested_type"),
-            "suggestion_reason": pending["reason"] if pending else c.get("suggestion_reason"),
-            "suggestion_confidence": pending["confidence"] if pending else c.get("suggestion_confidence", 0),
+            "suggested_type": suggested_type,
+            "suggestion_reason": (pending["reason"] if pending else c.get("suggestion_reason")) if suggested_type else None,
+            "suggestion_confidence": raw_confidence,
             "tags": c.get("tags", []),
             "created_at": c.get("created_at"),
         })
@@ -2688,6 +3091,19 @@ async def delete_contact(contact_id: str, user = Depends(get_current_user)):
     await db.customers.delete_one({"_id": contact_id})
     await db.messages.delete_many({"customer_id": contact_id})
     return {"status": "deleted"}
+
+@api_router.post("/contacts/purge-lid-numbers")
+async def purge_lid_numbers(user = Depends(get_current_user)):
+    """
+    Delete auto-created contacts with invalid phone numbers:
+    - Garbage @lid JID numbers (>15 digits)
+    - User's own number stored as a contact
+    - Too-short numbers (<7 digits)
+    Safe to call multiple times — never deletes confirmed customers.
+    """
+    business_id = user.get("business_id", user["_id"])
+    deleted = await _purge_invalid_contacts_for_user(business_id)
+    return {"status": "done", "deleted": deleted}
 
 @api_router.post("/contacts/scan-suggestions")
 async def scan_contact_suggestions(background_tasks: BackgroundTasks, user = Depends(get_current_user)):
@@ -2921,6 +3337,8 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         profile_picture=customer.get("profile_picture"),
         auto_reply=customer.get("auto_reply"),
         is_personal=customer.get("is_personal", False),
+        ai_enabled=customer.get("ai_enabled", not customer.get("is_personal", False)),
+        contact_type=customer.get("contact_type", "UNKNOWN"),
         is_customer=customer.get("is_customer", False),
         created_at=customer["created_at"]
     )
@@ -2958,6 +3376,17 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["auto_reply"] = update.auto_reply
     if update.is_personal is not None:
         update_data["is_personal"] = update.is_personal
+        # 16.5: Personal contacts have AI silent by default unless owner explicitly enables it
+        if update.is_personal is True and update.ai_enabled is None:
+            update_data["ai_enabled"] = False
+            update_data["contact_type"] = "KNOWN_PERSONAL"
+            update_data["contact_type_source"] = "owner_tagged"
+        elif update.is_personal is False and update.ai_enabled is None:
+            update_data["ai_enabled"] = True
+            update_data["contact_type"] = "KNOWN_CUSTOMER"
+            update_data["contact_type_source"] = "owner_tagged"
+    if update.ai_enabled is not None:
+        update_data["ai_enabled"] = update.ai_enabled
     if update.stage is not None:
         valid_stages = ["lead", "contacted", "negotiating", "won", "lost"]
         if update.stage in valid_stages:
@@ -2977,6 +3406,8 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         tags=updated.get("tags", []),
         auto_reply=updated.get("auto_reply"),
         is_personal=updated.get("is_personal", False),
+        ai_enabled=updated.get("ai_enabled", not updated.get("is_personal", False)),
+        contact_type=updated.get("contact_type", "UNKNOWN"),
         is_customer=updated.get("is_customer", False),
         stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
@@ -2984,6 +3415,33 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         profile_picture=updated.get("profile_picture"),
         created_at=updated["created_at"]
     )
+
+
+@api_router.post("/customers/{customer_id}/toggle-ai")
+async def toggle_ai_for_contact(customer_id: str, user = Depends(get_current_user)):
+    """16.5: Toggle AI on/off for a contact. Personal contacts are silent by default.
+    This is the personal/business switch button endpoint."""
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    current_ai_enabled = customer.get("ai_enabled", not customer.get("is_personal", False))
+    new_ai_enabled = not current_ai_enabled
+
+    await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$set": {
+            "ai_enabled": new_ai_enabled,
+            "contact_type_source": "owner_tagged",
+        }}
+    )
+    return {
+        "status": "success",
+        "ai_enabled": new_ai_enabled,
+        "message": "AI enabled for this contact" if new_ai_enabled else "AI silenced for this contact",
+    }
+
 
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, user = Depends(get_current_user)):
@@ -3645,6 +4103,59 @@ async def get_sales(user = Depends(get_current_user)):
         logging.error(f"Error in get_sales endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch sales: {str(e)}")
 
+@api_router.get("/revenue", response_model=List[SaleResponse])
+async def get_revenue(user = Depends(get_current_user)):
+    """Unified revenue: sales + paid bookings combined and sorted by date."""
+    business_id = user.get("business_id", user["_id"])
+    result = []
+
+    # 1. Regular sales
+    sales = await db.sales.find({"user_id": business_id}).sort("created_at", -1).to_list(1000)
+    for s in sales:
+        try:
+            customer = await db.customers.find_one({"_id": s.get("customer_id")})
+            result.append(SaleResponse(
+                id=s["_id"], user_id=s["user_id"],
+                customer_id=s.get("customer_id", ""),
+                customer_name=customer.get("name") if customer else s.get("customer_name", "Unknown"),
+                customer_phone=customer.get("phone_number") if customer else None,
+                item=s.get("item", ""), amount=s.get("amount", 0),
+                payment_method=s.get("payment_method", ""),
+                receipt_sent=s.get("receipt_sent", False),
+                is_credit=s.get("is_credit", False),
+                due_date=s.get("due_date"), paid_date=s.get("paid_date"),
+                created_at=s.get("created_at"), source="sale"
+            ))
+        except Exception:
+            continue
+
+    # 2. Paid bookings
+    paid_bookings = await db.bookings.find(
+        {"user_id": business_id, "payment_status": "paid"}
+    ).sort("date", -1).to_list(1000)
+    for b in paid_bookings:
+        try:
+            # Use the booking date as created_at for sorting
+            booking_dt = datetime.strptime(f"{b['date']} {b.get('time', '00:00')}", "%Y-%m-%d %H:%M")
+            result.append(SaleResponse(
+                id=b["_id"], user_id=b["user_id"],
+                customer_id=b.get("customer_id", ""),
+                customer_name=b.get("customer_name", "Customer"),
+                customer_phone=b.get("customer_phone"),
+                item=b.get("service_name", "Appointment"),
+                amount=b.get("price", 0),
+                payment_method=b.get("payment_method", "Cash"),
+                receipt_sent=False, is_credit=False,
+                created_at=booking_dt, source="booking"
+            ))
+        except Exception:
+            continue
+
+    # Sort combined list by date descending
+    result.sort(key=lambda x: x.created_at, reverse=True)
+    return result
+
+
 @api_router.get("/sales/by-employee")
 async def get_sales_by_employee(user = Depends(get_current_user)):
     """Get sales totals grouped by employee (owner/manager only)"""
@@ -3816,6 +4327,7 @@ async def get_orders(user = Depends(get_current_user)):
                 total_amount=order.get("total_amount", 0),
                 payment_status=order.get("payment_status", "unpaid"),
                 delivery_status=order.get("delivery_status", "pending"),
+                status=order.get("status", "pending"),
                 notes=order.get("notes"),
                 due_date=order.get("due_date"),
                 created_at=created_at_str
@@ -4253,6 +4765,457 @@ async def delete_customer_group(group_id: str, user = Depends(get_current_user))
     return {"status": "success", "message": "Group deleted"}
 
 
+# ============ BOOKING ENDPOINTS ============
+
+class BookingCreate(BaseModel):
+    service_id: str
+    customer_id: Optional[str] = None  # None for walk-in customers
+    customer_name: Optional[str] = None  # used when no customer_id (walk-in)
+    customer_phone: Optional[str] = None
+    date: str                          # "YYYY-MM-DD"
+    time: str                          # "HH:MM" 24h
+    notes: Optional[str] = None
+    staff_id: Optional[str] = None
+
+class BookingUpdate(BaseModel):
+    date: Optional[str] = None
+    time: Optional[str] = None
+    notes: Optional[str] = None
+    staff_id: Optional[str] = None
+    status: Optional[str] = None       # pending|confirmed|completed|cancelled|no_show
+    payment_status: Optional[str] = None  # unpaid|partial|paid
+
+class BookingResponse(BaseModel):
+    id: str
+    booking_number: str
+    customer_id: str
+    customer_name: str
+    customer_phone: Optional[str] = None
+    service_id: Optional[str] = None
+    service_name: str
+    staff_id: Optional[str] = None
+    staff_name: Optional[str] = None
+    date: str
+    time: str
+    end_time: Optional[str] = None
+    duration: Optional[int] = None
+    status: str
+    payment_status: str
+    price: float
+    notes: Optional[str] = None
+    source: Optional[str] = None
+    reminder_sent: bool = False
+    last_reminder_at: Optional[datetime] = None
+    created_at: datetime
+
+def _generate_booking_number() -> str:
+    """Generate short booking reference like BK-X7K2M9"""
+    import random, string
+    chars = string.ascii_uppercase + string.digits
+    return "BK-" + "".join(random.choices(chars, k=6))
+
+def _calc_end_time(start_time: str, duration_minutes: int) -> str:
+    """Calculate end time string from start time + duration in minutes"""
+    try:
+        h, m = map(int, start_time.split(":"))
+        total = h * 60 + m + duration_minutes
+        return f"{total // 60:02d}:{total % 60:02d}"
+    except Exception:
+        return start_time
+
+@api_router.post("/bookings", response_model=BookingResponse)
+async def create_booking(booking: BookingCreate, user = Depends(get_current_user)):
+    """Create a new booking/appointment"""
+    business_id = user.get("business_id", user["_id"])
+
+    # Fetch service
+    service = await db.products.find_one({"_id": booking.service_id, "user_id": business_id})
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    # Fetch customer (or allow walk-in with no customer record)
+    customer = None
+    if booking.customer_id:
+        customer = await db.customers.find_one({"_id": booking.customer_id})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+    duration = service.get("duration") or 60
+    end_time = _calc_end_time(booking.time, duration)
+
+    # Conflict check: no overlapping confirmed/pending bookings for same date/service
+    existing = await db.bookings.find_one({
+        "user_id": business_id,
+        "service_id": booking.service_id,
+        "date": booking.date,
+        "status": {"$in": ["pending", "confirmed"]},
+        "time": booking.time,
+    })
+    max_concurrent = service.get("max_concurrent", 1)
+    if existing:
+        slot_count = await db.bookings.count_documents({
+            "user_id": business_id,
+            "service_id": booking.service_id,
+            "date": booking.date,
+            "time": booking.time,
+            "status": {"$in": ["pending", "confirmed"]},
+        })
+        if slot_count >= max_concurrent:
+            raise HTTPException(status_code=409, detail="That time slot is already fully booked")
+
+    booking_id = str(uuid.uuid4())
+    booking_number = _generate_booking_number()
+    now = datetime.utcnow()
+
+    booking_settings = user.get("settings", {}).get("booking_settings", {})
+    auto_confirm = booking_settings.get("auto_confirm", False)
+    initial_status = "confirmed" if auto_confirm else "pending"
+
+    booking_doc = {
+        "_id": booking_id,
+        "user_id": business_id,
+        "booking_number": booking_number,
+        "customer_id": booking.customer_id or "walkin",
+        "customer_name": customer.get("name", "Customer") if customer else (booking.customer_name or "Walk-in Customer"),
+        "customer_phone": customer.get("phone_number") if customer else booking.customer_phone,
+        "service_id": booking.service_id,
+        "service_name": service.get("name", "Service"),
+        "staff_id": booking.staff_id,
+        "staff_name": None,
+        "date": booking.date,
+        "time": booking.time,
+        "end_time": end_time,
+        "duration": duration,
+        "status": initial_status,
+        "payment_status": "unpaid",
+        "price": service.get("price", 0),
+        "notes": booking.notes,
+        "reminder_sent": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.bookings.insert_one(booking_doc)
+
+    return BookingResponse(
+        id=booking_id,
+        booking_number=booking_number,
+        customer_id=booking.customer_id,
+        customer_name=booking_doc["customer_name"],
+        customer_phone=booking_doc["customer_phone"],
+        service_id=booking.service_id,
+        service_name=booking_doc["service_name"],
+        staff_id=booking.staff_id,
+        staff_name=None,
+        date=booking.date,
+        time=booking.time,
+        end_time=end_time,
+        duration=duration,
+        status=initial_status,
+        payment_status="unpaid",
+        price=booking_doc["price"],
+        notes=booking.notes,
+        source=None,
+        reminder_sent=False,
+        last_reminder_at=None,
+        created_at=now,
+    )
+
+@api_router.get("/bookings", response_model=List[BookingResponse])
+async def get_bookings(
+    status: Optional[str] = None,
+    date: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    user = Depends(get_current_user)
+):
+    """List bookings with optional filters"""
+    business_id = user.get("business_id", user["_id"])
+    query: Dict[str, Any] = {"user_id": business_id}
+    if status:
+        query["status"] = status
+    if date:
+        query["date"] = date
+    if customer_id:
+        query["customer_id"] = customer_id
+
+    docs = await db.bookings.find(query).sort([("date", -1), ("time", 1)]).to_list(500)
+    return [
+        BookingResponse(
+            id=d["_id"],
+            booking_number=d.get("booking_number", ""),
+            customer_id=d["customer_id"],
+            customer_name=d.get("customer_name", ""),
+            customer_phone=d.get("customer_phone"),
+            service_id=d.get("service_id"),
+            service_name=d.get("service_name", ""),
+            staff_id=d.get("staff_id"),
+            staff_name=d.get("staff_name"),
+            date=d["date"],
+            time=d["time"],
+            end_time=d.get("end_time"),
+            duration=d.get("duration"),
+            status=d.get("status", "pending"),
+            payment_status=d.get("payment_status", "unpaid"),
+            price=d.get("price", 0),
+            notes=d.get("notes"),
+            source=d.get("source"),
+            reminder_sent=d.get("reminder_sent", False),
+            last_reminder_at=d.get("last_reminder_at"),
+            created_at=d.get("created_at", datetime.utcnow()),
+        )
+        for d in docs
+    ]
+
+@api_router.get("/bookings/{booking_id}", response_model=BookingResponse)
+async def get_booking(booking_id: str, user = Depends(get_current_user)):
+    """Get a single booking"""
+    business_id = user.get("business_id", user["_id"])
+    d = await db.bookings.find_one({"_id": booking_id, "user_id": business_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return BookingResponse(
+        id=d["_id"],
+        booking_number=d.get("booking_number", ""),
+        customer_id=d["customer_id"],
+        customer_name=d.get("customer_name", ""),
+        customer_phone=d.get("customer_phone"),
+        service_id=d["service_id"],
+        service_name=d.get("service_name", ""),
+        staff_id=d.get("staff_id"),
+        staff_name=d.get("staff_name"),
+        date=d["date"],
+        time=d["time"],
+        end_time=d.get("end_time"),
+        duration=d.get("duration"),
+        status=d.get("status", "pending"),
+        payment_status=d.get("payment_status", "unpaid"),
+        price=d.get("price", 0),
+        notes=d.get("notes"),
+        source=d.get("source"),
+        reminder_sent=d.get("reminder_sent", False),
+        last_reminder_at=d.get("last_reminder_at"),
+        created_at=d.get("created_at", datetime.utcnow()),
+    )
+
+@api_router.put("/bookings/{booking_id}", response_model=BookingResponse)
+async def update_booking(booking_id: str, updates: BookingUpdate, user = Depends(get_current_user)):
+    """Update booking details or status"""
+    business_id = user.get("business_id", user["_id"])
+    d = await db.bookings.find_one({"_id": booking_id, "user_id": business_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    update_data: Dict[str, Any] = {"updated_at": datetime.utcnow()}
+    if updates.date is not None:
+        update_data["date"] = updates.date
+    if updates.time is not None:
+        update_data["time"] = updates.time
+        # Recalculate end_time
+        duration = d.get("duration", 60)
+        update_data["end_time"] = _calc_end_time(updates.time, duration)
+    if updates.notes is not None:
+        update_data["notes"] = updates.notes
+    if updates.staff_id is not None:
+        update_data["staff_id"] = updates.staff_id
+    if updates.status is not None:
+        update_data["status"] = updates.status
+        if updates.status == "cancelled":
+            update_data["cancelled_at"] = datetime.utcnow()
+    if updates.payment_status is not None:
+        update_data["payment_status"] = updates.payment_status
+
+    await db.bookings.update_one({"_id": booking_id}, {"$set": update_data})
+    d.update(update_data)
+
+    return BookingResponse(
+        id=d["_id"],
+        booking_number=d.get("booking_number", ""),
+        customer_id=d["customer_id"],
+        customer_name=d.get("customer_name", ""),
+        customer_phone=d.get("customer_phone"),
+        service_id=d["service_id"],
+        service_name=d.get("service_name", ""),
+        staff_id=d.get("staff_id"),
+        staff_name=d.get("staff_name"),
+        date=d["date"],
+        time=d["time"],
+        end_time=d.get("end_time"),
+        duration=d.get("duration"),
+        status=d.get("status", "pending"),
+        payment_status=d.get("payment_status", "unpaid"),
+        price=d.get("price", 0),
+        notes=d.get("notes"),
+        source=d.get("source"),
+        reminder_sent=d.get("reminder_sent", False),
+        last_reminder_at=d.get("last_reminder_at"),
+        created_at=d.get("created_at", datetime.utcnow()),
+    )
+
+@api_router.delete("/bookings/{booking_id}")
+async def delete_booking(booking_id: str, user = Depends(get_current_user)):
+    """Cancel/delete a booking"""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.bookings.delete_one({"_id": booking_id, "user_id": business_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return {"status": "success", "message": "Booking deleted"}
+
+@api_router.post("/bookings/{booking_id}/send-reminder")
+async def send_booking_reminder_manual(booking_id: str, user = Depends(get_current_user)):
+    """Manually send a WhatsApp reminder for a specific booking"""
+    from whatsapp_service import get_whatsapp_service
+    business_id = user.get("business_id", user["_id"])
+    booking = await db.bookings.find_one({"_id": booking_id, "user_id": business_id})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    customer_phone = booking.get("customer_phone")
+    if not customer_phone:
+        raise HTTPException(status_code=400, detail="No phone number on this booking")
+
+    customer_name  = booking.get("customer_name", "there")
+    service_name   = booking.get("service_name", "appointment")
+    date_str       = booking.get("date", "")
+    time_str       = booking.get("time", "")
+    booking_number = booking.get("booking_number", "")
+
+    msg = (
+        f"Hi {customer_name}! \U0001f4c5 Just a reminder about your upcoming "
+        f"*{service_name}* on *{date_str} at {time_str}*.\n\n"
+        f"Ref: *{booking_number}*\n"
+        f"_Reply to reschedule or cancel_"
+    )
+    ws = get_whatsapp_service(db)
+    await ws.send_message(
+        user_id=business_id, to_number=customer_phone,
+        message=msg, customer_name=customer_name, send_context="booking_reminder"
+    )
+    await db.bookings.update_one(
+        {"_id": booking_id},
+        {"$set": {"last_reminder_at": datetime.utcnow()}}
+    )
+    return {"status": "sent"}
+
+@api_router.get("/availability/day")
+async def get_availability(
+    date: str,
+    service_id: str,
+    user = Depends(get_current_user)
+):
+    """Get available time slots for a service on a given date (YYYY-MM-DD)"""
+    business_id = user.get("business_id", user["_id"])
+
+    # Fetch service for duration
+    service = await db.products.find_one({"_id": service_id, "user_id": business_id})
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    duration = service.get("duration", 60)
+    max_concurrent = service.get("max_concurrent", 1)
+
+    # Get business hours for the weekday
+    try:
+        from datetime import date as _date
+        parsed_date = _date.fromisoformat(date)
+        weekday_map = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        day_key = weekday_map[parsed_date.weekday()]
+        day_name = parsed_date.strftime("%A")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    business_hours = user.get("settings", {}).get("business_hours", {})
+    day_hours = business_hours.get(day_key, {})
+    if day_hours.get("closed", False) or not day_hours:
+        return {
+            "date": date,
+            "day": day_name,
+            "closed": True,
+            "available_slots": [],
+            "booked_slots": [],
+        }
+
+    open_time = day_hours.get("open", "09:00")
+    close_time = day_hours.get("close", "17:00")
+
+    booking_settings = user.get("settings", {}).get("booking_settings", {})
+    buffer = booking_settings.get("buffer_minutes", 15)
+
+    # Build all possible slots
+    def time_to_min(t: str) -> int:
+        h, m = map(int, t.split(":"))
+        return h * 60 + m
+
+    def min_to_time(m: int) -> str:
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    open_min = time_to_min(open_time)
+    close_min = time_to_min(close_time)
+    slot_step = duration + buffer
+
+    all_slots = []
+    cursor = open_min
+    while cursor + duration <= close_min:
+        all_slots.append(min_to_time(cursor))
+        cursor += slot_step
+
+    # Fetch existing bookings for that date and service
+    existing_bookings = await db.bookings.find({
+        "user_id": business_id,
+        "service_id": service_id,
+        "date": date,
+        "status": {"$in": ["pending", "confirmed"]},
+    }).to_list(200)
+
+    booked_slot_counts: Dict[str, int] = {}
+    for b in existing_bookings:
+        t = b.get("time", "")
+        booked_slot_counts[t] = booked_slot_counts.get(t, 0) + 1
+
+    booked_slots = [
+        {"time": b.get("time"), "end_time": b.get("end_time"), "service": b.get("service_name")}
+        for b in existing_bookings
+    ]
+
+    available_slots = [
+        {"time": s, "end_time": _calc_end_time(s, duration)}
+        for s in all_slots
+        if booked_slot_counts.get(s, 0) < max_concurrent
+    ]
+
+    return {
+        "date": date,
+        "day": day_name,
+        "closed": False,
+        "business_hours": {"open": open_time, "close": close_time},
+        "available_slots": available_slots,
+        "booked_slots": booked_slots,
+    }
+
+@api_router.get("/availability/week")
+async def get_availability_week(
+    start: str,
+    service_id: str,
+    user = Depends(get_current_user)
+):
+    """Get availability summary for 7 days starting from start date"""
+    from datetime import date as _date, timedelta
+    try:
+        start_date = _date.fromisoformat(start)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    result = []
+    for i in range(7):
+        day = start_date + timedelta(days=i)
+        day_str = day.isoformat()
+        day_avail = await get_availability(day_str, service_id, user)
+        result.append({
+            "date": day_str,
+            "day": day.strftime("%A"),
+            "closed": day_avail.get("closed", False),
+            "available_count": len(day_avail.get("available_slots", [])),
+        })
+    return result
+
+
 # ============ PRODUCT ENDPOINTS ============
 
 class ProductResponse(BaseModel):
@@ -4267,6 +5230,20 @@ class ProductResponse(BaseModel):
     in_stock: bool = True
     stock_quantity: Optional[int] = None
     created_at: datetime
+    # Multi-business-type fields
+    offering_type: Optional[str] = "product"  # product, service, menu_item, class, digital
+    duration: Optional[int] = None            # minutes (for services/classes)
+    requires_staff: Optional[bool] = False
+    max_concurrent: Optional[int] = 1
+    digital: Optional[bool] = False
+    download_url: Optional[str] = None
+    preview_url: Optional[str] = None
+    service_category: Optional[str] = "appointment"  # appointment | rental
+    addons: Optional[List[dict]] = []               # [{name, price}] max 4
+    listing_blocked_dates: Optional[List[str]] = []  # per-listing blocked YYYY-MM-DD dates
+    deposit_percent: Optional[int] = 0               # 0=none, 1-100 = required deposit %
+    price_unit: Optional[str] = "night"               # night | day | week | month | year | person
+    capacity: Optional[int] = 1                      # max appointments per time slot (default 1)
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def get_products(user = Depends(get_current_user)):
@@ -4291,7 +5268,20 @@ async def get_products(user = Depends(get_current_user)):
             description=p.get("description"),
             in_stock=p.get("in_stock", True),
             stock_quantity=p.get("stock_quantity"),
-            created_at=p.get("created_at", datetime.utcnow())
+            created_at=p.get("created_at", datetime.utcnow()),
+            offering_type=p.get("offering_type", "product"),
+            duration=p.get("duration"),
+            requires_staff=p.get("requires_staff", False),
+            max_concurrent=p.get("max_concurrent", 1),
+            digital=p.get("digital", False),
+            download_url=p.get("download_url"),
+            preview_url=p.get("preview_url"),
+            service_category=p.get("service_category", "appointment"),
+            addons=p.get("addons", []),
+            listing_blocked_dates=p.get("listing_blocked_dates", []),
+            deposit_percent=p.get("deposit_percent", 0),
+            price_unit=p.get("price_unit", "night"),
+            capacity=p.get("capacity", 1),
         ))
     return result
 
@@ -4305,6 +5295,20 @@ class ProductCreate(BaseModel):
     description: Optional[str] = None
     in_stock: bool = True
     stock_quantity: Optional[int] = None
+    # Multi-business-type fields
+    offering_type: Optional[str] = "product"
+    duration: Optional[int] = None
+    requires_staff: Optional[bool] = False
+    max_concurrent: Optional[int] = 1
+    digital: Optional[bool] = False
+    download_url: Optional[str] = None
+    preview_url: Optional[str] = None
+    service_category: Optional[str] = "appointment"
+    addons: Optional[List[dict]] = []
+    listing_blocked_dates: Optional[List[str]] = []
+    deposit_percent: Optional[int] = 0
+    price_unit: Optional[str] = "night"
+    capacity: Optional[int] = 1
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -4316,6 +5320,20 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = None
     in_stock: Optional[bool] = None
     stock_quantity: Optional[int] = None
+    # Multi-business-type fields
+    offering_type: Optional[str] = None
+    duration: Optional[int] = None
+    requires_staff: Optional[bool] = None
+    max_concurrent: Optional[int] = None
+    digital: Optional[bool] = None
+    download_url: Optional[str] = None
+    preview_url: Optional[str] = None
+    service_category: Optional[str] = None
+    addons: Optional[List[dict]] = None
+    listing_blocked_dates: Optional[List[str]] = None
+    deposit_percent: Optional[int] = None
+    price_unit: Optional[str] = None
+    capacity: Optional[int] = None
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -4385,6 +5403,19 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "description": clean_description,
         "in_stock": product.in_stock,
         "stock_quantity": product.stock_quantity,
+        "offering_type": product.offering_type or "product",
+        "duration": product.duration,
+        "requires_staff": product.requires_staff or False,
+        "max_concurrent": product.max_concurrent or 1,
+        "digital": product.digital or False,
+        "download_url": product.download_url,
+        "preview_url": product.preview_url,
+        "service_category": product.service_category or "appointment",
+        "addons": (product.addons or [])[:4],
+        "listing_blocked_dates": product.listing_blocked_dates or [],
+        "deposit_percent": product.deposit_percent or 0,
+        "price_unit": product.price_unit or "night",
+        "capacity": product.capacity or 1,
         "created_at": datetime.utcnow()
     }
     
@@ -4401,14 +5432,27 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         description=product_doc["description"],
         in_stock=product_doc["in_stock"],
         stock_quantity=product_doc["stock_quantity"],
-        created_at=product_doc["created_at"]
+        created_at=product_doc["created_at"],
+        offering_type=product_doc["offering_type"],
+        duration=product_doc["duration"],
+        requires_staff=product_doc["requires_staff"],
+        max_concurrent=product_doc["max_concurrent"],
+        digital=product_doc["digital"],
+        download_url=product_doc["download_url"],
+        preview_url=product_doc["preview_url"],
+        service_category=product_doc["service_category"],
+        addons=product_doc["addons"],
+        listing_blocked_dates=product_doc.get("listing_blocked_dates", []),
+        deposit_percent=product_doc.get("deposit_percent", 0),
+        price_unit=product_doc.get("price_unit", "night"),
+        capacity=product_doc.get("capacity", 1),
     )
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
 async def update_product(product_id: str, updates: ProductUpdate, user = Depends(get_current_user)):
     """Update a product"""
-    # Create update dict excluding None values
-    update_data = {k: v for k, v in updates.dict().items() if v is not None}
+    # Create update dict excluding None values (allow empty list for listing_blocked_dates)
+    update_data = {k: v for k, v in updates.dict().items() if v is not None or k == "listing_blocked_dates"}
     
     if not update_data:
         raise HTTPException(status_code=400, detail="No updates provided")
@@ -4459,7 +5503,19 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         description=result.get("description"),
         in_stock=result.get("in_stock", True),
         stock_quantity=result.get("stock_quantity"),
-        created_at=result["created_at"]
+        created_at=result["created_at"],
+        offering_type=result.get("offering_type", "product"),
+        duration=result.get("duration"),
+        requires_staff=result.get("requires_staff", False),
+        max_concurrent=result.get("max_concurrent", 1),
+        digital=result.get("digital", False),
+        download_url=result.get("download_url"),
+        preview_url=result.get("preview_url"),
+        service_category=result.get("service_category", "appointment"),
+        addons=result.get("addons", []),
+        listing_blocked_dates=result.get("listing_blocked_dates", []),
+        deposit_percent=result.get("deposit_percent", 0),
+        price_unit=result.get("price_unit", "night"),
     )
 
 @api_router.post("/products/{product_id}/images")
@@ -4686,15 +5742,12 @@ async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dic
     """Verify a Google Play purchase token with the Android Publisher API."""
     # Google Play product IDs follow the pattern: crm_{plan}_monthly
     product_id = f"crm_{plan_id}_monthly"
-    package_name = GOOGLE_PLAY_PACKAGE_NAME
-    sa_key_path = os.environ.get('GOOGLE_SA_KEY_PATH', '')
+    package_name = GOOGLE_PLAY_PACKAGE_NAME or 'com.charo360.whatsappcrm'
+    # Default to the service account file saved in the backend directory
+    sa_key_path = os.environ.get('GOOGLE_SA_KEY_PATH', 'google-service-account.json')
 
-    if not package_name:
-        logging.warning("GOOGLE_PLAY_PACKAGE_NAME not set — skipping server verification")
-        return {"valid": True, "reason": "no_server_config"}
-
-    if not sa_key_path or not os.path.exists(sa_key_path):
-        logging.warning("GOOGLE_SA_KEY_PATH not set or file missing — skipping server verification")
+    if not os.path.exists(sa_key_path):
+        logging.warning(f"Service account key not found at '{sa_key_path}' — skipping server verification")
         return {"valid": True, "reason": "no_server_config"}
 
     try:
@@ -4821,12 +5874,125 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
 @api_router.get("/subscription/status")
 async def get_subscription_status(user = Depends(get_current_user)):
     """Get current user subscription status"""
+    plan = user.get("subscription_plan")
+    active = user.get("subscription_active", False)
+    # Build limits from SUBSCRIPTION_LIMITS for the current plan
+    limits = SUBSCRIPTION_LIMITS.get(plan, SUBSCRIPTION_LIMITS['free']) if plan else SUBSCRIPTION_LIMITS['free']
     return {
-        "subscription_plan": user.get("subscription_plan"),
-        "subscription_active": user.get("subscription_active", False),
+        "subscription_plan": plan,
+        "subscription_active": active,
         "subscription_date": user.get("subscription_date"),
+        "subscription_expiry": user.get("subscription_expiry"),
+        "auto_renewing": user.get("auto_renewing", False),
         "extra_credits": user.get("extra_credits", 0),
+        "limits": limits,
     }
+
+
+class RestorePurchasesRequest(BaseModel):
+    purchases: list  # [{purchase_token, plan_id, platform}]
+
+@api_router.post("/subscription/restore-purchases")
+async def restore_purchases(request: RestorePurchasesRequest, user = Depends(get_current_user)):
+    """Restore previous purchases after app reinstall"""
+    if not request.purchases:
+        return {"restored": 0, "message": "No purchases to restore"}
+
+    restored_count = 0
+    best_plan = None
+
+    plan_rank = {"pro": 3, "standard": 2, "starter": 1, "free": 0}
+
+    for purchase in request.purchases:
+        purchase_token = purchase.get("purchase_token") or purchase.get("purchaseToken")
+        plan_id = purchase.get("plan_id") or purchase.get("productId", "").replace("crm_", "").replace("_monthly", "").replace("_yearly", "")
+        platform = purchase.get("platform", "android")
+
+        if not purchase_token or not plan_id:
+            continue
+
+        if platform == "android":
+            verification = await _verify_google_play_purchase(purchase_token, plan_id)
+        elif platform == "ios":
+            verification = await _verify_apple_receipt(purchase_token)
+        else:
+            continue
+
+        if verification.get("valid"):
+            restored_count += 1
+            if not best_plan or plan_rank.get(plan_id, 0) > plan_rank.get(best_plan, 0):
+                best_plan = plan_id
+
+    if best_plan:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {
+                "subscription_plan": best_plan,
+                "subscription_active": True,
+                "subscription_date": user.get("subscription_date") or datetime.utcnow(),
+            }}
+        )
+        logging.info(f"Restored subscription '{best_plan}' for user {user['_id']}")
+        return {"restored": restored_count, "plan": best_plan, "message": "Subscription restored successfully"}
+
+    return {"restored": 0, "message": "No valid active subscriptions found"}
+
+
+@api_router.post("/subscription/rtdn-webhook")
+async def google_play_rtdn_webhook(request: Request):
+    """
+    Google Play Real-Time Developer Notifications (RTDN) webhook.
+    Google sends Pub/Sub messages here when subscription state changes.
+    Set this URL in Play Console -> Monetize -> Subscriptions -> Real-time notifications.
+    """
+    try:
+        body = await request.json()
+        # Pub/Sub message format: {"message": {"data": "<base64>", "messageId": "..."}, "subscription": "..."}
+        import base64
+        message_data = body.get("message", {}).get("data", "")
+        if not message_data:
+            return {"status": "ok"}
+
+        decoded = base64.b64decode(message_data).decode("utf-8")
+        notification = json.loads(decoded)
+
+        notification_type = notification.get("notificationType")
+        purchase_token = notification.get("purchaseToken")
+        subscription_id = notification.get("subscriptionId", "")  # e.g. crm_pro_monthly
+
+        logging.info(f"RTDN received: type={notification_type}, sub={subscription_id}")
+
+        if not purchase_token:
+            return {"status": "ok"}
+
+        # Find user by purchase token
+        user_doc = await db.users.find_one({"purchase_token": purchase_token})
+        if not user_doc:
+            return {"status": "ok"}
+
+        # notificationType: 1=RECOVERED, 2=RENEWED, 3=CANCELED, 4=PURCHASED,
+        #                    5=ON_HOLD, 6=IN_GRACE_PERIOD, 7=RESTARTED, 13=EXPIRED
+        ACTIVE_TYPES = {1, 2, 4, 7}    # subscription is active
+        INACTIVE_TYPES = {3, 5, 13}     # subscription ended or on hold
+
+        if notification_type in ACTIVE_TYPES:
+            plan_id = subscription_id.replace("crm_", "").replace("_monthly", "").replace("_yearly", "")
+            await db.users.update_one(
+                {"_id": user_doc["_id"]},
+                {"$set": {"subscription_active": True, "subscription_plan": plan_id}}
+            )
+        elif notification_type in INACTIVE_TYPES:
+            await db.users.update_one(
+                {"_id": user_doc["_id"]},
+                {"$set": {"subscription_active": False}}
+            )
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        logging.error(f"RTDN webhook error: {e}")
+        return {"status": "ok"}  # Always return 200 to prevent Pub/Sub retries
+
 
 # Credit top-up bundles: bundle_id -> {credits, price_usd}
 CREDIT_BUNDLES = {
@@ -5354,6 +6520,14 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
     sales_today = sales_result[0]["total"] if sales_result else 0
     sales_count = sales_result[0]["count"] if sales_result else 0
 
+    # Today's bookings count (appointments scheduled for today)
+    today_date_str = local_now.strftime("%Y-%m-%d")
+    bookings_today = await db.bookings.count_documents({
+        "user_id": uid,
+        "date": today_date_str,
+        "status": {"$in": ["pending", "confirmed"]}
+    })
+
     # Total customers (confirmed only, not raw contacts)
     total_customers = await db.customers.count_documents({
         "user_id": uid,
@@ -5365,6 +6539,7 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
         "followups_today": followups_today,
         "sales_today": sales_today,
         "sales_count_today": sales_count,
+        "bookings_today": bookings_today,
         "total_customers": total_customers,
     }
 
@@ -5657,6 +6832,12 @@ async def evolution_webhook(request: Request):
                                     logging.info(f"Profile pic sync: {pic_result}")
                                 except Exception as pic_err:
                                     logging.error(f"Profile pic sync error: {pic_err}")
+
+                                # Auto-purge any invalid contacts that slipped through
+                                try:
+                                    await _purge_invalid_contacts_for_user(uid)
+                                except Exception as purge_err:
+                                    logging.error(f"Post-sync purge error: {purge_err}")
 
                             except Exception as sync_err:
                                 logging.error(f"Initial sync failed for user {uid}: {sync_err}")
@@ -6067,128 +7248,635 @@ async def evolution_webhook(request: Request):
                         logging.info(f"Button click detected: action={action}, product_id={button_product_id}")
                         break
                 
-                # NUMBERED REPLY HANDLER — customer replies "1", "2", "3" to action text
+                # NUMBERED REPLY HANDLER — customer replies "1", "2", "3" / "One" / "moja" to action text
                 if not button_action and not from_me and body:
                     _body_stripped = body.strip()
-                    # Accept plain digits or emoji keycap digits (1️⃣ etc)
-                    _num_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
-                                "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
-                                "4\ufe0f\u20e3": 4, "5\ufe0f\u20e3": 5, "6\ufe0f\u20e3": 6,
-                                "7\ufe0f\u20e3": 7, "8\ufe0f\u20e3": 8, "9\ufe0f\u20e3": 9}
-                    _reply_num = _num_map.get(_body_stripped)
+                    _body_lower = _body_stripped.lower()
+                    # Accept plain digits, emoji keycap digits, written numbers (multilingual)
+                    _num_map = {
+                        # Digits 1-16 (extended for time slot menus)
+                        "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+                        "6": 6, "7": 7, "8": 8, "9": 9,
+                        "10": 10, "11": 11, "12": 12, "13": 13,
+                        "14": 14, "15": 15, "16": 16,
+                        # Emoji keycap digits
+                        "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
+                        "4\ufe0f\u20e3": 4, "5\ufe0f\u20e3": 5, "6\ufe0f\u20e3": 6,
+                        "7\ufe0f\u20e3": 7, "8\ufe0f\u20e3": 8, "9\ufe0f\u20e3": 9,
+                        # English words
+                        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                        "six": 6, "seven": 7, "eight": 8, "nine": 9,
+                        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+                        "the first": 1, "the second": 2, "the third": 3,
+                        "first one": 1, "second one": 2, "third one": 3,
+                        "option 1": 1, "option 2": 2, "option 3": 3, "option 4": 4, "option 5": 5,
+                        "number 1": 1, "number 2": 2, "number 3": 3, "number 4": 4, "number 5": 5,
+                        "no 1": 1, "no 2": 2, "no 3": 3, "no. 1": 1, "no. 2": 2, "no. 3": 3,
+                        "#1": 1, "#2": 2, "#3": 3, "#4": 4, "#5": 5,
+                        # Swahili
+                        "moja": 1, "mbili": 2, "tatu": 3, "nne": 4, "tano": 5,
+                        "ya kwanza": 1, "ya pili": 2, "ya tatu": 3,
+                        "chaguo 1": 1, "chaguo 2": 2, "chaguo 3": 3,
+                        # French
+                        "un": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
+                        "premier": 1, "deuxième": 2, "troisième": 3,
+                        # Arabic numerals (common in mixed contexts)
+                        "١": 1, "٢": 2, "٣": 3, "٤": 4, "٥": 5,
+                    }
+                    _reply_num = _num_map.get(_body_lower) or _num_map.get(_body_stripped)
                     if _reply_num is not None:
-                        _pending_cat = await db.pending_catalogs.find_one({
-                            "customer_id": customer_id, "user_id": user["_id"]
+                        # Check if customer has pending order list — if so, skip catalog handler and let OrderAgent handle it
+                        _conv_state_check = await db.conversation_states.find_one({
+                            "customer_id": str(customer_id), "user_id": user["_id"]
                         })
-                        if _pending_cat:
-                            _ctx = _pending_cat.get("action_context", "product")
+                        if _conv_state_check and (
+                            _conv_state_check.get("pending_order_list") or
+                            _conv_state_check.get("pending_order_action") or
+                            _conv_state_check.get("pending_update_step") or
+                            _conv_state_check.get("pending_booking_list") or
+                            _conv_state_check.get("pending_booking_action")
+                        ):
+                            # Customer is interacting with an order or booking — don't intercept, let agent handle it
+                            logging.info(f"Numbered reply {_reply_num} with pending order/booking state — passing to agent")
+                        else:
+                            _pending_cat = await db.pending_catalogs.find_one({
+                                "customer_id": customer_id, "user_id": user["_id"]
+                            })
+                            if _pending_cat:
+                                _ctx = _pending_cat.get("action_context", "product")
 
-                            if _ctx == "catalog_select":
-                                _cat_products = _pending_cat.get("products", [])
-                                _biz_id_cs = user.get("business_id", user["_id"])
-                                # Check if customer wants next page (reply=9 and has_more=True)
-                                if _reply_num == 9 and _pending_cat.get("has_more"):
-                                    _all_ids = _pending_cat.get("all_product_ids", [])
-                                    _cur_offset = _pending_cat.get("page_offset", 0)
-                                    _new_offset = _cur_offset + 8
-                                    _next_ids = _all_ids[_new_offset:_new_offset + 8]
-                                    _new_has_more = len(_all_ids) > _new_offset + 8
-                                    _page_num = (_new_offset // 8) + 1
-                                    # Fetch next page products from DB
-                                    _next_products = []
-                                    for _pid in _next_ids:
-                                        _np = await db.products.find_one({"_id": _pid, "user_id": _biz_id_cs})
-                                        if _np:
-                                            _next_products.append(_np)
-                                    if _next_products:
-                                        _currency_pg = user.get("settings", {}).get("currency", "KES")
-                                        _next_with_curr = [{"currency": _currency_pg, **_np} for _np in _next_products]
+                                if _ctx == "catalog_select":
+                                    _cat_products = _pending_cat.get("products", [])
+                                    _biz_id_cs = user.get("business_id", user["_id"])
+                                    # Check if customer wants next page (reply=9 and has_more=True)
+                                    if _reply_num == 9 and _pending_cat.get("has_more"):
+                                        _all_ids = _pending_cat.get("all_product_ids", [])
+                                        _cur_offset = _pending_cat.get("page_offset", 0)
+                                        _new_offset = _cur_offset + 8
+                                        _next_ids = _all_ids[_new_offset:_new_offset + 8]
+                                        _new_has_more = len(_all_ids) > _new_offset + 8
+                                        _page_num = (_new_offset // 8) + 1
+                                        # Fetch next page products from DB
+                                        _next_products = []
+                                        for _pid in _next_ids:
+                                            _np = await db.products.find_one({"_id": _pid, "user_id": _biz_id_cs})
+                                            if _np:
+                                                _next_products.append(_np)
+                                        if _next_products:
+                                            _currency_pg = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                            _next_with_curr = [{"currency": _currency_pg, **_np} for _np in _next_products]
+                                            ws = get_whatsapp_service(db)
+                                            await ws.send_product_list(
+                                                user_id=user["_id"],
+                                                to_number=from_number,
+                                                title="Our Products",
+                                                products=_next_with_curr,
+                                                has_more=_new_has_more,
+                                                page_num=_page_num
+                                            )
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": {
+                                                    "products": [{"id": _np["_id"], "name": _np["name"],
+                                                                  "price": _np.get("price", 0), "index": i}
+                                                                 for i, _np in enumerate(_next_products, 1)],
+                                                    "page_offset": _new_offset,
+                                                    "has_more": _new_has_more,
+                                                    "updated_at": datetime.utcnow()
+                                                }}
+                                            )
+                                            logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
+                                            return {"status": "ok", "handled_by": "catalog_next_page"}
+                                    else:
+                                        # Customer picked a product from the numbered list — show full details
+                                        _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
+                                        if _selected_p:
+                                            _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
+                                            if _full_p:
+                                                ws = get_whatsapp_service(db)
+                                                await ws.send_product_showcase(
+                                                    user_id=user["_id"],
+                                                    to_number=from_number,
+                                                    product=_full_p,
+                                                    send_buttons=True,
+                                                )
+                                                # Switch context to product actions so next 1/2/3 = order/cart/ask
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {
+                                                        "products": [{"id": _full_p["_id"], "name": _full_p["name"],
+                                                                      "price": _full_p.get("price", 0), "index": 1}],
+                                                        "action_context": "product",
+                                                        "updated_at": datetime.utcnow()
+                                                    }}
+                                                )
+                                                logging.info(f"Catalog select #{_reply_num}: showed product {_full_p['_id']}")
+                                                return {"status": "ok", "handled_by": "catalog_select"}
+                                    # If product not found, fall through to AI
+                                    logging.warning(f"Catalog select #{_reply_num}: no product at that index")
+
+                                elif _ctx == "cart":
+                                    # 1 = checkout, 2 = continue shopping, 3 = cancel order
+                                    _num_to_action = {1: "checkout", 2: "continue", 3: "cancel_cart"}
+                                    _matched = _num_to_action.get(_reply_num)
+                                    if _matched:
+                                        button_action = _matched
+                                        button_product_id = None
+                                        logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
+
+                                elif _ctx == "duplicate_order_choice":
+                                    # 1 = create new (double), 2 = keep existing, 3 = cancel existing & create new
+                                    _dup_order_id = _pending_cat.get("duplicate_order_id")
+                                    _dup_items = _pending_cat.get("pending_cart_items", [])
+                                    _dup_total = _pending_cat.get("pending_cart_total", 0)
+                                    _biz_id_dup = user.get("business_id", user["_id"])
+                                    _currency_dup = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+
+                                    if _reply_num == 1:
+                                        # Create new order (double order)
+                                        _new_order_id = str(uuid.uuid4())
+                                        _new_order_num = "ORD-" + _new_order_id.replace("-", "").upper()[:6]
+                                        _item_names_dup = ", ".join(i["product_name"] for i in _dup_items[:3])
+                                        if len(_dup_items) > 3:
+                                            _item_names_dup += f" +{len(_dup_items)-3} more"
+                                        await db.orders.insert_one({
+                                            "_id": _new_order_id,
+                                            "order_number": _new_order_num,
+                                            "user_id": _biz_id_dup,
+                                            "customer_id": customer_id,
+                                            "customer_name": customer_name,
+                                            "customer_phone": from_number,
+                                            "product": _item_names_dup,
+                                            "items": _dup_items,
+                                            "quantity": len(_dup_items),
+                                            "total_amount": _dup_total,
+                                            "total": _dup_total,
+                                            "payment_status": "Unpaid",
+                                            "delivery_status": "Processing",
+                                            "status": "pending",
+                                            "created_at": datetime.utcnow(),
+                                            "source": "cart_checkout_duplicate"
+                                        })
+                                        # Clear cart
+                                        _cart_dup = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                        if _cart_dup:
+                                            await db.carts.update_one({"_id": _cart_dup["_id"]}, {"$set": {"status": "completed"}})
                                         ws = get_whatsapp_service(db)
-                                        await ws.send_product_list(
+                                        _user_dup1 = await db.users.find_one({"_id": _biz_id_dup})
+                                        _raw_pm_dup1 = (_user_dup1 or {}).get("payment_methods", [])
+                                        _pm_dup1_lines = []
+                                        for _pm in _raw_pm_dup1:
+                                            if isinstance(_pm, dict):
+                                                _ln = _pm.get("name", "")
+                                                _hd = False
+                                                if _pm.get("fields"):
+                                                    _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                    if _fp:
+                                                        _ln += " — " + ", ".join(_fp)
+                                                        _hd = True
+                                                elif _pm.get("details") and str(_pm["details"]).strip():
+                                                    _ln += f": {_pm['details']}"
+                                                    _hd = True
+                                                if _ln.strip() and _hd:
+                                                    _pm_dup1_lines.append(f"  • {_ln}")
+                                            else:
+                                                if str(_pm).strip():
+                                                    _pm_dup1_lines.append(f"  • {_pm}")
+                                        _pay_text_dup1 = "\n".join(_pm_dup1_lines)
+                                        _dup1_msg_lines = [
+                                            f"✅ New order *#{_new_order_num}* created!\n",
+                                            f"💰 *Total: {_currency_dup} {_dup_total:,.0f}*",
+                                            f"Status: 🔴 *Unpaid*\n",
+                                            "To complete your order, please make payment using the details below.\n",
+                                        ]
+                                        if _pay_text_dup1:
+                                            _dup1_msg_lines.append(f"*💳 Payment Details:*\n{_pay_text_dup1}\n")
+                                        else:
+                                            _dup1_msg_lines.append("We will send you our payment details shortly.\n")
+                                        _dup1_msg_lines.append(
+                                            f"📸 Once you have paid, *send us a screenshot* of your payment confirmation.\n\n"
+                                            f"Also send your *delivery details:*\n"
+                                            f"• Full name\n• Delivery address\n• Phone number\n\n"
+                                            f"Your order *#{_new_order_num}* will be processed once payment is confirmed. 🙏"
+                                        )
+                                        await ws.send_message(
                                             user_id=user["_id"],
                                             to_number=from_number,
-                                            title="Our Products",
-                                            products=_next_with_curr,
-                                            has_more=_new_has_more,
-                                            page_num=_page_num
+                                            message="\n".join(_dup1_msg_lines),
+                                            customer_name=customer_name,
+                                            send_context="order_confirm"
+                                        )
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id, "updated_at": datetime.utcnow()}}
+                                        )
+                                        logging.info(f"Duplicate order created: {_new_order_num}")
+                                        return {"status": "ok", "handled_by": "duplicate_order_create_new"}
+
+                                    elif _reply_num == 2:
+                                        # Keep existing order, clear cart
+                                        _cart_dup2 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                        if _cart_dup2:
+                                            await db.carts.update_one({"_id": _cart_dup2["_id"]}, {"$set": {"status": "cancelled"}})
+                                        _existing = await db.orders.find_one({"_id": _dup_order_id})
+                                        _existing_num = (_existing or {}).get("order_number", "")
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            message=f"👍 Got it! Your existing order *#{_existing_num}* is still active.\n\nCart has been cleared. Payment details were sent earlier. 😊",
+                                            customer_name=customer_name,
+                                            send_context="order_confirm"
+                                        )
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                        )
+                                        logging.info(f"Duplicate order: kept existing {_existing_num}")
+                                        return {"status": "ok", "handled_by": "duplicate_order_keep_existing"}
+
+                                    elif _reply_num == 3:
+                                        # Cancel existing, create new
+                                        await db.orders.update_one(
+                                            {"_id": _dup_order_id},
+                                            {"$set": {"status": "cancelled", "cancelled_at": datetime.utcnow(), "cancelled_by": "customer"}}
+                                        )
+                                        _new_order_id3 = str(uuid.uuid4())
+                                        _new_order_num3 = "ORD-" + _new_order_id3.replace("-", "").upper()[:6]
+                                        _item_names_dup3 = ", ".join(i["product_name"] for i in _dup_items[:3])
+                                        if len(_dup_items) > 3:
+                                            _item_names_dup3 += f" +{len(_dup_items)-3} more"
+                                        await db.orders.insert_one({
+                                            "_id": _new_order_id3,
+                                            "order_number": _new_order_num3,
+                                            "user_id": _biz_id_dup,
+                                            "customer_id": customer_id,
+                                            "customer_name": customer_name,
+                                            "customer_phone": from_number,
+                                            "product": _item_names_dup3,
+                                            "items": _dup_items,
+                                            "quantity": len(_dup_items),
+                                            "total_amount": _dup_total,
+                                            "total": _dup_total,
+                                            "payment_status": "Unpaid",
+                                            "delivery_status": "Processing",
+                                            "status": "pending",
+                                            "created_at": datetime.utcnow(),
+                                            "source": "cart_checkout_replaced"
+                                        })
+                                        # Clear cart
+                                        _cart_dup3 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
+                                        if _cart_dup3:
+                                            await db.carts.update_one({"_id": _cart_dup3["_id"]}, {"$set": {"status": "completed"}})
+                                        _old_order = await db.orders.find_one({"_id": _dup_order_id})
+                                        _old_num = (_old_order or {}).get("order_number", "")
+                                        ws = get_whatsapp_service(db)
+                                        _user_dup3 = await db.users.find_one({"_id": _biz_id_dup})
+                                        _raw_pm_dup3 = (_user_dup3 or {}).get("payment_methods", [])
+                                        _pm_dup3_lines = []
+                                        for _pm in _raw_pm_dup3:
+                                            if isinstance(_pm, dict):
+                                                _ln = _pm.get("name", "")
+                                                _hd = False
+                                                if _pm.get("fields"):
+                                                    _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                    if _fp:
+                                                        _ln += " — " + ", ".join(_fp)
+                                                        _hd = True
+                                                elif _pm.get("details") and str(_pm["details"]).strip():
+                                                    _ln += f": {_pm['details']}"
+                                                    _hd = True
+                                                if _ln.strip() and _hd:
+                                                    _pm_dup3_lines.append(f"  • {_ln}")
+                                            else:
+                                                if str(_pm).strip():
+                                                    _pm_dup3_lines.append(f"  • {_pm}")
+                                        _pay_text_dup3 = "\n".join(_pm_dup3_lines)
+                                        _dup3_msg_lines = [
+                                            f"✅ Order *#{_old_num}* cancelled.\n",
+                                            f"🆕 New order *#{_new_order_num3}* created!\n",
+                                            f"💰 *Total: {_currency_dup} {_dup_total:,.0f}*",
+                                            f"Status: 🔴 *Unpaid*\n",
+                                            "To complete your order, please make payment using the details below.\n",
+                                        ]
+                                        if _pay_text_dup3:
+                                            _dup3_msg_lines.append(f"*💳 Payment Details:*\n{_pay_text_dup3}\n")
+                                        else:
+                                            _dup3_msg_lines.append("We will send you our payment details shortly.\n")
+                                        _dup3_msg_lines.append(
+                                            f"📸 Once you have paid, *send us a screenshot* of your payment confirmation.\n\n"
+                                            f"Also send your *delivery details:*\n"
+                                            f"• Full name\n• Delivery address\n• Phone number\n\n"
+                                            f"Your order *#{_new_order_num3}* will be processed once payment is confirmed. 🙏"
+                                        )
+                                        await ws.send_message(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            message="\n".join(_dup3_msg_lines),
+                                            customer_name=customer_name,
+                                            send_context="order_confirm"
+                                        )
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": "delivery_pending", "order_id": _new_order_id3, "updated_at": datetime.utcnow()}}
+                                        )
+                                        logging.info(f"Duplicate order: cancelled {_old_num}, created {_new_order_num3}")
+                                        return {"status": "ok", "handled_by": "duplicate_order_replace"}
+
+                                elif _ctx == "booking_service_select":
+                                    # Customer picked a service number from booking menu
+                                    _bk_services = _pending_cat.get("products", [])
+                                    _bk_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                    _bk_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                                    _bk_is_rental_biz = _bk_biz_type == "rental"
+                                    _bk_is_restaurant = _bk_biz_type == "restaurant"
+                                    _bk_is_creator = _bk_biz_type == "creator"
+
+                                    # Reply 9 = see more services (pagination)
+                                    if _reply_num == 9 and _pending_cat.get("catalog_has_more"):
+                                        _all_svc_ids = _pending_cat.get("catalog_all_ids", [])
+                                        _cur_svc_off = _pending_cat.get("catalog_page_offset", 0)
+                                        _new_svc_off = _cur_svc_off + 8
+                                        _next_svc_ids = _all_svc_ids[_new_svc_off:_new_svc_off + 8]
+                                        _more_svc_has_more = len(_all_svc_ids) > _new_svc_off + 8
+                                        if _next_svc_ids:
+                                            _biz_id_bk_pg = user.get("business_id", user["_id"])
+                                            _next_svcs = []
+                                            for _sid in _next_svc_ids:
+                                                _sd = await db.products.find_one({"_id": _sid, "user_id": _biz_id_bk_pg})
+                                                if _sd:
+                                                    _next_svcs.append(_sd)
+                                            if _next_svcs:
+                                                if _bk_is_rental_biz:
+                                                    _pg_lines = ["🏠 *More Listings*\n"]
+                                                    for _pi, _ps in enumerate(_next_svcs, 1):
+                                                        _pp = _ps.get("price", 0)
+                                                        _pu = _ps.get("price_unit", "night")
+                                                        _pu_lbl = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_pu, "night")
+                                                        _pp_str = f"{_bk_currency} {_pp:,.0f}/{_pu_lbl}" if _pp else "Contact for price"
+                                                        _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}")
+                                                    if _more_svc_has_more:
+                                                        _pg_lines.append("9️⃣  ➡️ *See more listings*")
+                                                else:
+                                                    _pg_lines = ["📋 *More Services*\n"]
+                                                    for _pi, _ps in enumerate(_next_svcs, 1):
+                                                        _pp = _ps.get("price", 0)
+                                                        _pd = _ps.get("duration")
+                                                        _pp_str = f"{_bk_currency} {_pp:,.0f}" if _pp else "Contact for price"
+                                                        _pd_str = f" · {_pd} min" if _pd else ""
+                                                        _pg_lines.append(f"{_pi}️⃣  *{_ps['name']}* — {_pp_str}{_pd_str}")
+                                                    if _more_svc_has_more:
+                                                        _pg_lines.append("9️⃣  ➡️ *See more services*")
+                                                _pg_lines.append("\n_Reply with the number to book_")
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {
+                                                        "products": [
+                                                            {"id": str(_ps["_id"]), "name": _ps["name"],
+                                                             "price": _ps.get("price", 0), "duration": _ps.get("duration"),
+                                                             "index": _pi}
+                                                            for _pi, _ps in enumerate(_next_svcs, 1)
+                                                        ],
+                                                        "catalog_page_offset": _new_svc_off,
+                                                        "catalog_has_more": _more_svc_has_more,
+                                                        "updated_at": datetime.utcnow()
+                                                    }}
+                                                )
+                                                ws = get_whatsapp_service(db)
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message="\n".join(_pg_lines),
+                                                    customer_name=customer_name, send_context="booking_flow"
+                                                )
+                                                return {"status": "ok", "handled_by": "booking_service_page"}
+
+                                    _bk_sel = next((s for s in _bk_services if s.get("index") == _reply_num), None)
+                                    if _bk_sel:
+                                        _bk_price_str = f"{_bk_currency} {_bk_sel.get('price', 0):,.0f}" if _bk_sel.get("price") else "Contact for price"
+                                        _bk_svc_id = _bk_sel["id"]
+                                        _bk_svc_name = _bk_sel["name"]
+                                        # Fetch full service doc for image, addons, service_category, AND fresh duration
+                                        _bk_full_svc = await db.products.find_one({"_id": _bk_svc_id, "user_id": user.get("business_id", user["_id"])})
+                                        _bk_duration = (_bk_full_svc or {}).get("duration")  # Get fresh duration from DB, not cache
+                                        _bk_image_url = (_bk_full_svc or {}).get("image_url") or ""
+                                        # Build ordered image list: primary image always first, then extras
+                                        _bk_all_images = []
+                                        if _bk_image_url:
+                                            _bk_all_images.append(_bk_image_url)
+                                        for _extra_img in ((_bk_full_svc or {}).get("images") or []):
+                                            if _extra_img and _extra_img != _bk_image_url:
+                                                _bk_all_images.append(_extra_img)
+                                        _bk_addons = (_bk_full_svc or {}).get("addons", []) or []
+                                        # If whole business is rental, treat all listings as rental regardless of stored service_category
+                                        _bk_svc_cat = "rental" if _bk_is_rental_biz else (_bk_full_svc or {}).get("service_category", "appointment")
+                                        _bk_description = (_bk_full_svc or {}).get("description", "")
+                                        ws = get_whatsapp_service(db)
+                                        # Send listing images (up to 5) — captioned image always first
+                                        if _bk_all_images:
+                                            try:
+                                                import httpx as _httpx_bk
+                                                _inst_doc = await db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1})
+                                                _inst_name = (_inst_doc or {}).get("whatsapp", {}).get("instance_name", "")
+                                                if _inst_name:
+                                                    async with _httpx_bk.AsyncClient(timeout=15) as _hc:
+                                                        for _img_idx, _img_u in enumerate(_bk_all_images[:5]):
+                                                            _caption = ""
+                                                            if _img_idx == 0:
+                                                                _caption = f"*{_bk_svc_name}* — {_bk_price_str}"
+                                                                if _bk_description:
+                                                                    _caption += f"\n_{_bk_description[:120]}_"
+                                                            await _hc.post(
+                                                                f"{ws.base_url}/message/sendMedia/{_inst_name}",
+                                                                json={"number": from_number.lstrip("+"), "mediatype": "image",
+                                                                      "media": _img_u, "caption": _caption},
+                                                                headers=ws._headers(),
+                                                            )
+                                            except Exception as _img_err:
+                                                logging.warning(f"[Booking] Listing image send failed: {_img_err}")
+
+                                        _bk_price_unit = (_bk_full_svc or {}).get("price_unit", "night")
+                                        _bk_unit_label = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}.get(_bk_price_unit, "night")
+                                        # Store core booking fields in pending_catalogs
+                                        _base_ctx = {
+                                            "booking_service_id": _bk_svc_id,
+                                            "booking_service_name": _bk_svc_name,
+                                            "booking_service_price": _bk_sel.get("price", 0),
+                                            "booking_service_duration": _bk_duration,
+                                            "booking_service_category": _bk_svc_cat,
+                                            "booking_price_unit": _bk_price_unit,
+                                            "booking_addons_available": _bk_addons,
+                                            "booking_selected_addons": [],
+                                            "updated_at": datetime.utcnow(),
+                                        }
+
+                                        if _bk_addons:
+                                            # Step: show add-ons menu before date
+                                            _addon_lines = [f"✅ *{_bk_svc_name}* selected ({_bk_price_str})\n"]
+                                            _addon_lines.append("🔧 *Optional Add-ons:*\n")
+                                            for _ai, _ad in enumerate(_bk_addons[:4], 1):
+                                                _ad_price = _ad.get("price", 0)
+                                                _ad_str = f"+{_bk_currency} {_ad_price:,.0f}" if _ad_price else "Free"
+                                                _addon_lines.append(f"{_ai}️⃣  {_ad.get('name', '')} — {_ad_str}")
+                                            _addon_lines.append(f"0️⃣  No extras")
+                                            _addon_lines.append("\n_Reply with numbers separated by spaces (e.g. *1 3*) or *0* to skip_")
+                                            _base_ctx["action_context"] = "booking_addon_select"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message="\n".join(_addon_lines),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        elif _bk_svc_cat == "rental":
+                                            _base_ctx["action_context"] = "booking_checkin_input"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=(
+                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}/{_bk_unit_label}).\n\n"
+                                                    f"📅 *Check-in date?*\n"
+                                                    f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
+                                                ),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        elif _bk_is_restaurant:
+                                            _base_ctx["action_context"] = "booking_date_input"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=(
+                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}).\n\n"
+                                                    f"🍽️ *Table Reservation*\n"
+                                                    f"📅 *What date would you like?*\n"
+                                                    f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
+                                                ),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        elif _bk_is_creator:
+                                            _base_ctx["action_context"] = "creator_timeline_input"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=(
+                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}).\n\n"
+                                                    f"📅 *When do you need this delivered?*\n"
+                                                    f"_Reply with a deadline, e.g. *in 3 days*, *next Friday*, *March 20*_"
+                                                ),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        else:
+                                            _base_ctx["action_context"] = "booking_date_input"
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": _base_ctx}
+                                            )
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=(
+                                                    f"Great choice! *{_bk_svc_name}* ({_bk_price_str}).\n\n"
+                                                    f"📅 *What date would you like?*\n"
+                                                    f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_"
+                                                ),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                        logging.info(f"[Booking] Service selected: {_bk_svc_name} (cat={_bk_svc_cat}, addons={len(_bk_addons)}) for customer {customer_id}")
+                                        return {"status": "ok", "handled_by": "booking_service_select"}
+
+                                elif _ctx == "booking_time_select":
+                                    # Customer picked a time slot number
+                                    _bk_slots = _pending_cat.get("time_slots", [])
+                                    _bk_slot = next((s for s in _bk_slots if s.get("index") == _reply_num), None)
+                                    if _bk_slot:
+                                        _bk_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                        _bk_price = _pending_cat.get("booking_service_price", 0)
+                                        _bk_price_str = f"{_bk_currency} {_bk_price:,.0f}" if _bk_price else ""
+                                        _bk_biz_type_ts = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                                        
+                                        # Restaurant: ask for party size
+                                        if _bk_biz_type_ts == "restaurant":
+                                            await db.pending_catalogs.update_one(
+                                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                                {"$set": {
+                                                    "action_context": "restaurant_party_size_input",
+                                                    "booking_time": _bk_slot["time"],
+                                                    "updated_at": datetime.utcnow()
+                                                }}
+                                            )
+                                            ws = get_whatsapp_service(db)
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=(
+                                                    f"✅ Time: *{_bk_slot['time']}*\n\n"
+                                                    f"👥 *How many people?*\n"
+                                                    f"_Reply with the party size (1-50)_"
+                                                ),
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                            return {"status": "ok", "handled_by": "booking_time_select_restaurant"}
+                                        
+                                        # Other services: show summary
+                                        _bk_summary = (
+                                            f"✅ *Booking Summary*\n\n"
+                                            f"📋 Service: *{_pending_cat.get('booking_service_name', '')}*\n"
+                                            f"📅 Date: *{_pending_cat.get('booking_date', '')}*\n"
+                                            f"🕐 Time: *{_bk_slot['time']}*\n"
+                                            + (f"💰 Price: *{_bk_price_str}*\n" if _bk_price_str else "")
+                                            + f"\nReply *YES* to confirm or *NO* to cancel"
                                         )
                                         await db.pending_catalogs.update_one(
                                             {"customer_id": customer_id, "user_id": user["_id"]},
                                             {"$set": {
-                                                "products": [{"id": _np["_id"], "name": _np["name"],
-                                                              "price": _np.get("price", 0), "index": i}
-                                                             for i, _np in enumerate(_next_products, 1)],
-                                                "page_offset": _new_offset,
-                                                "has_more": _new_has_more,
+                                                "action_context": "booking_confirm",
+                                                "booking_time": _bk_slot["time"],
                                                 "updated_at": datetime.utcnow()
                                             }}
                                         )
-                                        logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
-                                        return {"status": "ok", "handled_by": "catalog_next_page"}
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message=_bk_summary, customer_name=customer_name, send_context="booking_flow"
+                                        )
+                                        logging.info(f"[Booking] Time selected: {_bk_slot['time']} for customer {customer_id}")
+                                        return {"status": "ok", "handled_by": "booking_time_select"}
+
                                 else:
-                                    # Customer picked a product from the numbered list — show full details
-                                    _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
-                                    if _selected_p:
-                                        _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
-                                        if _full_p:
-                                            ws = get_whatsapp_service(db)
-                                            await ws.send_product_showcase(
-                                                user_id=user["_id"],
-                                                to_number=from_number,
-                                                product=_full_p,
-                                                send_buttons=True,
-                                            )
-                                            # Switch context to product actions so next 1/2/3 = order/cart/ask
-                                            await db.pending_catalogs.update_one(
-                                                {"customer_id": customer_id, "user_id": user["_id"]},
-                                                {"$set": {
-                                                    "products": [{"id": _full_p["_id"], "name": _full_p["name"],
-                                                                  "price": _full_p.get("price", 0), "index": 1}],
-                                                    "action_context": "product",
-                                                    "updated_at": datetime.utcnow()
-                                                }}
-                                            )
-                                            logging.info(f"Catalog select #{_reply_num}: showed product {_full_p['_id']}")
-                                            return {"status": "ok", "handled_by": "catalog_select"}
-                                # If product not found, fall through to AI
-                                logging.warning(f"Catalog select #{_reply_num}: no product at that index")
+                                    # product context — look up user's custom action buttons
+                                    _default_actions = [
+                                        {"label": "Order Now",             "action_type": "order",       "index": 1},
+                                        {"label": "Add to Cart",           "action_type": "add_to_cart", "index": 2},
+                                        {"label": "See Similar Products",  "action_type": "similar",     "index": 3},
+                                    ]
+                                    _user_actions_doc = await db.users.find_one(
+                                        {"_id": user["_id"]}, {"settings.product_actions": 1}
+                                    )
+                                    _user_actions = (
+                                        (_user_actions_doc or {}).get("settings", {}).get("product_actions")
+                                        or _default_actions
+                                    )
+                                    # Add "Back to Catalog" as last option (matches whatsapp_service.py)
+                                    _back_index = len(_user_actions) + 1
+                                    _user_actions_with_back = _user_actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
 
-                            elif _ctx == "cart":
-                                # 1 = checkout, 2 = continue shopping
-                                _num_to_action = {1: "checkout", 2: "continue"}
-                                _matched = _num_to_action.get(_reply_num)
-                                if _matched:
-                                    button_action = _matched
-                                    button_product_id = None
-                                    logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
-
-                            else:
-                                # product context — look up user's custom action buttons
-                                _default_actions = [
-                                    {"label": "Order Now",      "action_type": "order",       "index": 1},
-                                    {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
-                                    {"label": "Ask a Question", "action_type": "ask",         "index": 3},
-                                ]
-                                _user_actions_doc = await db.users.find_one(
-                                    {"_id": user["_id"]}, {"settings.product_actions": 1}
-                                )
-                                _user_actions = (
-                                    (_user_actions_doc or {}).get("settings", {}).get("product_actions")
-                                    or _default_actions
-                                )
-                                # Add "Back to Catalog" as last option (matches whatsapp_service.py)
-                                _back_index = len(_user_actions) + 1
-                                _user_actions_with_back = _user_actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
-                                
-                                _chosen = next(
-                                    (a for a in _user_actions_with_back if a.get("index") == _reply_num), None
-                                )
-                                if _chosen and _pending_cat.get("products"):
-                                    button_action = _chosen["action_type"]
-                                    button_product_id = _pending_cat["products"][0].get("id")
-                                    # Store the full action for prompt lookup in the handler
-                                    _chosen_action_meta = _chosen
-                                    logging.info(f"Numbered product reply: {_reply_num} → {button_action}, product={button_product_id}")
+                                    _chosen = next(
+                                        (a for a in _user_actions_with_back if a.get("index") == _reply_num), None
+                                    )
+                                    if _chosen and _pending_cat.get("products"):
+                                        button_action = _chosen["action_type"]
+                                        button_product_id = _pending_cat["products"][0].get("id")
+                                        # Store the full action for prompt lookup in the handler
+                                        _chosen_action_meta = _chosen
+                                        logging.info(f"Numbered product reply: {_reply_num} → {button_action}, product={button_product_id}")
 
                 # TEXT OPTION HANDLER — match full option text (legacy poll / typed responses)
                 if not button_action and not from_me and body:
@@ -6200,10 +7888,12 @@ async def evolution_webhook(request: Request):
                         "➕ add to cart": "add_to_cart",
                         "🛒 add to cart": "add_to_cart",
                         "add to cart": "add_to_cart",
-                        "💬 ask a question": "ask",
-                        "💬 ask question": "ask",
-                        "ask a question": "ask",
-                        "ask question": "ask",
+                        "💬 ask a question": "similar",
+                        "💬 ask question": "similar",
+                        "ask a question": "similar",
+                        "ask question": "similar",
+                        "see similar": "similar",
+                        "similar products": "similar",
                         "📋 more info": "details",
                         "more info": "details",
                         "🛍️ continue shopping": "continue",
@@ -6222,11 +7912,101 @@ async def evolution_webhook(request: Request):
                             button_product_id = _pending_cat["products"][0].get("id")
                             logging.info(f"Text option matched: action={_poll_matched}, product={button_product_id}")
                 
+                # ORDER CONFIRMATION — FlowJudge for ambiguous messages (not clear YES/NO)
+                if not button_action and not from_me and body:
+                    _oc_pre_body = body.strip().lower()
+                    _oc_pre_yes = {"yes","yeah","yep","sure","ok","okay","confirm","ndio","sawa","yes please","yep!","yes!",
+                                   "sounds good","order it","go ahead","let's do it","great","perfect","proceed"}
+                    _oc_pre_no  = {"no","nope","cancel","hapana","nah","no thanks","no thank you","cancel order",
+                                   "never mind","forget it","don't","dont","stop","acha"}
+                    if _oc_pre_body not in _oc_pre_yes and _oc_pre_body not in _oc_pre_no:
+                        _oc_fj_state = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"],
+                            "action_context": "order_confirm"
+                        })
+                        if _oc_fj_state:
+                            try:
+                                from agents.flow_judge import get_flow_judge as _get_fj_oc
+                                _fj_oc = _get_fj_oc()
+                                _fj_oc_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                                # Build a quick order summary for context
+                                _oc_product_id = _oc_fj_state.get("confirm_product_id")
+                                _oc_product = await db.products.find_one({"_id": _oc_product_id}) if _oc_product_id else None
+                                _oc_ctx = {
+                                    "booking_service_name": _oc_product["name"] if _oc_product else _oc_fj_state.get("product_name", ""),
+                                    "booking_service_price": _oc_product.get("price", 0) if _oc_product else _oc_fj_state.get("price", 0),
+                                }
+                                _fj_oc_result = await _fj_oc.understand(
+                                    message=body,
+                                    current_step="waiting for order confirmation",
+                                    waiting_for="YES to confirm order or NO to cancel",
+                                    pending_state=_oc_ctx,
+                                    language="English",
+                                    currency=_fj_oc_cur,
+                                )
+                                _fj_oc_action = _fj_oc_result.get("action", "unclear")
+                                _oc_ws = get_whatsapp_service(db)
+                                _oc_prod_name = _oc_ctx.get("booking_service_name", "this item")
+                                _oc_price = _oc_ctx.get("booking_service_price", 0)
+                                _oc_price_str = f"{_fj_oc_cur} {_oc_price:,.0f}" if _oc_price else ""
+                                if _fj_oc_action == "continue":
+                                    _ext_oc = (_fj_oc_result.get("extracted_value") or "").lower()
+                                    _oc_pre_body = "yes" if _ext_oc in ("yes","confirm","y","sure","ok","ndio","sawa","agree","order","proceed") else "no"
+                                    body = _oc_pre_body
+                                elif _fj_oc_action == "go_back":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="No problem! What else can I help you with? 😊",
+                                        customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_go_back"}
+                                elif _fj_oc_action == "cancel":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_fj_oc_result.get("reply") or "No worries! Let me know if you'd like to order anything else 😊",
+                                        customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_cancelled"}
+                                elif _fj_oc_action == "tangent":
+                                    _oc_summary_hint = f" for *{_oc_prod_name}*" + (f" ({_oc_price_str})" if _oc_price_str else "")
+                                    _oc_tangent_msg = _fj_oc_result.get("reply") or (
+                                        f"Hey! 😊 We were just confirming your order{_oc_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_oc_tangent_msg, customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_tangent"}
+                                else:  # unclear
+                                    _oc_re_summary = (
+                                        f"Just to confirm your order:\n"
+                                        f"🛍️ *{_oc_prod_name}*"
+                                        + (f" — {_oc_price_str}" if _oc_price_str else "")
+                                        + f"\n\nReply *YES* to confirm or *NO* to cancel 😊"
+                                    )
+                                    await _oc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_oc_re_summary, customer_name=customer_name, send_context="order_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "order_confirm_unclear"}
+                            except Exception as _fj_oc_err:
+                                logging.warning(f"[FlowJudge/order_confirm] {_fj_oc_err}")
+
                 # ORDER CONFIRMATION HANDLER — customer replied YES or NO to an order confirmation request
                 if not button_action and not from_me and body:
                     _body_confirm = body.strip().lower()
-                    _yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "ndio", "sawa", "yes please", "yep!", "yes!"}
-                    _no_words = {"no", "nope", "cancel", "hapana", "nah", "no thanks", "no thank you", "cancel order"}
+                    _yes_words = {"yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "ndio", "sawa", "yes please", "yep!", "yes!",
+                                  "sounds good", "order it", "go ahead", "let's do it", "great", "perfect", "proceed"}
+                    _no_words = {"no", "nope", "cancel", "hapana", "nah", "no thanks", "no thank you", "cancel order",
+                                 "never mind", "forget it", "don't", "dont", "stop", "acha"}
                     if _body_confirm in _yes_words or _body_confirm in _no_words:
                         _pending_confirm = await db.pending_catalogs.find_one({
                             "customer_id": customer_id, "user_id": user["_id"],
@@ -6239,7 +8019,7 @@ async def evolution_webhook(request: Request):
                                 # Customer confirmed — create order and send payment details
                                 _conf_product = await db.products.find_one({"_id": _conf_product_id, "user_id": _biz_id_conf}) if _conf_product_id else None
                                 if _conf_product:
-                                    _currency_conf = user.get("settings", {}).get("currency", "KES")
+                                    _currency_conf = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                     _price_conf = _conf_product.get("price", 0)
                                     _now_conf = datetime.utcnow()
                                     _order_id_conf = str(uuid.uuid4())
@@ -6265,18 +8045,52 @@ async def evolution_webhook(request: Request):
                                         "created_at": _now_conf,
                                         "source": "whatsapp_confirmed"
                                     })
+                                    # Create sales record so order appears in CRM sales tab
+                                    await db.sales.insert_one({
+                                        "_id": str(uuid.uuid4()),
+                                        "user_id": _biz_id_conf,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "product": _conf_product["name"],
+                                        "product_id": _conf_product["_id"],
+                                        "amount": _price_conf,
+                                        "quantity": 1,
+                                        "status": "pending_payment",
+                                        "payment_status": "unpaid",
+                                        "order_id": _order_id_conf,
+                                        "order_number": _order_number,
+                                        "source": "whatsapp_order",
+                                        "created_at": _now_conf,
+                                    })
                                     await db.customers.update_one(
                                         {"_id": customer_id},
-                                        {"$set": {"last_contacted": _now_conf}}
+                                        {
+                                            "$inc": {"purchase_count": 1, "total_spent": _price_conf},
+                                            "$set": {"last_contacted": _now_conf}
+                                        }
                                     )
-                                    # Extract payment details from business knowledge
+                                    # Extract payment details from user.payment_methods (top-level)
                                     _user_conf_doc = await db.users.find_one({"_id": _biz_id_conf})
-                                    _bk_conf = (_user_conf_doc or {}).get("business_knowledge", {})
-                                    _payment_text = ""
-                                    if isinstance(_bk_conf, dict):
-                                        _payment_text = _bk_conf.get("payment_methods") or _bk_conf.get("payment") or _bk_conf.get("payments") or ""
-                                    elif isinstance(_bk_conf, str):
-                                        _payment_text = _bk_conf[:500]
+                                    _raw_pm_conf = (_user_conf_doc or {}).get("payment_methods", [])
+                                    _pm_conf_lines = []
+                                    for _pm in _raw_pm_conf:
+                                        if isinstance(_pm, dict):
+                                            _line = _pm.get("name", "")
+                                            _has_details = False
+                                            if _pm.get("fields"):
+                                                _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                if _fp:
+                                                    _line += " — " + ", ".join(_fp)
+                                                    _has_details = True
+                                            elif _pm.get("details") and str(_pm["details"]).strip():
+                                                _line += f": {_pm['details']}"
+                                                _has_details = True
+                                            if _line.strip() and _has_details:
+                                                _pm_conf_lines.append(f"  • {_line}")
+                                        else:
+                                            if str(_pm).strip():
+                                                _pm_conf_lines.append(f"  • {_pm}")
+                                    _payment_text = "\n".join(_pm_conf_lines)
                                     # Build order confirmation + payment request message
                                     _conf_msg = (
                                         f"✅ *Order Received!*\n\n"
@@ -6340,15 +8154,1658 @@ async def evolution_webhook(request: Request):
                                 logging.info(f"[Order] Cancelled via NO reply for customer={customer_id}")
                                 return {"status": "ok", "handled_by": "order_confirm_no"}
 
+                # BOOKING ADDON SELECT HANDLER — customer picks add-ons (or 0 to skip)
+                if not button_action and not from_me and body:
+                    _addon_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_addon_select"
+                    })
+                    if _addon_state:
+                        import re as _re_addon
+                        _addon_available = _addon_state.get("booking_addons_available", [])
+                        _addon_body = body.strip().lower()
+                        _selected_addons = []
+                        if _addon_body != "0" and _addon_body not in ("no", "skip", "none"):
+                            _nums = [int(x) for x in _re_addon.findall(r'\d+', body) if int(x) > 0 and int(x) <= len(_addon_available)]
+                            for _n in _nums:
+                                _selected_addons.append(_addon_available[_n - 1])
+                        _bk_svc_cat = _addon_state.get("booking_service_category", "appointment")
+                        _bk_currency_ad = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                        _bk_svc_name_ad = _addon_state.get("booking_service_name", "Service")
+                        _bk_price_ad = _addon_state.get("booking_service_price", 0)
+                        _addon_total = _bk_price_ad + sum(a.get("price", 0) for a in _selected_addons)
+                        _addon_total_str = f"{_bk_currency_ad} {_addon_total:,.0f}" if _addon_total else ""
+                        ws = get_whatsapp_service(db)
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "booking_selected_addons": _selected_addons,
+                                "action_context": "booking_checkin_input" if _bk_svc_cat == "rental" else "booking_date_input",
+                                "updated_at": datetime.utcnow(),
+                            }}
+                        )
+                        if _bk_svc_cat == "rental":
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    (f"Got it — added: {', '.join(a['name'] for a in _selected_addons)}\n\n" if _selected_addons else "No extras added.\n\n")
+                                    + f"📅 *Check-in date?*\n_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                        else:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    (f"Got it — added: {', '.join(a['name'] for a in _selected_addons)}\n\n" if _selected_addons else "No extras added.\n\n")
+                                    + (f"💰 Total: *{_addon_total_str}*\n\n" if _addon_total_str else "")
+                                    + f"📅 *What date would you like?*\n_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_"
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                        logging.info(f"[Booking] Addons selected: {_selected_addons} for customer {customer_id}")
+                        return {"status": "ok", "handled_by": "booking_addon_select"}
+
+                # BOOKING CHECK-IN DATE HANDLER — for rental services
+                if not button_action and not from_me and body:
+                    _ci_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_checkin_input"
+                    })
+                    if _ci_state:
+                        # ── FlowJudge: AI reads message before rigid date parser ──
+                        _ci_fj_skip = False
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_ci
+                            _fj_ci = _get_fj_ci()
+                            _fj_ci_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                            _fj_ci_result = await _fj_ci.understand(
+                                message=body,
+                                current_step="waiting for rental check-in date",
+                                waiting_for="a check-in date (today, tomorrow, Monday, 15 March, 2026-03-15)",
+                                pending_state=_ci_state,
+                                language="English",
+                                currency=_fj_ci_cur,
+                            )
+                            _fj_ci_action = _fj_ci_result.get("action", "continue")
+                            _fj_ci_ws = get_whatsapp_service(db)
+                            _ci_svc = _ci_state.get("booking_service_name", "your rental")
+                            if _fj_ci_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_service_select", "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! Which listing would you like? Reply with the number 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_go_back"}
+                            elif _fj_ci_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _ci_state["_id"]})
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_ci_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_cancelled"}
+                            elif _fj_ci_action == "tangent":
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_ci_result.get("reply") or f"Hey! 😊 We were picking your check-in date for *{_ci_svc}* — what date works for you? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_tangent"}
+                            elif _fj_ci_action == "unclear":
+                                await _fj_ci_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_ci_result.get("reply") or "What date would you like to check in? 📅\n_e.g. tomorrow, Monday, 15 March_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkin_unclear"}
+                            if _fj_ci_result.get("extracted_value"):
+                                body = _fj_ci_result["extracted_value"]
+                        except Exception as _fj_ci_err:
+                            logging.warning(f"[FlowJudge/checkin] {_fj_ci_err}")
+
+                        import re as _re_ci
+                        _ci_body = body.strip()
+                        _ci_lower = _ci_body.lower()
+                        _ci_is_cancel = False
+                        _ci_is_avail = any(_ci_lower.startswith(kw) for kw in ("availability", "check availability", "available dates", "show dates", "what dates", "when is it available"))
+
+                        if _ci_is_cancel:
+                            await db.pending_catalogs.delete_one({"_id": _ci_state["_id"]})
+                            # Fall through — let agent pipeline handle
+                        elif _ci_is_avail:
+                            # Show the listing's availability calendar and KEEP booking state
+                            import calendar as _cal_ci
+                            _avail_ws = get_whatsapp_service(db)
+                            _avail_today = datetime.utcnow().date()
+                            _avail_yr, _avail_mo = _avail_today.year, _avail_today.month
+                            _avail_days_in_month = _cal_ci.monthrange(_avail_yr, _avail_mo)[1]
+                            _avail_month_label = _avail_today.strftime("%B %Y")
+                            _avail_svc_id = _ci_state.get("booking_service_id", "")
+                            _avail_svc_name = _ci_state.get("booking_service_name", "this listing")
+                            _avail_user_doc = await db.users.find_one({"_id": user["_id"]})
+                            _avail_global_blocked = set((_avail_user_doc or {}).get("settings", {}).get("rental_availability") or [])
+                            _avail_listing_doc = await db.products.find_one({"_id": _avail_svc_id}) if _avail_svc_id else None
+                            _avail_listing_blocked = set((_avail_listing_doc or {}).get("listing_blocked_dates") or [])
+                            _avail_all_blocked = _avail_global_blocked | _avail_listing_blocked
+                            _avail_blocked_days = [d for d in range(1, _avail_days_in_month + 1)
+                                                   if f"{_avail_yr:04d}-{_avail_mo:02d}-{d:02d}" in _avail_all_blocked]
+                            _avail_free_days = [d for d in range(1, _avail_days_in_month + 1)
+                                                if d not in _avail_blocked_days and _avail_today.replace(day=d) >= _avail_today]
+
+                            def _compress_ranges(days):
+                                if not days: return ""
+                                ranges, s, e = [], days[0], days[0]
+                                for d in days[1:]:
+                                    if d == e + 1: e = d
+                                    else:
+                                        ranges.append(str(s) if s == e else f"{s}–{e}")
+                                        s = e = d
+                                ranges.append(str(s) if s == e else f"{s}–{e}")
+                                return ", ".join(ranges)
+
+                            _avail_lines = [f"📅 *{_avail_svc_name} — {_avail_month_label}*\n"]
+                            if not _avail_blocked_days:
+                                _avail_lines.append("✅ Fully available this month!")
+                            else:
+                                if _avail_free_days:
+                                    _avail_lines.append(f"✅ *Available:* {_compress_ranges(_avail_free_days)}")
+                                _avail_lines.append(f"❌ *Blocked:* {_compress_ranges(_avail_blocked_days)}")
+                            _avail_lines.append(f"\n_Reply with your preferred check-in date to continue booking_ 📅")
+                            await _avail_ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="\n".join(_avail_lines),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_checkin_avail_view"}
+                        else:
+                            _today_ci = datetime.utcnow().date()
+                            _parsed_ci = None
+                            _parsed_co_inline = None  # checkout parsed from same message (range)
+
+                            _mm_ci = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                      "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+
+                            def _parse_single_date_ci(txt, ref_today):
+                                """Parse a single date token into a date object, or return None."""
+                                txt = txt.strip().lower().rstrip("stndrh")  # strip ordinal suffixes (1st→1)
+                                if txt == "today": return ref_today
+                                if txt == "tomorrow": return ref_today + timedelta(days=1)
+                                if txt in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                    _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[txt]
+                                    return ref_today + timedelta(days=(_wd - ref_today.weekday()) % 7 or 7)
+                                # plain day number like "27"
+                                if _re_ci.fullmatch(r"\d{1,2}", txt):
+                                    d = int(txt)
+                                    mo, yr = ref_today.month, ref_today.year
+                                    try:
+                                        candidate = datetime(yr, mo, d).date()
+                                        if candidate < ref_today:
+                                            mo += 1
+                                            if mo > 12: mo, yr = 1, yr + 1
+                                        return datetime(yr, mo, d).date()
+                                    except Exception: return None
+                                # YYYY-MM-DD
+                                _m = _re_ci.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", txt)
+                                if _m:
+                                    try: return datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                                    except Exception: return None
+                                # DD/MM/YYYY or DD-MM-YYYY
+                                _m4 = _re_ci.fullmatch(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", txt)
+                                if _m4:
+                                    try: return datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                                    except Exception: return None
+                                # "15 march" or "march 15"
+                                _m2 = _re_ci.fullmatch(r"(\d{1,2})\s+([a-z]+)", txt)
+                                _m3 = _re_ci.fullmatch(r"([a-z]+)\s+(\d{1,2})", txt)
+                                if _m2 and _m2.group(2) in _mm_ci:
+                                    d, mo = int(_m2.group(1)), _mm_ci[_m2.group(2)]
+                                    yr = ref_today.year if (mo, d) >= (ref_today.month, ref_today.day) else ref_today.year + 1
+                                    try: return datetime(yr, mo, d).date()
+                                    except Exception: return None
+                                if _m3 and _m3.group(1) in _mm_ci:
+                                    d, mo = int(_m3.group(2)), _mm_ci[_m3.group(1)]
+                                    yr = ref_today.year if (mo, d) >= (ref_today.month, ref_today.day) else ref_today.year + 1
+                                    try: return datetime(yr, mo, d).date()
+                                    except Exception: return None
+                                return None
+
+                            try:
+                                # ── Range detection: "27-31", "27 to 31", "27 – 31",
+                                #    "march 27-31", "27 march to 31 march", "27th to 31st" ──
+                                _range_m = _re_ci.search(
+                                    r"(\d{1,2}(?:st|nd|rd|th)?\s*(?:[a-z]*)?)\s*(?:to|-|–|till|until|thru|through)\s*(\d{1,2}(?:st|nd|rd|th)?\s*(?:[a-z]*)?)",
+                                    _ci_lower
+                                )
+                                if _range_m:
+                                    _tok_a = _range_m.group(1).strip()
+                                    _tok_b = _range_m.group(2).strip()
+                                    _d_a = _parse_single_date_ci(_tok_a, _today_ci)
+                                    _d_b = _parse_single_date_ci(_tok_b, _today_ci)
+                                    # If only day numbers, they share the same month
+                                    if _d_a and _d_b and _d_b <= _d_a:
+                                        # e.g. "27-31" both in same month: recalculate _d_b with _d_a's month
+                                        try: _d_b = _d_a.replace(day=int(_re_ci.sub(r"[^0-9]", "", _tok_b)))
+                                        except Exception: pass
+                                    if _d_a and _d_b and _d_b > _d_a:
+                                        _parsed_ci = _d_a
+                                        _parsed_co_inline = _d_b
+                                if not _parsed_ci:
+                                    _parsed_ci = _parse_single_date_ci(_ci_lower, _today_ci)
+                            except Exception: _parsed_ci = None
+
+                            ws = get_whatsapp_service(db)
+                            if not _parsed_ci or _parsed_ci < _today_ci:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="I didn't catch that. Please reply with a check-in date like *tomorrow*, *Monday*, or *15 March* 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkin_invalid"}
+                            _ci_user_doc = await db.users.find_one({"_id": user["_id"]})
+                            _ci_blocked_global = (_ci_user_doc or {}).get("settings", {}).get("rental_availability") or []
+                            _ci_svc_id = _ci_state.get("booking_service_id", "")
+                            _ci_listing_doc = await db.products.find_one({"_id": _ci_svc_id}) if _ci_svc_id else None
+                            _ci_blocked_listing = (_ci_listing_doc or {}).get("listing_blocked_dates") or []
+                            _ci_all_blocked = set(_ci_blocked_global) | set(_ci_blocked_listing)
+                            if str(_parsed_ci) in _ci_all_blocked:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=(
+                                        f"Sorry, *{_parsed_ci.strftime('%A %d %B %Y')}* is not available for check-in. \n\n"
+                                        f"📅 Please reply with a different check-in date."
+                                    ),
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkin_blocked"}
+
+                            if _parsed_co_inline and _parsed_co_inline > _parsed_ci:
+                                # Range given in one message (e.g. "27-31") — check checkout date too
+                                _co_also_blocked = any(
+                                    f"{_parsed_ci + timedelta(days=i)}" in _ci_all_blocked
+                                    for i in range((_parsed_co_inline - _parsed_ci).days)
+                                )
+                                if _co_also_blocked:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=(
+                                            f"Some dates in *{_parsed_ci.strftime('%d %b')} – {_parsed_co_inline.strftime('%d %b %Y')}* "
+                                            f"are not available. Please choose a different range. 📅"
+                                        ),
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_checkin_range_blocked"}
+                                # Both dates good — store both and jump to checkout handler
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "booking_checkin_date": str(_parsed_ci),
+                                        "booking_checkout_date": str(_parsed_co_inline),
+                                        "action_context": "booking_checkout_input",
+                                        "updated_at": datetime.utcnow()
+                                    }}
+                                )
+                                # Re-use the checkout confirmation message by falling through to checkout handler
+                                # Inject a synthetic body so the checkout handler processes the stored date
+                                body = str(_parsed_co_inline)
+                                # Fall through — checkout handler will pick up the stored checkout date
+                            else:
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"booking_checkin_date": str(_parsed_ci), "action_context": "booking_checkout_input", "updated_at": datetime.utcnow()}}
+                                )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=(
+                                        f"✅ Check-in: *{_parsed_ci.strftime('%A %d %B %Y')}*\n\n"
+                                        f"📅 *Check-out date?*\n_Reply with a date after your check-in_"
+                                    ),
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkin_input"}
+
+                # BOOKING CHECK-OUT DATE HANDLER — completes rental date range
+                if not button_action and not from_me and body:
+                    _co_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_checkout_input"
+                    })
+                    if _co_state:
+                        # ── FlowJudge: AI reads message before rigid date parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_co
+                            _fj_co = _get_fj_co()
+                            _fj_co_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                            _fj_co_result = await _fj_co.understand(
+                                message=body,
+                                current_step="waiting for rental check-out date",
+                                waiting_for="a check-out date (must be after check-in)",
+                                pending_state=_co_state,
+                                language="English",
+                                currency=_fj_co_cur,
+                            )
+                            _fj_co_action = _fj_co_result.get("action", "continue")
+                            _fj_co_ws = get_whatsapp_service(db)
+                            _co_svc = _co_state.get("booking_service_name", "your rental")
+                            _co_ci = _co_state.get("booking_checkin_date", "")
+                            if _fj_co_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_checkin_input", "booking_checkin_date": None, "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"No problem! What check-in date would you like for *{_co_svc}*? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_go_back"}
+                            elif _fj_co_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _co_state["_id"]})
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_co_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_cancelled"}
+                            elif _fj_co_action == "tangent":
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_co_result.get("reply") or f"Hey! 😊 Check-in: *{_co_ci}* is set. What date would you like to check out? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_tangent"}
+                            elif _fj_co_action == "unclear":
+                                await _fj_co_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_co_result.get("reply") or f"What date would you like to check out? 📅\n_Check-in is {_co_ci}_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "checkout_unclear"}
+                            if _fj_co_result.get("extracted_value"):
+                                body = _fj_co_result["extracted_value"]
+                        except Exception as _fj_co_err:
+                            logging.warning(f"[FlowJudge/checkout] {_fj_co_err}")
+
+                        import re as _re_co
+                        _co_body = body.strip()
+                        _co_lower = _co_body.lower()
+                        if False:
+                            pass
+                        else:
+                            _today_co = datetime.utcnow().date()
+                            _ci_date_str = _co_state.get("booking_checkin_date", "")
+                            try: _ci_date = datetime.strptime(_ci_date_str, "%Y-%m-%d").date()
+                            except Exception: _ci_date = _today_co
+                            _parsed_co = None
+                            try:
+                                if _co_lower == "tomorrow": _parsed_co = _today_co + timedelta(days=1)
+                                elif _co_lower in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                    _wd = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}[_co_lower]
+                                    _parsed_co = _today_co + timedelta(days=(_wd - _today_co.weekday()) % 7 or 7)
+                                else:
+                                    _m = _re_co.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", _co_body)
+                                    if _m: _parsed_co = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                                    else:
+                                        _mm = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                               "january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                        _m2 = _re_co.match(r"(\d{1,2})\s+([a-z]+)", _co_lower)
+                                        _m3 = _re_co.match(r"([a-z]+)\s+(\d{1,2})", _co_lower)
+                                        if _m2 and _m2.group(2) in _mm:
+                                            _d, _mo = int(_m2.group(1)), _mm[_m2.group(2)]
+                                            _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
+                                        elif _m3 and _m3.group(1) in _mm:
+                                            _d, _mo = int(_m3.group(2)), _mm[_m3.group(1)]
+                                            _parsed_co = datetime(_today_co.year if (_mo,_d)>=(_today_co.month,_today_co.day) else _today_co.year+1, _mo, _d).date()
+                                        else:
+                                            _m4 = _re_co.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _co_body)
+                                            if _m4: _parsed_co = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                            except Exception: _parsed_co = None
+                            ws = get_whatsapp_service(db)
+                            if not _parsed_co or _parsed_co <= _ci_date:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"Check-out must be after check-in (*{_ci_date_str}*). Please reply with a valid check-out date 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkout_invalid"}
+                            _co_user_doc = await db.users.find_one({"_id": user["_id"]})
+                            _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability") or []
+                            _co_svc_id = _co_state.get("booking_service_id", "")
+                            _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
+                            _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates") or []
+                            _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
+                            _nights_check = (_parsed_co - _ci_date).days
+                            _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
+                            if _blocked_in_range:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=(
+                                        f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
+                                        f"📅 Please reply with a different check-out date."
+                                    ),
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkout_blocked"}
+                            _nights = _nights_check
+                            _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            _co_base_price = _co_state.get("booking_service_price", 0)
+                            _co_addons = _co_state.get("booking_selected_addons", [])
+                            _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
+                            _co_price_unit = _co_state.get("booking_price_unit", "night")
+                            _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
+                            _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
+                            if _co_price_unit == "week":
+                                _co_periods = max(1, round(_nights / 7))
+                            elif _co_price_unit == "month":
+                                _co_periods = max(1, round(_nights / 30))
+                            elif _co_price_unit == "year":
+                                _co_periods = max(1, round(_nights / 365))
+                            elif _co_price_unit == "person":
+                                _co_periods = 1
+                            else:
+                                _co_periods = _nights
+                            _co_total = (_co_base_price * _co_periods) + _co_addon_total
+                            _co_svc_name = _co_state.get("booking_service_name", "Service")
+                            _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
+                            _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
+                            _co_summary = (
+                                f"📋 *Booking Summary*\n\n"
+                                f"🏠 *{_co_svc_name}*\n"
+                                f"📅 Check-in: *{_ci_date_str}*\n"
+                                f"📅 Check-out: *{str(_parsed_co)}*\n"
+                                f"⏱ Duration: *{_co_dur_label}*\n"
+                            )
+                            if _co_addons:
+                                _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
+                            if _co_price_str:
+                                _co_summary += f"💰 Total: *{_co_price_str}*\n"
+                            _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "action_context": "booking_confirm",
+                                    "booking_checkout_date": str(_parsed_co),
+                                    "booking_nights": _nights,
+                                    "booking_total_price": _co_total,
+                                    "booking_time": "check-in",
+                                    "booking_date": _ci_date_str,
+                                    "updated_at": datetime.utcnow(),
+                                }}
+                            )
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=_co_summary, customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_checkout_input"}
+
+                # BOOKING DATE INPUT HANDLER — customer types a date for a pending booking
+                if not button_action and not from_me and body:
+                    _bk_date_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_date_input"
+                    })
+                    if _bk_date_state:
+                        # ── FlowJudge: AI reads message before rigid date parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_bkd
+                            _fj_bkd = _get_fj_bkd()
+                            _fj_bkd_lang = _bk_date_state.get("preferred_language") or "English"
+                            _fj_bkd_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                            _fj_bkd_result = await _fj_bkd.understand(
+                                message=body,
+                                current_step="waiting for booking date",
+                                waiting_for="a date (today, tomorrow, Monday, 15 March, 2026-03-15)",
+                                pending_state=_bk_date_state,
+                                language=_fj_bkd_lang,
+                                currency=_fj_bkd_cur,
+                                last_bot_message=_bk_date_state.get("last_bot_message", ""),
+                            )
+                            _fj_bkd_action = _fj_bkd_result.get("action", "continue")
+                            _fj_bkd_ws = get_whatsapp_service(db)
+                            _bkd_svc = _bk_date_state.get("booking_service_name", "your service")
+                            if _fj_bkd_action == "go_back":
+                                # Use dynamic routing based on what customer wants to change
+                                _target = _fj_bkd_result.get("target_step")
+                                return await _handle_flow_go_back(
+                                    target_step=_target,
+                                    pending_state=_bk_date_state,
+                                    customer_id=customer_id,
+                                    user_id=user["_id"],
+                                    from_number=from_number,
+                                    customer_name=customer_name,
+                                    default_step="booking_service_select"
+                                )
+                            elif _fj_bkd_action == "cancel":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_bkd_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_bkd_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_cancelled"}
+                            elif _fj_bkd_action == "tangent":
+                                await _fj_bkd_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_bkd_result.get("reply") or f"Hey! 😊 We were just picking a date for *{_bkd_svc}* — what day works for you? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_tangent"}
+                            elif _fj_bkd_action == "unclear":
+                                await _fj_bkd_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_bkd_result.get("reply") or f"What date would you like for *{_bkd_svc}*? 📅\n_e.g. tomorrow, Monday, 15 March_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_unclear"}
+                            # continue — use extracted_value as cleaner date input for parser
+                            if _fj_bkd_result.get("extracted_value"):
+                                body = _fj_bkd_result["extracted_value"]
+                        except Exception as _fj_bkd_err:
+                            logging.warning(f"[FlowJudge/booking_date] {_fj_bkd_err}")
+
+                        import re as _re_bk
+                        _body_bk = body.strip()
+                        _body_lower_bk = _body_bk.lower()
+                        _today_bk = datetime.utcnow().date()
+                        _parsed_bk_date = None
+                        try:
+                            # Check for common words first (exact match)
+                            if "today" in _body_lower_bk:
+                                _parsed_bk_date = _today_bk
+                            elif "tomorrow" in _body_lower_bk or "kesho" in _body_lower_bk:
+                                _parsed_bk_date = _today_bk + timedelta(days=1)
+                            else:
+                                # Check for weekday names
+                                _wd_map = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6,
+                                          "mon":0,"tue":1,"wed":2,"thu":3,"fri":4,"sat":5,"sun":6}
+                                for _wd_name, _wd_num in _wd_map.items():
+                                    if _wd_name in _body_lower_bk:
+                                        _days_ahead = (_wd_num - _today_bk.weekday()) % 7 or 7
+                                        _parsed_bk_date = _today_bk + timedelta(days=_days_ahead)
+                                        break
+                                
+                                if not _parsed_bk_date:
+                                    # Try YYYY-MM-DD (search anywhere in message)
+                                    _m = _re_bk.search(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})", _body_bk)
+                                    if _m:
+                                        _parsed_bk_date = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3))).date()
+                                    else:
+                                        # Try "15 March", "March 15", "May10" (no space), "May 10"
+                                        _month_map = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+                                                      "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                                      "january":1,"february":2,"march":3,"april":4,"june":6,
+                                                      "july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                        # Search anywhere in message, not just start
+                                        _m2 = _re_bk.search(r"(\d{1,2})\s+([a-z]+)", _body_lower_bk)
+                                        _m3 = _re_bk.search(r"([a-z]+)\s*(\d{1,2})", _body_lower_bk)
+                                        if _m2 and _m2.group(2) in _month_map:
+                                            _d, _mo = int(_m2.group(1)), _month_map[_m2.group(2)]
+                                            _yr = _today_bk.year if (_mo, _d) >= (_today_bk.month, _today_bk.day) else _today_bk.year + 1
+                                            _parsed_bk_date = datetime(_yr, _mo, _d).date()
+                                        elif _m3 and _m3.group(1) in _month_map:
+                                            _d, _mo = int(_m3.group(2)), _month_map[_m3.group(1)]
+                                            _yr = _today_bk.year if (_mo, _d) >= (_today_bk.month, _today_bk.day) else _today_bk.year + 1
+                                            _parsed_bk_date = datetime(_yr, _mo, _d).date()
+                                        else:
+                                            # Try DD/MM/YYYY or MM/DD/YYYY
+                                            _m4 = _re_bk.search(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _body_bk)
+                                            if _m4:
+                                                _parsed_bk_date = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
+                        except Exception:
+                            _parsed_bk_date = None
+
+                        if not _parsed_bk_date or _parsed_bk_date < _today_bk:
+                            ws = get_whatsapp_service(db)
+                            if _parsed_bk_date and _parsed_bk_date < _today_bk:
+                                _bk_err_msg = f"That date has already passed. Please reply with a future date 📅"
+                            else:
+                                _bk_err_msg = "I didn't catch that date. Please reply with a date like *tomorrow*, *Monday*, *15 March*, or *2026-03-15* 📅"
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=_bk_err_msg, customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_date_invalid"}
+
+                        # Fetch business hours to validate day + build slots
+                        _bk_biz_id = user.get("business_id", user["_id"])
+                        _bk_user_doc = await db.users.find_one({"_id": _bk_biz_id})
+                        _bk_settings = (_bk_user_doc or {}).get("settings", {})
+                        _bk_biz_hours = _bk_settings.get("business_hours", {})
+                        _bk_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
+                        _bk_day_key = _bk_wd_keys[_parsed_bk_date.weekday()]
+                        _bk_day_hours = _bk_biz_hours.get(_bk_day_key, {})
+                        
+                        # Debug logging for business hours validation
+                        logging.info(f"[Booking] Date={_parsed_bk_date.strftime('%A %Y-%m-%d')}, day_key={_bk_day_key}, day_hours={_bk_day_hours}, closed={_bk_day_hours.get('closed')}")
+
+                        if _bk_day_hours.get("closed"):
+                            ws = get_whatsapp_service(db)
+                            _closed_msg = f"Sorry, we're closed on {_parsed_bk_date.strftime('%A %d %B')}. Please choose another date 📅"
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {"last_bot_message": _closed_msg, "updated_at": datetime.utcnow()}}
+                            )
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=_closed_msg, customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_date_closed"}
+
+                        _bk_open = _bk_day_hours.get("open", "08:00")
+                        _bk_close = _bk_day_hours.get("close", "17:00")
+
+                        # Get existing bookings for that date and count per time slot
+                        _bk_existing = await db.bookings.find({
+                            "user_id": user["_id"],
+                            "date": str(_parsed_bk_date),
+                            "status": {"$nin": ["cancelled"]}
+                        }).to_list(100)
+                        _bk_slot_counts = {}
+                        for _b in _bk_existing:
+                            _bt = _b.get("time")
+                            if _bt:
+                                _bk_slot_counts[_bt] = _bk_slot_counts.get(_bt, 0) + 1
+
+                        # Get service capacity (default 1 for backward compatibility)
+                        _bk_capacity = 1
+                        _bk_service_id = _bk_date_state.get("booking_service_id")
+                        if _bk_service_id:
+                            _bk_svc_doc = await db.products.find_one({"_id": _bk_service_id})
+                            if _bk_svc_doc:
+                                _bk_capacity = _bk_svc_doc.get("capacity", 1)
+
+                        # Build slots using service duration (or default 60 min)
+                        _bk_slot_mins = 60
+                        try:
+                            _raw_dur = _bk_date_state.get("booking_service_duration")
+                            if _raw_dur and int(_raw_dur) >= 15:
+                                _bk_slot_mins = int(_raw_dur)
+                        except Exception:
+                            pass
+                        try:
+                            _bk_oh, _bk_om = map(int, _bk_open.split(":"))
+                            _bk_ch, _bk_cm = map(int, _bk_close.split(":"))
+                            _bk_cur = _bk_oh * 60 + _bk_om
+                            _bk_end = _bk_ch * 60 + _bk_cm
+                            _bk_avail = []
+                            while _bk_cur + _bk_slot_mins <= _bk_end:
+                                _t = f"{_bk_cur // 60:02d}:{_bk_cur % 60:02d}"
+                                _booked_count = _bk_slot_counts.get(_t, 0)
+                                if _booked_count < _bk_capacity:
+                                    _remaining = _bk_capacity - _booked_count
+                                    _bk_avail.append({"time": _t, "remaining": _remaining})
+                                _bk_cur += _bk_slot_mins
+                        except Exception:
+                            _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
+                        
+                        if not _bk_avail:
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=f"No available slots on {_parsed_bk_date.strftime('%A %d %B')}. Please try another date 📅",
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "booking_date_no_slots"}
+
+                        # ── Paginated time slots: show 5 per page ──
+                        _BK_PAGE_SIZE = 5
+                        _bk_all_slots = [{"time": s["time"], "remaining": s["remaining"]} for s in _bk_avail]
+                        _bk_page_slots = _bk_all_slots[:_BK_PAGE_SIZE]
+                        _bk_has_more = len(_bk_all_slots) > _BK_PAGE_SIZE
+
+                        # Detect time-of-day period of first slot for header
+                        def _bk_slot_period(t):
+                            h = int(t.split(":")[0])
+                            if h < 12: return "Morning"
+                            if h < 17: return "Afternoon"
+                            return "Evening"
+
+                        _bk_date_label = _parsed_bk_date.strftime("%A %d %B")
+                        _bk_period_label = _bk_slot_period(_bk_page_slots[0]["time"])
+                        _bk_slot_lines = [f"🕐 *{_bk_period_label} — {_bk_date_label}:*\n"]
+                        _bk_page_objs = []
+                        for _bk_i, _bk_slot in enumerate(_bk_page_slots, 1):
+                            _bk_time = _bk_slot["time"]
+                            _bk_rem = _bk_slot["remaining"]
+                            if _bk_capacity > 1 and _bk_rem > 1:
+                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} ({_bk_rem} spots left)")
+                            elif _bk_capacity > 1 and _bk_rem == 1:
+                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} (1 spot left)")
+                            else:
+                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time}")
+                            _bk_page_objs.append({"index": _bk_i, "time": _bk_time, "remaining": _bk_rem})
+
+                        _bk_nav_hints = ["_Reply with a number to select_"]
+                        if _bk_has_more:
+                            _bk_nav_hints.append('_"next" for more slots_')
+                        # Check if afternoon/evening slots exist
+                        _bk_has_afternoon = any(int(s["time"].split(":")[0]) >= 12 for s in _bk_all_slots)
+                        _bk_has_evening = any(int(s["time"].split(":")[0]) >= 17 for s in _bk_all_slots)
+                        if _bk_has_afternoon and _bk_period_label == "Morning":
+                            _bk_nav_hints.append('_"afternoon" for afternoon slots_')
+                        if _bk_has_evening and _bk_period_label != "Evening":
+                            _bk_nav_hints.append('_"evening" for evening slots_')
+                        _bk_slot_lines.append("\n" + " · ".join(_bk_nav_hints))
+
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "action_context": "booking_time_select",
+                                "booking_date": str(_parsed_bk_date),
+                                "all_slots": _bk_all_slots,
+                                "time_slots": _bk_page_objs,
+                                "time_slots_page": 0,
+                                "time_slots_period": None,
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message="\n".join(_bk_slot_lines), customer_name=customer_name, send_context="booking_flow"
+                        )
+                        logging.info(f"[Booking] Date={_parsed_bk_date}, total_slots={len(_bk_all_slots)}, page=0, shown={len(_bk_page_slots)} for customer={customer_id}")
+                        return {"status": "ok", "handled_by": "booking_date_input"}
+
+                # TIME SLOT NAVIGATION HANDLER — handles "next", "morning", "afternoon", "evening"
+                # when customer is in booking_time_select state (navigating paginated slots)
+                if not button_action and not from_me and body:
+                    _bk_ts_nav_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "booking_time_select"
+                    })
+                    if _bk_ts_nav_state:
+                        _bk_ts_body = body.strip().lower()
+                        _bk_ts_all = _bk_ts_nav_state.get("all_slots", [])
+                        _bk_ts_cur_page = _bk_ts_nav_state.get("time_slots_page", 0)
+                        _bk_ts_capacity = 1
+                        _BK_TS_PAGE_SIZE = 5
+
+                        def _bk_ts_period_of(t):
+                            h = int(t.split(":")[0])
+                            if h < 12: return "Morning"
+                            if h < 17: return "Afternoon"
+                            return "Evening"
+
+                        def _bk_ts_build_and_send(slots_subset, period_label, page_idx, total_all):
+                            """Build slot message lines and page objs for a given subset."""
+                            page_slots = slots_subset[:_BK_TS_PAGE_SIZE]
+                            has_more = len(slots_subset) > _BK_TS_PAGE_SIZE
+                            bk_date = _bk_ts_nav_state.get("booking_date", "")
+                            try:
+                                from datetime import date as _dt_date
+                                _d = datetime.strptime(bk_date, "%Y-%m-%d")
+                                date_label = _d.strftime("%A %d %B")
+                            except Exception:
+                                date_label = bk_date
+                            lines = [f"🕐 *{period_label} — {date_label}:*\n"]
+                            objs = []
+                            for idx, s in enumerate(page_slots, 1):
+                                t = s["time"]
+                                rem = s.get("remaining", 1)
+                                cap = _bk_ts_nav_state.get("booking_service_capacity", 1)
+                                if cap > 1 and rem > 1:
+                                    lines.append(f"{idx}. {t} ({rem} spots left)")
+                                elif cap > 1 and rem == 1:
+                                    lines.append(f"{idx}. {t} (1 spot left)")
+                                else:
+                                    lines.append(f"{idx}. {t}")
+                                objs.append({"index": idx, "time": t, "remaining": rem})
+                            nav_hints = ["_Reply with a number to select_"]
+                            if has_more:
+                                nav_hints.append('_"next" for more_')
+                            has_aft = any(int(s["time"].split(":")[0]) >= 12 for s in total_all)
+                            has_eve = any(int(s["time"].split(":")[0]) >= 17 for s in total_all)
+                            if has_aft and period_label == "Morning":
+                                nav_hints.append('_"afternoon" for afternoon_')
+                            if has_eve and period_label != "Evening":
+                                nav_hints.append('_"evening" for evening_')
+                            if period_label != "Morning":
+                                nav_hints.append('_"morning" for morning_')
+                            lines.append("\n" + " · ".join(nav_hints))
+                            return "\n".join(lines), objs, has_more
+
+                        # Navigation word detection
+                        _bk_ts_nav_action = None
+                        _bk_ts_jump_period = None
+                        _next_words = {"next", "more", "zaidi", "show more", "more slots", "siguiente", "suivant"}
+                        _morning_words = {"morning", "asubuhi", "mañana", "matin", "subah", "صباح"}
+                        _afternoon_words = {"afternoon", "mchana", "après-midi", "tarde", "dopogiorno", "بعد الظهر"}
+                        _evening_words = {"evening", "jioni", "soir", "noche", "sera", "مساء"}
+
+                        if _bk_ts_body in _next_words:
+                            _bk_ts_nav_action = "next"
+                        elif _bk_ts_body in _morning_words:
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "morning"
+                        elif _bk_ts_body in _afternoon_words:
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "afternoon"
+                        elif _bk_ts_body in _evening_words:
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "evening"
+
+                        if _bk_ts_nav_action == "next" and _bk_ts_all:
+                            # If a period is active, paginate within that period's slots only
+                            _bk_ts_cur_period = _bk_ts_nav_state.get("time_slots_period")
+                            if _bk_ts_cur_period:
+                                _pf = {"morning": (0, 12), "afternoon": (12, 17), "evening": (17, 24)}
+                                _ps, _pe = _pf.get(_bk_ts_cur_period, (0, 24))
+                                _bk_ts_pool = [s for s in _bk_ts_all if _ps <= int(s["time"].split(":")[0]) < _pe]
+                            else:
+                                _bk_ts_pool = _bk_ts_all
+                            _bk_ts_next_page = _bk_ts_cur_page + 1
+                            _bk_ts_offset = _bk_ts_next_page * _BK_TS_PAGE_SIZE
+                            _bk_ts_remaining_slots = _bk_ts_pool[_bk_ts_offset:]
+                            if not _bk_ts_remaining_slots:
+                                # Wrap around to page 0 of same pool
+                                _bk_ts_next_page = 0
+                                _bk_ts_remaining_slots = _bk_ts_pool
+                            _bk_ts_plabel = _bk_ts_period_of(_bk_ts_remaining_slots[0]["time"])
+                            _bk_ts_msg, _bk_ts_objs, _ = _bk_ts_build_and_send(_bk_ts_remaining_slots, _bk_ts_plabel, _bk_ts_next_page, _bk_ts_all)
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {"time_slots": _bk_ts_objs, "time_slots_page": _bk_ts_next_page, "updated_at": datetime.utcnow()}}
+                            )
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_msg, customer_name=customer_name, send_context="booking_flow")
+                            return {"status": "ok", "handled_by": "booking_time_next_page"}
+
+                        elif _bk_ts_nav_action == "jump" and _bk_ts_all:
+                            _period_filter = {"morning": (0, 12), "afternoon": (12, 17), "evening": (17, 24)}
+                            _ph_start, _ph_end = _period_filter[_bk_ts_jump_period]
+                            _bk_ts_period_slots = [s for s in _bk_ts_all if _ph_start <= int(s["time"].split(":")[0]) < _ph_end]
+                            if not _bk_ts_period_slots:
+                                ws = get_whatsapp_service(db)
+                                _period_names = {"morning": "morning", "afternoon": "afternoon", "evening": "evening"}
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"No {_period_names[_bk_ts_jump_period]} slots available on that date. Reply with a number from the list above, or try another period.",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_time_period_empty"}
+                            _bk_ts_plabel = _bk_ts_jump_period.capitalize()
+                            _bk_ts_msg, _bk_ts_objs, _ = _bk_ts_build_and_send(_bk_ts_period_slots, _bk_ts_plabel, 0, _bk_ts_all)
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {"time_slots": _bk_ts_objs, "time_slots_page": 0, "time_slots_period": _bk_ts_jump_period, "updated_at": datetime.utcnow()}}
+                            )
+                            ws = get_whatsapp_service(db)
+                            await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_msg, customer_name=customer_name, send_context="booking_flow")
+                            return {"status": "ok", "handled_by": "booking_time_jump_period"}
+
+                # RESTAURANT PARTY SIZE HANDLER — after time slot selection
+                if not button_action and not from_me and body:
+                    _rest_party_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "restaurant_party_size_input"
+                    })
+                    if _rest_party_state:
+                        # ── FlowJudge: AI reads message before rigid number parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_rp
+                            _fj_rp = _get_fj_rp()
+                            _fj_rp_result = await _fj_rp.understand(
+                                message=body,
+                                current_step="waiting for restaurant party size",
+                                waiting_for="a number of people (1-50)",
+                                pending_state=_rest_party_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_rp_action = _fj_rp_result.get("action", "continue")
+                            _fj_rp_ws = get_whatsapp_service(db)
+                            if _fj_rp_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _rest_party_state["_id"]})
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rp_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_cancelled"}
+                            elif _fj_rp_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_time_select", "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! Reply with the time slot number to pick a different time 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_go_back"}
+                            elif _fj_rp_action == "tangent":
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rp_result.get("reply") or "Hey! 😊 How many people will be dining? 👥",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_tangent"}
+                            elif _fj_rp_action == "unclear":
+                                await _fj_rp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rp_result.get("reply") or "How many people will be joining? (e.g. reply *2* for 2 people) 👥",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "party_size_unclear"}
+                            if _fj_rp_result.get("extracted_value"):
+                                body = _fj_rp_result["extracted_value"]
+                        except Exception as _fj_rp_err:
+                            logging.warning(f"[FlowJudge/party_size] {_fj_rp_err}")
+
+                        _party_body = body.strip()
+                        _party_size = None
+                        try:
+                            _party_size = int(_party_body)
+                            if _party_size < 1 or _party_size > 50:
+                                _party_size = None
+                        except Exception:
+                            pass
+                        
+                        ws = get_whatsapp_service(db)
+                        if not _party_size:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="Please reply with a valid party size (1-50 people) 👥",
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "restaurant_party_invalid"}
+                        
+                        # Ask for special requests
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "restaurant_party_size": _party_size,
+                                "action_context": "restaurant_requests_input",
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=(
+                                f"✅ Party size: *{_party_size} {'person' if _party_size == 1 else 'people'}*\n\n"
+                                f"📝 *Any special requests?*\n"
+                                f"_e.g. window seat, high chair, dietary restrictions_\n\n"
+                                f"Reply *NONE* if no special requests"
+                            ),
+                            customer_name=customer_name, send_context="booking_flow"
+                        )
+                        return {"status": "ok", "handled_by": "restaurant_party_size_input"}
+
+                # RESTAURANT SPECIAL REQUESTS HANDLER
+                if not button_action and not from_me and body:
+                    _rest_req_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "restaurant_requests_input"
+                    })
+                    if _rest_req_state:
+                        _req_body = body.strip()
+                        _special_requests = "" if _req_body.lower() in ("none", "no", "nope", "nothing") else _req_body
+                        
+                        # Show booking summary
+                        _rest_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                        _rest_svc_name = _rest_req_state.get("booking_service_name", "")
+                        _rest_price = _rest_req_state.get("booking_service_price", 0)
+                        _rest_date = _rest_req_state.get("booking_date", "")
+                        _rest_time = _rest_req_state.get("booking_time", "")
+                        _rest_party = _rest_req_state.get("restaurant_party_size", 1)
+                        _rest_price_str = f"{_rest_currency} {_rest_price:,.0f}" if _rest_price else ""
+                        
+                        _rest_summary = (
+                            f"✅ *Reservation Summary*\n\n"
+                            f"🍽️ Restaurant: *{_rest_svc_name}*\n"
+                            f"📅 Date: *{_rest_date}*\n"
+                            f"🕐 Time: *{_rest_time}*\n"
+                            f"👥 Party size: *{_rest_party} {'person' if _rest_party == 1 else 'people'}*\n"
+                            + (f"📝 Special requests: {_special_requests}\n" if _special_requests else "")
+                            + (f"💰 Price: *{_rest_price_str}*\n" if _rest_price_str else "")
+                            + f"\nReply *YES* to confirm or *NO* to cancel"
+                        )
+                        
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "restaurant_special_requests": _special_requests,
+                                "action_context": "booking_confirm",
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
+                        
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=_rest_summary,
+                            customer_name=customer_name, send_context="booking_flow"
+                        )
+                        return {"status": "ok", "handled_by": "restaurant_requests_input"}
+
+                # CREATOR TIMELINE/DEADLINE HANDLER
+                if not button_action and not from_me and body:
+                    _cr_timeline_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "creator_timeline_input"
+                    })
+                    if _cr_timeline_state:
+                        # ── FlowJudge: AI reads message before rigid timeline parser ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_cr
+                            _fj_cr = _get_fj_cr()
+                            _fj_cr_result = await _fj_cr.understand(
+                                message=body,
+                                current_step="waiting for project deadline/timeline",
+                                waiting_for="a deadline or timeframe (e.g. in 2 weeks, next Friday, 15 March)",
+                                pending_state=_cr_timeline_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_cr_action = _fj_cr_result.get("action", "continue")
+                            _fj_cr_ws = get_whatsapp_service(db)
+                            _cr_svc = _cr_timeline_state.get("booking_service_name", "your project")
+                            if _fj_cr_action == "go_back":
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_service_select", "updated_at": datetime.utcnow()}}
+                                )
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! Which service would you like instead? Reply with the number 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_go_back"}
+                            elif _fj_cr_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _cr_timeline_state["_id"]})
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cr_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_cancelled"}
+                            elif _fj_cr_action == "tangent":
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cr_result.get("reply") or f"Hey! 😊 We were setting a timeline for *{_cr_svc}* — when would you need it by? 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_tangent"}
+                            elif _fj_cr_action == "unclear":
+                                await _fj_cr_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cr_result.get("reply") or "When do you need *{_cr_svc}* completed? 📅\n_e.g. in 2 weeks, next Friday, 15 March_",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_timeline_unclear"}
+                            if _fj_cr_result.get("extracted_value"):
+                                body = _fj_cr_result["extracted_value"]
+                        except Exception as _fj_cr_err:
+                            logging.warning(f"[FlowJudge/creator_timeline] {_fj_cr_err}")
+
+                        import re as _re_cr
+                        _timeline_body = body.strip()
+                        _timeline_lower = _timeline_body.lower()
+                        _today_cr = datetime.utcnow().date()
+                        _parsed_deadline = None
+                        
+                        try:
+                            # Parse relative dates like "in 3 days", "in 1 week"
+                            _m_days = _re_cr.search(r"in\s+(\d+)\s+days?", _timeline_lower)
+                            _m_weeks = _re_cr.search(r"in\s+(\d+)\s+weeks?", _timeline_lower)
+                            if _m_days:
+                                _parsed_deadline = _today_cr + timedelta(days=int(_m_days.group(1)))
+                            elif _m_weeks:
+                                _parsed_deadline = _today_cr + timedelta(weeks=int(_m_weeks.group(1)))
+                            elif _timeline_lower == "today":
+                                _parsed_deadline = _today_cr
+                            elif _timeline_lower == "tomorrow":
+                                _parsed_deadline = _today_cr + timedelta(days=1)
+                            elif _timeline_lower.startswith("next "):
+                                _day_name = _timeline_lower.replace("next ", "").strip()
+                                if _day_name in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday"):
+                                    _wd_map = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,"friday":4,"saturday":5,"sunday":6}
+                                    _tgt_wd = _wd_map[_day_name]
+                                    _days_ahead = (_tgt_wd - _today_cr.weekday()) % 7 or 7
+                                    _parsed_deadline = _today_cr + timedelta(days=_days_ahead)
+                            else:
+                                # Try standard date formats
+                                _month_map = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+                                              "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+                                              "january":1,"february":2,"march":3,"april":4,"june":6,
+                                              "july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
+                                _m2 = _re_cr.match(r"(\d{1,2})\s+([a-z]+)", _timeline_lower)
+                                _m3 = _re_cr.match(r"([a-z]+)\s*(\d{1,2})", _timeline_lower)
+                                if _m2 and _m2.group(2) in _month_map:
+                                    _d, _mo = int(_m2.group(1)), _month_map[_m2.group(2)]
+                                    _yr = _today_cr.year if (_mo, _d) >= (_today_cr.month, _today_cr.day) else _today_cr.year + 1
+                                    _parsed_deadline = datetime(_yr, _mo, _d).date()
+                                elif _m3 and _m3.group(1) in _month_map:
+                                    _d, _mo = int(_m3.group(2)), _month_map[_m3.group(1)]
+                                    _yr = _today_cr.year if (_mo, _d) >= (_today_cr.month, _today_cr.day) else _today_cr.year + 1
+                                    _parsed_deadline = datetime(_yr, _mo, _d).date()
+                        except Exception:
+                            _parsed_deadline = None
+                        
+                        ws = get_whatsapp_service(db)
+                        if not _parsed_deadline or _parsed_deadline < _today_cr:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="I didn't catch that deadline. Please reply with a date like *in 3 days*, *next Friday*, or *March 20* 📅",
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "creator_timeline_invalid"}
+                        
+                        # Ask for budget
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "creator_deadline": str(_parsed_deadline),
+                                "action_context": "creator_budget_input",
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=(
+                                f"✅ Deadline: *{_parsed_deadline.strftime('%A %d %B %Y')}*\n\n"
+                                f"💰 *What's your budget?*\n"
+                                f"_Reply with an amount or *FLEXIBLE* if negotiable_"
+                            ),
+                            customer_name=customer_name, send_context="booking_flow"
+                        )
+                        return {"status": "ok", "handled_by": "creator_timeline_input"}
+
+                # CREATOR BUDGET HANDLER
+                if not button_action and not from_me and body:
+                    _cr_budget_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "creator_budget_input"
+                    })
+                    if _cr_budget_state:
+                        _budget_body = body.strip()
+                        _budget_lower = _budget_body.lower()
+                        _budget_amount = None
+                        _budget_text = _budget_body
+                        
+                        if _budget_lower in ("flexible", "negotiable", "open", "tbd"):
+                            _budget_text = "Flexible/Negotiable"
+                        else:
+                            try:
+                                import re as _re_budget
+                                _num_match = _re_budget.search(r"[\d,]+", _budget_body)
+                                if _num_match:
+                                    _budget_amount = int(_num_match.group().replace(",", ""))
+                            except Exception:
+                                pass
+                        
+                        # Ask for project details
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "creator_budget": _budget_text,
+                                "creator_budget_amount": _budget_amount,
+                                "action_context": "creator_details_input",
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
+                        
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=(
+                                f"✅ Budget: *{_budget_text}*\n\n"
+                                f"📝 *Tell me about your project*\n"
+                                f"_What do you need? Include any specific requirements, deliverables, or details_"
+                            ),
+                            customer_name=customer_name, send_context="booking_flow"
+                        )
+                        return {"status": "ok", "handled_by": "creator_budget_input"}
+
+                # CREATOR PROJECT DETAILS HANDLER
+                if not button_action and not from_me and body:
+                    _cr_details_state = await db.pending_catalogs.find_one({
+                        "customer_id": customer_id, "user_id": user["_id"],
+                        "action_context": "creator_details_input"
+                    })
+                    if _cr_details_state:
+                        _details_body = body.strip()
+                        
+                        # Show booking summary
+                        _cr_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                        _cr_svc_name = _cr_details_state.get("booking_service_name", "")
+                        _cr_price = _cr_details_state.get("booking_service_price", 0)
+                        _cr_deadline = _cr_details_state.get("creator_deadline", "")
+                        _cr_budget = _cr_details_state.get("creator_budget", "")
+                        _cr_price_str = f"{_cr_currency} {_cr_price:,.0f}" if _cr_price else ""
+                        
+                        _cr_summary = (
+                            f"✅ *Collaboration Summary*\n\n"
+                            f"🎨 Service: *{_cr_svc_name}*\n"
+                            f"📅 Deadline: *{_cr_deadline}*\n"
+                            f"💰 Budget: *{_cr_budget}*\n"
+                            + (f"💵 Base price: *{_cr_price_str}*\n" if _cr_price_str else "")
+                            + f"📝 Details: {_details_body[:200]}{'...' if len(_details_body) > 200 else ''}\n"
+                            + f"\nReply *YES* to confirm or *NO* to cancel"
+                        )
+                        
+                        await db.pending_catalogs.update_one(
+                            {"customer_id": customer_id, "user_id": user["_id"]},
+                            {"$set": {
+                                "creator_project_details": _details_body,
+                                "action_context": "booking_confirm",
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
+                        
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=_cr_summary,
+                            customer_name=customer_name, send_context="booking_flow"
+                        )
+                        return {"status": "ok", "handled_by": "creator_details_input"}
+
+                # BOOKING CONFIRMATION — FlowJudge for ambiguous messages (not clear YES/NO)
+                if not button_action and not from_me and body:
+                    _bkc_pre_body = body.strip().lower()
+                    _bkc_pre_yes = {"yes","yeah","yep","sure","ok","okay","confirm","ndio","sawa","yes please",
+                                    "sounds good","let's do it","go ahead","book it","great","perfect","done"}
+                    _bkc_pre_no  = {"no","nope","cancel","hapana","nah","no thanks","no thank you",
+                                    "never mind","forget it","don't","dont","stop","acha"}
+                    if _bkc_pre_body not in _bkc_pre_yes and _bkc_pre_body not in _bkc_pre_no:
+                        _bkc_fj_state = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"],
+                            "action_context": "booking_confirm"
+                        })
+                        if _bkc_fj_state:
+                            try:
+                                from agents.flow_judge import get_flow_judge as _get_fj_bc
+                                _fj_bc = _get_fj_bc()
+                                _fj_bc_cur = user.get("currency") or user.get("settings", {}).get("currency", "")
+                                _fj_bc_result = await _fj_bc.understand(
+                                    message=body,
+                                    current_step="waiting for booking confirmation",
+                                    waiting_for="YES to confirm or NO to cancel",
+                                    pending_state=_bkc_fj_state,
+                                    language="English",
+                                    currency=_fj_bc_cur,
+                                )
+                                _fj_bc_action = _fj_bc_result.get("action", "unclear")
+                                _bc_ws = get_whatsapp_service(db)
+                                _bc_svc = _bkc_fj_state.get("booking_service_name", "your service")
+                                _bc_date = _bkc_fj_state.get("booking_date", "")
+                                _bc_time = _bkc_fj_state.get("booking_time", "")
+                                if _fj_bc_action == "continue":
+                                    # AI extracted a yes/no intent — map to body for existing handler
+                                    _ext_bc = (_fj_bc_result.get("extracted_value") or "").lower()
+                                    _bkc_pre_body = "yes" if _ext_bc in ("yes","confirm","y","sure","ok","ndio","sawa","agree","book","proceed") else "no"
+                                    # Fall through to YES/NO handler below with updated _bkc_pre_body
+                                    # We need to re-route to the handler — set body to the extracted value
+                                    body = _bkc_pre_body
+                                elif _fj_bc_action == "go_back":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "booking_date_input",
+                                                  "booking_time": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=f"No problem! Let's pick a new date for *{_bc_svc}* 📅\n_Reply with a date, e.g. tomorrow, Monday, 15 March_",
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_go_back"}
+                                elif _fj_bc_action == "cancel":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_fj_bc_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_cancelled"}
+                                elif _fj_bc_action == "tangent":
+                                    _summary_hint = (f" for *{_bc_svc}*" + (f" on {_bc_date} at {_bc_time}" if _bc_date and _bc_time else ""))
+                                    _tangent_msg = _fj_bc_result.get("reply") or (
+                                        f"Hey! 😊 We were just confirming your booking{_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_tangent_msg, customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_tangent"}
+                                else:  # unclear
+                                    _bkc_re_summary = (
+                                        f"Just to confirm your booking:\n"
+                                        f"📋 *{_bc_svc}*\n"
+                                        + (f"📅 {_bc_date}" if _bc_date else "")
+                                        + (f" at {_bc_time}" if _bc_time else "")
+                                        + f"\n\nReply *YES* to confirm or *NO* to cancel 😊"
+                                    )
+                                    await _bc_ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_bkc_re_summary, customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_confirm_unclear"}
+                            except Exception as _fj_bc_err:
+                                logging.warning(f"[FlowJudge/booking_confirm] {_fj_bc_err}")
+
+                # BOOKING CONFIRMATION HANDLER — customer said YES or NO to booking summary
+                if not button_action and not from_me and body:
+                    _bkc_body = body.strip().lower()
+                    _bkc_yes = {"yes","yeah","yep","sure","ok","okay","confirm","ndio","sawa","yes please",
+                                "sounds good","let's do it","go ahead","book it","great","perfect","done"}
+                    _bkc_no  = {"no","nope","cancel","hapana","nah","no thanks","no thank you",
+                                "never mind","forget it","don't","dont","stop","acha"}
+                    if _bkc_body in _bkc_yes or _bkc_body in _bkc_no:
+                        _bkc_state = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"],
+                            "action_context": "booking_confirm"
+                        })
+                        if _bkc_state:
+                            _bkc_biz_id = user.get("business_id", user["_id"])
+                            _bkc_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            if _bkc_body in _bkc_yes:
+                                _bkc_now = datetime.utcnow()
+                                _bkc_svc_name = _bkc_state.get("booking_service_name", "Service")
+                                _bkc_svc_id   = _bkc_state.get("booking_service_id", "")
+                                _bkc_price    = _bkc_state.get("booking_service_price", 0)
+                                _bkc_date_str = _bkc_state.get("booking_date", "")
+                                _bkc_time_str = _bkc_state.get("booking_time", "")
+                                _bkc_price_str = f"{_bkc_currency} {_bkc_price:,.0f}" if _bkc_price else ""
+                                _reschedule_id = _bkc_state.get("reschedule_booking_id")
+                                _reschedule_num = _bkc_state.get("reschedule_booking_number", "")
+
+                                if _reschedule_id:
+                                    # RESCHEDULE — update existing booking
+                                    await db.bookings.update_one(
+                                        {"_id": _reschedule_id},
+                                        {"$set": {
+                                            "date": _bkc_date_str,
+                                            "time": _bkc_time_str,
+                                            "status": "pending",
+                                            "rescheduled_at": _bkc_now,
+                                            "rescheduled_by": "customer",
+                                            "updated_at": _bkc_now,
+                                        }}
+                                    )
+                                    _bkc_number = _reschedule_num
+                                    _bkc_conf_msg = (
+                                        f"✅ *Booking Rescheduled!*\n\n"
+                                        f"🔖 Ref: *{_bkc_number}*\n"
+                                        f"📋 Service: *{_bkc_svc_name}*\n"
+                                        f"📅 New Date: *{_bkc_date_str}*\n"
+                                        f"🕐 New Time: *{_bkc_time_str}*\n"
+                                        + (f"💰 Price: *{_bkc_price_str}*\n" if _bkc_price_str else "")
+                                        + f"\nSee you then! 😊"
+                                    )
+                                    _bkc_push_title = "🔄 Booking Rescheduled"
+                                    _bkc_push_body = f"{customer_name} rescheduled {_bkc_svc_name} to {_bkc_date_str} at {_bkc_time_str}"
+                                    _bkc_push_type = "booking_rescheduled"
+                                    _bkc_id = _reschedule_id
+                                    logging.info(f"[Booking] Rescheduled via WhatsApp: {_reschedule_id}")
+                                else:
+                                    # NEW BOOKING — insert
+                                    # VALIDATE BUSINESS HOURS before creating booking
+                                    try:
+                                        from datetime import datetime as _dt_bkc
+                                        _bkc_date_obj = _dt_bkc.strptime(_bkc_date_str, "%Y-%m-%d").date()
+                                        _bkc_biz_id_check = user.get("business_id", user["_id"])
+                                        _bkc_user_doc = await db.users.find_one({"_id": _bkc_biz_id_check})
+                                        _bkc_settings = (_bkc_user_doc or {}).get("settings", {})
+                                        _bkc_biz_hours = _bkc_settings.get("business_hours", {})
+                                        _bkc_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
+                                        _bkc_day_key = _bkc_wd_keys[_bkc_date_obj.weekday()]
+                                        _bkc_day_hours = _bkc_biz_hours.get(_bkc_day_key, {})
+                                        
+                                        if _bkc_day_hours.get("closed"):
+                                            logging.warning(f"[Booking] Blocked booking on closed day: {_bkc_date_str} ({_bkc_day_key})")
+                                            ws = get_whatsapp_service(db)
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=f"Sorry, we're closed on {_bkc_date_obj.strftime('%A %d %B')}. Your booking was not created. Please choose another date 📅",
+                                                customer_name=customer_name, send_context="booking_flow"
+                                            )
+                                            await db.pending_catalogs.delete_one({"customer_id": customer_id, "user_id": user["_id"]})
+                                            return {"status": "ok", "handled_by": "booking_confirm_closed_day_blocked"}
+                                    except Exception as _bkc_val_err:
+                                        logging.error(f"[Booking] Business hours validation error: {_bkc_val_err}")
+                                    
+                                    _bkc_id = str(uuid.uuid4())
+                                    _bkc_number = _generate_booking_number()
+                                    _bkc_selected_addons = _bkc_state.get("booking_selected_addons", [])
+                                    _bkc_checkout = _bkc_state.get("booking_checkout_date", "")
+                                    _bkc_nights = _bkc_state.get("booking_nights", 0)
+                                    _bkc_total = _bkc_state.get("booking_total_price") or _bkc_price
+                                    _bkc_svc_cat = _bkc_state.get("booking_service_category", "appointment")
+                                    # Fetch deposit_percent from product doc
+                                    _bkc_listing_doc = await db.products.find_one({"_id": _bkc_svc_id}) if _bkc_svc_id else None
+                                    _bkc_deposit_pct = (_bkc_listing_doc or {}).get("deposit_percent", 0) or 0
+                                    _bkc_deposit_amt = round((_bkc_total or _bkc_price) * _bkc_deposit_pct / 100, 2) if _bkc_deposit_pct > 0 else 0
+                                    _bkc_payment_status = "deposit_pending" if _bkc_deposit_pct > 0 else "unpaid"
+                                    # Restaurant and creator-specific fields
+                                    _bkc_party_size = _bkc_state.get("restaurant_party_size")
+                                    _bkc_special_req = _bkc_state.get("restaurant_special_requests")
+                                    _bkc_deadline = _bkc_state.get("creator_deadline")
+                                    _bkc_budget = _bkc_state.get("creator_budget")
+                                    _bkc_project_details = _bkc_state.get("creator_project_details")
+                                    
+                                    await db.bookings.insert_one({
+                                        "_id": _bkc_id,
+                                        "booking_number": _bkc_number,
+                                        "user_id": _bkc_biz_id,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "customer_phone": from_number,
+                                        "service_id": _bkc_svc_id,
+                                        "service_name": _bkc_svc_name,
+                                        "service_category": _bkc_svc_cat,
+                                        "date": _bkc_date_str,
+                                        "time": _bkc_time_str,
+                                        "checkin_date": _bkc_date_str if _bkc_svc_cat == "rental" else None,
+                                        "checkout_date": _bkc_checkout or None,
+                                        "nights": _bkc_nights or None,
+                                        "addons": _bkc_selected_addons,
+                                        "party_size": _bkc_party_size,
+                                        "special_requests": _bkc_special_req,
+                                        "deadline": _bkc_deadline,
+                                        "budget": _bkc_budget,
+                                        "project_details": _bkc_project_details,
+                                        "status": "pending",
+                                        "payment_status": _bkc_payment_status,
+                                        "deposit_percent": _bkc_deposit_pct,
+                                        "deposit_amount": _bkc_deposit_amt,
+                                        "price": _bkc_price,
+                                        "total_price": _bkc_total,
+                                        "source": "whatsapp",
+                                        "created_at": _bkc_now,
+                                        "updated_at": _bkc_now,
+                                    })
+                                    # Create sales record so booking appears in CRM sales/revenue tab
+                                    _bkc_sale_amount = _bkc_total or _bkc_price or 0
+                                    await db.sales.insert_one({
+                                        "_id": str(uuid.uuid4()),
+                                        "user_id": _bkc_biz_id,
+                                        "customer_id": customer_id,
+                                        "customer_name": customer_name,
+                                        "product": _bkc_svc_name,
+                                        "product_id": _bkc_svc_id,
+                                        "amount": _bkc_sale_amount,
+                                        "quantity": 1,
+                                        "type": "booking",
+                                        "status": "pending_payment",
+                                        "payment_status": _bkc_payment_status,
+                                        "booking_id": _bkc_id,
+                                        "booking_number": _bkc_number,
+                                        "source": "whatsapp_booking",
+                                        "created_at": _bkc_now,
+                                    })
+                                    # Update customer stats
+                                    await db.customers.update_one(
+                                        {"_id": customer_id},
+                                        {
+                                            "$inc": {"purchase_count": 1, "total_spent": _bkc_sale_amount},
+                                            "$set": {"last_contacted": _bkc_now}
+                                        }
+                                    )
+                                    _bkc_total_str = f"{_bkc_currency} {_bkc_total:,.0f}" if _bkc_total else _bkc_price_str
+                                    _bkc_deposit_str = f"{_bkc_currency} {_bkc_deposit_amt:,.0f}" if _bkc_deposit_amt else ""
+                                    # Build payment methods snippet (full details incl. multi-field format)
+                                    _bkc_pm_doc = await db.users.find_one({"_id": _bkc_biz_id})
+                                    _bkc_raw_pm = (_bkc_pm_doc or {}).get("payment_methods", []) or []
+                                    _bkc_pm_lines = []
+                                    for _pm in _bkc_raw_pm:
+                                        if isinstance(_pm, dict) and _pm.get("name"):
+                                            _line = f"  • *{_pm['name']}*"
+                                            if _pm.get("fields"):
+                                                _fparts = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                                if _fparts: _line += " — " + ", ".join(_fparts)
+                                            elif _pm.get("details"):
+                                                _line += f": {_pm['details']}"
+                                            _bkc_pm_lines.append(_line)
+                                        elif isinstance(_pm, str) and _pm.strip():
+                                            _bkc_pm_lines.append(f"  • *{_pm}*")
+                                    _bkc_pm_block = ("\n".join(_bkc_pm_lines) + "\n") if _bkc_pm_lines else ""
+                                    if _bkc_deposit_pct > 0:
+                                        _bkc_deposit_block = (
+                                            f"\n💳 *Deposit Required ({_bkc_deposit_pct}%)*\n"
+                                            f"Please send *{_bkc_deposit_str}* to secure your booking:\n"
+                                            + _bkc_pm_block
+                                            + f"\nSend proof of payment once done. Remaining balance due on arrival."
+                                        )
+                                    elif _bkc_pm_block:
+                                        _bkc_deposit_block = (
+                                            f"\n💳 *Payment Details:*\n"
+                                            + _bkc_pm_block
+                                            + f"\nFull amount of *{_bkc_total_str}* is due on arrival. "
+                                            f"You may also send payment in advance via the above details and share proof of payment."
+                                        )
+                                    else:
+                                        _bkc_deposit_block = (
+                                            f"\n💰 Full amount of *{_bkc_total_str}* is due on arrival." if _bkc_total_str else ""
+                                        )
+                                    _bkc_closing = "\n\nWe look forward to having you! 😊 If you need to change anything, just say *reschedule*."
+                                    if _bkc_svc_cat == "rental":
+                                        _bkc_conf_msg = (
+                                            f"✅ *Booking Confirmed!*\n\n"
+                                            f"🔖 Ref: *{_bkc_number}*\n"
+                                            f"🏠 *{_bkc_svc_name}*\n"
+                                            f"📅 Check-in: *{_bkc_date_str}*\n"
+                                            f"📅 Check-out: *{_bkc_checkout}*\n"
+                                            f"🌙 {_bkc_nights} night(s)\n"
+                                            + ("🔧 Add-ons: " + ", ".join(a["name"] for a in _bkc_selected_addons) + "\n" if _bkc_selected_addons else "")
+                                            + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
+                                            + _bkc_deposit_block
+                                            + _bkc_closing
+                                        )
+                                    else:
+                                        _bkc_conf_msg = (
+                                            f"✅ *Booking Confirmed!*\n\n"
+                                            f"🔖 Ref: *{_bkc_number}*\n"
+                                            f"📋 Service: *{_bkc_svc_name}*\n"
+                                            + ("🔧 Add-ons: " + ", ".join(a["name"] for a in _bkc_selected_addons) + "\n" if _bkc_selected_addons else "")
+                                            + f"📅 Date: *{_bkc_date_str}*\n"
+                                            f"🕐 Time: *{_bkc_time_str}*\n"
+                                            + (f"💰 Total: *{_bkc_total_str}*\n" if _bkc_total_str else "")
+                                            + _bkc_deposit_block
+                                            + _bkc_closing
+                                        )
+                                    # Append other available services to the confirmation message
+                                    try:
+                                        _bkc_other_svcs = await db.products.find(
+                                            {"user_id": _bkc_biz_id, "in_stock": {"$ne": False}},
+                                        ).to_list(20)
+                                        # Exclude the service they just booked
+                                        _bkc_other_svcs = [s for s in _bkc_other_svcs if str(s["_id"]) != str(_bkc_svc_id)]
+                                        if _bkc_other_svcs:
+                                            _bkc_currency_str = _bkc_currency
+                                            _bkc_other_lines = ["\n\n✨ *Our other services:*"]
+                                            for _os in _bkc_other_svcs[:5]:
+                                                _os_price = _os.get("price", 0)
+                                                _os_price_str = f"{_bkc_currency_str} {_os_price:,.0f}" if _os_price else "Contact for price"
+                                                _os_dur = f" · {_os['duration']} min" if _os.get("duration") else ""
+                                                _bkc_other_lines.append(f"  • *{_os['name']}* — {_os_price_str}{_os_dur}")
+                                            _bkc_other_lines.append("\n_Reply *book* anytime to make another appointment._")
+                                            _bkc_conf_msg += "\n".join(_bkc_other_lines)
+                                    except Exception as _bkc_other_err:
+                                        logging.warning(f"[Booking] Other services fetch failed: {_bkc_other_err}")
+
+                                    # Auto-block confirmed rental booking dates on the listing
+                                    if _bkc_svc_cat == "rental" and _bkc_svc_id and _bkc_checkout and _bkc_date_str:
+                                        try:
+                                            from datetime import date as _date_cls
+                                            _bl_ci = datetime.strptime(_bkc_date_str, "%Y-%m-%d").date()
+                                            _bl_co = datetime.strptime(_bkc_checkout, "%Y-%m-%d").date()
+                                            _bl_range = [str(_bl_ci + timedelta(days=i)) for i in range((_bl_co - _bl_ci).days)]
+                                            if _bl_range:
+                                                await db.products.update_one(
+                                                    {"_id": _bkc_svc_id},
+                                                    {"$addToSet": {"listing_blocked_dates": {"$each": _bl_range}}}
+                                                )
+                                                logging.info(f"[Booking] Auto-blocked dates {_bl_range[0]}→{_bl_range[-1]} on listing {_bkc_svc_id}")
+                                        except Exception as _bl_err:
+                                            logging.warning(f"[Booking] Auto-block dates failed: {_bl_err}")
+                                    _bkc_push_title = "📅 New Booking!"
+                                    _bkc_push_body = f"{customer_name} booked {_bkc_svc_name} on {_bkc_date_str} at {_bkc_time_str}"
+                                    _bkc_push_type = "new_booking"
+                                    logging.info(f"[Booking] Created via WhatsApp confirm: {_bkc_id}")
+
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=_bkc_biz_id, to_number=from_number,
+                                    message=_bkc_conf_msg, customer_name=customer_name, send_context="booking_confirm"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "product", "updated_at": _bkc_now}}
+                                )
+                                await db.customers.update_one(
+                                    {"_id": customer_id}, {"$set": {"last_contacted": _bkc_now}}
+                                )
+                                # Push notification to owner
+                                _bkc_owner = await db.users.find_one({"_id": _bkc_biz_id}, {"expo_push_token": 1})
+                                _bkc_push = (_bkc_owner or {}).get("expo_push_token", "")
+                                if _bkc_push:
+                                    try:
+                                        from notification_service import get_notification_service
+                                        _bkc_ns = get_notification_service()
+                                        await _bkc_ns.send_notification(
+                                            push_token=_bkc_push,
+                                            title=_bkc_push_title,
+                                            body=_bkc_push_body,
+                                            data={"type": _bkc_push_type, "booking_id": _bkc_id, "customer_id": customer_id}
+                                        )
+                                    except Exception as _bkc_ne:
+                                        logging.warning(f"Booking push failed: {_bkc_ne}")
+                                return {"status": "ok", "handled_by": "booking_confirm_yes"}
+                            else:
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="No problem! If you'd like to book again, just say *book* or ask about our services. 😊",
+                                    customer_name=customer_name, send_context="booking_cancel"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "product", "updated_at": datetime.utcnow()}}
+                                )
+                                logging.info(f"[Booking] Cancelled via NO reply for customer={customer_id}")
+                                return {"status": "ok", "handled_by": "booking_confirm_no"}
+
                 # Handle button actions
-                if button_action and (button_product_id or button_action in ("checkout", "continue")):
+                if button_action and (button_product_id or button_action in ("checkout", "continue", "cancel_cart")):
                     try:
                         if button_action == "order":
                             # Customer clicked "Order Now" — ask for confirmation first, don't create order yet
                             _biz_id = user.get("business_id", user["_id"])
                             product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id})
                             if product:
-                                currency = user.get("settings", {}).get("currency", "KES")
+                                currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 _price = product.get("price", 0)
                                 confirm_req = (
                                     f"📦 *Please confirm your order:*\n\n"
@@ -6383,7 +9840,8 @@ async def evolution_webhook(request: Request):
                             product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
                             if product:
                                 ws = get_whatsapp_service(db)
-                                detailed_msg = ws.format_product_message(product)
+                                _details_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                detailed_msg = ws.format_product_message(product, currency=_details_currency)
                                 await ws.send_message(
                                     user_id=user["_id"],
                                     to_number=from_number,
@@ -6399,7 +9857,7 @@ async def evolution_webhook(request: Request):
                             product = await db.products.find_one({"_id": button_product_id, "user_id": user["_id"]})
                             if product:
                                 # Send full product showcase with buttons
-                                currency = user.get("settings", {}).get("currency", "USD")
+                                currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 product_data = {"currency": currency, **product}
                                 
                                 ws = get_whatsapp_service(db)
@@ -6435,7 +9893,7 @@ async def evolution_webhook(request: Request):
                             _biz_id = user.get("business_id", user["_id"])
                             product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id})
                             if product:
-                                currency = user.get("settings", {}).get("currency", "USD")
+                                currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                 await db.carts.update_one(
                                     {"customer_id": customer_id, "user_id": _biz_id, "status": "active"},
                                     {
@@ -6478,9 +9936,10 @@ async def evolution_webhook(request: Request):
                                         await asyncio.sleep(0.5)
                                         cart_text = (
                                             f"*What would you like to do?*\n\n"
-                                            f"1\ufe0f\u20e3  Continue Shopping\n"
-                                            f"2\ufe0f\u20e3  Checkout Now\n\n"
-                                            f"_Reply with 1 or 2_"
+                                            f"1️⃣  Checkout Now\n"
+                                            f"2️⃣  Continue Shopping\n"
+                                            f"3️⃣  Cancel Order\n\n"
+                                            f"_Reply with 1, 2 or 3_"
                                         )
                                         await client.post(
                                             f"{ws.base_url}/message/sendText/{_inst_name}",
@@ -6503,14 +9962,88 @@ async def evolution_webhook(request: Request):
                                 _items = _cart["items"]
                                 _total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _items)
                                 _now = datetime.utcnow()
-                                _currency = user.get("settings", {}).get("currency", "USD")
+                                _currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                
+                                # ── Check for duplicate unpaid orders with same items ──────────────
+                                _existing_orders = await db.orders.find({
+                                    "user_id": _biz_id,
+                                    "customer_id": customer_id,
+                                    "payment_status": "Unpaid",
+                                    "status": {"$in": ["pending", "confirmed"]}
+                                }).sort("created_at", -1).to_list(10)
+                                
+                                _duplicate_order = None
+                                for _eo in _existing_orders:
+                                    _eo_items = _eo.get("items", [])
+                                    # Check if items match (same products, same quantities)
+                                    if len(_eo_items) == len(_items):
+                                        _match = True
+                                        for _ci in _items:
+                                            _found = False
+                                            for _ei in _eo_items:
+                                                if (_ei.get("product_id") == _ci.get("product_id") and
+                                                    _ei.get("quantity") == _ci.get("quantity")):
+                                                    _found = True
+                                                    break
+                                            if not _found:
+                                                _match = False
+                                                break
+                                        if _match:
+                                            _duplicate_order = _eo
+                                            break
+                                
+                                if _duplicate_order:
+                                    # Found duplicate unpaid order — ask customer what to do
+                                    _dup_order_num = _duplicate_order.get("order_number") or ("ORD-" + str(_duplicate_order.get("_id", ""))[:6].upper())
+                                    _dup_items_text = ", ".join(i.get("product_name", "Item") for i in _duplicate_order.get("items", [])[:3])
+                                    if len(_duplicate_order.get("items", [])) > 3:
+                                        _dup_items_text += f" +{len(_duplicate_order.get('items', []))-3} more"
+                                    
+                                    ws = get_whatsapp_service(db)
+                                    _dup_msg = (
+                                        f"⚠️ You already have an unpaid order with the same items:\n\n"
+                                        f"🔖 Order *#{_dup_order_num}*\n"
+                                        f"📦 {_dup_items_text}\n"
+                                        f"💰 {_currency} {_duplicate_order.get('total_amount', 0):,.0f}\n\n"
+                                        f"*What would you like to do?*\n\n"
+                                        f"1️⃣  Create New Order (double order)\n"
+                                        f"2️⃣  Keep Existing Order\n"
+                                        f"3️⃣  Cancel Existing & Create New\n\n"
+                                        f"_Reply with 1, 2 or 3_"
+                                    )
+                                    await ws.send_message(
+                                        user_id=user["_id"],
+                                        to_number=from_number,
+                                        message=_dup_msg,
+                                        customer_name=customer_name,
+                                        send_context="order_confirm"
+                                    )
+                                    # Store duplicate context so next reply resolves the choice
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "action_context": "duplicate_order_choice",
+                                            "duplicate_order_id": str(_duplicate_order["_id"]),
+                                            "pending_cart_items": _items,
+                                            "pending_cart_total": _total,
+                                            "updated_at": _now
+                                        }},
+                                        upsert=True
+                                    )
+                                    logging.info(f"Duplicate order detected: existing={_dup_order_num}, asking customer")
+                                    return {"status": "ok", "handled_by": "duplicate_order_prompt"}
+                                
+                                # No duplicate — proceed with normal checkout
                                 _order_id = str(uuid.uuid4())
+                                _order_number = "ORD-" + _order_id.replace("-", "").upper()[:6]
                                 # Build item summary for order name
                                 _item_names = ", ".join(i["product_name"] for i in _items[:3])
                                 if len(_items) > 3:
                                     _item_names += f" +{len(_items)-3} more"
+                                # Create ORDER as Unpaid — sale record only after payment confirmed
                                 await db.orders.insert_one({
                                     "_id": _order_id,
+                                    "order_number": _order_number,
                                     "user_id": _biz_id,
                                     "customer_id": customer_id,
                                     "customer_name": customer_name,
@@ -6520,39 +10053,71 @@ async def evolution_webhook(request: Request):
                                     "quantity": len(_items),
                                     "total_amount": _total,
                                     "total": _total,
+                                    "payment_status": "Unpaid",
+                                    "delivery_status": "Processing",
                                     "status": "pending",
                                     "created_at": _now,
                                     "source": "cart_checkout"
                                 })
-                                # Create sale record for revenue tracking
-                                await db.sales.insert_one({
-                                    "_id": str(uuid.uuid4()),
-                                    "user_id": _biz_id,
-                                    "customer_id": customer_id,
-                                    "customer_name": customer_name,
-                                    "product": _item_names,
-                                    "amount": _total,
-                                    "quantity": len(_items),
-                                    "status": "completed",
-                                    "created_at": _now,
-                                    "source": "cart_checkout"
-                                })
-                                # Update customer totals
                                 await db.customers.update_one(
                                     {"_id": customer_id},
-                                    {"$inc": {"total_spent": _total, "purchase_count": 1},
-                                     "$set": {"last_contacted": _now}}
+                                    {"$set": {"last_contacted": _now}}
                                 )
                                 await db.carts.update_one({"_id": _cart["_id"]}, {"$set": {"status": "completed"}})
-                                # Build cart summary for confirmation
-                                _lines = [f"✅ *Order Confirmed!*\n"]
+                                # Extract payment details from user.payment_methods (top-level)
+                                _user_co_doc = await db.users.find_one({"_id": _biz_id})
+                                _raw_pm_co = (_user_co_doc or {}).get("payment_methods", [])
+                                _pm_co_lines = []
+                                for _pm in _raw_pm_co:
+                                    if isinstance(_pm, dict):
+                                        _line = _pm.get("name", "")
+                                        _has_details_co = False
+                                        if _pm.get("fields"):
+                                            _fp = [f"{f['label']}: {f['value']}" for f in _pm["fields"] if f.get("value") and str(f["value"]).strip()]
+                                            if _fp:
+                                                _line += " — " + ", ".join(_fp)
+                                                _has_details_co = True
+                                        elif _pm.get("details") and str(_pm["details"]).strip():
+                                            _line += f": {_pm['details']}"
+                                            _has_details_co = True
+                                        if _line.strip() and _has_details_co:
+                                            _pm_co_lines.append(f"  • {_line}")
+                                    else:
+                                        if str(_pm).strip():
+                                            _pm_co_lines.append(f"  • {_pm}")
+                                _payment_text_co = "\n".join(_pm_co_lines)
+                                # Build order summary + payment request
+                                _co_lines = [f"✅ *Order Received!*\n", f"🔖 Order No: *#{_order_number}*\n"]
                                 for _it in _items:
-                                    _lines.append(f"• {_it['product_name']} × {_it.get('quantity',1)} — {_currency} {_it.get('price',0):,.0f}")
-                                _lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
-                                _lines.append("\nWe'll contact you shortly to confirm delivery. Thank you! 🙏")
+                                    _co_lines.append(f"• {_it['product_name']} × {_it.get('quantity',1)} — {_currency} {_it.get('price',0):,.0f}")
+                                _co_lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*")
+                                _co_lines.append(f"Status: 🔴 *Unpaid*\n")
+                                _co_lines.append("To complete your order, please make payment using the details below.\n")
+                                if _payment_text_co:
+                                    _co_lines.append(f"*💳 Payment Details:*\n{_payment_text_co}\n")
+                                else:
+                                    _co_lines.append("We will send you our payment details shortly.\n")
+                                _co_lines.append(
+                                    f"📸 Once you have paid, *send us a screenshot* of your payment confirmation.\n\n"
+                                    f"Also send your *delivery details:*\n"
+                                    f"• Full name\n"
+                                    f"• Delivery address\n"
+                                    f"• Phone number\n\n"
+                                    f"Your order *#{_order_number}* will be processed once payment is confirmed. 🙏"
+                                )
                                 ws = get_whatsapp_service(db)
-                                await ws.send_message(user_id=_biz_id, to_number=from_number, message="\n".join(_lines), customer_name=customer_name, send_context="order_confirm")
-                                logging.info(f"Cart checkout completed: order_id={_order_id}, items={len(_items)}, total={_total}")
+                                await ws.send_message(
+                                    user_id=_biz_id, to_number=from_number,
+                                    message="\n".join(_co_lines),
+                                    customer_name=customer_name, send_context="order_confirm"
+                                )
+                                # Set state to delivery_pending so payment screenshot is captured
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "delivery_pending", "order_id": _order_id, "updated_at": _now}},
+                                    upsert=True
+                                )
+                                logging.info(f"Cart checkout initiated: order_id={_order_id}, items={len(_items)}, total={_total}")
                                 # Notify business owner via push notification
                                 _owner2 = await db.users.find_one({"_id": _biz_id}, {"expo_push_token": 1})
                                 _push_token2 = (_owner2 or {}).get("expo_push_token", "")
@@ -6569,6 +10134,27 @@ async def evolution_webhook(request: Request):
                                     except Exception as _ne2:
                                         logging.warning(f"Checkout push notification failed: {_ne2}")
                                 return {"status": "ok", "handled_by": "checkout"}
+
+                        elif button_action == "cancel_cart":
+                            # Customer chose "Cancel Order" from cart menu
+                            _biz_id_cancel = user.get("business_id", user["_id"])
+                            _cart_cancel = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_cancel, "status": "active"})
+                            if _cart_cancel:
+                                await db.carts.update_one({"_id": _cart_cancel["_id"]}, {"$set": {"status": "cancelled"}})
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message="🗑️ Your cart has been cleared.\n\nFeel free to browse our catalog anytime! 😊",
+                                    customer_name=customer_name,
+                                    send_context="order_confirm"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                )
+                                logging.info(f"Cart cancelled by customer: customer_id={customer_id}")
+                                return {"status": "ok", "handled_by": "cancel_cart"}
 
                         elif button_action == "continue" or button_action == "back":
                             # Customer chose "Continue Shopping" or "Back to Catalog" — re-send product catalog with pagination
@@ -6618,18 +10204,55 @@ async def evolution_webhook(request: Request):
                             logging.info("Continue shopping: re-sent product catalog")
                             return {"status": "ok", "handled_by": "continue_shopping"}
 
-                        elif button_action == "ask":
-                            # Customer clicked "Ask Question" — replace raw button ID with
-                            # a meaningful question so the AI knows what the customer wants
-                            _biz_id_ask = user.get("business_id", user["_id"])
-                            _ask_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_ask})
-                            if _ask_product:
-                                body = f"I have a question about {_ask_product['name']}"
-                                await db.messages.update_one(
-                                    {"_id": message_id},
-                                    {"$set": {"content": body}}
-                                )
-                            logging.info(f"Ask button clicked for product {button_product_id}, passing to AI with body={body!r}")
+                        elif button_action == "similar":
+                            # Customer wants to see similar/related products
+                            _biz_id_sim = user.get("business_id", user["_id"])
+                            _sim_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_sim})
+                            _sim_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            if _sim_product:
+                                _sim_category = _sim_product.get("category", "")
+                                _sim_name = _sim_product["name"]
+                                # Find products in same category, excluding the current one
+                                _sim_query = {"user_id": _biz_id_sim, "_id": {"$ne": button_product_id}}
+                                if _sim_category:
+                                    _sim_query["category"] = _sim_category
+                                _sim_matches = await db.products.find(_sim_query).to_list(5)
+                                # If same-category has < 3 results, pad with other products
+                                if len(_sim_matches) < 3:
+                                    _other_query = {"user_id": _biz_id_sim, "_id": {"$nin": [button_product_id] + [p["_id"] for p in _sim_matches]}}
+                                    _others = await db.products.find(_other_query).to_list(5 - len(_sim_matches))
+                                    _sim_matches += _others
+                                ws = get_whatsapp_service(db)
+                                if _sim_matches:
+                                    _sim_lines = [f"Here are some products you might also like:\n"]
+                                    for _si, _sp in enumerate(_sim_matches[:5], 1):
+                                        _sp_price = f"{_sim_currency} {_sp.get('price',0):,.0f}" if _sp.get('price') else "POA"
+                                        _sp_stock = "✅" if _sp.get('in_stock', True) else "❌"
+                                        _sim_lines.append(f"{_si}️⃣  *{_sp['name']}* — {_sp_price} {_sp_stock}")
+                                    _sim_lines.append("\n_Reply with a number to select_")
+                                    await ws.send_message(
+                                        user_id=_biz_id_sim, to_number=from_number,
+                                        message="\n".join(_sim_lines),
+                                        customer_name=customer_name, send_context="similar_products"
+                                    )
+                                    # Save to pending_catalogs so numbered replies work
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "products": [{"id": str(p["_id"]), "name": p["name"], "price": p.get("price",0), "index": idx}
+                                                         for idx, p in enumerate(_sim_matches[:5], 1)],
+                                            "action_context": "catalog_select",
+                                            "updated_at": datetime.utcnow()
+                                        }}
+                                    )
+                                else:
+                                    await ws.send_message(
+                                        user_id=_biz_id_sim, to_number=from_number,
+                                        message=f"Sorry, we don't have other products similar to *{_sim_name}* right now. Feel free to browse our full catalog by typing *catalog*! 😊",
+                                        customer_name=customer_name, send_context="similar_products"
+                                    )
+                            logging.info(f"Similar products shown for product {button_product_id}")
+                            return {"status": "ok", "handled_by": "similar_products"}
 
                         elif button_action in ("book", "subscribe", "quote", "test_drive", "info", "custom"):
                             # Custom action types — craft intent message and let AI handle naturally
@@ -6902,9 +10525,44 @@ async def evolution_webhook(request: Request):
                             _pm_lines.append(f"  - {_line}")
                     if _pm_lines:
                         _bk_parts.append("Payment methods accepted:\n" + "\n".join(_pm_lines))
+                # Inject actual product catalog from DB so all agents see real products/services
+                _biz_id_for_ctx = user.get("business_id", user["_id"])
+                _ctx_currency = user.get("currency") or _user_settings.get("currency", "USD")
+                try:
+                    _ctx_products = await db.products.find({"user_id": _biz_id_for_ctx}).to_list(50)
+                    if _ctx_products:
+                        _cat_lines = ["\nPRODUCTS/SERVICES CATALOG (use exact names and prices — do NOT invent):"]
+                        for _cp in _ctx_products:
+                            _cp_stock = "" if _cp.get("in_stock", True) else " [OUT OF STOCK]"
+                            _cp_price = f"{_ctx_currency} {_cp['price']:,.0f}" if _cp.get("price") is not None else "Price on request"
+                            _cp_dur = f" · {_cp['duration']} min" if _cp.get("duration") else ""
+                            _cp_desc = f" — {_cp['description'][:80]}" if _cp.get("description") else ""
+                            _cat_lines.append(f"  • {_cp['name']}: {_cp_price}{_cp_dur}{_cp_desc}{_cp_stock}")
+                        _cat_lines.append("IMPORTANT: Only mention products listed above. Never invent product names or prices.")
+                        _bk_parts.append("\n".join(_cat_lines))
+                    else:
+                        _bk_parts.append("No products/services in catalog yet. Do NOT make up product names or prices.")
+                except Exception as _ctx_cat_err:
+                    logging.warning(f"[Webhook] Failed to fetch products for agent context: {_ctx_cat_err}")
+
+                # Inject structured business hours from settings (not the text field)
+                _struct_bh = _user_settings.get("business_hours", {})
+                if _struct_bh:
+                    _bh_lines = ["Business Hours:"]
+                    _bh_day_names = {"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
+                                     "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}
+                    for _bh_key, _bh_label in _bh_day_names.items():
+                        _bh = _struct_bh.get(_bh_key, {})
+                        if _bh.get("closed"):
+                            _bh_lines.append(f"  {_bh_label}: CLOSED")
+                        elif _bh.get("open") and _bh.get("close"):
+                            _bh_lines.append(f"  {_bh_label}: {_bh['open']} – {_bh['close']}")
+                    if len(_bh_lines) > 1:
+                        _bk_parts.append("\n".join(_bh_lines))
+
                 _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
 
-                currency = _user_settings.get("currency", "USD")
+                currency = user.get("currency") or _user_settings.get("currency", "USD")
                 # Build customer data dict for agents that need it
                 _customer_data = {}
                 if customer:
@@ -6929,13 +10587,32 @@ async def evolution_webhook(request: Request):
                     "business_name": user.get("business_name", ""),
                     "ai_model": _user_settings.get("ai_model", "standard"),
                     "payment_methods": _raw_pm,  # structured array for PaymentAgent
+                    "business_type": _user_settings.get("business_type", ""),
+                    # business_id is the authoritative ID for product/service queries
+                    # (may differ from user["_id"] for sub-users)
+                    "business_id": _biz_id_for_ctx,
                 }
 
-                agent_result = await router.route_and_process(
-                    user_id=user["_id"],
-                    message=body,
-                    context=agent_context
-                )
+                # Skip agent pipeline if button_action already set by numbered response handler
+                if not button_action:
+                    logging.info(
+                        f"[Webhook] ▶ agent pipeline: user_id={user['_id']} "
+                        f"biz_id={_biz_id_for_ctx} btype={_user_settings.get('business_type','')} "
+                        f"msg={repr(body[:80])}"
+                    )
+                    agent_result = await router.route_and_process(
+                        user_id=user["_id"],
+                        message=body,
+                        context=agent_context
+                    )
+                    logging.info(
+                        f"[Webhook] ◀ agent result: handled={agent_result.get('handled') if agent_result else None} "
+                        f"escalated={agent_result.get('escalated') if agent_result else None} "
+                        f"msgs={len(agent_result.get('messages',[])) if agent_result else 0}"
+                    )
+                else:
+                    agent_result = None
+                    logging.info(f"[Webhook] Skipping agent pipeline - button_action already set: {button_action}")
 
                 if agent_result and agent_result.get("handled"):
                     # If escalated — notify owner/employee, then stop (human will handle)
@@ -6973,11 +10650,13 @@ async def evolution_webhook(request: Request):
 
                                 if notify_phone and notify_phone != cust_phone:
                                     preview = msg_body[:120] + ("..." if len(msg_body) > 120 else "")
+                                    reason_line = f"📋 *Reason:* {reason}\n\n" if reason else ""
                                     notification_msg = (
                                         f"🔔 *Customer needs your help!*\n\n"
                                         f"👤 *{cust_name}* ({cust_phone})\n"
-                                        f"💬 _{preview}_\n\n"
-                                        f"The AI couldn't handle this — please reply to them directly."
+                                        f"💬 *Last message:* _{preview}_\n\n"
+                                        f"{reason_line}"
+                                        f"Please reply to them directly on WhatsApp."
                                     )
                                     await ws_notif.send_message(
                                         user_id=owner_user["_id"],
@@ -6989,10 +10668,11 @@ async def evolution_webhook(request: Request):
 
                                 # Also send Expo push notification to owner's device
                                 try:
+                                    _push_body = reason if reason else msg_body[:100]
                                     await send_push_notification(
                                         user_id=owner_user["_id"],
                                         title=f"🔔 {cust_name} needs your help",
-                                        body=f"{msg_body[:100]}",
+                                        body=_push_body,
                                         data={"type": "escalation", "customer_id": cust_id, "customer_name": cust_name}
                                     )
                                 except Exception:
@@ -7000,25 +10680,38 @@ async def evolution_webhook(request: Request):
                             except Exception as notif_err:
                                 logging.error(f"[Escalation] Notification failed: {notif_err}")
 
-                        # Send a natural hold message to the customer — sounds like owner, not AI
+                        # Send agent-prepared message (e.g. cancel confirmation) OR a hold message
+                        _escalation_messages = agent_result.get("messages", [])
                         try:
-                            import random as _random
-                            _hold_messages = [
-                                "Hang on, let me check on that for you.",
-                                "One sec, let me look into that.",
-                                "Sure, give me a moment on that.",
-                                "Let me check and get back to you shortly.",
-                                "On it — give me a moment.",
-                            ]
-                            _hold_msg = _random.choice(_hold_messages)
                             _ws_hold = get_whatsapp_service(db)
-                            await _ws_hold.send_message(
-                                user_id=user["_id"],
-                                to_number=from_number,
-                                message=_hold_msg,
-                                customer_name=customer_name,
-                                send_context="auto_reply"
-                            )
+                            if _escalation_messages:
+                                # Agent gave a specific reply (e.g. "order cancelled", "flagged for team")
+                                for _em in _escalation_messages:
+                                    if _em.get("text"):
+                                        await _ws_hold.send_message(
+                                            user_id=user["_id"],
+                                            to_number=from_number,
+                                            message=_em["text"],
+                                            customer_name=customer_name,
+                                            send_context="auto_reply"
+                                        )
+                            else:
+                                import random as _random
+                                _hold_messages = [
+                                    "Hang on, let me check on that for you.",
+                                    "One sec, let me look into that.",
+                                    "Sure, give me a moment on that.",
+                                    "Let me check and get back to you shortly.",
+                                    "On it — give me a moment.",
+                                ]
+                                _hold_msg = _random.choice(_hold_messages)
+                                await _ws_hold.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message=_hold_msg,
+                                    customer_name=customer_name,
+                                    send_context="auto_reply"
+                                )
                         except Exception as _hold_err:
                             logging.error(f"[Escalation] Hold message failed: {_hold_err}")
 
@@ -7060,20 +10753,34 @@ async def evolution_webhook(request: Request):
 
                     # Send all messages returned by agent
                     for msg in agent_result.get("messages", []):
-                        if not msg.get("text"):
+                        _msg_text = msg.get("text", "")
+                        _msg_media = msg.get("media_url")
+                        # Skip if neither text nor media
+                        if not _msg_text and not _msg_media:
                             continue
                         # Strip any [NEEDS_HUMAN] tag that leaked into message text
-                        _msg_text = msg["text"].replace("[NEEDS_HUMAN]", "").strip()
-                        if not _msg_text:
-                            continue
+                        _msg_text = _msg_text.replace("[NEEDS_HUMAN]", "").strip()
                         await ws.send_message(
                             user_id=user["_id"],
                             to_number=from_number,
                             message=_msg_text,
                             customer_name=customer_name,
-                            media_url=msg.get("media_url"),
+                            media_url=_msg_media,
                             send_context="auto_reply"
                         )
+
+                    # Send push notification to owner if agent requested it (e.g. order cancellation)
+                    _owner_notif = agent_result.get("owner_notification")
+                    if _owner_notif:
+                        try:
+                            await send_push_notification(
+                                user_id=user.get("business_id", user["_id"]),
+                                title=_owner_notif.get("title", "Order Update"),
+                                body=_owner_notif.get("body", ""),
+                            )
+                            logging.info(f"[Agent] Owner notified: {_owner_notif.get('title')}")
+                        except Exception as _notif_err:
+                            logging.error(f"[Agent] Owner notification failed: {_notif_err}")
 
                     import time as _t_stamp
                     _last_auto_reply_sent[f"{user['_id']}:{from_number}"] = _t_stamp.time()
@@ -7229,7 +10936,8 @@ async def evolution_webhook(request: Request):
                         
                         log_trace(f"Starting AI generation for {from_number}")
                         
-                        user_products = await db.products.find({"user_id": user["_id"]}).to_list(50)
+                        _ai_biz_id = user.get("business_id", user["_id"])
+                        user_products = await db.products.find({"user_id": _ai_biz_id}).to_list(50)
                         product_catalog_map = {}  # product_id -> image_url
                         product_name_map = {}     # lowercase product name -> {id, image_url, name}
                         if user_products:
@@ -7290,6 +10998,23 @@ async def evolution_webhook(request: Request):
                             business_knowledge = (business_knowledge or "") + no_products_msg
                         
                         if not business_knowledge:
+                            business_knowledge = ""
+                        
+                        # Append business hours context + build closed_days hard override list
+                        business_hours = user_settings.get("business_hours", {})
+                        closed_days_list = []
+                        if business_hours:
+                            hours_lines = ["\nBUSINESS HOURS:"]
+                            for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]:
+                                h = business_hours.get(day, {})
+                                if h.get("closed"):
+                                    hours_lines.append(f"- {day.capitalize()}: CLOSED (Do NOT offer bookings or availability for this day)")
+                                    closed_days_list.append(day.capitalize())
+                                elif h.get("open") and h.get("close"):
+                                    hours_lines.append(f"- {day.capitalize()}: {h.get('open')} to {h.get('close')}")
+                            business_knowledge += "\n".join(hours_lines)
+                        
+                        if not business_knowledge.strip():
                             business_knowledge = None
                         
                         from ai_service import get_drafter
@@ -7310,7 +11035,8 @@ async def evolution_webhook(request: Request):
                             customer_id=customer_id,
                             user_country=user_country_code,
                             customer_phone=customer_phone,
-                            model_pref=user_settings.get("ai_model", "standard")
+                            model_pref=user_settings.get("ai_model", "standard"),
+                            closed_days=closed_days_list if closed_days_list else None
                         )
                         
                         reply_text = result.get("drafted_message", "")
@@ -7849,6 +11575,8 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
         val = getattr(knowledge, field, None)
         if val is not None:
             update_data[f'business_knowledge.{field}'] = val
+    if knowledge.payment_methods is not None:
+        update_data['payment_methods'] = knowledge.payment_methods
     if update_data:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_data})
     return {"status": "success", "message": "Business knowledge updated"}
@@ -8133,12 +11861,12 @@ GOAL: Re-engage them with one short, genuine message.
         if relationship == "new_conversation" and last_incoming_text:
             history_block = f"\n\nLatest message from {customer_name}:\nCustomer: {last_incoming_text}"
         elif is_replying_to_incoming and last_incoming_text:
-            # When replying to a specific incoming message, ONLY show recent thread, not old context
+            # When replying, show last 8 messages for multi-turn context
             recent_only = []
-            for m in history[-4:]:
+            for m in history[-8:]:
                 role = "Customer" if m["direction"] == "incoming" else "You"
                 recent_only.append(f"{role}: {m['content']}")
-            history_block = f"\n\nRecent thread (FOCUS ON THIS):\n" + "\n".join(recent_only)
+            history_block = f"\n\nRecent thread (context only — reply to the LATEST message above):\n" + "\n".join(recent_only)
         elif threaded_history_text and threaded_history_text != "(no prior history)":
             history_block = f"\n\nConversation context:\n{threaded_history_text}"
         elif conversation_log:
@@ -8155,33 +11883,66 @@ GOAL: Re-engage them with one short, genuine message.
         elif is_replying_to_incoming:
             relationship_note = f"\n\n⚡ CRITICAL: Reply to their LATEST message: \"{last_incoming_text[:100]}\" — ignore any old topics from earlier in the conversation history."
 
-        # Anchor block — always shows the last few messages right before the instruction
-        # This is the most important context for the AI — what was JUST said
+        # Anchor block — moved to TOP of prompt so AI sees the most recent exchange FIRST
         recent_lines = []
-        for m in history[-6:]:
+        for m in history[-8:]:
             role = "Customer" if m["direction"] == "incoming" else "You"
             recent_lines.append(f"{role}: {m['content']}")
         recent_exchange = "\n".join(recent_lines) if recent_lines else ""
-        anchor_block = f"\n\nMOST RECENT EXCHANGE (reply is based on THIS):\n{recent_exchange}" if recent_exchange else ""
+        anchor_block = (
+            f"MOST RECENT EXCHANGE — your reply MUST address this directly:\n{recent_exchange}\n"
+            if recent_exchange else ""
+        )
 
-        # Full prompt
+        # Latest incoming message focus block — prominently signals what to reply to
+        if last_incoming_text:
+            latest_msg_block = (
+                f"CUSTOMER'S LATEST MESSAGE: \"{last_incoming_text}\"\n"
+                f"→ Reply to THIS. Not to old topics. Not to the full history. THIS message.\n"
+            )
+        else:
+            latest_msg_block = ""
+
+        # Session summary — structured understanding of what conversation is about
+        session_summary_block = ""
+        try:
+            from agents.session_summarizer import maybe_summarize, format_summary_for_prompt
+            from agents.conversation_state import load_state
+            _conv_state = await load_state(db, business_id, request.customer_id)
+            _session_summary = await maybe_summarize(
+                history=history,
+                user_id=business_id,
+                customer_id=request.customer_id,
+                db=db,
+                conv_state=_conv_state,
+            )
+            if _session_summary:
+                _summary_text = format_summary_for_prompt(_session_summary)
+                if _summary_text:
+                    session_summary_block = f"\nCONVERSATION SUMMARY (use this to understand context, but still reply to the LATEST message above):\n{_summary_text}\n"
+        except Exception:
+            pass
+
+        # Full prompt — anchor and latest message are at the TOP so the AI sees them first
         prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
+You are a real person — not a bot, not a marketing tool. Direct, warm, brief.
 
-You are a real person — not a bot, not a marketing tool. You write the way real business owners text their customers: direct, warm, brief.
-
-{scenario_block}{bk_block}{history_block}{anchor_block}{relationship_note}{repetition_block}{direction_block}{variety_block}
+{latest_msg_block}
+{anchor_block}
+{session_summary_block}
+{scenario_block}{bk_block}{history_block}{relationship_note}{repetition_block}{direction_block}{variety_block}
 
 WRITING RULES (non-negotiable):
-1. Output ONLY the message text. No labels, no "Message:", no quotes around it, no explanation.
+1. Output ONLY the message text. No labels, no quotes around it, no explanation.
 2. 1-3 sentences. Short is better. WhatsApp messages are not emails.
-3. YOUR REPLY MUST DIRECTLY ADDRESS the most recent exchange shown above — do NOT ignore it and talk about something else.
-4. USE REAL SPECIFICS: If business info is provided above, name actual products, actual prices, actual offers. Never say "we have great options" when you know exactly what they are.
+3. YOUR REPLY MUST DIRECTLY ADDRESS the customer's latest message shown at the top — do NOT ignore it and talk about something unrelated.
+4. USE REAL SPECIFICS: If business info is provided, name actual products, actual prices, actual offers — never say "we have great options".
 5. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
-6. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix — never translate the same thing twice.
+6. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix.
 7. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
 8. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
 
-Message:"""
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message."""
 
         # Call LLM directly
         from ai_service import get_drafter
@@ -8744,6 +12505,11 @@ async def get_user_settings(user = Depends(get_current_user)):
         "country_code": country_code,
         "plan_limits": get_plan_limits(user),
         "subscription_plan": user.get("subscription_plan", "free"),
+        "business_type": settings.get("business_type", "retail"),
+        "business_hours": settings.get("business_hours", {}),
+        "booking_settings": settings.get("booking_settings", {}),
+        "timezone": settings.get("timezone", "UTC"),
+        "rental_availability": settings.get("rental_availability", []),
     }
 
 @api_router.put("/settings")
@@ -8788,6 +12554,24 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
     if settings.ai_model is not None:
         update_data['settings.ai_model'] = settings.ai_model
     
+    if settings.auto_reply_audience is not None:
+        update_data['settings.auto_reply_audience'] = settings.auto_reply_audience
+
+    if settings.business_type is not None:
+        update_data['settings.business_type'] = settings.business_type
+
+    if settings.business_hours is not None:
+        update_data['settings.business_hours'] = settings.business_hours
+
+    if settings.booking_settings is not None:
+        update_data['settings.booking_settings'] = settings.booking_settings
+
+    if settings.timezone is not None:
+        update_data['settings.timezone'] = settings.timezone
+
+    if settings.rental_availability is not None:
+        update_data['settings.rental_availability'] = settings.rental_availability
+
     if update_data:
         await db.users.update_one(
             {"_id": user["_id"]},
@@ -9094,6 +12878,24 @@ async def update_product(
     
     if product_update.in_stock is not None:
         update_data["in_stock"] = product_update.in_stock
+    
+    if product_update.stock_quantity is not None:
+        update_data["stock_quantity"] = product_update.stock_quantity
+    
+    if product_update.offering_type is not None:
+        update_data["offering_type"] = product_update.offering_type
+    
+    if product_update.duration is not None:
+        update_data["duration"] = product_update.duration
+    
+    if product_update.service_category is not None:
+        update_data["service_category"] = product_update.service_category
+    
+    if product_update.addons is not None:
+        update_data["addons"] = product_update.addons
+    
+    if product_update.capacity is not None:
+        update_data["capacity"] = product_update.capacity
     
     await db.products.update_one(
         {"_id": product_id},
@@ -10127,7 +13929,12 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"Failed to start Evolution API keep-alive: {e}")
 
-logger = logging.getLogger(__name__)
+    # Start booking reminder scheduler
+    try:
+        asyncio.create_task(run_booking_reminder_scheduler())
+        logging.info("Booking reminder scheduler started (24h + 1h reminders)")
+    except Exception as e:
+        logging.error(f"Failed to start booking reminder scheduler: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

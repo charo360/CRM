@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { settingsAPI, apiClient } from '../context/api';
+import { useBusiness } from '../context/BusinessContext';
 
 interface BusinessKnowledgeModalProps {
     visible: boolean;
@@ -137,13 +138,17 @@ function FAQField({
     );
 }
 
-const BUSINESS_TYPES = [
-    { key: 'general', label: 'General', icon: 'storefront-outline' },
-    { key: 'retail', label: 'Retail', icon: 'cart-outline' },
-    { key: 'creator', label: 'Creator', icon: 'videocam-outline' },
-    { key: 'restaurant', label: 'Food & Resto', icon: 'restaurant-outline' },
-    { key: 'service', label: 'Services', icon: 'briefcase-outline' },
-];
+const GLOBAL_TO_BK_TYPE: Record<string, string> = {
+    retail: 'retail', restaurant: 'restaurant', creator: 'creator',
+    salon: 'service', services: 'service', fitness: 'service', healthcare: 'service',
+    rental: 'rental',
+    '': 'general',
+};
+
+const BK_TYPE_LABELS: Record<string, string> = {
+    general: 'General', retail: 'Retail', creator: 'Creator',
+    restaurant: 'Restaurant', service: 'Services / Salon', rental: 'Rental / Airbnb',
+};
 
 const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'Twitter/X', 'Facebook', 'Snapchat', 'LinkedIn', 'Podcast'];
 
@@ -151,9 +156,10 @@ export default function BusinessKnowledgeModal({
     visible,
     onClose,
 }: BusinessKnowledgeModalProps) {
+    const { businessType: globalBT, isServiceBusiness, config } = useBusiness();
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [businessType, setBusinessType] = useState('general');
+    const [businessType, setBusinessType] = useState(() => GLOBAL_TO_BK_TYPE[globalBT] || 'general');
     const [knowledge, setKnowledge] = useState({
         business_description: '',
         products_services: '',
@@ -162,6 +168,9 @@ export default function BusinessKnowledgeModal({
         delivery_info: '',
         faqs: '',
         special_offers: '',
+        booking_process: '',
+        cancellation_policy: '',
+        staff_info: '',
     });
     const [creator, setCreator] = useState({
         creator_niche: '',
@@ -183,9 +192,7 @@ export default function BusinessKnowledgeModal({
     const [paymentMethods, setPaymentMethods] = useState<{name:string;details?:string;fields?:{label:string;value:string}[]}[]>([]);
     const [addingPayment, setAddingPayment] = useState(false);
     const [newPmName, setNewPmName] = useState('');
-    const [newPmFieldValues, setNewPmFieldValues] = useState<string[]>([]);
-    const [customPmName, setCustomPmName] = useState('');
-    const [customFields, setCustomFields] = useState<{label:string;value:string}[]>([]);
+    const [newPmDetails, setNewPmDetails] = useState('');
 
     // List states (derived from string fields)
     const [productItems, setProductItems] = useState<string[]>([]);
@@ -193,11 +200,13 @@ export default function BusinessKnowledgeModal({
     const [faqList, setFaqList] = useState<{ question: string; answer: string }[]>([]);
     const [offerItems, setOfferItems] = useState<string[]>([]);
 
+    // Sync internal type from global context whenever modal opens
     useEffect(() => {
         if (visible) {
+            setBusinessType(GLOBAL_TO_BK_TYPE[globalBT] || 'general');
             fetchKnowledge();
         }
-    }, [visible]);
+    }, [visible, globalBT]);
 
     const fetchKnowledge = async () => {
         setLoading(true);
@@ -212,8 +221,12 @@ export default function BusinessKnowledgeModal({
                     delivery_info: data.delivery_info || '',
                     faqs: data.faqs || '',
                     special_offers: data.special_offers || '',
+                    booking_process: data.booking_process || '',
+                    cancellation_policy: data.cancellation_policy || '',
+                    staff_info: data.staff_info || '',
                 });
-                setBusinessType(data.business_type || 'general');
+                // Always use global type mapping, ignoring any stale saved BK type
+                setBusinessType(GLOBAL_TO_BK_TYPE[globalBT] || data.business_type || 'general');
                 setCreator({
                     creator_niche: data.creator_niche || '',
                     creator_platforms: data.creator_platforms || '',
@@ -231,11 +244,12 @@ export default function BusinessKnowledgeModal({
                 setSelectedPlatforms(
                     data.creator_platforms ? data.creator_platforms.split(',').map((s: string) => s.trim()).filter(Boolean) : []
                 );
-                // Load payment methods (support both legacy {name,details} and new {name,fields})
+                // Load payment methods — keep all entries that have a name
                 if (data.payment_methods && data.payment_methods.length > 0) {
-                    setPaymentMethods(data.payment_methods.map((m: any) =>
-                        typeof m === 'string' ? { name: m } : m
-                    ));
+                    const loaded = data.payment_methods
+                        .map((m: any) => typeof m === 'string' ? { name: m } : m)
+                        .filter((m: any) => m.name && String(m.name).trim());
+                    setPaymentMethods(loaded);
                 }
                 setProductItems(stringToItems(data.products_services));
                 setDeliveryItems(stringToItems(data.delivery_info));
@@ -273,26 +287,6 @@ export default function BusinessKnowledgeModal({
         setCreator(c => ({ ...c, creator_platforms: updated.join(', ') }));
     };
 
-    const PM_PRESETS = [
-        { name: 'M-Pesa (Send Money)', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0712 345 678', kb: 'phone-pad' }] },
-        { name: 'M-Pesa Paybill', icon: 'phone-portrait', fields: [{ label: 'Business No.', placeholder: 'e.g. 400200', kb: 'number-pad' }, { label: 'Account No.', placeholder: 'e.g. your phone / order ID', kb: 'default' }] },
-        { name: 'M-Pesa Till (Buy Goods)', icon: 'phone-portrait', fields: [{ label: 'Till No.', placeholder: 'e.g. 123456', kb: 'number-pad' }] },
-        { name: 'Airtel Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0733 123 456', kb: 'phone-pad' }] },
-        { name: 'MTN Mobile Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0770 123 456', kb: 'phone-pad' }] },
-        { name: 'Bank Transfer', icon: 'business', fields: [{ label: 'Bank Name', placeholder: 'e.g. KCB', kb: 'default' }, { label: 'Account No.', placeholder: 'e.g. 1234567890', kb: 'number-pad' }, { label: 'Account Name', placeholder: 'e.g. John Doe / Company', kb: 'default' }] },
-        { name: 'PayPal', icon: 'logo-paypal', fields: [{ label: 'PayPal Email', placeholder: 'e.g. pay@youremail.com', kb: 'email-address' }] },
-        { name: 'Cash', icon: 'cash', fields: [] },
-        { name: 'Visa/Card', icon: 'card', fields: [{ label: 'POS / Reference', placeholder: 'e.g. card machine details', kb: 'default' }] },
-        { name: 'Stripe', icon: 'card', fields: [{ label: 'Payment Link', placeholder: 'https://buy.stripe.com/...', kb: 'default' }] },
-        { name: 'Wave', icon: 'wallet', fields: [{ label: 'Phone Number', placeholder: 'e.g. +221 77 000 0000', kb: 'phone-pad' }] },
-        { name: 'UPI', icon: 'phone-portrait', fields: [{ label: 'UPI ID', placeholder: 'e.g. yourname@upi', kb: 'default' }] },
-        { name: 'Chipper Cash', icon: 'wallet', fields: [{ label: 'Username / Phone', placeholder: 'e.g. @yourname', kb: 'default' }] },
-        { name: 'Bitcoin/Crypto', icon: 'logo-bitcoin', fields: [{ label: 'Wallet Address', placeholder: 'e.g. 1A1zP1eP5...', kb: 'default' }] },
-        { name: 'Custom', icon: 'add-circle-outline', fields: [] },
-    ];
-
-    const selectedPreset = PM_PRESETS.find(p => p.name === newPmName);
-
     const getMethodSummary = (pm: {name:string;details?:string;fields?:{label:string;value:string}[]}) => {
         if (pm.fields && pm.fields.length > 0) {
             return pm.fields.filter(f => f.value).map(f => `${f.label}: ${f.value}`).join('  ·  ');
@@ -303,9 +297,7 @@ export default function BusinessKnowledgeModal({
     const resetAddForm = () => {
         setAddingPayment(false);
         setNewPmName('');
-        setNewPmFieldValues([]);
-        setCustomPmName('');
-        setCustomFields([]);
+        setNewPmDetails('');
     };
 
     const handleSave = async () => {
@@ -321,10 +313,10 @@ export default function BusinessKnowledgeModal({
             creator_platforms: selectedPlatforms.join(', '),
         };
         try {
-            await Promise.all([
-                settingsAPI.updateBusinessKnowledge(updatedKnowledge),
-                apiClient.put('/settings', { payment_methods: paymentMethods }),
-            ]);
+            await settingsAPI.updateBusinessKnowledge({
+                ...updatedKnowledge,
+                payment_methods: paymentMethods,
+            });
             Alert.alert('Saved', 'Business knowledge updated!', [
                 { text: 'OK', onPress: onClose },
             ]);
@@ -337,6 +329,8 @@ export default function BusinessKnowledgeModal({
     };
 
     const isCreator = businessType === 'creator';
+    const isService = businessType === 'service' || isServiceBusiness;
+    const itemLabel = config.catalogItemLabel;    // 'Product' | 'Service' | 'Class'
 
     return (
         <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -370,27 +364,14 @@ export default function BusinessKnowledgeModal({
                             </Text>
                         </View>
 
-                        {/* Business Type Selector */}
-                        <View style={styles.field}>
-                            <Text style={styles.label}>Business Type</Text>
-                            <Text style={styles.hint}>Select the type that best describes you</Text>
-                            <View style={styles.typeGrid}>
-                                {BUSINESS_TYPES.map(bt => (
-                                    <TouchableOpacity
-                                        key={bt.key}
-                                        style={[styles.typeCard, businessType === bt.key && styles.typeCardActive]}
-                                        onPress={() => setBusinessType(bt.key)}
-                                    >
-                                        <Ionicons
-                                            name={bt.icon as any}
-                                            size={22}
-                                            color={businessType === bt.key ? '#25D366' : '#6B7D99'}
-                                        />
-                                        <Text style={[styles.typeLabel, businessType === bt.key && styles.typeLabelActive]}>
-                                            {bt.label}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))}
+                        {/* Business Type — read-only, driven by Account Settings */}
+                        <View style={[styles.field, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
+                            <Ionicons name="storefront-outline" size={18} color="#25D366" />
+                            <View style={{ flex: 1 }}>
+                                <Text style={styles.label}>Business Type</Text>
+                                <Text style={[styles.hint, { marginTop: 2 }]}>
+                                    {BK_TYPE_LABELS[businessType] || businessType}  ·  Change in Account Settings
+                                </Text>
                             </View>
                         </View>
 
@@ -612,8 +593,87 @@ export default function BusinessKnowledgeModal({
                             </>
                         )}
 
-                        {/* ── STANDARD FIELDS (shown for all types) ── */}
-                        {!isCreator && (
+                        {/* ── SERVICE-SPECIFIC FIELDS ── */}
+                        {isService && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="briefcase-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Service Details</Text>
+                                </View>
+
+                                {/* Services Menu */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="list-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>{config.catalogLabel} & Pricing</Text>
+                                    </View>
+                                    <Text style={styles.hint}>Add each {itemLabel.toLowerCase()} with its price and duration</Text>
+                                    <ListField
+                                        items={productItems}
+                                        onUpdate={setProductItems}
+                                        placeholder={`${itemLabel} - price - duration`}
+                                        icon="timer-outline"
+                                    />
+                                </View>
+
+                                {/* Booking Process */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="calendar-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Booking Process</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Book via WhatsApp 24hrs in advance. We confirm within 1 hour."</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="How do clients book appointments?"
+                                        placeholderTextColor="#555"
+                                        value={knowledge.booking_process}
+                                        onChangeText={(text) => setKnowledge({ ...knowledge, booking_process: text })}
+                                        multiline
+                                        numberOfLines={2}
+                                    />
+                                </View>
+
+                                {/* Cancellation Policy */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="close-circle-outline" size={18} color="#FF9800" />
+                                        <Text style={styles.label}>Cancellation Policy</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Cancel at least 24hrs before. Late cancellations charged 50%."</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="Your cancellation & rescheduling policy"
+                                        placeholderTextColor="#555"
+                                        value={knowledge.cancellation_policy}
+                                        onChangeText={(text) => setKnowledge({ ...knowledge, cancellation_policy: text })}
+                                        multiline
+                                        numberOfLines={2}
+                                    />
+                                </View>
+
+                                {/* Staff Info */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="people-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Team / Staff</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Maria - hair colouring specialist. John - massage therapist."</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="Who are your team members and their specialties?"
+                                        placeholderTextColor="#555"
+                                        value={knowledge.staff_info}
+                                        onChangeText={(text) => setKnowledge({ ...knowledge, staff_info: text })}
+                                        multiline
+                                        numberOfLines={2}
+                                    />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── STANDARD FIELDS (retail / restaurant / general) ── */}
+                        {!isCreator && !isService && (
                             <>
                                 {/* Products & Prices */}
                                 <View style={styles.field}>
@@ -649,8 +709,8 @@ export default function BusinessKnowledgeModal({
                             />
                         </View>
 
-                        {/* Delivery - only for non-creators */}
-                        {!isCreator && (
+                        {/* Delivery - only for retail/restaurant, not service businesses or creators */}
+                        {!isCreator && !isService && (
                             <View style={styles.field}>
                                 <View style={styles.sectionHeader}>
                                     <Ionicons name="bicycle-outline" size={18} color="#25D366" />
@@ -701,109 +761,25 @@ export default function BusinessKnowledgeModal({
                             {/* Add form */}
                             {addingPayment ? (
                                 <View style={styles.pmAddBox}>
-                                    {/* Preset chips */}
-                                    <Text style={styles.pmPresetLabel}>Select a method:</Text>
-                                    <View style={styles.pmChipRow}>
-                                        {PM_PRESETS.filter(p => !paymentMethods.find(m => m.name === p.name)).map(p => (
-                                            <TouchableOpacity
-                                                key={p.name}
-                                                style={[styles.pmChip, newPmName === p.name && styles.pmChipActive]}
-                                                onPress={() => {
-                                                    setNewPmName(p.name);
-                                                    setCustomPmName('');
-                                                    setCustomFields([]);
-                                                    setNewPmFieldValues(p.fields.map(() => ''));
-                                                }}
-                                            >
-                                                <Ionicons name={p.icon as any} size={13} color={newPmName === p.name ? '#25D366' : '#6B7D99'} />
-                                                <Text style={[styles.pmChipText, newPmName === p.name && { color: '#25D366' }]}>{p.name}</Text>
-                                            </TouchableOpacity>
-                                        ))}
-                                    </View>
-
-                                    {/* Custom payment method builder */}
-                                    {newPmName === 'Custom' && (
-                                        <View style={{ marginTop: 8 }}>
-                                            <TextInput
-                                                style={styles.pmInput}
-                                                value={customPmName}
-                                                onChangeText={setCustomPmName}
-                                                placeholder="Payment method name (e.g. Venmo, GCash, Zelle)"
-                                                placeholderTextColor="#555"
-                                            />
-                                            
-                                            <Text style={[styles.pmFieldLabel, { marginTop: 12, marginBottom: 6 }]}>Fields (optional):</Text>
-                                            {customFields.map((field, fi) => (
-                                                <View key={fi} style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
-                                                    <TextInput
-                                                        style={[styles.pmInput, { flex: 1 }]}
-                                                        value={field.label}
-                                                        onChangeText={t => {
-                                                            const updated = [...customFields];
-                                                            updated[fi].label = t;
-                                                            setCustomFields(updated);
-                                                        }}
-                                                        placeholder="Field name (e.g. Phone, Account No.)"
-                                                        placeholderTextColor="#555"
-                                                    />
-                                                    <TextInput
-                                                        style={[styles.pmInput, { flex: 1.5 }]}
-                                                        value={field.value}
-                                                        onChangeText={t => {
-                                                            const updated = [...customFields];
-                                                            updated[fi].value = t;
-                                                            setCustomFields(updated);
-                                                        }}
-                                                        placeholder="Value"
-                                                        placeholderTextColor="#555"
-                                                    />
-                                                    <TouchableOpacity
-                                                        onPress={() => setCustomFields(customFields.filter((_, i) => i !== fi))}
-                                                        style={{ justifyContent: 'center' }}
-                                                    >
-                                                        <Ionicons name="close-circle" size={22} color="#FF6B6B" />
-                                                    </TouchableOpacity>
-                                                </View>
-                                            ))}
-                                            <TouchableOpacity
-                                                style={[styles.addButton, { marginTop: 4 }]}
-                                                onPress={() => setCustomFields([...customFields, { label: '', value: '' }])}
-                                            >
-                                                <Ionicons name="add" size={16} color="#25D366" />
-                                                <Text style={[styles.addButtonText, { fontSize: 13 }]}>Add field</Text>
-                                            </TouchableOpacity>
-                                        </View>
-                                    )}
-
-                                    {/* Dynamic fields for selected preset */}
-                                    {selectedPreset && selectedPreset.name !== 'Custom' && selectedPreset.fields.length > 0 && (
-                                        <View style={{ marginTop: 8 }}>
-                                            {selectedPreset.fields.map((field, fi) => (
-                                                <View key={fi} style={{ marginBottom: 8 }}>
-                                                    <Text style={styles.pmFieldLabel}>{field.label}</Text>
-                                                    <TextInput
-                                                        style={styles.pmInput}
-                                                        value={newPmFieldValues[fi] || ''}
-                                                        onChangeText={t => {
-                                                            const updated = [...newPmFieldValues];
-                                                            updated[fi] = t;
-                                                            setNewPmFieldValues(updated);
-                                                        }}
-                                                        placeholder={field.placeholder}
-                                                        placeholderTextColor="#555"
-                                                        autoCapitalize="none"
-                                                        keyboardType={(field.kb as any) || 'default'}
-                                                    />
-                                                </View>
-                                            ))}
-                                        </View>
-                                    )}
-
-                                    {/* Cash has no fields */}
-                                    {selectedPreset && selectedPreset.name === 'Cash' && (
-                                        <Text style={[styles.pmRowDetails, { marginTop: 8, color: '#555' }]}>No details needed for cash payments</Text>
-                                    )}
-
+                                    <Text style={styles.pmFieldLabel}>Payment Method Name</Text>
+                                    <TextInput
+                                        style={[styles.pmInput, { marginBottom: 10 }]}
+                                        value={newPmName}
+                                        onChangeText={setNewPmName}
+                                        placeholder="e.g. M-Pesa, Bank Transfer, PayPal, Cash"
+                                        placeholderTextColor="#555"
+                                        autoCapitalize="words"
+                                    />
+                                    <Text style={styles.pmFieldLabel}>Payment Details</Text>
+                                    <TextInput
+                                        style={[styles.pmInput, { minHeight: 60, textAlignVertical: 'top' }]}
+                                        value={newPmDetails}
+                                        onChangeText={setNewPmDetails}
+                                        placeholder="e.g. Send to 0712 345 678 (John) / Account: 1234567890, Equity Bank"
+                                        placeholderTextColor="#555"
+                                        multiline
+                                        autoCapitalize="none"
+                                    />
                                     <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                                         <TouchableOpacity style={styles.pmCancelBtn} onPress={resetAddForm}>
                                             <Text style={{ color: '#888', fontSize: 14, fontWeight: '600' }}>Cancel</Text>
@@ -811,34 +787,10 @@ export default function BusinessKnowledgeModal({
                                         <TouchableOpacity
                                             style={styles.pmSaveBtn}
                                             onPress={() => {
-                                                let name = '';
-                                                let newEntry: {name:string;fields?:{label:string;value:string}[]};
-                                                
-                                                if (newPmName === 'Custom') {
-                                                    // Custom payment method
-                                                    name = customPmName.trim();
-                                                    if (!name) return;
-                                                    if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) return;
-                                                    const validFields = customFields.filter(f => f.label.trim() || f.value.trim());
-                                                    if (validFields.length > 0) {
-                                                        newEntry = { name, fields: validFields };
-                                                    } else {
-                                                        newEntry = { name };
-                                                    }
-                                                } else if (selectedPreset) {
-                                                    // Preset payment method
-                                                    name = selectedPreset.name;
-                                                    if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) return;
-                                                    if (selectedPreset.fields.length > 0) {
-                                                        newEntry = { name, fields: selectedPreset.fields.map((f, fi) => ({ label: f.label, value: newPmFieldValues[fi] || '' })) };
-                                                    } else {
-                                                        newEntry = { name };
-                                                    }
-                                                } else {
-                                                    return;
-                                                }
-                                                
-                                                setPaymentMethods([...paymentMethods, newEntry]);
+                                                const name = newPmName.trim();
+                                                if (!name) return;
+                                                if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) return;
+                                                setPaymentMethods([...paymentMethods, { name, details: newPmDetails.trim() }]);
                                                 resetAddForm();
                                             }}
                                         >

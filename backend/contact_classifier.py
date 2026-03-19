@@ -253,9 +253,11 @@ PRODUCTS: Comma-separated list of products discussed (max 5), or "N/A" if unclea
         Classify all unclassified contacts for a user.
         Returns list of pending classifications for user approval.
         """
-        # Get contacts that haven't been classified yet
+        # Get contacts that haven't been classified yet — only actual WhatsApp contacts
         contacts = await self.db.customers.find({
             "user_id": user_id,
+            "is_customer": False,
+            "auto_created": True,
             "classification_confirmed": {"$ne": True},
         }).sort("last_contacted", -1).limit(50).to_list(50)
 

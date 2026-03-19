@@ -39,7 +39,20 @@ IDENTITY_HALLUCINATION_PATTERNS = [
 # Chat intents where short replies are fine
 SHORT_OK_INTENTS = {"GREETING", "SMALL_TALK", "GENERAL_CHAT", "PERSONAL_CHAT"}
 
-MAX_REPLY_WORDS = 200  # WhatsApp readability limit
+# 12.4: Revised length thresholds
+MIN_REPLY_CHARS = 20          # minimum characters for non-chat intents
+MAX_REPLY_CHARS = 600         # ~150 words — WhatsApp readability limit
+MAX_REPLY_CHARS_COMPLAINT = 800  # complaint/booking can be a bit longer
+
+# 12.6: Booking hallucination patterns — inventing availability or prices
+BOOKING_HALLUCINATION_PATTERNS = [
+    r'\bavailable\s+(on|at|for)\s+\w+\s+(at\s+)?\d+',   # "available on Monday at 3"
+    r'\b(slot|appointment|booking)\s+(is\s+)?available\b',
+    r'\bwe have\s+(a\s+)?(slot|opening|appointment|space)\b',
+    r'\b(come in|come\s+at|be here)\s+(on\s+)?\w+\s+at\s+\d+',
+    r'\bprice\s+(is|for)\s+[\$\£\€\₦\₹\¥]?\s*\d+',     # inventing service prices
+    r'\bcosts?\s+[\$\£\€\₦\₹\¥]?\s*\d+',
+]
 
 
 async def validate_reply(
@@ -66,6 +79,7 @@ async def validate_reply(
 
     reply_lower = reply_text.lower()
     word_count = len(reply_text.split())
+    char_count = len(reply_text.strip())
 
     # Rule 2: ChatAgent must never make money promises
     if agent_name == "chat":
@@ -102,20 +116,31 @@ async def validate_reply(
             }
 
     # Rule 5: Too short for non-chat intents
-    if word_count < 3 and intent not in SHORT_OK_INTENTS:
+    if char_count < MIN_REPLY_CHARS and intent not in SHORT_OK_INTENTS:
         return {
             "result": RESULT_REJECT,
-            "reason": f"Reply too short ({word_count} words) for intent {intent}",
+            "reason": f"Reply too short ({char_count} chars) for intent {intent}",
             "suggestion": "Provide a complete answer to the customer's question.",
         }
 
     # Rule 6: Too long — WhatsApp messages should be concise
-    if word_count > MAX_REPLY_WORDS:
+    max_chars = MAX_REPLY_CHARS_COMPLAINT if agent_name in ("complaint", "booking") else MAX_REPLY_CHARS
+    if char_count > max_chars:
         return {
             "result": RESULT_REJECT,
-            "reason": f"Reply too long ({word_count} words) — will bore the customer on WhatsApp",
-            "suggestion": "Keep the reply under 150 words. Be direct and WhatsApp-natural.",
+            "reason": f"Reply too long ({char_count} chars) — will bore the customer on WhatsApp",
+            "suggestion": "Keep the reply under 600 characters. Be direct and WhatsApp-natural.",
         }
+
+    # Rule 7: Booking agent must not invent availability slots or prices
+    if agent_name == "booking":
+        for pattern in BOOKING_HALLUCINATION_PATTERNS:
+            if re.search(pattern, reply_lower):
+                return {
+                    "result": RESULT_REJECT,
+                    "reason": "Booking reply appears to invent availability or prices not from business data",
+                    "suggestion": "Do NOT invent specific time slots or prices. Ask the customer what date works and let the owner confirm.",
+                }
 
     # All rules passed
     logger.info(f"[ReplyValidator] APPROVE agent={agent_name} intent={intent} words={word_count}")

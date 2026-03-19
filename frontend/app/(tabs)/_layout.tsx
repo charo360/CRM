@@ -11,6 +11,7 @@ import * as Device from 'expo-device';
 
 import { useAuth } from '../../context/AuthContext';
 import { settingsAPI, apiClient } from '../../context/api';
+import { useBusiness } from '../../context/BusinessContext';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -32,6 +33,7 @@ export default function TabsLayout() {
   const [dailyPulseEnabled, setDailyPulseEnabled] = useState(false);
 
   const { user } = useAuth();
+  const { config, isRetailBusiness } = useBusiness();
   const notificationListener = useRef<any>();
   const responseListener = useRef<any>();
 
@@ -177,9 +179,15 @@ export default function TabsLayout() {
                     onPress: () => router.push('../team-analytics' as any),
                     color: '#4A90E2'
                   }] : []),
+                  ...(!isRetailBusiness ? [{
+                    icon: 'megaphone-outline' as const,
+                    label: 'Broadcast',
+                    onPress: () => router.push('/(tabs)/broadcast' as any),
+                    color: '#F59E0B'
+                  }] : []),
                   {
                     icon: 'cube-outline',
-                    label: 'Product Catalog',
+                    label: `${config.catalogLabel} Catalog`,
                     onPress: () => setShowProductCatalog(true)
                   },
                   {
@@ -254,8 +262,19 @@ export default function TabsLayout() {
           name="broadcast"
           options={{
             title: 'Broadcast',
+            href: isRetailBusiness ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="bookings"
+          options={{
+            title: 'Bookings',
+            href: config.bookingsTabVisible ? undefined : null,
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="calendar" size={size} color={color} />
             ),
           }}
         />

@@ -21,15 +21,29 @@ class SalesAgent(BaseAgent):
         keywords = context.get("keywords", [])
         entities = context.get("entities", {})
         conv_state = context.get("conversation_state_data", {})
+        confidence = context.get("confidence", 1.0)
+        careful_instruction = context.get("careful_instruction", "")
+        business_config = context.get("business_config", {})
+        discount_policy = business_config.get("discount_policy") or context.get("discount_policy", "")
 
-        # Fetch all active products for this user
+        # Use business_id from context (authoritative for product queries)
+        biz_id = context.get("business_id", user_id)
+
+        # Fetch products - physical/digital products first
         try:
-            products = await self.db.products.find({"user_id": user_id}).to_list(100)
+            products = await self.db.products.find({
+                "user_id": biz_id,
+                "offering_type": {"$in": ["product", "digital", "menu_item"]}
+            }).to_list(100)
+            # Fallback: if no physical products found (e.g. service business with empty/wrong
+            # business_type routed here), show ALL products so catalog is never empty
+            if not products:
+                products = await self.db.products.find({"user_id": biz_id}).to_list(100)
         except Exception as e:
             logger.error(f"[SalesAgent] DB error fetching products: {e}")
             return {"handled": False}
 
-        # --- CATALOG REQUEST: send full catalog ---
+        # --- CATALOG REQUEST ---
         if intent == "CATALOG_REQUEST":
             relationship = context.get("_relationship", "new_conversation")
             return await self._handle_catalog_request(
@@ -105,13 +119,22 @@ class SalesAgent(BaseAgent):
                     desc = desc[:117] + "..."
                 caption += f"\n{desc}"
 
-            img_url = p.get("image_url")
-            if not img_url and p.get("images"):
-                img_url = p["images"][0]
+            # Collect ALL images (deduplicated)
+            all_imgs = []
+            if p.get("image_url"):
+                all_imgs.append(p["image_url"])
+            for _im in p.get("images", []):
+                if _im and _im not in all_imgs:
+                    all_imgs.append(_im)
+            all_imgs = [normalize_url(u) for u in all_imgs if u]
+
+            # Extra images first (no caption/text)
+            for _extra_img in all_imgs[1:]:
+                messages_out.append({"text": "", "media_url": _extra_img})
 
             msg = {"text": caption}
-            if img_url:
-                msg["media_url"] = normalize_url(img_url)
+            if all_imgs:
+                msg["media_url"] = all_imgs[0]
             messages_out.append(msg)
         
         # Add instruction text for how to select/order
@@ -124,7 +147,7 @@ class SalesAgent(BaseAgent):
                 "*What would you like to do?*\n\n"
                 "1️⃣  Order Now\n"
                 "2️⃣  Add to Cart\n"
-                "3️⃣  Ask a Question\n\n"
+                "3️⃣  See Similar Products\n\n"
                 "_Reply with 1, 2 or 3_"
             )
             messages_out.append({"text": instruction})
@@ -165,6 +188,21 @@ class SalesAgent(BaseAgent):
         context_update["state"] = "ongoing"
         context_update["last_intent"] = intent
 
+        # 17: Save menu state so router can intercept "One", "moja", "first" etc.
+        if len(to_send) > 1:
+            from datetime import timezone as _tz
+            context_update["active_menu"] = True
+            context_update["menu_type"] = "product_selection"
+            context_update["menu_items"] = {
+                str(i): {"name": p["name"], "price": p.get("price", 0), "id": str(p["_id"]), "type": "product"}
+                for i, p in enumerate(to_send, 1)
+            }
+            context_update["waiting_for_selection"] = True
+            context_update["menu_sent_at"] = datetime.utcnow().isoformat()
+        else:
+            context_update["waiting_for_selection"] = False
+            context_update["active_menu"] = False
+
         return {
             "messages": messages_out,
             "context_update": context_update,
@@ -177,10 +215,13 @@ class SalesAgent(BaseAgent):
     ) -> Dict[str, Any]:
         """Send numbered catalog list with pagination (8 products per page, option 9 = more)."""
         if not products:
+            # 3.1: Friendly empty catalog fallback — never say "no products"
             return {
                 "handled": True,
-                "messages": [{"text": "We don't have any products listed yet. Please check back soon!"}],
+                "messages": [{"text": f"Thanks for reaching out, {customer_name}! Our full catalog is being updated right now. I'll personally send you our latest items shortly — stay tuned! 😊"}],
                 "escalate": False,
+                "flag_for_human": True,
+                "flag_reason": "Customer requested catalog but no products found — owner needs to follow up",
             }
 
         in_stock = [p for p in products if p.get("in_stock", True)]
@@ -268,25 +309,38 @@ class SalesAgent(BaseAgent):
             price = product.get("price", 0)
             in_stock = product.get("in_stock", True)
 
+            # 5.1: Extract discount policy
+            discount_hint = f"\nDiscount policy: {discount_policy}" if discount_policy else "\nDiscount policy: None stated — do NOT invent discounts."
+
+            # Intent hint injection
+            intent_hint = (
+                f"Intent classified as: NEGOTIATION ({confidence:.0%} confidence)\n"
+                f"Customer message: \"{message}\"\n\n"
+                f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+            )
+            if careful_instruction:
+                intent_hint += f"\n{careful_instruction}\n"
+
             prompt = f"""You are a sales assistant handling a price negotiation.
 
-Business info: {bk}
+{intent_hint}
+Business info: {bk}{discount_hint}
 Product: {product['name']} — {currency} {price:,.0f} {'(In stock)' if in_stock else '(Out of stock)'}
 Customer: {customer_name}
-Customer message: "{message}"
 
 Recent conversation:
 {history_snippet}
 
-Write a polite reply in {language} that:
-1. Acknowledges their request warmly
-2. Holds firm on the price politely OR mentions any genuine offer from the business info
-3. NEVER invents a lower price or discount not in the business info
-4. If no flexibility exists, suggest value (quality, service, etc.)
-5. Is conversational and WhatsApp-natural (2-3 sentences)
-6. CRITICAL: ONLY use facts from the business info and conversation above. NEVER invent details.
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message.
 
-Reply only:"""
+Rules:
+1. Acknowledge their request warmly
+2. Hold firm on the price politely OR mention any genuine offer from the business info above
+3. NEVER invent a lower price or discount not stated in the business info
+4. 5.2: If customer makes a counter-offer, acknowledge it specifically (e.g. "I hear you on the {currency} X ask") then explain why the price is fair
+5. If no flexibility exists, suggest value (quality, service, speed, etc.)
+6. Conversational, WhatsApp-natural, 2-3 sentences max
+7. CRITICAL: ONLY use facts above. NEVER invent prices, discounts, or offers."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
             return {
@@ -327,28 +381,38 @@ Reply only:"""
             else:
                 tone_rule = "Keep it short. No corporate opener."
 
-            if has_products:
-                catalog_hint = format_product_catalog(products[:5], "")
-                prompt = f"""You are a business owner replying on WhatsApp. A customer asked about something you don't have.
+            # Intent hint injection
+            intent_hint = (
+                f"Intent classified as: {intent} ({confidence:.0%} confidence)\n"
+                f"Customer message: \"{message}\"\n\n"
+                f"Read the message yourself. If the classification seems off, address what the customer actually needs instead.\n"
+            )
+            if careful_instruction:
+                intent_hint += f"\n{careful_instruction}\n"
 
+            if has_products:
+                # 4.1: No-match — show closest alternative specifically
+                catalog_hint = format_product_catalog(products[:5], "")
+                prompt = f"""You are a business owner replying on WhatsApp. A customer asked about something you don't carry.
+
+{intent_hint}
 Business info: {bk}
-Customer asked: "{message}"
 Available products:
 {catalog_hint}
 
 Recent conversation:
 {history_snippet}
 
+Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message.
+
 Rules:
 - {tone_rule}
-- If you don't carry it, say so simply in 1 sentence — like a real person would
-- If something in your catalog is close, mention it naturally (name it specifically)
-- NEVER say "I don't have specific details" — if info is missing, just say what you DO have
+- Acknowledge what they asked for in 1 short sentence
+- Then suggest the SINGLE most relevant product from your catalog by name — be specific (e.g. "We don't carry X but our Y might work for you")
+- NEVER say "I don't have specific details" — just say what you DO have
 - NEVER invent products or prices not in the catalog
-- Max 2 sentences. WhatsApp tone — not a help desk ticket.
-- Language: {language}
-
-Reply only:"""
+- Max 2 sentences. WhatsApp tone.
+- Language: {language}"""
             else:
                 prompt = f"""You are a business owner on WhatsApp. Customer asked: "{message}"
 You don't have a product catalog set up yet.
@@ -383,7 +447,7 @@ Write 1 short sentence in {language} saying you'll get back to them — sound li
             return context["_threaded_history_text"]
         if not history:
             return "(no prior history)"
-        recent = history[-6:]
+        recent = history[-15:]
         lines = [
             f"{'Customer' if m.get('direction')=='incoming' else 'Business'}: {m.get('content','')}"
             for m in recent

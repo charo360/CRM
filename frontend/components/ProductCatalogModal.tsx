@@ -18,10 +18,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { productsAPI, settingsAPI } from '../context/api';
+import { useBusiness } from '../context/BusinessContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_GAP = 10;
 const CARD_WIDTH = (SCREEN_WIDTH - 48 - CARD_GAP) / 2;
+
+interface Addon {
+    name: string;
+    price: number;
+}
 
 interface Product {
     id: string;
@@ -35,6 +41,14 @@ interface Product {
     in_stock: boolean;
     stock_quantity?: number;
     created_at: string;
+    offering_type?: string;
+    duration?: number;
+    service_category?: string;
+    addons?: Addon[];
+    listing_blocked_dates?: string[];
+    deposit_percent?: number;
+    price_unit?: string;
+    capacity?: number;
 }
 
 interface ProductCatalogModalProps {
@@ -46,6 +60,9 @@ export default function ProductCatalogModal({
     visible,
     onClose,
 }: ProductCatalogModalProps) {
+    const { config, isServiceBusiness, businessType } = useBusiness();
+    const itemLabel = config.catalogItemLabel;   // 'Product' | 'Service' | 'Item'
+    const catalogLabel = config.catalogLabel;     // 'Products' | 'Services' | 'Menu'
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -65,8 +82,50 @@ export default function ProductCatalogModal({
     const [editDescription, setEditDescription] = useState('');
     const [editInStock, setEditInStock] = useState(true);
     const [editStockQuantity, setEditStockQuantity] = useState('');
+    const [editOfferingType, setEditOfferingType] = useState('product');
+    const [editDuration, setEditDuration] = useState('');
+    const [editServiceCategory, setEditServiceCategory] = useState<'appointment' | 'rental'>('appointment');
+    const [editAddons, setEditAddons] = useState<Addon[]>([]);
+    const [editDepositPercent, setEditDepositPercent] = useState<string>('0');
+    const [editPriceUnit, setEditPriceUnit] = useState<string>('night');
+    const [editCapacity, setEditCapacity] = useState<string>('1');
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
+
+    // Per-listing availability calendar state
+    const [listingBlockedDates, setListingBlockedDates] = useState<string[]>([]);
+    const [listingCalMonth, setListingCalMonth] = useState(new Date());
+    const [savingListingAvail, setSavingListingAvail] = useState(false);
+
+    const getListingCalDays = (month: Date): (string | null)[] => {
+        const year = month.getFullYear();
+        const mo = month.getMonth();
+        const firstDay = new Date(year, mo, 1).getDay();
+        const daysInMonth = new Date(year, mo + 1, 0).getDate();
+        const days: (string | null)[] = [];
+        for (let i = 0; i < firstDay; i++) days.push(null);
+        for (let d = 1; d <= daysInMonth; d++) {
+            const mm = String(mo + 1).padStart(2, '0');
+            const dd = String(d).padStart(2, '0');
+            days.push(`${year}-${mm}-${dd}`);
+        }
+        return days;
+    };
+
+    const saveListingAvailability = async (productId: string) => {
+        setSavingListingAvail(true);
+        try {
+            await productsAPI.updateProduct(productId, { listing_blocked_dates: listingBlockedDates } as any);
+            setProducts(prev => prev.map(p =>
+                p.id === productId ? { ...p, listing_blocked_dates: listingBlockedDates } : p
+            ));
+            Alert.alert('Saved', 'Listing availability updated.');
+        } catch (e) {
+            Alert.alert('Error', 'Failed to save listing availability');
+        } finally {
+            setSavingListingAvail(false);
+        }
+    };
     const [addingPhotos, setAddingPhotos] = useState(false);
     const [aiFailedBanner, setAiFailedBanner] = useState(false);
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
@@ -215,7 +274,7 @@ export default function ProductCatalogModal({
 
     const handleDeleteProduct = (product: Product) => {
         Alert.alert(
-            'Delete Product',
+            `Delete ${itemLabel}`,
             `Delete "${product.name}"? This cannot be undone.`,
             [
                 { text: 'Cancel', style: 'cancel' },
@@ -229,7 +288,7 @@ export default function ProductCatalogModal({
                             setSelectedProduct(null);
                             fetchProducts();
                         } catch (error) {
-                            Alert.alert('Error', 'Failed to delete product');
+                            Alert.alert('Error', `Failed to delete ${itemLabel.toLowerCase()}`);
                         }
                     },
                 },
@@ -253,6 +312,8 @@ export default function ProductCatalogModal({
         setSelectedProduct(product);
         setEditMode(false);
         setActiveImageIndex(0);
+        setListingBlockedDates(product.listing_blocked_dates || []);
+        setListingCalMonth(new Date());
         setDetailVisible(true);
     };
 
@@ -265,6 +326,13 @@ export default function ProductCatalogModal({
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
         setEditStockQuantity(product.stock_quantity?.toString() || '');
+        setEditOfferingType(product.offering_type || 'product');
+        setEditDuration(product.duration?.toString() || '');
+        setEditServiceCategory((product.service_category as 'appointment' | 'rental') || 'appointment');
+        setEditAddons(product.addons || []);
+        setEditDepositPercent((product.deposit_percent ?? 0).toString());
+        setEditPriceUnit(product.price_unit || 'night');
+        setEditCapacity((product.capacity ?? 1).toString());
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -283,6 +351,13 @@ export default function ProductCatalogModal({
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
+        setEditOfferingType(businessType === 'rental' ? 'rental' : isServiceBusiness ? 'service' : businessType === 'restaurant' ? 'menu_item' : businessType === 'creator' ? 'digital' : 'product');
+        setEditDuration(isServiceBusiness ? '60' : '');
+        setEditServiceCategory('appointment');
+        setEditAddons([]);
+        setEditDepositPercent('0');
+        setEditPriceUnit('night');
+        setEditCapacity('1');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -323,6 +398,13 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    offering_type: editOfferingType,
+                    duration: editDuration.trim() ? parseInt(editDuration) : undefined,
+                    service_category: editServiceCategory,
+                    addons: editAddons.filter(a => a.name.trim()),
+                    deposit_percent: parseInt(editDepositPercent) || 0,
+                    price_unit: editPriceUnit,
+                    capacity: editCapacity.trim() ? parseInt(editCapacity) : 1,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -342,6 +424,13 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    offering_type: editOfferingType,
+                    duration: editDuration.trim() ? parseInt(editDuration) : undefined,
+                    service_category: editServiceCategory,
+                    addons: editAddons.filter(a => a.name.trim()),
+                    deposit_percent: parseInt(editDepositPercent) || 0,
+                    price_unit: editPriceUnit,
+                    capacity: editCapacity.trim() ? parseInt(editCapacity) : 1,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -464,7 +553,8 @@ export default function ProductCatalogModal({
 
     const renderProductCard = (product: Product) => {
         const imageUri = getImageUri(product);
-        const isOutOfStock = product.in_stock === false;
+        const isRentalListing = product.service_category === 'rental' || product.offering_type === 'rental';
+        const isOutOfStock = !isRentalListing && product.in_stock === false;
 
         return (
             <TouchableOpacity
@@ -481,7 +571,7 @@ export default function ProductCatalogModal({
                     </View>
                 )}
 
-                {isOutOfStock && (
+                {isOutOfStock && !isRentalListing && (
                     <View style={styles.outOfStockBadge}>
                         <Text style={styles.outOfStockText}>Out of Stock</Text>
                     </View>
@@ -503,7 +593,7 @@ export default function ProductCatalogModal({
                         <View style={[styles.categoryBadge]}>
                             <Text style={styles.categoryBadgeText} numberOfLines={1}>{product.category || 'Other'}</Text>
                         </View>
-                        <View style={[styles.stockDot, isOutOfStock ? styles.stockDotRed : styles.stockDotGreen]} />
+                        {!isRentalListing && <View style={[styles.stockDot, isOutOfStock ? styles.stockDotRed : styles.stockDotGreen]} />}
                     </View>
                 </View>
             </TouchableOpacity>
@@ -519,7 +609,7 @@ export default function ProductCatalogModal({
                     <TouchableOpacity onPress={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); setAiFailedBanner(false); }}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitle}>{addMode ? 'Add Product' : editMode ? 'Edit Product' : 'Product Details'}</Text>
+                    <Text style={styles.headerTitle}>{addMode ? `Add ${itemLabel}` : editMode ? `Edit ${itemLabel}` : `${itemLabel} Details`}</Text>
                     {!editMode && selectedProduct ? (
                         <TouchableOpacity onPress={() => startEdit(selectedProduct)}>
                             <Ionicons name="create-outline" size={24} color="#25D366" />
@@ -543,12 +633,12 @@ export default function ProductCatalogModal({
                                 </View>
                             )}
                             <View style={styles.formGroup}>
-                                <Text style={styles.formLabel}>Product Name *</Text>
+                                <Text style={styles.formLabel}>{itemLabel} Name *</Text>
                                 <TextInput
                                     style={styles.formInput}
                                     value={editName}
                                     onChangeText={setEditName}
-                                    placeholder="e.g. Chocolate Cake"
+                                    placeholder={businessType === 'rental' ? 'e.g. Beachfront Villa, Toyota Corolla, Camera Kit' : isServiceBusiness ? 'e.g. Haircut, Deep Tissue Massage' : businessType === 'restaurant' ? 'e.g. Grilled Chicken, Jollof Rice' : businessType === 'creator' ? 'e.g. Brand Deal Package, E-Book' : 'e.g. Chocolate Cake, T-Shirt'}
                                     placeholderTextColor="#555"
                                 />
                             </View>
@@ -583,9 +673,30 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editCategory}
                                     onChangeText={setEditCategory}
-                                    placeholder="e.g. Cakes, Electronics, Clothing"
+                                    placeholder={businessType === 'rental' ? 'e.g. Property, Vehicle, Equipment, Boat' : isServiceBusiness ? 'e.g. Hair, Nails, Massage, Fitness' : businessType === 'restaurant' ? 'e.g. Mains, Starters, Drinks, Desserts' : businessType === 'creator' ? 'e.g. Sponsored Post, Digital Product, Merch' : 'e.g. Clothing, Electronics, Food'}
                                     placeholderTextColor="#555"
                                 />
+                                {/* Quick-pick chips from existing categories */}
+                                {(() => {
+                                    const existingCats = [...new Set(
+                                        products
+                                            .filter(p => p.category && p.category !== 'Other' && p.id !== selectedProduct?.id)
+                                            .map(p => p.category!)
+                                    )].slice(0, 6);
+                                    return existingCats.length > 0 ? (
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }}>
+                                            {existingCats.map(cat => (
+                                                <TouchableOpacity
+                                                    key={cat}
+                                                    style={[styles.typeChip, editCategory === cat && styles.typeChipActive, { marginRight: 6 }]}
+                                                    onPress={() => setEditCategory(cat)}
+                                                >
+                                                    <Text style={[styles.typeChipText, editCategory === cat && styles.typeChipTextActive]}>{cat}</Text>
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+                                    ) : null;
+                                })()}
                             </View>
 
                             <View style={styles.formGroup}>
@@ -594,30 +705,32 @@ export default function ProductCatalogModal({
                                     style={[styles.formInput, { height: 80, textAlignVertical: 'top' }]}
                                     value={editDescription}
                                     onChangeText={setEditDescription}
-                                    placeholder="Describe your product..."
+                                    placeholder={businessType === 'rental' ? 'Bedrooms, amenities, location, rules...' : isServiceBusiness ? 'What does this service include? Any preparation needed?' : businessType === 'restaurant' ? 'Ingredients, allergens, portion size...' : `Describe your ${itemLabel.toLowerCase()}...`}
                                     placeholderTextColor="#555"
                                     multiline
                                     numberOfLines={3}
                                 />
                             </View>
 
-                            <View style={styles.formGroup}>
-                                <Text style={styles.formLabel}>Stock Quantity (Optional)</Text>
-                                <TextInput
-                                    style={styles.formInput}
-                                    value={editStockQuantity}
-                                    onChangeText={setEditStockQuantity}
-                                    placeholder="Leave empty for unlimited stock"
-                                    placeholderTextColor="#555"
-                                    keyboardType="numeric"
-                                />
-                                <Text style={styles.stockHint}>Automatically reduces when orders are placed</Text>
-                            </View>
+                            {!isServiceBusiness && (
+                                <View style={styles.formGroup}>
+                                    <Text style={styles.formLabel}>Stock Quantity (Optional)</Text>
+                                    <TextInput
+                                        style={styles.formInput}
+                                        value={editStockQuantity}
+                                        onChangeText={setEditStockQuantity}
+                                        placeholder="Leave empty for unlimited stock"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <Text style={styles.stockHint}>Automatically reduces when orders are placed</Text>
+                                </View>
+                            )}
 
                             <View style={styles.stockToggleRow}>
                                 <View>
-                                    <Text style={styles.formLabel}>In Stock</Text>
-                                    <Text style={styles.stockHint}>{editInStock ? 'Available for customers' : 'Hidden from AI replies'}</Text>
+                                    <Text style={styles.formLabel}>{isServiceBusiness ? 'Available' : 'In Stock'}</Text>
+                                    <Text style={styles.stockHint}>{editInStock ? (isServiceBusiness ? 'Bookable by customers' : 'Available for customers') : 'Hidden from AI replies'}</Text>
                                 </View>
                                 <Switch
                                     value={editInStock}
@@ -625,6 +738,201 @@ export default function ProductCatalogModal({
                                     trackColor={{ false: '#333', true: '#1A3A2A' }}
                                     thumbColor={editInStock ? '#25D366' : '#666'}
                                 />
+                            </View>
+
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Type</Text>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                    {(businessType === 'rental'
+                                        ? [
+                                            { id: 'rental',       label: '🏠 Property' },
+                                            { id: 'service',      label: '🚗 Vehicle' },
+                                            { id: 'equipment',    label: '🔧 Equipment' },
+                                            { id: 'package',      label: '🎁 Package' },
+                                          ]
+                                        : isServiceBusiness
+                                        ? [
+                                            { id: 'service',      label: '✂️ Service' },
+                                            { id: 'class',        label: '🎓 Class' },
+                                            { id: 'appointment',  label: '📅 Appointment' },
+                                            { id: 'consultation', label: '💬 Consultation' },
+                                            { id: 'package',      label: '🎁 Package' },
+                                          ]
+                                        : businessType === 'restaurant'
+                                        ? [
+                                            { id: 'menu_item',    label: '🍽️ Menu Item' },
+                                            { id: 'drink',        label: '🥤 Drink' },
+                                            { id: 'combo',        label: '🥡 Combo' },
+                                          ]
+                                        : businessType === 'creator'
+                                        ? [
+                                            { id: 'digital',      label: '💾 Digital' },
+                                            { id: 'service',      label: '🔧 Service' },
+                                            { id: 'product',      label: '📦 Product' },
+                                          ]
+                                        : [
+                                            { id: 'product',      label: '📦 Product' },
+                                            { id: 'service',      label: '🔧 Service' },
+                                            { id: 'digital',      label: '💾 Digital' },
+                                            { id: 'menu_item',    label: '🍽️ Menu Item' },
+                                          ]
+                                    ).map(ot => (
+                                        <TouchableOpacity
+                                            key={ot.id}
+                                            style={[
+                                                styles.typeChip,
+                                                editOfferingType === ot.id && styles.typeChipActive,
+                                            ]}
+                                            onPress={() => setEditOfferingType(ot.id)}
+                                        >
+                                            <Text style={[
+                                                styles.typeChipText,
+                                                editOfferingType === ot.id && styles.typeChipTextActive,
+                                            ]}>{ot.label}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </ScrollView>
+                            </View>
+
+                            {businessType !== 'rental' && editServiceCategory !== 'rental' && (isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
+                                <View style={[styles.formGroup, isServiceBusiness && { borderLeftWidth: 3, borderLeftColor: '#25D366', paddingLeft: 12 }]}>
+                                    <Text style={styles.formLabel}>Duration (minutes) {isServiceBusiness && '*'}</Text>
+                                    <TextInput
+                                        style={styles.formInput}
+                                        value={editDuration}
+                                        onChangeText={setEditDuration}
+                                        placeholder="e.g. 30, 60, 90"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <Text style={styles.stockHint}>Used for booking slot calculation</Text>
+                                </View>
+                            )}
+
+                            {businessType !== 'rental' && editServiceCategory !== 'rental' && (isServiceBusiness || ['service','class','appointment','consultation','package'].includes(editOfferingType)) && (
+                                <View style={styles.formGroup}>
+                                    <Text style={styles.formLabel}>Capacity per Time Slot</Text>
+                                    <TextInput
+                                        style={styles.formInput}
+                                        value={editCapacity}
+                                        onChangeText={setEditCapacity}
+                                        placeholder="e.g. 1, 5, 10"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <Text style={styles.stockHint}>How many appointments can be booked at the same time? (Default: 1)</Text>
+                                </View>
+                            )}
+
+                            <View style={styles.formGroup}>
+                                    <Text style={styles.formLabel}>Booking Type</Text>
+                                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                                        {[{ id: 'appointment', label: '📅 Appointment' }, { id: 'rental', label: '🏠 Rental' }].map(opt => (
+                                            <TouchableOpacity
+                                                key={opt.id}
+                                                style={[
+                                                    styles.typeChip,
+                                                    editServiceCategory === opt.id && styles.typeChipActive,
+                                                    { flex: 1, justifyContent: 'center' }
+                                                ]}
+                                                onPress={() => setEditServiceCategory(opt.id as 'appointment' | 'rental')}
+                                            >
+                                                <Text style={[styles.typeChipText, editServiceCategory === opt.id && styles.typeChipTextActive]}>{opt.label}</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+                                    <Text style={styles.stockHint}>
+                                        {editServiceCategory === 'rental' ? 'Customer picks check-in & check-out dates' : 'Customer picks a date & time slot'}
+                                    </Text>
+                                </View>
+
+                            <View style={styles.formGroup}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                        <Text style={styles.formLabel}>Add-ons ({editAddons.length}/4)</Text>
+                                        {editAddons.length < 4 && (
+                                            <TouchableOpacity
+                                                onPress={() => setEditAddons(prev => [...prev, { name: '', price: 0 }])}
+                                                style={{ backgroundColor: '#1A3A2A', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 }}
+                                            >
+                                                <Text style={{ color: '#25D366', fontSize: 13 }}>+ Add</Text>
+                                            </TouchableOpacity>
+                                        )}
+                                    </View>
+                                    {editAddons.map((addon, idx) => (
+                                        <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 2, marginBottom: 0 }]}
+                                                value={addon.name}
+                                                onChangeText={v => setEditAddons(prev => prev.map((a, i) => i === idx ? { ...a, name: v } : a))}
+                                                placeholder={businessType === 'rental' || editServiceCategory === 'rental' ? 'e.g. Parking, Pool, WiFi' : 'e.g. Braids, Parking'}
+                                                placeholderTextColor="#555"
+                                            />
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                                                value={addon.price === 0 ? '' : addon.price.toString()}
+                                                onChangeText={v => setEditAddons(prev => prev.map((a, i) => i === idx ? { ...a, price: parseFloat(v) || 0 } : a))}
+                                                placeholder="Price"
+                                                placeholderTextColor="#555"
+                                                keyboardType="numeric"
+                                            />
+                                            <TouchableOpacity onPress={() => setEditAddons(prev => prev.filter((_, i) => i !== idx))}>
+                                                <Ionicons name="close-circle" size={22} color="#FF6B6B" />
+                                            </TouchableOpacity>
+                                        </View>
+                                    ))}
+                                    {editAddons.length === 0 && (
+                                        <Text style={styles.stockHint}>Optional extras customers can add to their booking</Text>
+                                    )}
+                                </View>
+
+                            {(businessType === 'rental' || editServiceCategory === 'rental') && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Pricing Unit</Text>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                    {[
+                                        { id: 'night',  label: '🌙 Per Night' },
+                                        { id: 'day',    label: '☀️ Per Day' },
+                                        { id: 'week',   label: '📅 Per Week' },
+                                        { id: 'month',  label: '🗓 Per Month' },
+                                        { id: 'year',   label: '📆 Per Year' },
+                                        { id: 'person', label: '👤 Per Person' },
+                                    ].map(u => (
+                                        <TouchableOpacity
+                                            key={u.id}
+                                            style={[
+                                                styles.typeChip,
+                                                editPriceUnit === u.id && styles.typeChipActive,
+                                            ]}
+                                            onPress={() => setEditPriceUnit(u.id)}
+                                        >
+                                            <Text style={[styles.typeChipText, editPriceUnit === u.id && styles.typeChipTextActive]}>{u.label}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </ScrollView>
+                                <Text style={styles.stockHint}>How the price is charged to the customer</Text>
+                            </View>
+                            )}
+
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Deposit Required (%)</Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                                        value={editDepositPercent === '0' ? '' : editDepositPercent}
+                                        onChangeText={v => setEditDepositPercent(v.replace(/[^0-9]/g, ''))}
+                                        placeholder="0 = no deposit"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    {parseInt(editDepositPercent) > 0 && (
+                                        <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>{editDepositPercent}% upfront</Text>
+                                    )}
+                                </View>
+                                <Text style={styles.stockHint}>
+                                    {parseInt(editDepositPercent) > 0
+                                        ? `Customer must pay ${editDepositPercent}% deposit to secure booking`
+                                        : 'Leave at 0 for no deposit (full payment on arrival)'}
+                                </Text>
                             </View>
 
                             {(addMode || selectedProduct) && (
@@ -704,14 +1012,14 @@ export default function ProductCatalogModal({
                                 {saving ? (
                                     <ActivityIndicator color="#FFF" size="small" />
                                 ) : (
-                                    <Text style={styles.saveBtnText}>{addMode ? 'Add Product' : 'Save Changes'}</Text>
+                                    <Text style={styles.saveBtnText}>{addMode ? `Add ${itemLabel}` : 'Save Changes'}</Text>
                                 )}
                             </TouchableOpacity>
 
                             {!addMode && selectedProduct && (
                                 <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDeleteProduct(selectedProduct)}>
                                     <Ionicons name="trash-outline" size={18} color="#FF6B6B" />
-                                    <Text style={styles.deleteBtnText}>Delete Product</Text>
+                                    <Text style={styles.deleteBtnText}>{`Delete ${itemLabel}`}</Text>
                                 </TouchableOpacity>
                             )}
                         </View>
@@ -778,11 +1086,13 @@ export default function ProductCatalogModal({
                             <View style={styles.detailBody}>
                                 <View style={styles.detailNameRow}>
                                     <Text style={styles.detailName}>{selectedProduct.name}</Text>
-                                    <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
-                                        <Text style={styles.stockBadgeText}>
-                                            {selectedProduct.in_stock === false ? 'Out of Stock' : 'In Stock'}
-                                        </Text>
-                                    </View>
+                                    {(selectedProduct.service_category !== 'rental' && selectedProduct.offering_type !== 'rental') && (
+                                        <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
+                                            <Text style={styles.stockBadgeText}>
+                                                {selectedProduct.in_stock === false ? (isServiceBusiness ? 'Unavailable' : 'Out of Stock') : (isServiceBusiness ? 'Available' : 'In Stock')}
+                                            </Text>
+                                        </View>
+                                    )}
                                 </View>
 
                                 <Text style={styles.detailPrice}>{currency} {selectedProduct.price.toLocaleString()}</Text>
@@ -791,12 +1101,18 @@ export default function ProductCatalogModal({
                                     <Ionicons name="pricetag-outline" size={14} color="#8899AA" />
                                     <Text style={styles.detailCategory}>{selectedProduct.category || 'Other'}</Text>
 
-                                    {selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
+                                    {!isServiceBusiness && selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
                                         <View style={styles.detailStockInfo}>
                                             <Ionicons name="cube-outline" size={14} color="#8899AA" style={{ marginLeft: 12 }} />
                                             <Text style={styles.detailCategory}>Stock: {selectedProduct.stock_quantity}</Text>
                                         </View>
                                     )}
+                                    {selectedProduct.duration ? (
+                                        <View style={styles.detailStockInfo}>
+                                            <Ionicons name="time-outline" size={14} color="#8899AA" style={{ marginLeft: 12 }} />
+                                            <Text style={styles.detailCategory}>{selectedProduct.duration} min</Text>
+                                        </View>
+                                    ) : null}
                                 </View>
 
                                 {selectedProduct.description ? (
@@ -806,8 +1122,92 @@ export default function ProductCatalogModal({
                                     </View>
                                 ) : null}
 
+                                {/* Per-listing Date Availability Calendar (rental only) */}
+                                {(businessType === 'rental' || selectedProduct.service_category === 'rental') && (
+                                    <View style={{ marginTop: 16, padding: 14, backgroundColor: '#0F1E35', borderRadius: 12, borderWidth: 1, borderColor: '#1A2942' }}>
+                                        <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14, marginBottom: 4 }}>Listing Availability</Text>
+                                        <Text style={{ color: '#64748B', fontSize: 12, marginBottom: 12 }}>
+                                            Tap dates to mark them as <Text style={{ color: '#EF4444' }}>unavailable</Text> for this listing only.
+                                        </Text>
+                                        {/* Month nav */}
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                            <TouchableOpacity onPress={() => setListingCalMonth(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))} style={{ padding: 4 }}>
+                                                <Ionicons name="chevron-back" size={18} color="#25D366" />
+                                            </TouchableOpacity>
+                                            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>
+                                                {listingCalMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
+                                            </Text>
+                                            <TouchableOpacity onPress={() => setListingCalMonth(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))} style={{ padding: 4 }}>
+                                                <Ionicons name="chevron-forward" size={18} color="#25D366" />
+                                            </TouchableOpacity>
+                                        </View>
+                                        {/* Day headers */}
+                                        <View style={{ flexDirection: 'row', marginBottom: 3 }}>
+                                            {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+                                                <Text key={d} style={{ flex: 1, textAlign: 'center', color: '#64748B', fontSize: 10, fontWeight: '700' }}>{d}</Text>
+                                            ))}
+                                        </View>
+                                        {/* Calendar grid */}
+                                        <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                                            {getListingCalDays(listingCalMonth).map((dateStr, i) => {
+                                                if (!dateStr) return <View key={`e-${i}`} style={{ width: '14.28%', aspectRatio: 1 }} />;
+                                                const todayStr = new Date().toISOString().slice(0, 10);
+                                                const isPast = dateStr < todayStr;
+                                                const isBlocked = listingBlockedDates.includes(dateStr);
+                                                const dayNum = parseInt(dateStr.split('-')[2]);
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={dateStr}
+                                                        style={{
+                                                            width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center',
+                                                            borderRadius: 5,
+                                                            backgroundColor: isBlocked ? '#EF444422' : 'transparent',
+                                                            opacity: isPast ? 0.3 : 1,
+                                                        }}
+                                                        onPress={() => !isPast && setListingBlockedDates(prev =>
+                                                            prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr]
+                                                        )}
+                                                        disabled={isPast}
+                                                    >
+                                                        <Text style={{ fontSize: 12, fontWeight: '600', color: isBlocked ? '#EF4444' : dateStr === todayStr ? '#25D366' : '#FFFFFF' }}>
+                                                            {dayNum}
+                                                        </Text>
+                                                        {isBlocked && <View style={{ width: 3, height: 3, borderRadius: 2, backgroundColor: '#EF4444', marginTop: 1 }} />}
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                        {/* Legend + count */}
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 12 }}>
+                                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                                <View style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: '#EF444422', borderWidth: 1, borderColor: '#EF4444' }} />
+                                                <Text style={{ color: '#64748B', fontSize: 11 }}>Blocked</Text>
+                                            </View>
+                                            {listingBlockedDates.length > 0 && (
+                                                <>
+                                                    <Text style={{ color: '#64748B', fontSize: 11 }}>{listingBlockedDates.length} date{listingBlockedDates.length !== 1 ? 's' : ''} blocked</Text>
+                                                    <TouchableOpacity onPress={() => setListingBlockedDates([])} style={{ marginLeft: 'auto' }}>
+                                                        <Text style={{ color: '#64748B', fontSize: 11, textDecorationLine: 'underline' }}>Clear all</Text>
+                                                    </TouchableOpacity>
+                                                </>
+                                            )}
+                                        </View>
+                                        <TouchableOpacity
+                                            style={{ marginTop: 12, backgroundColor: '#25D366', borderRadius: 8, paddingVertical: 10, alignItems: 'center', opacity: savingListingAvail ? 0.6 : 1 }}
+                                            onPress={() => saveListingAvailability(selectedProduct.id)}
+                                            disabled={savingListingAvail}
+                                        >
+                                            {savingListingAvail
+                                                ? <ActivityIndicator size="small" color="#FFF" />
+                                                : <Text style={{ color: '#FFF', fontWeight: '600', fontSize: 13 }}>Save Availability</Text>
+                                            }
+                                        </TouchableOpacity>
+                                    </View>
+                                )}
+
                                 {/* Action Buttons */}
                                 <View style={styles.actionButtons}>
+                                    {!isServiceBusiness && (
                                     <TouchableOpacity
                                         style={styles.actionBtn}
                                         onPress={() => handleToggleStock(selectedProduct)}
@@ -821,13 +1221,14 @@ export default function ProductCatalogModal({
                                             {selectedProduct.in_stock === false ? 'Mark In Stock' : 'Mark Out of Stock'}
                                         </Text>
                                     </TouchableOpacity>
+                                    )}
 
                                     <TouchableOpacity
                                         style={styles.actionBtn}
                                         onPress={() => startEdit(selectedProduct)}
                                     >
                                         <Ionicons name="create-outline" size={22} color="#4A90D9" />
-                                        <Text style={styles.actionBtnText}>Edit Product</Text>
+                                        <Text style={styles.actionBtnText}>{`Edit ${itemLabel}`}</Text>
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
@@ -856,7 +1257,7 @@ export default function ProductCatalogModal({
                     <TouchableOpacity onPress={onClose}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitle}>Product Catalog</Text>
+                    <Text style={styles.headerTitle}>{`${catalogLabel} Catalog`}</Text>
                     <TouchableOpacity onPress={startAddProduct}>
                         <Ionicons name="add-circle-outline" size={26} color="#25D366" />
                     </TouchableOpacity>
@@ -950,7 +1351,7 @@ export default function ProductCatalogModal({
                             <Ionicons name="storefront-outline" size={64} color="#25D366" />
                         </View>
                         <Text style={styles.emptyText}>Your catalog is empty</Text>
-                        <Text style={styles.emptySubtext}>Add products to share with customers and let AI recommend them automatically</Text>
+                        <Text style={styles.emptySubtext}>{`Add ${catalogLabel.toLowerCase()} to share with customers and let AI recommend them automatically`}</Text>
                         <View style={styles.emptyActionRow}>
                             <TouchableOpacity style={styles.emptyUploadBtn} onPress={() => handleUploadProducts('library')}>
                                 <Ionicons name="images-outline" size={20} color="#FFF" />
@@ -1485,6 +1886,27 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#556',
         marginTop: 2,
+    },
+    typeChip: {
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        borderRadius: 8,
+        backgroundColor: '#0F1E35',
+        borderWidth: 1,
+        borderColor: '#1A2942',
+        marginRight: 6,
+    },
+    typeChipActive: {
+        borderColor: '#25D366',
+        backgroundColor: 'rgba(37,211,102,0.12)',
+    },
+    typeChipText: {
+        color: '#94A3B8',
+        fontSize: 13,
+    },
+    typeChipTextActive: {
+        color: '#25D366',
+        fontWeight: '600',
     },
     uploadImageBtn: {
         flexDirection: 'row',

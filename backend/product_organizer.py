@@ -175,7 +175,7 @@ CONFIDENCE: [High/Medium/Low]"""
         return {
             "name": f"Product {filename[:8]}",
             "category": "Other",
-            "description": "Add product description",
+            "description": "",
             "suggested_price": None,
             "confidence": 0.3
         }

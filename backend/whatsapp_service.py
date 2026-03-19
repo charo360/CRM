@@ -44,6 +44,28 @@ def get_model_credits(ai_model: str) -> float:
     """Return credit cost for a given AI model slug."""
     return MODEL_MESSAGE_CREDITS.get(ai_model or "standard", 1.6)
 
+def _is_valid_contact_phone(phone: str, own_digits: str = "") -> bool:
+    """
+    Central gate — returns True only if `phone` is a real E.164-style number
+    that is safe to store as a contact.
+
+    Rules:
+      - Must contain digits after stripping leading '+'
+      - Length must be 7–15 digits (valid E.164 range)
+      - Must not equal the business owner's own number
+    This rejects @lid garbage numbers (16+ digits), empty strings, and self-contacts.
+    """
+    if not phone:
+        return False
+    digits = phone.lstrip("+").replace(" ", "").replace("-", "")
+    if not digits.isdigit():
+        return False
+    if len(digits) < 7 or len(digits) > 15:
+        return False
+    if own_digits and digits == own_digits:
+        return False
+    return True
+
 # Rate limiting
 DAILY_MESSAGE_LIMIT = 500  # Max messages per user per day (WhatsApp safety)
 BROADCAST_COOLDOWN_HOURS = 24  # Min hours between broadcasts
@@ -924,39 +946,66 @@ class WhatsAppService:
         send_buttons: bool = True
     ) -> Dict:
         """Send product image with caption then interactive buttons using authenticated client"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
+        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         price = product.get('price', 0)
-        currency = product.get('currency', 'KES')
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
-        stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
-        desc = product.get('description', '')
+        _is_rental = (product.get('service_category') == 'rental' or product.get('offering_type') == 'rental')
+        stock_label = "" if _is_rental else ("✅ In Stock" if in_stock else "❌ Out of Stock")
+        desc = product.get('description', '') or ''
+        if desc.strip().lower() == 'add product description':
+            desc = ''
 
-        caption = f"🌟 *{product['name']}*\n💰 {price_str}\n{stock_label}"
-        if desc:
+        caption = f"🌟 *{product['name']}*\n💰 {price_str}" + (f"\n{stock_label}" if stock_label else "")
+        if desc.strip():
             caption += f"\n\n{desc}"
 
-        # Get image URL
+        # Collect ALL images for this product (deduplicated)
         images = product.get('images', [])
         image_url = product.get('image_url')
-        media_url = images[0] if images else image_url
+        all_imgs: list = []
+        if image_url:
+            all_imgs.append(image_url)
+        for _img in images:
+            if _img and _img not in all_imgs:
+                all_imgs.append(_img)
+        from agents.tools import normalize_url as _norm_url
+        all_imgs = [_norm_url(u) for u in all_imgs if u]
 
         result = None
         async with httpx.AsyncClient(timeout=30) as client:
-            # Step 1: send image with caption (or text if no image)
-            if media_url:
+            if all_imgs:
+                # Send extra images first (no caption) so the captioned one arrives last
+                for _extra in all_imgs[1:]:
+                    try:
+                        await client.post(
+                            f"{self.base_url}/message/sendMedia/{instance_name}",
+                            json={
+                                "number": clean_to,
+                                "mediatype": "image",
+                                "media": _extra,
+                                "caption": "",
+                            },
+                            headers=self._headers(),
+                        )
+                        await asyncio.sleep(0.4)
+                    except Exception as _ie:
+                        logger.warning(f"Extra image send failed: {_ie}")
+
+                # Main image with caption
                 resp = await client.post(
                     f"{self.base_url}/message/sendMedia/{instance_name}",
                     json={
                         "number": clean_to,
                         "mediatype": "image",
-                        "media": media_url,
+                        "media": all_imgs[0],
                         "caption": caption,
                     },
                     headers=self._headers(),
@@ -1012,11 +1061,12 @@ class WhatsAppService:
         page_num: int = 1
     ) -> Dict:
         """Send multiple products as a numbered list (max 8 per page). If has_more, option 9 = next page."""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
+        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         # Show max 8 products as options 1-8
@@ -1024,10 +1074,10 @@ class WhatsAppService:
         lines = [f"🛍️ *{title}{page_label}*\n"]
         for i, p in enumerate(products[:8], 1):
             price = p.get('price', 0)
-            currency = p.get('currency', '')
-            stock = "✅" if p.get('in_stock', True) else "❌"
+            _p_is_rental = (p.get('service_category') == 'rental' or p.get('offering_type') == 'rental')
+            stock = "" if _p_is_rental else ("✅" if p.get('in_stock', True) else "❌")
             price_str = f"{currency} {price:,.0f}" if price else "POA"
-            lines.append(f"{i}\ufe0f\u20e3  *{p['name']}* — {price_str} {stock}")
+            lines.append(f"{i}️⃣  *{p['name']}* — {price_str}" + (f" {stock}" if stock else ""))
         if has_more:
             lines.append(f"9\ufe0f\u20e3  ➡️ *See more products*")
         lines.append("\n_Reply with a number to select_")
@@ -1053,15 +1103,15 @@ class WhatsAppService:
         include_share: bool = True
     ) -> Dict:
         """Send a single product with interactive buttons (no image)"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
+        currency = user.get("settings", {}).get("currency", "USD")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         price = product.get('price', 0)
-        currency = product.get('currency', 'KES')
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
         product_id = str(product.get('_id', product.get('id', '')))
@@ -1099,19 +1149,20 @@ class WhatsAppService:
             else:
                 raise Exception(f"sendPoll error: {resp.status_code} {resp.text[:200]}")
 
-    def format_product_message(self, product: Dict[str, Any]) -> str:
+    def format_product_message(self, product: Dict[str, Any], currency: str = 'USD') -> str:
         """Format a product into a rich text message"""
         price = product.get('price', 0)
-        currency = product.get('currency', 'KES')
         price_str = f"{currency} {price:,.0f}" if price else "Price on request"
         in_stock = product.get('in_stock', True)
-        stock_label = "✅ In Stock" if in_stock else "❌ Out of Stock"
+        _is_rental = (product.get('service_category') == 'rental' or product.get('offering_type') == 'rental')
+        stock_label = "" if _is_rental else ("✅ In Stock" if in_stock else "❌ Out of Stock")
         parts = [
             f"🛍️ *{product['name'].upper()}*",
             "",
             f"💰 *Price:* {price_str}",
-            stock_label,
         ]
+        if stock_label:
+            parts.append(stock_label)
         if product.get('description'):
             parts.extend(["", "📝 *Description:*", product['description']])
         return "\n".join(parts)
@@ -1276,10 +1327,16 @@ class WhatsAppService:
         if "@g.us" in remote_jid:
             return
 
+        # Skip @lid and other non-standard JIDs (not real phone numbers)
+        if "@s.whatsapp.net" not in remote_jid:
+            return
+
         # Convert JID to phone number (remove @s.whatsapp.net)
-        contact_number = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
-        if contact_number and not contact_number.startswith("+"):
-            contact_number = f"+{contact_number}"
+        _raw_contact = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
+        contact_number = f"+{_raw_contact}" if _raw_contact and not _raw_contact.startswith("+") else _raw_contact
+        own_digits = (user.get("phone_number") or "").lstrip("+").replace(" ", "").replace("-", "")
+        if not _is_valid_contact_phone(contact_number, own_digits):
+            return
 
         # Get message content
         message_data = msg.get("message", {})
@@ -1750,13 +1807,13 @@ class WhatsAppService:
                     jid = contact.get("remoteJid", "")
                     if not jid or "@g.us" in jid or "status@" in jid or "0@s.whatsapp.net" == jid:
                         continue  # Skip groups, status broadcasts, system contacts
+                    if "@s.whatsapp.net" not in jid:
+                        continue  # Skip @lid and other non-standard JIDs (not real phone numbers)
                     phone = jid.split("@")[0] if "@" in jid else jid
-                    if not phone or not phone.isdigit():
+                    phone_with_plus = f"+{phone}" if not phone.startswith("+") else phone
+                    if not _is_valid_contact_phone(phone_with_plus, own_number):
                         continue
-                    # Skip own number
-                    if phone == own_number:
-                        continue
-                    phone = f"+{phone}"
+                    phone = phone_with_plus
 
                     raw_name = (
                         contact.get("pushName")
@@ -1867,13 +1924,13 @@ class WhatsAppService:
                     if not chat_jid or "@g.us" in chat_jid or "status@" in chat_jid:
                         continue  # Skip groups and status broadcasts
 
+                    if "@s.whatsapp.net" not in chat_jid:
+                        continue  # Skip @lid and other non-standard JIDs (not real phone numbers)
                     phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
-                    if not phone or not phone.isdigit():
+                    phone_with_plus = f"+{phone}" if not phone.startswith("+") else phone
+                    if not _is_valid_contact_phone(phone_with_plus, own_number):
                         continue
-                    # Skip own number
-                    if phone == own_number:
-                        continue
-                    phone = f"+{phone}"
+                    phone = phone_with_plus
 
                     # Find or create customer record
                     customer = await self.db.customers.find_one({

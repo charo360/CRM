@@ -30,7 +30,7 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
             "customer_id": str(customer_id)
         })
         if doc:
-            # Check if state is stale — reset if last update > 24h ago
+            # 13.1: Check if state is stale — but do NOT reset if complaint is unresolved or pending action exists
             updated_at = doc.get("updated_at")
             if updated_at:
                 if isinstance(updated_at, datetime):
@@ -38,11 +38,24 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                         updated_at = updated_at.replace(tzinfo=timezone.utc)
                     age_hours = (datetime.now(timezone.utc) - updated_at).total_seconds() / 3600.0
                     if age_hours > STALE_HOURS:
-                        logger.info(
-                            f"[ConversationState] Resetting stale state for customer {customer_id} "
-                            f"(last update {age_hours:.1f}h ago)"
-                        )
-                        return _default_state()
+                        current_state = doc.get("state", "new")
+                        has_unresolved_complaint = doc.get("complaint_count", 0) > 0 and current_state not in ("resolved", "new")
+                        has_pending_action = any(doc.get(k) for k in (
+                            "pending_order_list", "pending_order_action",
+                            "pending_booking_list", "pending_booking_action",
+                            "pending_update_step",
+                        ))
+                        if has_unresolved_complaint or has_pending_action:
+                            logger.info(
+                                f"[ConversationState] Stale ({age_hours:.1f}h) but preserving: "
+                                f"complaint={has_unresolved_complaint} pending={has_pending_action}"
+                            )
+                        else:
+                            logger.info(
+                                f"[ConversationState] Resetting stale state for customer {customer_id} "
+                                f"(last update {age_hours:.1f}h ago)"
+                            )
+                            return _default_state()
 
             return {
                 "state": doc.get("state", "new"),
@@ -52,7 +65,25 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                 "pending_question": doc.get("pending_question"),
                 "complaint_count": doc.get("complaint_count", 0),
                 "last_intent": doc.get("last_intent"),
+                "pending_order_list": doc.get("pending_order_list"),
+                "pending_order_action": doc.get("pending_order_action"),
+                "pending_update_step": doc.get("pending_update_step"),
+                "pending_update_item_idx": doc.get("pending_update_item_idx"),
+                "pending_booking_list": doc.get("pending_booking_list"),
+                "pending_booking_action": doc.get("pending_booking_action"),
                 "updated_at": doc.get("updated_at"),
+                # 13.2: Enriched customer profile fields
+                "preferred_language": doc.get("preferred_language"),
+                "price_sensitivity": doc.get("price_sensitivity"),   # low|medium|high
+                "sentiment_history": doc.get("sentiment_history", []),  # last N sentiments
+                "lifetime_value": doc.get("lifetime_value", 0.0),
+                "preferred_products": doc.get("preferred_products", []),
+                "interaction_count": doc.get("interaction_count", 0),
+                "last_purchase_date": doc.get("last_purchase_date"),
+                "products_viewed": doc.get("products_viewed", []),  # accumulate across sessions
+                "total_orders": doc.get("total_orders", 0),
+                "last_complaint_resolved": doc.get("last_complaint_resolved"),  # True/False
+                "personality": doc.get("personality"),  # "direct"|"chatty"|"formal" — detected over time
             }
     except Exception as e:
         logger.error(f"[ConversationState] load error: {e}")
@@ -131,5 +162,29 @@ def _default_state() -> Dict[str, Any]:
         "pending_question": None,
         "complaint_count": 0,
         "last_intent": None,
+        "pending_order_list": None,
+        "pending_order_action": None,
+        "pending_update_step": None,
+        "pending_update_item_idx": None,
+        "pending_booking_list": None,
+        "pending_booking_action": None,
         "updated_at": None,
+        # 13.2: Enriched customer profile fields
+        "preferred_language": None,
+        "price_sensitivity": None,
+        "sentiment_history": [],
+        "lifetime_value": 0.0,
+        "preferred_products": [],
+        "interaction_count": 0,
+        "last_purchase_date": None,
+        "products_viewed": [],
+        "total_orders": 0,
+        "last_complaint_resolved": None,
+        "personality": None,
+        # 17: Menu state — tracks active numbered menus waiting for customer selection
+        "active_menu": False,
+        "menu_type": None,           # "product_selection" | "service_selection" | "booking_confirm"
+        "menu_items": {},            # {"1": {"name": ..., "price": ..., "type": ...}, ...}
+        "waiting_for_selection": False,
+        "menu_sent_at": None,
     }
