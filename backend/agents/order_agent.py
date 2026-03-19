@@ -497,11 +497,36 @@ class OrderAgent:
             if pick:
                 choice = int(pick.group(1))
                 if choice == 1:
-                    await save_state(self.db, user_id, customer_id, {"pending_update_step": "add_item_await"})
-                    return {"handled": True, "escalate": False, "messages": [{"text": (
-                        f"Please type the *item name and quantity* to add to order *#{order_num}*.\n"
-                        f"Example: _Blue Shirt 2_"
-                    )}]}
+                    # Fetch product catalog and show numbered list
+                    try:
+                        _biz_id = user_id  # OrderAgent already uses correct user_id
+                        products = await self.db.products.find({
+                            "user_id": _biz_id,
+                            "in_stock": {"$ne": False},
+                        }).to_list(50)
+                        if not products:
+                            await _clear()
+                            return {"handled": True, "escalate": False, "messages": [{"text": (
+                                "No products available to add. Please contact us for help."
+                            )}]}
+                        # Build numbered catalog
+                        lines = [f"Which product would you like to add to order *#{order_num}*?\n"]
+                        for i, p in enumerate(products[:20], 1):
+                            price_str = f"{currency} {p.get('price', 0):,.0f}" if p.get('price') else "Contact for price"
+                            lines.append(f"*{i}.* {p['name']} — {price_str}")
+                        lines.append("\nReply with the product number (e.g. *1*).")
+                        # Save product list in state
+                        await save_state(self.db, user_id, customer_id, {
+                            "pending_update_step": "add_item_select_product",
+                            "pending_update_products": [{"id": str(p["_id"]), "name": p["name"], "price": p.get("price", 0)} for p in products[:20]],
+                        })
+                        return {"handled": True, "escalate": False, "messages": [{"text": "\n".join(lines)}]}
+                    except Exception as e:
+                        logger.error(f"[OrderAgent] product fetch error: {e}")
+                        await _clear()
+                        return {"handled": True, "escalate": False, "messages": [{"text": (
+                            "Something went wrong loading products. Please try again or contact us."
+                        )}]}
                 elif choice == 2:
                     if not items:
                         await _clear()
@@ -532,48 +557,61 @@ class OrderAgent:
                 "Please reply with *1* (Add Item), *2* (Remove Item), or *3* (Change Quantity)."
             )}]}
 
-        elif step == "add_item_await":
-            stripped = message.strip()
-            qty_match = _re.search(r'\b(\d+)\s*$', stripped)
+        elif step == "add_item_select_product":
+            # Customer picked a product number from the catalog
+            pick = PICK_NUMBER_RE.match(message.strip())
+            if pick:
+                idx = int(pick.group(1)) - 1
+                products_list = conv_state.get("pending_update_products", [])
+                if 0 <= idx < len(products_list):
+                    selected = products_list[idx]
+                    # Ask for quantity
+                    await save_state(self.db, user_id, customer_id, {
+                        "pending_update_step": "add_item_await_qty",
+                        "pending_update_selected_product": selected,
+                    })
+                    return {"handled": True, "escalate": False, "messages": [{"text": (
+                        f"How many *{selected['name']}* would you like to add?\n"
+                        f"Reply with a number (e.g. *2*)."
+                    )}]}
+            return {"handled": True, "escalate": False, "messages": [{"text": (
+                "Please reply with the product number."
+            )}]}
+
+        elif step == "add_item_await_qty":
+            # Customer entered quantity
+            qty_match = _re.match(r'^\s*(\d+)\s*$', message.strip())
             if qty_match:
                 qty = int(qty_match.group(1))
-                item_name = stripped[:qty_match.start()].strip().rstrip(',')
-            else:
-                qty = 1
-                item_name = stripped
-            if not item_name:
-                return {"handled": True, "escalate": False, "messages": [{"text": (
-                    "Please send the item name and quantity. Example: _Blue Shirt 2_"
-                )}]}
-            unit_price = 0
-            try:
-                product_row = await self.db.products.find_one({
-                    "user_id": user_id,
-                    "name": {"$regex": f"^{_re.escape(item_name)}$", "$options": "i"}
-                })
-                if product_row:
-                    unit_price = product_row.get("price", 0)
-            except Exception:
-                pass
-            new_item = {"product_name": item_name, "quantity": qty, "price": unit_price * qty}
-            new_items = items + [new_item]
-            new_total = sum(it.get("price", 0) for it in new_items)
-            await self.db.orders.update_one(
-                {"_id": order["_id"]},
-                {"$set": {"items": new_items, "total_amount": new_total, "total": new_total}}
-            )
-            await _clear()
-            return {
-                "handled": True, "escalate": False,
-                "messages": [{"text": (
-                    f"✅ Added *{item_name} × {qty}* to order *#{order_num}*.\n\n"
-                    f"Updated total: {currency} {new_total:,.0f} 🎉"
-                )}],
-                "owner_notification": {
-                    "title": f"📦 Order #{order_num} Updated",
-                    "body": f"{customer_name} added {item_name} × {qty}",
-                },
-            }
+                if qty <= 0:
+                    return {"handled": True, "escalate": False, "messages": [{"text": (
+                        "Quantity must be at least 1. Please try again."
+                    )}]}
+                selected = conv_state.get("pending_update_selected_product", {})
+                item_name = selected.get("name", "Item")
+                unit_price = selected.get("price", 0)
+                new_item = {"product_name": item_name, "quantity": qty, "price": unit_price * qty}
+                new_items = items + [new_item]
+                new_total = sum(it.get("price", 0) for it in new_items)
+                await self.db.orders.update_one(
+                    {"_id": order["_id"]},
+                    {"$set": {"items": new_items, "total_amount": new_total, "total": new_total}}
+                )
+                await _clear()
+                return {
+                    "handled": True, "escalate": False,
+                    "messages": [{"text": (
+                        f"✅ Added *{item_name} × {qty}* to order *#{order_num}*.\n\n"
+                        f"Updated total: {currency} {new_total:,.0f} 🎉"
+                    )}],
+                    "owner_notification": {
+                        "title": f"📦 Order #{order_num} Updated",
+                        "body": f"{customer_name} added {item_name} × {qty}",
+                    },
+                }
+            return {"handled": True, "escalate": False, "messages": [{"text": (
+                "Please reply with the quantity (number only, e.g. *2*)."
+            )}]}
 
         elif step == "remove_item_await":
             pick = PICK_NUMBER_RE.match(message.strip())
