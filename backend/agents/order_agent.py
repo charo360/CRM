@@ -518,6 +518,7 @@ class OrderAgent:
                         # Save product list in state
                         await save_state(self.db, user_id, customer_id, {
                             "pending_update_step": "add_item_select_product",
+                            "pending_order_action": str(order["_id"]),
                             "pending_update_products": [{"id": str(p["_id"]), "name": p["name"], "price": p.get("price", 0)} for p in products[:20]],
                         })
                         return {"handled": True, "escalate": False, "messages": [{"text": "\n".join(lines)}]}
@@ -568,6 +569,7 @@ class OrderAgent:
                     # Ask for quantity
                     await save_state(self.db, user_id, customer_id, {
                         "pending_update_step": "add_item_await_qty",
+                        "pending_order_action": pending_action_order_id,
                         "pending_update_selected_product": selected,
                     })
                     return {"handled": True, "escalate": False, "messages": [{"text": (
