@@ -243,14 +243,22 @@ class OrderAgent:
 
         # 1-2 active orders — show directly with actions
         if active_orders and len(active_orders) <= 2:
-            blocks = []
-            for o in active_orders:
-                blocks.append(_format_order_block(o, currency) + "\n" + self._action_hint(o))
-            intro = f"Hi {customer_name}! Here are your active order(s):\n\n"
-            reply = intro + "\n\n---\n\n".join(blocks)
-            if len(orders) > len(active_orders):
-                reply += "\n\nFor older orders just send the order number (e.g. *ORD-4B9D32*)."
-            return {"handled": True, "messages": [{"text": reply}], "escalate": False}
+            if len(active_orders) == 1:
+                # Single active order — show with action hints and save state for 1=Cancel / 2=Update
+                return await self._interact_with_order(
+                    active_orders[0], customer_name, currency, language, user_id, customer_id
+                )
+            else:
+                # 2 active orders — show both without action hints to avoid ambiguity
+                blocks = []
+                for o in active_orders:
+                    blocks.append(_format_order_block(o, currency))
+                intro = f"Hi {customer_name}! Here are your active orders:\n\n"
+                reply = intro + "\n\n---\n\n".join(blocks)
+                reply += "\n\nSend the order number (e.g. *ORD-4B9D32*) to view details or make changes."
+                if len(orders) > len(active_orders):
+                    reply += " For older orders, send their order number too."
+                return {"handled": True, "messages": [{"text": reply}], "escalate": False}
 
         # Many orders — send a numbered pick list
         return await self._send_order_list(
