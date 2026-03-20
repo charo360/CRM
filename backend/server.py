@@ -2172,7 +2172,6 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
 DEFAULT_PRODUCT_ACTIONS = [
     {"label": "Order Now",       "action_type": "order",       "index": 1, "ai_prompt": ""},
     {"label": "Add to Cart",     "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
-    {"label": "Ask a Question",  "action_type": "ask",         "index": 3, "ai_prompt": ""},
 ]
 
 # All action types supported + what they do

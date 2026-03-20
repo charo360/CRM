@@ -1026,7 +1026,6 @@ class WhatsAppService:
                 _default_actions = [
                     {"label": "Order Now",      "action_type": "order",       "index": 1},
                     {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
-                    {"label": "Ask a Question", "action_type": "ask",         "index": 3},
                 ]
                 _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
                 # Always add "Back to Catalog" as the last option
