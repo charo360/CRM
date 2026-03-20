@@ -211,6 +211,23 @@ class OrderAgent:
                     "escalate": False,
                 }
 
+        # ── Check for unhandled override/fallback intent ────────
+        # If the user is in a pending state but gave an invalid reply (e.g. "Thank you" instead of "1"),
+        # and their intent is not related to orders, we should clear the state and pass to another agent.
+        from agents.intent_analyzer import ORDER_INTENTS
+        if intent not in ORDER_INTENTS:
+            if conv_state.get("pending_order_action") or conv_state.get("pending_order_list") or conv_state.get("pending_update_step"):
+                from agents.conversation_state import save_state
+                await save_state(self.db, user_id, customer_id, {
+                    "pending_order_list": None,
+                    "pending_order_action": None,
+                    "pending_update_step": None,
+                    "pending_update_item_idx": None,
+                    "pending_update_products": None,
+                    "pending_update_selected_product": None,
+                })
+            return {"handled": False}
+
         # ── Fetch recent orders for general status queries ────────────────────
         orders = await self._fetch_customer_orders(user_id, customer_id, limit=10)
         if orders is None:
