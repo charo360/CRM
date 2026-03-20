@@ -498,6 +498,8 @@ class OrderAgent:
                 "pending_update_step": None,
                 "pending_order_action": None,
                 "pending_update_item_idx": None,
+                "pending_update_products": None,
+                "pending_update_selected_product": None,
             })
 
         if step == "update_menu":
