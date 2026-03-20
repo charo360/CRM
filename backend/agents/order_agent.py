@@ -547,7 +547,10 @@ class OrderAgent:
                     for i, it in enumerate(items, 1):
                         lines.append(f"*{i}.* {it.get('product_name','Item')} × {it.get('quantity',1)} — {currency} {it.get('price',0):,.0f}")
                     lines.append("\nReply with the item number (e.g. *1*).")
-                    await save_state(self.db, user_id, customer_id, {"pending_update_step": "remove_item_await"})
+                    await save_state(self.db, user_id, customer_id, {
+                        "pending_update_step": "remove_item_await",
+                        "pending_order_action": str(order["_id"]),
+                    })
                     return {"handled": True, "escalate": False, "messages": [{"text": "\n".join(lines)}]}
                 elif choice == 3:
                     if not items:
@@ -560,7 +563,10 @@ class OrderAgent:
                     for i, it in enumerate(items, 1):
                         lines.append(f"*{i}.* {it.get('product_name','Item')} × {it.get('quantity',1)}")
                     lines.append("\nReply with the item number (e.g. *1*).")
-                    await save_state(self.db, user_id, customer_id, {"pending_update_step": "change_qty_item"})
+                    await save_state(self.db, user_id, customer_id, {
+                        "pending_update_step": "change_qty_item",
+                        "pending_order_action": str(order["_id"]),
+                    })
                     return {"handled": True, "escalate": False, "messages": [{"text": "\n".join(lines)}]}
             return {"handled": True, "escalate": False, "messages": [{"text": (
                 "Please reply with *1* (Add Item), *2* (Remove Item), or *3* (Change Quantity)."
@@ -581,7 +587,7 @@ class OrderAgent:
                     # Ask for quantity
                     await save_state(self.db, user_id, customer_id, {
                         "pending_update_step": "add_item_await_qty",
-                        "pending_order_action": pending_action_order_id,
+                        "pending_order_action": str(order["_id"]),
                         "pending_update_selected_product": selected,
                     })
                     return {"handled": True, "escalate": False, "messages": [{"text": (
@@ -657,7 +663,10 @@ class OrderAgent:
                         {"_id": order["_id"]},
                         {"$set": {"items": new_items, "total_amount": new_total, "total": new_total}}
                     )
-                    await _clear()
+                    await save_state(self.db, user_id, customer_id, {
+                        "pending_update_step": None,
+                        "pending_order_action": str(order["_id"]),
+                    })
                     removed_name = removed.get("product_name", "Item")
                     return {
                         "handled": True, "escalate": False,
@@ -683,6 +692,7 @@ class OrderAgent:
                     cur_qty = items[idx].get("quantity", 1)
                     await save_state(self.db, user_id, customer_id, {
                         "pending_update_step": "change_qty_value",
+                        "pending_order_action": str(order["_id"]),
                         "pending_update_item_idx": idx,
                     })
                     return {"handled": True, "escalate": False, "messages": [{"text": (
