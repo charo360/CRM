@@ -228,6 +228,17 @@ class OrderAgent:
                 })
             return {"handled": False}
 
+        # Catch simple acknowledgements that might have been misclassified as ORDER_STATUS due to context
+        import string
+        clean_msg = message.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+        if clean_msg in {
+            "ok", "okay", "k", "kk", "thanks", "thank you", "thx", "tysm", "thank you so much", "thanks a lot",
+            "cool", "perfect", "awesome", "great", "good", "done", "sweet", "sounds good",
+            "yes", "yep", "yeah", "no", "nope", "nah"
+        }:
+            # Let it fall through to ChatAgent
+            return {"handled": False}
+
         # ── Fetch recent orders for general status queries ────────────────────
         orders = await self._fetch_customer_orders(user_id, customer_id, limit=10)
         if orders is None:
@@ -682,10 +693,7 @@ class OrderAgent:
                         {"_id": order["_id"]},
                         {"$set": {"items": new_items, "total_amount": new_total, "total": new_total}}
                     )
-                    await save_state(self.db, user_id, customer_id, {
-                        "pending_update_step": None,
-                        "pending_order_action": str(order["_id"]),
-                    })
+                    await _clear()
                     removed_name = removed.get("product_name", "Item")
                     return {
                         "handled": True, "escalate": False,
