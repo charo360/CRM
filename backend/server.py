@@ -2201,11 +2201,11 @@ async def update_product_actions(request: Request, user = Depends(get_current_us
     validated = []
     for i, a in enumerate(raw[:3], 1):
         lbl = str(a.get("label", "")).strip()[:30]
-        atype = str(a.get("action_type", "ask")).strip()
+        atype = str(a.get("action_type", "order")).strip()
         if not lbl:
             continue
         if atype not in PRODUCT_ACTION_TYPES:
-            atype = "ask"
+            atype = "order"
         validated.append({
             "label":       lbl,
             "action_type": atype,

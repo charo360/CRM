@@ -194,7 +194,7 @@ class Router:
                 else:
                     _reply = (
                         f"Great choice! *{_name}* — {_currency} {_price:,.0f}\n\n"
-                        f"Would you like to:\n1️⃣  Order Now\n2️⃣  Ask a question\n\n_Reply with 1 or 2_"
+                        f"Would you like to:\n1️⃣  Order Now\n2️⃣  Add to Cart\n\n_Reply with 1 or 2_"
                     )
                 return {
                     "handled": True, "escalated": False,
