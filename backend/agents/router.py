@@ -381,6 +381,15 @@ class Router:
 
         # ── 5. Dispatch to agent ───────────────────────────────────────────
         agent_name = route_intent_to_agent(intent, context.get("business_type", ""))
+        
+        # Override agent routing based on active multi-step flows
+        if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
+            logger.info("[Router] Overriding agent to 'order' due to pending order state")
+            agent_name = "order"
+        elif conv_state.get("pending_booking_action") or conv_state.get("pending_booking_list"):
+            logger.info("[Router] Overriding agent to 'booking' due to pending booking state")
+            agent_name = "booking"
+            
         if is_personal:
             agent_name = "chat"
 
