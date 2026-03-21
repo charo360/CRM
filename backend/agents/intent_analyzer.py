@@ -329,7 +329,7 @@ NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est t
 
 ══ CLASSIFICATION RULES ══
 1. Understand INTENT not exact words — "I want to order something else" = CATALOG_REQUEST
-2. Short follow-ups ("ok", "yes", "sure") inherit intent from RECENT THREAD context
+2. Short follow-ups ("ok", "yes", "sure") inherit business intent ONLY if the business explicitly offered a product/action. If the business just asked a casual question, classify as GENERAL_CHAT.
 3. When unsure between two intents, pick the one that requires ACTION
 4. For personal contacts, prefer PERSONAL_CHAT unless clearly business
 5. Confidence < 0.65 on business messages → needs_escalation=true
