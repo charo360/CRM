@@ -3375,13 +3375,15 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["auto_reply"] = update.auto_reply
     if update.is_personal is not None:
         update_data["is_personal"] = update.is_personal
-        # 16.5: Personal contacts have AI silent by default unless owner explicitly enables it
-        if update.is_personal is True and update.ai_enabled is None:
-            update_data["ai_enabled"] = False
+        # User requested AI to continue chatting when personal button is clicked
+        if update.is_personal is True:
+            if update.ai_enabled is None:
+                update_data["ai_enabled"] = True
             update_data["contact_type"] = "KNOWN_PERSONAL"
             update_data["contact_type_source"] = "owner_tagged"
-        elif update.is_personal is False and update.ai_enabled is None:
-            update_data["ai_enabled"] = True
+        elif update.is_personal is False:
+            if update.ai_enabled is None:
+                update_data["ai_enabled"] = True
             update_data["contact_type"] = "KNOWN_CUSTOMER"
             update_data["contact_type_source"] = "owner_tagged"
     if update.ai_enabled is not None:
