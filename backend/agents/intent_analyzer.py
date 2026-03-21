@@ -484,15 +484,13 @@ def route_intent_to_agent(intent: str, business_type: str = "") -> str:
         return "payment"
     
     # Service businesses → BookingAgent for ALL catalog/sales/booking intents
-    # Also route GREETING to booking — at a salon/spa/clinic every "hi" is a booking inquiry
     if is_service_business:
-        if intent in (SALES_INTENTS | BOOKING_INTENTS) or intent == "GREETING":
+        if intent in (SALES_INTENTS | BOOKING_INTENTS):
             return "booking"
     
     # Retail/Shop businesses → SalesAgent for ALL catalog/sales/booking intents
-    # Also route GREETING to sales — first contact at a shop usually wants to see products
     else:
-        if intent in (SALES_INTENTS | BOOKING_INTENTS) or intent == "GREETING":
+        if intent in (SALES_INTENTS | BOOKING_INTENTS):
             return "sales"
     
     return "chat"
