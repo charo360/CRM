@@ -276,20 +276,32 @@ class Router:
                 )
                 return None
             else:
-                # Still unclear
+                # Still unclear or low confidence
+                if msg_count > 3:
+                    # After 3 messages, if they STILL haven't proven to be a business contact, go silent
+                    logger.info(f"[Router] Unknown contact reached message 4 — defaulting to KNOWN_PERSONAL and going silent")
+                    await self._update_contact_state(
+                        str(customer_id) if customer_id else "", user_id,
+                        {"contact_type": "KNOWN_PERSONAL", "contact_type_source": "auto_detected_timeout",
+                         "auto_detected_at_message": msg_count, "message_count": msg_count,
+                         "ai_enabled": False, "is_personal": True}
+                    )
+                    return None
+
                 await self._update_contact_state(
                     str(customer_id) if customer_id else "", user_id,
                     {"message_count": msg_count}
                 )
-                # After 3 messages still unclear → ask one natural clarifying question
-                if msg_count >= 3 and sig_type == "unclear":
-                    logger.info(f"[Router] Unknown contact after 3 msgs — sending clarifying question")
+                
+                # At exactly 3 messages, send one natural clarifying question if unclear
+                if msg_count == 3 and sig_type == "unclear":
+                    logger.info(f"[Router] Unknown contact at 3 msgs — sending clarifying question")
                     return {
                         "handled": True,
                         "escalated": False,
                         "messages": [{"text": "What are you looking for today? 😊"}],
                     }
-                # Within first 3 messages — respond naturally, continue pipeline
+                # Within first 2 messages or if sig_type is personal with low confidence — respond naturally, continue pipeline
         else:
             # Known contact type — just update message count
             await self._update_contact_state(
