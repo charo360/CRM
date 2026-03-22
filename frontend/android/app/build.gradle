@@ -89,6 +89,7 @@ android {
 
     namespace 'com.zilo.reply'
     defaultConfig {
+        missingDimensionStrategy 'store', 'play'
         applicationId 'com.zilo.reply'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
