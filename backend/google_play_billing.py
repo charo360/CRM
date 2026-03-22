@@ -17,7 +17,7 @@ class GooglePlayBilling:
     
     SCOPES = ['https://www.googleapis.com/auth/androidpublisher']
     SERVICE_ACCOUNT_FILE = 'google-service-account.json'
-    PACKAGE_NAME = 'com.charo360.zilo'
+    PACKAGE_NAME = 'com.zilo.reply'
     
     def __init__(self):
         """Initialize Google Play API client"""

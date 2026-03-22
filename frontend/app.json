@@ -15,7 +15,7 @@
       }
     },
     "android": {
-      "package": "com.charo360.zilo",
+      "package": "com.zilo.reply",
       "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
