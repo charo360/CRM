@@ -12,17 +12,17 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as RNIap from 'react-native-iap';
+// import * as RNIap from 'react-native-iap';
 
 // These must match exactly what you create in Google Play Console
-const SUBSCRIPTION_SKUS = [
-  'crm_starter_monthly',
-  'crm_starter_yearly',
-  'crm_standard_monthly',
-  'crm_standard_yearly',
-  'crm_pro_monthly',
-  'crm_pro_yearly',
-];
+// const SUBSCRIPTION_SKUS = [
+//   'crm_starter_monthly',
+//   'crm_starter_yearly',
+//   'crm_standard_monthly',
+//   'crm_standard_yearly',
+//   'crm_pro_monthly',
+//   'crm_pro_yearly',
+// ];
 
 interface Plan {
   id: string;          // 'starter' | 'standard' | 'pro'
@@ -46,10 +46,34 @@ interface SubStatus {
 
 export default function SubscriptionScreen() {
   const router = useRouter();
+  
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+          <Ionicons name="arrow-back" size={24} color="#fff" />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Subscription Plans</Text>
+      </View>
+      
+      <View style={styles.comingSoonContainer}>
+        <Ionicons name="rocket-outline" size={80} color="#25D366" />
+        <Text style={styles.comingSoonTitle}>Coming Soon!</Text>
+        <Text style={styles.comingSoonText}>
+          In-app subscriptions will be available after the app is published to Google Play Store.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/*
+export default function SubscriptionScreenOLD() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState<string | null>(null);
   const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
-  const [iapProducts, setIapProducts] = useState<RNIap.Subscription[]>([]);
+  // const [iapProducts, setIapProducts] = useState<RNIap.Subscription[]>([]);
   const [plans, setPlans] = useState<Plan[]>([]);
 
   useEffect(() => {
@@ -379,6 +403,25 @@ const styles = StyleSheet.create({
     color: '#25D366',
     fontWeight: '600',
     marginTop: 2,
+  },
+  comingSoonContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  comingSoonTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#222',
+    marginTop: 20,
+    marginBottom: 12,
+  },
+  comingSoonText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 24,
   },
   activeBadge: {
     backgroundColor: '#e6f9ef',
