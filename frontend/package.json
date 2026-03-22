@@ -46,7 +46,7 @@
     "react-native": "0.81.5",
     "react-native-dotenv": "^3.4.11",
     "react-native-gesture-handler": "~2.24.0",
-    "react-native-iap": "14.7.17",
+    "react-native-iap": "13.0.4",
     "react-native-keyboard-aware-scroll-view": "^0.9.5",
     "react-native-reanimated": "~3.17.4",
     "react-native-safe-area-context": "5.4.0",
