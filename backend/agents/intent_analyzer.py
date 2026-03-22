@@ -329,7 +329,7 @@ NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est t
 
 ══ CLASSIFICATION RULES ══
 1. Understand INTENT not exact words — "I want to order something else" = CATALOG_REQUEST
-2. Short follow-ups ("ok", "yes", "sure") inherit intent from RECENT THREAD context
+2. Short follow-ups ("ok", "yes", "sure") inherit business intent ONLY if the business explicitly offered a product/action. If the business just asked a casual question, classify as GENERAL_CHAT.
 3. When unsure between two intents, pick the one that requires ACTION
 4. For personal contacts, prefer PERSONAL_CHAT unless clearly business
 5. Confidence < 0.65 on business messages → needs_escalation=true
@@ -484,15 +484,13 @@ def route_intent_to_agent(intent: str, business_type: str = "") -> str:
         return "payment"
     
     # Service businesses → BookingAgent for ALL catalog/sales/booking intents
-    # Also route GREETING to booking — at a salon/spa/clinic every "hi" is a booking inquiry
     if is_service_business:
-        if intent in (SALES_INTENTS | BOOKING_INTENTS) or intent == "GREETING":
+        if intent in (SALES_INTENTS | BOOKING_INTENTS):
             return "booking"
     
     # Retail/Shop businesses → SalesAgent for ALL catalog/sales/booking intents
-    # Also route GREETING to sales — first contact at a shop usually wants to see products
     else:
-        if intent in (SALES_INTENTS | BOOKING_INTENTS) or intent == "GREETING":
+        if intent in (SALES_INTENTS | BOOKING_INTENTS):
             return "sales"
     
     return "chat"

@@ -194,7 +194,7 @@ class Router:
                 else:
                     _reply = (
                         f"Great choice! *{_name}* — {_currency} {_price:,.0f}\n\n"
-                        f"Would you like to:\n1️⃣  Order Now\n2️⃣  Ask a question\n\n_Reply with 1 or 2_"
+                        f"Would you like to:\n1️⃣  Order Now\n2️⃣  Add to Cart\n\n_Reply with 1 or 2_"
                     )
                 return {
                     "handled": True, "escalated": False,
@@ -276,20 +276,32 @@ class Router:
                 )
                 return None
             else:
-                # Still unclear
+                # Still unclear or low confidence
+                if msg_count > 3:
+                    # After 3 messages, if they STILL haven't proven to be a business contact, go silent
+                    logger.info(f"[Router] Unknown contact reached message 4 — defaulting to KNOWN_PERSONAL and going silent")
+                    await self._update_contact_state(
+                        str(customer_id) if customer_id else "", user_id,
+                        {"contact_type": "KNOWN_PERSONAL", "contact_type_source": "auto_detected_timeout",
+                         "auto_detected_at_message": msg_count, "message_count": msg_count,
+                         "ai_enabled": False, "is_personal": True}
+                    )
+                    return None
+
                 await self._update_contact_state(
                     str(customer_id) if customer_id else "", user_id,
                     {"message_count": msg_count}
                 )
-                # After 3 messages still unclear → ask one natural clarifying question
-                if msg_count >= 3 and sig_type == "unclear":
-                    logger.info(f"[Router] Unknown contact after 3 msgs — sending clarifying question")
+                
+                # At exactly 3 messages, send one natural clarifying question if unclear
+                if msg_count == 3 and sig_type == "unclear":
+                    logger.info(f"[Router] Unknown contact at 3 msgs — sending clarifying question")
                     return {
                         "handled": True,
                         "escalated": False,
                         "messages": [{"text": "What are you looking for today? 😊"}],
                     }
-                # Within first 3 messages — respond naturally, continue pipeline
+                # Within first 2 messages or if sig_type is personal with low confidence — respond naturally, continue pipeline
         else:
             # Known contact type — just update message count
             await self._update_contact_state(
@@ -381,6 +393,15 @@ class Router:
 
         # ── 5. Dispatch to agent ───────────────────────────────────────────
         agent_name = route_intent_to_agent(intent, context.get("business_type", ""))
+        
+        # Override agent routing based on active multi-step flows
+        if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
+            logger.info("[Router] Overriding agent to 'order' due to pending order state")
+            agent_name = "order"
+        elif conv_state.get("pending_booking_action") or conv_state.get("pending_booking_list"):
+            logger.info("[Router] Overriding agent to 'booking' due to pending booking state")
+            agent_name = "booking"
+            
         if is_personal:
             agent_name = "chat"
 
