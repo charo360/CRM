@@ -31,7 +31,6 @@ export default {
       favicon: "./assets/images/favicon.png"
     },
     plugins: [
-      "./plugins/withRNIap",
       "expo-router",
       [
         "expo-splash-screen",
