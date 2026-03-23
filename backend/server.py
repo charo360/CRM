@@ -13781,6 +13781,7 @@ async def diag_test_flow(user_phone: str = Query(...)):
 
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
+app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="static")
 
 # Startup event
 @app.on_event("startup")
