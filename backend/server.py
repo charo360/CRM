@@ -13788,6 +13788,18 @@ app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="stat
 async def startup_tasks():
     """Run startup tasks"""
 
+    # ---- P0: Ensure required folders exist ----
+    try:
+        static_dir = ROOT_DIR / "static"
+        static_dir.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Static folder ensured at: {static_dir}")
+        
+        uploads_dir = ROOT_DIR / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Uploads folder ensured at: {uploads_dir}")
+    except Exception as e:
+        logging.error(f"Failed to create folders: {e}")
+
     # ---- P1: Ensure database indexes ----
     try:
         logging.info("Ensuring database indexes...")
