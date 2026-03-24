@@ -23,7 +23,7 @@ export default {
       },
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "adjustResize",
-      permissions: ["android.permission.READ_CONTACTS"]
+      permissions: ["android.permission.READ_CONTACTS", "com.android.vending.BILLING"]
     },
     web: {
       bundler: "metro",
