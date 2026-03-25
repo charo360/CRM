@@ -19,17 +19,8 @@ class BookingAgent(BaseAgent):
         - BOOKING_STATUS    : Customer asks about an existing booking
         - BOOKING_CANCEL    : Customer wants to cancel/reschedule
         """
+        # --- EXTRACT CONTEXT VARIABLES ---
         intent = context.get("intent", "BOOKING_REQUEST")
-
-        # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
-        # Prevents ChatAgent fallback from generating fake booking confirmations
-        if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
-            return await self._handle_customer_chat(
-                message, intent, customer_name, context.get("language", "English"),
-                context.get("business_knowledge", ""), context.get("history", []),
-                context.get("currency", "USD"), context
-            )
-
         language = context.get("language", "English")
         currency = context.get("currency", "USD")
         customer_name = context.get("customer_name", "there")
@@ -41,6 +32,14 @@ class BookingAgent(BaseAgent):
         is_rental = business_type == "rental"  # will also check services below after fetch
         confidence = context.get("confidence", 1.0)
         careful_instruction = context.get("careful_instruction", "")
+
+        # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
+        # Prevents ChatAgent fallback from generating fake booking confirmations
+        if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
+            return await self._handle_customer_chat(
+                message, intent, customer_name, language,
+                business_knowledge, history, currency, context
+            )
 
         # ── Handle pending_booking_action: 1=Cancel / 2=Reschedule pick ──────
         pending_booking_action_id = conv_state.get("pending_booking_action")
