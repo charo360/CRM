@@ -484,14 +484,18 @@ They just sent a casual message or greeting: "{message}"
 
 Business info: {bk}
 
-Think one sentence about how to warmly acknowledge their message, then pivot to asking if they need help with an order or want to see the catalog. Output only the customer-facing message.
+Think one sentence about how to warmly acknowledge their message, then pivot to asking if they need help or want to see the catalog. Output only the customer-facing message.
 
 Rules:
 - Be warm and natural, match their energy.
-- MUST end by gently asking if they want to see the catalog, menu, or place an order.
+- MUST end by gently asking if they want to see the catalog, menu, or browse products.
 - Do NOT push specific products yet, just offer the catalog.
 - Max 2 sentences. WhatsApp tone.
-- Language: {language}"""
+- Language: {language}
+- CRITICAL: NEVER say an order has been placed, confirmed, or is being processed.
+- CRITICAL: NEVER say a booking or appointment has been made or scheduled.
+- CRITICAL: NEVER suggest specific dates, times, or time slots.
+- ONLY invite them to browse — do NOT imply any action has been taken."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
             return {

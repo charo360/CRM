@@ -860,16 +860,28 @@ class BookingAgent(BaseAgent):
             if is_rental:
                 prompt = (
                     f"{intent_hint}"
-                    f"Customer is looking to book a rental/property. Business: {bk}. "
-                    f"Think one sentence about what this customer actually needs, then write 1 warm short line in {language} "
-                    f"welcoming them to browse listings (WhatsApp tone, no bullet points). Output only the customer-facing message."
+                    f"Customer is looking to book a rental/property. "
+                    f"Write 1 warm short line in {language} welcoming them to browse listings "
+                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
+                    f"STRICT RULES — breaking any of these = wrong answer:\n"
+                    f"- NEVER mention or suggest specific dates, days, or times\n"
+                    f"- NEVER state or imply a booking has been made or confirmed\n"
+                    f"- NEVER mention prices or availability\n"
+                    f"- Just a warm welcome line, nothing else"
                 )
             else:
                 prompt = (
                     f"{intent_hint}"
-                    f"Customer wants to book a service. Business: {bk}. "
-                    f"Think one sentence about what this customer actually needs, then write 1 warm short line in {language} "
-                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message."
+                    f"Customer wants to book a service. "
+                    f"Write 1 warm short line in {language} acknowledging their request "
+                    f"and letting them know you'll show them the options "
+                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
+                    f"STRICT RULES — breaking any of these = wrong answer:\n"
+                    f"- NEVER mention or suggest specific dates, days, or times\n"
+                    f"- NEVER state or imply anything is booked, confirmed, or scheduled\n"
+                    f"- NEVER mention prices or opening hours\n"
+                    f"- NEVER reference previous bookings or past conversations\n"
+                    f"- Just a warm 1-line intro, nothing else"
                 )
             intro = await ai._call_llm(prompt, model_pref="standard")
             if intro and len(intro.strip()) < 120:
