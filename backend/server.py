@@ -2144,6 +2144,7 @@ async def get_settings(user = Depends(get_current_user)):
         "booking_settings": s.get("booking_settings", {}),
         "timezone": s.get("timezone", "UTC"),
         "rental_availability": s.get("rental_availability", []),
+        "payment_methods": user.get("payment_methods", s.get("payment_methods", [])),
     }
 
 @api_router.put("/settings")
@@ -2154,7 +2155,7 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
     top_level_fields = {}
     settings_fields = {}
     for k, v in body.items():
-        if k in ("currency", "country_code"):
+        if k in ("currency", "country_code", "payment_methods"):
             top_level_fields[k] = v
         else:
             settings_fields[f"settings.{k}"] = v
@@ -12559,6 +12560,7 @@ async def get_user_settings(user = Depends(get_current_user)):
         "booking_settings": settings.get("booking_settings", {}),
         "timezone": settings.get("timezone", "UTC"),
         "rental_availability": settings.get("rental_availability", []),
+        "payment_methods": user.get("payment_methods", settings.get("payment_methods", [])),
     }
 
 @api_router.put("/settings")
