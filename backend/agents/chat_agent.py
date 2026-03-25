@@ -101,14 +101,17 @@ class ChatAgent(BaseAgent):
             r'\b(i\s+want|i\'d\s+like|can\s+i\s+get|please\s+book|book\s+me)\b.*\b(haircut|massage|service|appointment|session)\b',
             r'\bcan\s+you\s+confirm\b',
             r'\bconfirm\s+that\s+for\s+me\b',
+            r'\b(reschedule|rebook|move\s+my\s+booking|change\s+my\s+booking|cancel\s+my\s+booking|cancel\s+my\s+appointment)\b',
+            r'\b(wanna|want\s+to|need\s+to|i\'d\s+like\s+to)\s+(reschedule|cancel|rebook)\b',
         ]
         
         # Scheduling guardrail: ChatAgent should NEVER handle scheduling back-and-forths.
         # If the customer mentions a day of the week or a time, let the BookingAgent handle it.
         _SCHEDULING_PATTERNS = [
             r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b',
-            r'\b(tomorrow|today|next\s+week)\b',
+            r'\b(tomorrow|today|next\s+week|this\s+week)\b',
             r'\b\d{1,2}(:\d{2})?\s*(am|pm)\b',  # "4pm", "11:30 am"
+            r'\b(what\s+time|which\s+day|what\s+day|available\s+slot|open\s+slot|free\s+slot)\b',
         ]
         
         if not is_personal and (
