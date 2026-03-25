@@ -61,6 +61,8 @@ SALES_HALLUCINATION_PATTERNS = [
     r'\b(let me check with|i will ask the owner|i\'ll ask the owner)\b',
     r'\b(i don\'t have a catalog|no catalog available)\b',
     r'\b(i\'m just an ai|i am an ai)\b',
+]
+
 # 12.8: Fake confirmation patterns — AI pretends to book/order/schedule without DB writes
 # These MUST be broad enough to catch every creative variation the LLM generates.
 FAKE_CONFIRMATION_PATTERNS = [
