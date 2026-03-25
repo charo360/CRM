@@ -61,8 +61,6 @@ SALES_HALLUCINATION_PATTERNS = [
     r'\b(let me check with|i will ask the owner|i\'ll ask the owner)\b',
     r'\b(i don\'t have a catalog|no catalog available)\b',
     r'\b(i\'m just an ai|i am an ai)\b',
-]
-
 # 12.8: Fake confirmation patterns — AI pretends to book/order/schedule without DB writes
 # These MUST be broad enough to catch every creative variation the LLM generates.
 FAKE_CONFIRMATION_PATTERNS = [
@@ -70,9 +68,12 @@ FAKE_CONFIRMATION_PATTERNS = [
     r'\b(is\s+now\s+booked|has\s+been\s+booked|is\s+confirmed|has\s+been\s+confirmed)\b',
     r'\b(booked\s+you\s+(for|in|at)|booking\s+you\s+(for|in|at))\b',
     r'\b(you\'?re\s+(all\s+)?booked|all\s+booked|you\s+are\s+booked)\b',
-    r'\b(booked\s+for\s+(the|a|your))\b',
+    r'\b(booked\s+for\s+(the|a|your|haircut|massage|service|appointment))\b',
+    r'\b(booked\s+for\s+[\w\s]+at\s+\$[\d,]+)\b',  # "Booked for haircut at $500"
+    r'(✅\s*booked|booked\s*✅|✅\s*confirmed|confirmed\s*✅)',
     # "See you" language
     r'\b(see\s+you\s+(then|at|on|there|soon|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
+    r'\b(see\s+you\s+in\s+a\s+bit)\b',
     # Appointment/booking confirmations
     r'\b(appointment\s+(is|has\s+been)\s+(set|scheduled|confirmed|booked))\b',
     r'\b(your\s+(order|booking|appointment|reservation)\s+(is|has\s+been)\s+(placed|confirmed|set|ready|booked))\b',
@@ -81,9 +82,12 @@ FAKE_CONFIRMATION_PATTERNS = [
     r'\b(we(\'re|\s+are)\s+open\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
     r'\b(our\s+hours\s+are|we\s+open\s+at|hours\s+of\s+operation)\b',
     r'\b(open\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday).*(am|pm))\b',
+    r'\b(we\'?re\s+closed\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
     r'\b(\d{1,2}\s*am\s*[\-–to]+\s*\d{1,2}\s*pm)\b',  # "8am-5pm", "8am–5pm", "8am to 5pm"
     # Specific time confirmations without DB context
     r'\b(you\'?re\s+set\s+for|you\'?re\s+all\s+set)\b',
+    r'\b((monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+works)\b',
+    r'\b(\d{1,2}(:\d{2})?\s*(am|pm)?\s+(on\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+works)\b',
     r'\b(we\'?ll\s+see\s+you\s+(at|on))\b',
     r'\b(confirmed\s+for\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today))\b',
     r'\b(slot\s+(is|has been)\s+(reserved|booked|confirmed))\b',

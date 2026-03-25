@@ -417,6 +417,8 @@ class Router:
         if not agent_result:
             agent_result = {"handled": False}
 
+        # Note: If an agent returns handled=False, it will fall through to the fallback block below
+        
         # If agent itself requested escalation
         if agent_result.get("escalate"):
             reason = agent_result.get("escalate_reason", f"Agent {agent_name} escalated")
@@ -440,18 +442,23 @@ class Router:
                 "fitness", "gym", "services", "restaurant", "hotel", "beauty",
                 "rental", "airbnb", "creator", "service",
             ))
+            
+            # If the primary attempt failed, and we haven't tried the domain-specific agent yet, do so.
             if _is_svc_fb and agent_name != "booking":
-                logger.info(f"[Router] Service biz: trying booking agent as fallback for intent={intent}")
+                logger.info(f"[Router] Service biz fallback: trying booking agent for intent={intent}")
                 agent_result = await self._dispatch("booking", user_id, message, context)
             elif not _is_svc_fb and agent_name != "sales":
-                logger.info(f"[Router] Retail biz: trying sales agent as fallback for intent={intent}")
+                logger.info(f"[Router] Retail biz fallback: trying sales agent for intent={intent}")
                 agent_result = await self._dispatch("sales", user_id, message, context)
-
-            if not agent_result or not agent_result.get("handled"):
-                # Final fallback: chat agent
+            
+            # If domain-specific agents still didn't handle it, AND we haven't tried chat fallback yet, try chat.
+            if (not agent_result or not agent_result.get("handled")) and agent_name != "chat":
                 logger.warning(f"[Router] No agent handled intent={intent}, trying chat fallback")
                 agent_result = await self._dispatch("chat", user_id, message, context)
+                
+            # If nothing handled it at all
             if not agent_result or not agent_result.get("handled"):
+                logger.warning(f"[Router] ALL fallbacks failed. Escalating intent={intent}")
                 await self._do_escalate(user_id, customer_id, f"No agent handled intent={intent}")
                 return {"handled": True, "escalated": True, "messages": [], "escalation_reason": f"Unhandled intent: {intent}"}
 
