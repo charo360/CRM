@@ -43,6 +43,14 @@ class SalesAgent(BaseAgent):
             logger.error(f"[SalesAgent] DB error fetching products: {e}")
             return {"handled": False}
 
+        # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
+        if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
+            relationship = context.get("_relationship", "new_conversation")
+            return await self._handle_customer_chat(
+                message, intent, customer_name, language,
+                business_knowledge, history, currency, relationship, products, context
+            )
+
         # --- CATALOG REQUEST ---
         if intent == "CATALOG_REQUEST":
             relationship = context.get("_relationship", "new_conversation")
@@ -189,19 +197,26 @@ class SalesAgent(BaseAgent):
         context_update["last_intent"] = intent
 
         # 17: Save menu state so router can intercept "One", "moja", "first" etc.
+        from datetime import timezone as _tz
+        context_update["active_menu"] = True
+        context_update["waiting_for_selection"] = True
+        context_update["menu_sent_at"] = datetime.utcnow().isoformat()
+        
         if len(to_send) > 1:
-            from datetime import timezone as _tz
-            context_update["active_menu"] = True
             context_update["menu_type"] = "product_selection"
             context_update["menu_items"] = {
                 str(i): {"name": p["name"], "price": p.get("price", 0), "id": str(p["_id"]), "type": "product"}
                 for i, p in enumerate(to_send, 1)
             }
-            context_update["waiting_for_selection"] = True
-            context_update["menu_sent_at"] = datetime.utcnow().isoformat()
         else:
-            context_update["waiting_for_selection"] = False
-            context_update["active_menu"] = False
+            # Single product also uses a numbered list: 1. Order, 2. Add, 3. Similar
+            context_update["menu_type"] = "single_product_actions"
+            p = to_send[0]
+            context_update["menu_items"] = {
+                "1": {"name": "Order Now", "price": p.get("price", 0), "id": str(p["_id"]), "type": "product_action", "action": "order"},
+                "2": {"name": "Add to Cart", "price": p.get("price", 0), "id": str(p["_id"]), "type": "product_action", "action": "add_cart"},
+                "3": {"name": "See Similar", "price": p.get("price", 0), "id": str(p["_id"]), "type": "product_action", "action": "similar"}
+            }
 
         return {
             "messages": messages_out,
@@ -453,3 +468,38 @@ Write 1 short sentence in {language} saying you'll get back to them — sound li
             for m in recent
         ]
         return "\n".join(lines)
+
+    async def _handle_customer_chat(
+        self, message, intent, customer_name, language,
+        business_knowledge, history, currency, relationship, products, context
+    ) -> Dict[str, Any]:
+        """Contact-Aware Routing: Handles small talk from KNOWN_CUSTOMERs by pivoting to sales."""
+        try:
+            from ai_service import get_drafter
+            ai = get_drafter()
+            bk = (business_knowledge or "")[:300]
+            
+            prompt = f"""You are a business owner replying on WhatsApp to a known customer: {customer_name}.
+They just sent a casual message or greeting: "{message}"
+
+Business info: {bk}
+
+Think one sentence about how to warmly acknowledge their message, then pivot to asking if they need help with an order or want to see the catalog. Output only the customer-facing message.
+
+Rules:
+- Be warm and natural, match their energy.
+- MUST end by gently asking if they want to see the catalog, menu, or place an order.
+- Do NOT push specific products yet, just offer the catalog.
+- Max 2 sentences. WhatsApp tone.
+- Language: {language}"""
+
+            reply = await ai._call_llm(prompt, model_pref="standard")
+            return {
+                "handled": True,
+                "messages": [{"text": reply}],
+                "escalate": False,
+                "context_update": {"state": "ongoing", "last_intent": intent},
+            }
+        except Exception as e:
+            logger.error(f"[SalesAgent] customer_chat handler error: {e}")
+            return {"handled": False}

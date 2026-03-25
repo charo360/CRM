@@ -20,6 +20,16 @@ class BookingAgent(BaseAgent):
         - BOOKING_CANCEL    : Customer wants to cancel/reschedule
         """
         intent = context.get("intent", "BOOKING_REQUEST")
+
+        # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
+        # Prevents ChatAgent fallback from generating fake booking confirmations
+        if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
+            return await self._handle_customer_chat(
+                message, intent, customer_name, context.get("language", "English"),
+                context.get("business_knowledge", ""), context.get("history", []),
+                context.get("currency", "USD"), context
+            )
+
         language = context.get("language", "English")
         currency = context.get("currency", "USD")
         customer_name = context.get("customer_name", "there")
@@ -868,3 +878,40 @@ class BookingAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[BookingAgent] AI intro error: {e}")
         return None
+
+    async def _handle_customer_chat(
+        self, message, intent, customer_name, language,
+        business_knowledge, history, currency, context
+    ) -> Dict[str, Any]:
+        """Contact-Aware Routing: Handles small talk from KNOWN_CUSTOMERs by pivoting to services."""
+        try:
+            from ai_service import get_drafter
+            ai = get_drafter()
+            bk = (business_knowledge or "")[:300]
+
+            prompt = f"""You are a business owner replying on WhatsApp to a known customer: {customer_name}.
+They just sent a casual message or greeting: "{message}"
+
+Business info: {bk}
+
+Think one sentence about how to warmly acknowledge their message, then pivot to asking if they want to book a service or check availability. Output only the customer-facing message.
+
+Rules:
+- Be warm and natural, match their energy.
+- MUST end by gently asking if they want to book a service or see availability.
+- Do NOT confirm any booking or appointment. Do NOT invent opening hours.
+- Do NOT say 'booked', 'confirmed', or 'see you then'.
+- Max 2 sentences. WhatsApp tone.
+- Language: {language}"""
+
+            reply = await ai._call_llm(prompt, model_pref="standard")
+            return {
+                "handled": True,
+                "messages": [{"text": reply}],
+                "escalate": False,
+                "context_update": {"state": "ongoing", "last_intent": intent},
+            }
+        except Exception as e:
+            logger.error(f"[BookingAgent] customer_chat handler error: {e}")
+            return {"handled": False}
+

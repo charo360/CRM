@@ -5,7 +5,7 @@ from collections import defaultdict
 
 from .intent_analyzer import analyze_intent, route_intent_to_agent, build_threaded_context, format_threaded_history
 from .conversation_state import load_state, save_state, mark_escalated
-from .reply_validator import validate_reply, RESULT_APPROVE, RESULT_REJECT, RESULT_ESCALATE
+from .reply_validator import validate_reply, validate_db_state, RESULT_APPROVE, RESULT_REJECT, RESULT_ESCALATE
 from .sales_agent import SalesAgent
 from .order_agent import OrderAgent
 from .payment_agent import PaymentAgent
@@ -392,7 +392,7 @@ class Router:
             }
 
         # ── 5. Dispatch to agent ───────────────────────────────────────────
-        agent_name = route_intent_to_agent(intent, context.get("business_type", ""))
+        agent_name = route_intent_to_agent(intent, context.get("business_type", ""), current_contact_type)
         
         # Override agent routing based on active multi-step flows
         if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
@@ -490,6 +490,34 @@ class Router:
                 else:
                     await self._do_escalate(user_id, customer_id, "Retry agent failed")
                     return {"handled": True, "escalated": True, "messages": [], "escalation_reason": "Retry agent failed"}
+
+        # ── 6.5. Post-action DB state validation ──────────────────────────
+        # Checks that claims in the reply ("booked", "ordered", "cancelled")
+        # actually match database records. Catches hallucinated confirmations
+        # that slipped past the text validator.
+        if messages_out:
+            reply_text = " ".join(m.get("text", "") for m in messages_out if m.get("text"))
+            db_validation = await validate_db_state(
+                reply_text=reply_text,
+                agent_name=agent_name,
+                intent=intent,
+                customer_id=str(customer_id) if customer_id else None,
+                user_id=user_id,
+                db=self.db,
+            )
+            if db_validation["result"] == RESULT_REJECT:
+                db_suggestion = db_validation.get("suggestion", "")
+                logger.warning(f"[Router] DB Validator REJECT: {db_validation.get('reason')} | Retrying with hint")
+                context["validator_suggestion"] = db_suggestion
+                context["custom_instructions"] = db_suggestion
+
+                retry_result = await self._dispatch(agent_name, user_id, message, context)
+                if retry_result and retry_result.get("handled") and not retry_result.get("escalate"):
+                    messages_out = retry_result.get("messages", [])
+                    agent_result = retry_result
+                else:
+                    await self._do_escalate(user_id, customer_id, "DB validation retry failed")
+                    return {"handled": True, "escalated": True, "messages": [], "escalation_reason": "DB validation retry failed"}
 
         # ── 7. Save conversation state ────────────────────────────────────
         state_updates = agent_result.get("context_update", {})

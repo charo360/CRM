@@ -11719,12 +11719,14 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         user_products = await db.products.find({"user_id": business_id}).to_list(50)
         if user_products:
             catalog_lines = ["\nProducts available:"]
+            idx = 1
             for p in user_products:
                 if not p.get("in_stock", True):
                     continue
                 price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "price on request"
                 desc = f" — {p['description'][:80]}" if p.get("description") else ""
-                catalog_lines.append(f"  • {p['name']}: {price_str}{desc}")
+                catalog_lines.append(f"  {idx}. {p['name']}: {price_str}{desc}")
+                idx += 1
             bk_parts.append("\n".join(catalog_lines))
 
         business_knowledge = "\n".join(bk_parts) if bk_parts else ""
@@ -11965,6 +11967,10 @@ GOAL: Re-engage them with one short, genuine message.
                     session_summary_block = f"\nCONVERSATION SUMMARY (use this to understand context, but still reply to the LATEST message above):\n{_summary_text}\n"
         except Exception:
             pass
+        # Relax length limit if the user explicitly asks for a list or catalog
+        length_rule = "2. 1-3 sentences. Short is better. WhatsApp messages are not emails."
+        if custom_direction and any(word in custom_direction.lower() for word in ["list", "catalog", "menu", "products", "options"]):
+            length_rule = "2. You MAY use a numbered list if it fits the user's direction, keeping items brief."
 
         # Full prompt — anchor and latest message are at the TOP so the AI sees them first
         prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
@@ -11977,7 +11983,7 @@ You are a real person — not a bot, not a marketing tool. Direct, warm, brief.
 
 WRITING RULES (non-negotiable):
 1. Output ONLY the message text. No labels, no quotes around it, no explanation.
-2. 1-3 sentences. Short is better. WhatsApp messages are not emails.
+{length_rule}
 3. YOUR REPLY MUST DIRECTLY ADDRESS the customer's latest message shown at the top — do NOT ignore it and talk about something unrelated.
 4. USE REAL SPECIFICS: If business info is provided, name actual products, actual prices, actual offers — never say "we have great options".
 5. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".

@@ -184,12 +184,89 @@ _PAYMENT_CONFIRM_KEYWORDS = {
     "i've made the payment", "payment complete", "transaction done",
 }
 
+_CATALOG_EXACT_KEYWORDS = {
+    "catalog", "catalogue", "menu", "products", "what do you sell",
+    "show me products", "what do you have", "show me what you have",
+    "show catalog", "show catalogue", "show menu", "price list",
+    "what are your products", "what do you offer", "your products",
+    "send catalog", "send catalogue", "send menu", "list products",
+    # Swahili
+    "bidhaa", "orodha", "bei", "nini mnacho", "mnauza nini",
+    "unacho nini", "unauzaje", "unauza nini",
+    # French
+    "catalogue", "produits", "prix",
+}
+
+_BOOKING_EXACT_KEYWORDS = {
+    "book", "booking", "i want to book", "book me", "make a booking",
+    "make appointment", "i need an appointment", "schedule",
+    "i want an appointment", "book appointment", "reserve",
+    # Swahili
+    "nipangie", "nataka kupanga", "booking",
+}
+
+_PRICE_PATTERNS = [
+    r'\bhow\s+much\b',
+    r'\bwhat.*price\b',
+    r'\bwhat.*cost\b',
+    r'\bhow\s+much\s+(is|are|does|do|for)\b',
+    r'\bbei\s+(ya|gani)\b',  # Swahili
+]
+
 def _deterministic_intent_override(message: str) -> dict | None:
     """
     Fast rules-only pre-check before the LLM is called.
     Returns a result dict if the intent is unambiguous, else None.
+    This is the primary stability mechanism — these keywords NEVER touch the LLM.
     """
     msg = message.strip().lower()
+
+    # Catalog/product request → always CATALOG_REQUEST
+    if msg in _CATALOG_EXACT_KEYWORDS or any(msg.startswith(kw) for kw in _CATALOG_EXACT_KEYWORDS if len(kw) > 3):
+        return {
+            "intent": "CATALOG_REQUEST",
+            "sentiment": "neutral",
+            "language": "English",
+            "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+            "conversation_state": "ongoing",
+            "confidence": 1.0,
+            "needs_escalation": False,
+            "escalation_reason": None,
+            "keywords": ["catalog"],
+            "contact_signal": {"type": "customer", "confidence": 0.95, "reason": "business keyword detected"},
+        }
+
+    # Booking request → always BOOKING_REQUEST
+    if msg in _BOOKING_EXACT_KEYWORDS or any(msg.startswith(kw) for kw in _BOOKING_EXACT_KEYWORDS if len(kw) > 3):
+        return {
+            "intent": "BOOKING_REQUEST",
+            "sentiment": "neutral",
+            "language": "English",
+            "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+            "conversation_state": "ongoing",
+            "confidence": 1.0,
+            "needs_escalation": False,
+            "escalation_reason": None,
+            "keywords": ["booking"],
+            "contact_signal": {"type": "customer", "confidence": 0.95, "reason": "business keyword detected"},
+        }
+
+    # Price inquiry → always PRICE_INQUIRY (routes to sales)
+    for pattern in _PRICE_PATTERNS:
+        if re.search(pattern, msg):
+            return {
+                "intent": "PRICE_INQUIRY",
+                "sentiment": "neutral",
+                "language": "English",
+                "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+                "conversation_state": "ongoing",
+                "confidence": 1.0,
+                "needs_escalation": False,
+                "escalation_reason": None,
+                "keywords": ["price"],
+                "contact_signal": {"type": "customer", "confidence": 0.95, "reason": "business keyword detected"},
+            }
+
     # Availability keywords → always AVAILABILITY_CHECK, never misrouted to payment
     if msg in _AVAILABILITY_EXACT_KEYWORDS or msg.startswith("availability") or msg.startswith("check availability"):
         return {
@@ -456,7 +533,7 @@ JSON only, no markdown:"""
         }
 
 
-def route_intent_to_agent(intent: str, business_type: str = "") -> str:
+def route_intent_to_agent(intent: str, business_type: str = "", contact_type: str = "UNKNOWN") -> str:
     """
     Route to agent based on BUSINESS TYPE first, then intent.
     Business type determines the workflow - customer's words don't matter.
@@ -487,10 +564,16 @@ def route_intent_to_agent(intent: str, business_type: str = "") -> str:
     if is_service_business:
         if intent in (SALES_INTENTS | BOOKING_INTENTS):
             return "booking"
+        # Contact-Aware Routing: Known customers skip the ChatAgent for small talk
+        if contact_type == "KNOWN_CUSTOMER" and intent in CHAT_INTENTS:
+            return "booking"
     
     # Retail/Shop businesses → SalesAgent for ALL catalog/sales/booking intents
     else:
         if intent in (SALES_INTENTS | BOOKING_INTENTS):
+            return "sales"
+        # Contact-Aware Routing: Known customers skip the ChatAgent for small talk
+        if contact_type == "KNOWN_CUSTOMER" and intent in CHAT_INTENTS:
             return "sales"
     
     return "chat"
