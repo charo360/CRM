@@ -883,35 +883,54 @@ class BookingAgent(BaseAgent):
         self, message, intent, customer_name, language,
         business_knowledge, history, currency, context
     ) -> Dict[str, Any]:
-        """Contact-Aware Routing: Handles small talk from KNOWN_CUSTOMERs by pivoting to services."""
+        """Contact-Aware Routing: Redirects known customers to the structured service menu.
+        
+        CRITICAL: This method must NEVER use free-form LLM responses for booking conversations.
+        Instead, it always redirects to the structured booking flow which shows the actual
+        numbered service menu from the database, preventing all hallucination.
+        """
+        logger.info(f"[BookingAgent] Customer chat redirected to structured BOOKING_REQUEST flow")
+        
+        biz_id = context.get("business_id", "")
+        customer_id = context.get("customer_id")
+        user_id = biz_id  # business_id is the authoritative user_id for product queries
+        business_type = (context.get("business_type") or "").lower().strip()
+        is_rental = business_type == "rental"
+        
+        # Fetch services directly
         try:
-            from ai_service import get_drafter
-            ai = get_drafter()
-            bk = (business_knowledge or "")[:300]
-
-            prompt = f"""You are a business owner replying on WhatsApp to a known customer: {customer_name}.
-They just sent a casual message or greeting: "{message}"
-
-Business info: {bk}
-
-Think one sentence about how to warmly acknowledge their message, then pivot to asking if they want to book a service or check availability. Output only the customer-facing message.
-
-Rules:
-- Be warm and natural, match their energy.
-- MUST end by gently asking if they want to book a service or see availability.
-- Do NOT confirm any booking or appointment. Do NOT invent opening hours.
-- Do NOT say 'booked', 'confirmed', or 'see you then'.
-- Max 2 sentences. WhatsApp tone.
-- Language: {language}"""
-
-            reply = await ai._call_llm(prompt, model_pref="standard")
-            return {
-                "handled": True,
-                "messages": [{"text": reply}],
-                "escalate": False,
-                "context_update": {"state": "ongoing", "last_intent": intent},
-            }
+            services = await self.db.products.find({
+                "user_id": biz_id,
+                "in_stock": {"$ne": False},
+                "$or": [
+                    {"offering_type": {"$nin": ["physical", "retail", "product"]}},
+                    {"offering_type": "product", "duration": {"$exists": True, "$ne": None}},
+                ],
+            }).to_list(50)
+            if not services:
+                services = await self.db.products.find({
+                    "user_id": biz_id,
+                    "in_stock": {"$ne": False},
+                }).to_list(50)
         except Exception as e:
-            logger.error(f"[BookingAgent] customer_chat handler error: {e}")
+            logger.error(f"[BookingAgent] customer_chat DB error: {e}")
             return {"handled": False}
+
+        # Fetch business hours/settings
+        try:
+            user_doc = await self.db.users.find_one({"_id": biz_id})
+            settings = (user_doc or {}).get("settings", {})
+            business_hours = settings.get("business_hours", {})
+            booking_settings = settings.get("booking_settings", {})
+        except Exception:
+            business_hours = {}
+            booking_settings = {}
+
+        # Go straight to the structured service menu — no LLM involved
+        return await self._handle_booking_request(
+            services, business_hours, booking_settings,
+            customer_name, language, currency, message,
+            business_knowledge, history, customer_id, biz_id, is_rental,
+            intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
+        )
 
