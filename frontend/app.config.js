@@ -62,7 +62,7 @@ export default {
     extra: {
       backendUrl: process.env.EXPO_PUBLIC_BACKEND_URL || "https://crm-1-pnfo.onrender.com",
       eas: {
-        projectId: "0a86c71b-2ade-4705-87c6-f48155d466c3"
+        projectId: "a548a1a8-7dac-4a37-9a14-9b7667ccd1dc"
       }
     }
   }
