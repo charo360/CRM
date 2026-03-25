@@ -17,14 +17,14 @@ export default {
     },
     android: {
       package: "com.zilo.reply",
-      versionCode: 2,
+      versionCode: 3,
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#2DB843"
       },
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "adjustResize",
-      permissions: ["android.permission.READ_CONTACTS", "com.android.vending.BILLING"]
+      permissions: ["android.permission.READ_CONTACTS"]
     },
     web: {
       bundler: "metro",
