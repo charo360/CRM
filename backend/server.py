@@ -10779,6 +10779,12 @@ async def evolution_webhook(request: Request):
                     agent_result = None
                     logging.info(f"[Webhook] Skipping agent pipeline - button_action already set: {button_action}")
 
+                # Router returned None = AI explicitly disabled (personal contact / silenced)
+                # Do NOT fall through to raw AI generation in this case
+                if not button_action and agent_result is None:
+                    logging.info(f"[Webhook] Router returned None for {from_number} — silencing reply")
+                    return {"status": "ok"}
+
                 if agent_result and agent_result.get("handled"):
                     # If escalated — notify owner/employee, then stop (human will handle)
                     if agent_result.get("escalated"):
