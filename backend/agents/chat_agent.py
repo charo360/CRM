@@ -101,9 +101,24 @@ class ChatAgent(BaseAgent):
             r'\b(i\s+want|i\'d\s+like|can\s+i\s+get|please\s+book|book\s+me)\b.*\b(haircut|massage|service|appointment|session)\b',
             r'\bcan\s+you\s+confirm\b',
             r'\bconfirm\s+that\s+for\s+me\b',
+            r'\b(reschedule|rebook|move\s+my\s+booking|change\s+my\s+booking|cancel\s+my\s+booking|cancel\s+my\s+appointment)\b',
+            r'\b(wanna|want\s+to|need\s+to|i\'d\s+like\s+to)\s+(reschedule|cancel|rebook)\b',
         ]
-        if not is_personal and self._matches_patterns(message, _BOOKING_CONFIRM_PATTERNS):
-            logger.info(f"[ChatAgent] Booking confirmation request detected — returning unhandled to trigger BookingAgent")
+        
+        # Scheduling guardrail: ChatAgent should NEVER handle scheduling back-and-forths.
+        # If the customer mentions a day of the week or a time, let the BookingAgent handle it.
+        _SCHEDULING_PATTERNS = [
+            r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b',
+            r'\b(tomorrow|today|next\s+week|this\s+week)\b',
+            r'\b\d{1,2}(:\d{2})?\s*(am|pm)\b',  # "4pm", "11:30 am"
+            r'\b(what\s+time|which\s+day|what\s+day|available\s+slot|open\s+slot|free\s+slot)\b',
+        ]
+        
+        if not is_personal and (
+            self._matches_patterns(message, _BOOKING_CONFIRM_PATTERNS) or
+            self._matches_patterns(message, _SCHEDULING_PATTERNS)
+        ):
+            logger.info(f"[ChatAgent] Booking or scheduling request detected — returning unhandled to trigger BookingAgent")
             return {"handled": False}
 
         try:
@@ -185,6 +200,9 @@ class ChatAgent(BaseAgent):
                         "If they ask for help drafting something, do it well and directly. "
                         "If they ask a general question you can answer, answer it straight. "
                         "Never promise anything financial or make business commitments. "
+                        "CRITICAL: NEVER engage in scheduling, booking, or confirming appointments. "
+                        "If they try to book or pick a time, NEVER confirm it. "
+                        "Do NOT invent or share opening hours or available days. "
                         "1-2 sentences max. No filler. No corporate phrases. Sound human. "
                         "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details."
                     )

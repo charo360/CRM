@@ -1,25 +1,26 @@
 export default {
   expo: {
-    name: "WhatsApp CRM",
-    slug: "whatsapp-crm",
+    name: "Zilo",
+    slug: "zilo",
     version: "1.0.0",
     orientation: "portrait",
     icon: "./assets/images/icon.png",
-    scheme: "whatsappcrm",
+    scheme: "zilo",
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     ios: {
-      bundleIdentifier: "com.charo360.whatsappcrm",
+      bundleIdentifier: "com.zilo.reply",
       supportsTablet: true,
       infoPlist: {
         NSContactsUsageDescription: "Import customers from your contacts"
       }
     },
     android: {
-      package: "com.charo360.whatsappcrm",
+      package: "com.zilo.reply",
+      versionCode: 4,
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
-        backgroundColor: "#0A1628"
+        backgroundColor: "#2DB843"
       },
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "adjustResize",
@@ -35,16 +36,16 @@ export default {
       [
         "expo-splash-screen",
         {
-          image: "./assets/images/splash-icon.png",
+          image: "./assets/images/splash-image.png",
           imageWidth: 200,
           resizeMode: "contain",
-          backgroundColor: "#0A1628"
+          backgroundColor: "#2DB843"
         }
       ],
       [
         "expo-contacts",
         {
-          contactsPermission: "Allow WhatsApp CRM to access your contacts to import customers."
+          contactsPermission: "Allow Zilo to access your contacts to import customers."
         }
       ],
       [
@@ -60,7 +61,10 @@ export default {
       typedRoutes: true
     },
     extra: {
-      backendUrl: process.env.EXPO_PUBLIC_BACKEND_URL || "https://crm-1-pnfo.onrender.com"
+      backendUrl: process.env.EXPO_PUBLIC_BACKEND_URL || "https://crm-1-pnfo.onrender.com",
+      eas: {
+        projectId: "a548a1a8-7dac-4a37-9a14-9b7667ccd1dc"
+      }
     }
   }
 };

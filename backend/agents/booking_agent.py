@@ -19,6 +19,7 @@ class BookingAgent(BaseAgent):
         - BOOKING_STATUS    : Customer asks about an existing booking
         - BOOKING_CANCEL    : Customer wants to cancel/reschedule
         """
+        # --- EXTRACT CONTEXT VARIABLES ---
         intent = context.get("intent", "BOOKING_REQUEST")
         language = context.get("language", "English")
         currency = context.get("currency", "USD")
@@ -31,6 +32,14 @@ class BookingAgent(BaseAgent):
         is_rental = business_type == "rental"  # will also check services below after fetch
         confidence = context.get("confidence", 1.0)
         careful_instruction = context.get("careful_instruction", "")
+
+        # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
+        # Prevents ChatAgent fallback from generating fake booking confirmations
+        if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
+            return await self._handle_customer_chat(
+                message, intent, customer_name, language,
+                business_knowledge, history, currency, context
+            )
 
         # ── Handle pending_booking_action: 1=Cancel / 2=Reschedule pick ──────
         pending_booking_action_id = conv_state.get("pending_booking_action")
@@ -851,16 +860,28 @@ class BookingAgent(BaseAgent):
             if is_rental:
                 prompt = (
                     f"{intent_hint}"
-                    f"Customer is looking to book a rental/property. Business: {bk}. "
-                    f"Think one sentence about what this customer actually needs, then write 1 warm short line in {language} "
-                    f"welcoming them to browse listings (WhatsApp tone, no bullet points). Output only the customer-facing message."
+                    f"Customer is looking to book a rental/property. "
+                    f"Write 1 warm short line in {language} welcoming them to browse listings "
+                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
+                    f"STRICT RULES — breaking any of these = wrong answer:\n"
+                    f"- NEVER mention or suggest specific dates, days, or times\n"
+                    f"- NEVER state or imply a booking has been made or confirmed\n"
+                    f"- NEVER mention prices or availability\n"
+                    f"- Just a warm welcome line, nothing else"
                 )
             else:
                 prompt = (
                     f"{intent_hint}"
-                    f"Customer wants to book a service. Business: {bk}. "
-                    f"Think one sentence about what this customer actually needs, then write 1 warm short line in {language} "
-                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message."
+                    f"Customer wants to book a service. "
+                    f"Write 1 warm short line in {language} acknowledging their request "
+                    f"and letting them know you'll show them the options "
+                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
+                    f"STRICT RULES — breaking any of these = wrong answer:\n"
+                    f"- NEVER mention or suggest specific dates, days, or times\n"
+                    f"- NEVER state or imply anything is booked, confirmed, or scheduled\n"
+                    f"- NEVER mention prices or opening hours\n"
+                    f"- NEVER reference previous bookings or past conversations\n"
+                    f"- Just a warm 1-line intro, nothing else"
                 )
             intro = await ai._call_llm(prompt, model_pref="standard")
             if intro and len(intro.strip()) < 120:
@@ -868,3 +889,59 @@ class BookingAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[BookingAgent] AI intro error: {e}")
         return None
+
+    async def _handle_customer_chat(
+        self, message, intent, customer_name, language,
+        business_knowledge, history, currency, context
+    ) -> Dict[str, Any]:
+        """Contact-Aware Routing: Redirects known customers to the structured service menu.
+        
+        CRITICAL: This method must NEVER use free-form LLM responses for booking conversations.
+        Instead, it always redirects to the structured booking flow which shows the actual
+        numbered service menu from the database, preventing all hallucination.
+        """
+        logger.info(f"[BookingAgent] Customer chat redirected to structured BOOKING_REQUEST flow")
+        
+        biz_id = context.get("business_id", "")
+        customer_id = context.get("customer_id")
+        user_id = biz_id  # business_id is the authoritative user_id for product queries
+        business_type = (context.get("business_type") or "").lower().strip()
+        is_rental = business_type == "rental"
+        
+        # Fetch services directly
+        try:
+            services = await self.db.products.find({
+                "user_id": biz_id,
+                "in_stock": {"$ne": False},
+                "$or": [
+                    {"offering_type": {"$nin": ["physical", "retail", "product"]}},
+                    {"offering_type": "product", "duration": {"$exists": True, "$ne": None}},
+                ],
+            }).to_list(50)
+            if not services:
+                services = await self.db.products.find({
+                    "user_id": biz_id,
+                    "in_stock": {"$ne": False},
+                }).to_list(50)
+        except Exception as e:
+            logger.error(f"[BookingAgent] customer_chat DB error: {e}")
+            return {"handled": False}
+
+        # Fetch business hours/settings
+        try:
+            user_doc = await self.db.users.find_one({"_id": biz_id})
+            settings = (user_doc or {}).get("settings", {})
+            business_hours = settings.get("business_hours", {})
+            booking_settings = settings.get("booking_settings", {})
+        except Exception:
+            business_hours = {}
+            booking_settings = {}
+
+        # Go straight to the structured service menu — no LLM involved
+        return await self._handle_booking_request(
+            services, business_hours, booking_settings,
+            customer_name, language, currency, message,
+            business_knowledge, history, customer_id, biz_id, is_rental,
+            intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
+        )
+

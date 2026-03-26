@@ -2144,6 +2144,7 @@ async def get_settings(user = Depends(get_current_user)):
         "booking_settings": s.get("booking_settings", {}),
         "timezone": s.get("timezone", "UTC"),
         "rental_availability": s.get("rental_availability", []),
+        "payment_methods": user.get("payment_methods", s.get("payment_methods", [])),
     }
 
 @api_router.put("/settings")
@@ -2154,7 +2155,7 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
     top_level_fields = {}
     settings_fields = {}
     for k, v in body.items():
-        if k in ("currency", "country_code"):
+        if k in ("currency", "country_code", "payment_methods"):
             top_level_fields[k] = v
         else:
             settings_fields[f"settings.{k}"] = v
@@ -10636,6 +10637,127 @@ async def evolution_webhook(request: Request):
                             )
                             logging.info(f"[Escape Hatch] Cleared pending_update_step for customer {customer_id} - context switch: {_escape_body[:50]}")
 
+                # ── BOOKING FLOW GUARD ────────────────────────────────────────────────────
+                # Intercept non-number messages when customer is in an active booking state.
+                # Prevents AI from hallucinating time slots, dates, and fake confirmations.
+                if not button_action and not from_me and body:
+                    import re as _re_bkg
+                    _bkg_body = body.strip()
+                    _bkg_lower = _bkg_body.lower()
+                    _bkg_is_number = bool(_re_bkg.match(r'^\d+$', _bkg_body))
+
+                    if not _bkg_is_number:
+                        # Guard 1: pending_booking_list + non-number → resend booking list
+                        _bkg_conv = await db.conversation_states.find_one({
+                            "customer_id": str(customer_id), "user_id": user["_id"]
+                        })
+                        if _bkg_conv and _bkg_conv.get("pending_booking_list"):
+                            try:
+                                _bkg_bks = []
+                                for _bid in _bkg_conv["pending_booking_list"]:
+                                    _bk_g = await db.bookings.find_one({"_id": _bid})
+                                    if _bk_g:
+                                        _bkg_bks.append(_bk_g)
+                                if _bkg_bks:
+                                    _bkg_lines = ["📅 *Your Upcoming Bookings*\n"]
+                                    for _bi, _bb in enumerate(_bkg_bks, 1):
+                                        _bst = "✅" if _bb.get("status") == "confirmed" else "⏳"
+                                        _bdt = f"{_bb.get('date', '')} at {_bb.get('time', '')}"
+                                        _bkg_lines.append(
+                                            f"*{_bi}.* {_bst} *{_bb.get('service_name', 'Service')}*\n"
+                                            f"   📆 {_bdt}\n"
+                                            f"   Ref: *{_bb.get('booking_number', '')}*"
+                                        )
+                                    _bkg_lines.append("\n_Reply with a number to manage that booking (e.g. *1*)_")
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="\n".join(_bkg_lines),
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_list_guard"}
+                            except Exception as _bkg_e:
+                                logging.warning(f"[BookingGuard] pending_booking_list guard: {_bkg_e}")
+
+                        # Guard 2: booking_service_select + non-number → fuzzy service name match
+                        _bkg_pending = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"],
+                            "action_context": "booking_service_select"
+                        })
+                        if _bkg_pending:
+                            _bkg_svcs = _bkg_pending.get("products", [])
+                            _bkg_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            _bkg_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                            _bkg_is_rental = _bkg_biz_type == "rental"
+                            _bkg_is_creator = _bkg_biz_type == "creator"
+                            # Fuzzy match: body contained in service name or service name in body
+                            _bkg_match = None
+                            for _sv in _bkg_svcs:
+                                _sv_nl = _sv.get("name", "").lower()
+                                if _sv_nl in _bkg_lower or _bkg_lower in _sv_nl or any(w in _sv_nl for w in _bkg_lower.split() if len(w) > 3):
+                                    _bkg_match = _sv
+                                    break
+                            if _bkg_match:
+                                _bkg_svc_id = _bkg_match["id"]
+                                _bkg_svc_name = _bkg_match["name"]
+                                _bkg_price = _bkg_match.get("price", 0)
+                                _bkg_price_str = f"{_bkg_currency} {_bkg_price:,.0f}" if _bkg_price else "Contact for price"
+                                _bkg_full_svc = await db.products.find_one({"_id": _bkg_svc_id, "user_id": user.get("business_id", user["_id"])})
+                                _bkg_duration = (_bkg_full_svc or {}).get("duration")
+                                _bkg_addons = (_bkg_full_svc or {}).get("addons", []) or []
+                                _bkg_svc_cat = "rental" if _bkg_is_rental else (_bkg_full_svc or {}).get("service_category", "appointment")
+                                _bkg_price_unit = (_bkg_full_svc or {}).get("price_unit", "night")
+                                _bkg_unit_lbl = {"night": "night", "day": "day", "week": "week", "month": "month"}.get(_bkg_price_unit, "night")
+                                _bkg_base = {
+                                    "booking_service_id": _bkg_svc_id,
+                                    "booking_service_name": _bkg_svc_name,
+                                    "booking_service_price": _bkg_price,
+                                    "booking_service_duration": _bkg_duration,
+                                    "booking_service_category": _bkg_svc_cat,
+                                    "booking_price_unit": _bkg_price_unit,
+                                    "booking_addons_available": _bkg_addons,
+                                    "booking_selected_addons": [],
+                                    "updated_at": datetime.utcnow(),
+                                }
+                                ws = get_whatsapp_service(db)
+                                if _bkg_addons:
+                                    _bkg_base["action_context"] = "booking_addon_select"
+                                    _al = [f"✅ *{_bkg_svc_name}* selected ({_bkg_price_str})\n", "🔧 *Optional Add-ons:*\n"]
+                                    for _ai2, _ad2 in enumerate(_bkg_addons[:4], 1):
+                                        _adp = _ad2.get("price", 0)
+                                        _al.append(f"{_ai2}️⃣  {_ad2.get('name','')} — {'+' + _bkg_currency + ' ' + f'{_adp:,.0f}' if _adp else 'Free'}")
+                                    _al += ["0️⃣  No extras", "\n_Reply with numbers or *0* to skip_"]
+                                    await db.pending_catalogs.update_one({"customer_id": customer_id, "user_id": user["_id"]}, {"$set": _bkg_base})
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message="\n".join(_al), customer_name=customer_name, send_context="booking_flow")
+                                elif _bkg_svc_cat == "rental":
+                                    _bkg_base["action_context"] = "booking_checkin_input"
+                                    await db.pending_catalogs.update_one({"customer_id": customer_id, "user_id": user["_id"]}, {"$set": _bkg_base})
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message=f"Great choice! *{_bkg_svc_name}* ({_bkg_price_str}/{_bkg_unit_lbl}).\n\n📅 *Check-in date?*\n_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*_", customer_name=customer_name, send_context="booking_flow")
+                                elif _bkg_is_creator:
+                                    _bkg_base["action_context"] = "creator_timeline_input"
+                                    await db.pending_catalogs.update_one({"customer_id": customer_id, "user_id": user["_id"]}, {"$set": _bkg_base})
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message=f"Great choice! *{_bkg_svc_name}* ({_bkg_price_str}).\n\n📅 *When do you need this delivered?*\n_Reply with a deadline, e.g. *in 3 days*, *next Friday*, *March 20*_", customer_name=customer_name, send_context="booking_flow")
+                                else:
+                                    _bkg_base["action_context"] = "booking_date_input"
+                                    await db.pending_catalogs.update_one({"customer_id": customer_id, "user_id": user["_id"]}, {"$set": _bkg_base})
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message=f"Great choice! *{_bkg_svc_name}* ({_bkg_price_str}).\n\n📅 *What date would you like?*\n_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_", customer_name=customer_name, send_context="booking_flow")
+                                logging.info(f"[BookingGuard] Name match: '{_bkg_body}' → '{_bkg_svc_name}' for customer {customer_id}")
+                                return {"status": "ok", "handled_by": "booking_service_name_match"}
+                            else:
+                                # No match — resend numbered service list
+                                _bkg_sl = ["📋 *Our Services*\n"]
+                                for _sv in _bkg_svcs:
+                                    _sv_p = _sv.get("price", 0)
+                                    _sv_d = _sv.get("duration")
+                                    _sv_ps = f"{_bkg_currency} {_sv_p:,.0f}" if _sv_p else "Contact for price"
+                                    _sv_ds = f" · {_sv_d} min" if _sv_d else ""
+                                    _bkg_sl.append(f"{_sv.get('index','?')}️⃣  *{_sv.get('name','Service')}* — {_sv_ps}{_sv_ds}")
+                                _bkg_sl.append("\n_Reply with the number to select (e.g. *1*, *2*)_")
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(user_id=user["_id"], to_number=from_number, message="\n".join(_bkg_sl), customer_name=customer_name, send_context="booking_flow")
+                                logging.info(f"[BookingGuard] No service match for '{_bkg_body}', resent list for customer {customer_id}")
+                                return {"status": "ok", "handled_by": "booking_service_no_match_guard"}
+
                 # Skip agent pipeline if button_action already set by numbered response handler
                 if not button_action:
                     logging.info(
@@ -11719,12 +11841,14 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         user_products = await db.products.find({"user_id": business_id}).to_list(50)
         if user_products:
             catalog_lines = ["\nProducts available:"]
+            idx = 1
             for p in user_products:
                 if not p.get("in_stock", True):
                     continue
                 price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "price on request"
                 desc = f" — {p['description'][:80]}" if p.get("description") else ""
-                catalog_lines.append(f"  • {p['name']}: {price_str}{desc}")
+                catalog_lines.append(f"  {idx}. {p['name']}: {price_str}{desc}")
+                idx += 1
             bk_parts.append("\n".join(catalog_lines))
 
         business_knowledge = "\n".join(bk_parts) if bk_parts else ""
@@ -11965,6 +12089,10 @@ GOAL: Re-engage them with one short, genuine message.
                     session_summary_block = f"\nCONVERSATION SUMMARY (use this to understand context, but still reply to the LATEST message above):\n{_summary_text}\n"
         except Exception:
             pass
+        # Relax length limit if the user explicitly asks for a list or catalog
+        length_rule = "2. 1-3 sentences. Short is better. WhatsApp messages are not emails."
+        if custom_direction and any(word in custom_direction.lower() for word in ["list", "catalog", "menu", "products", "options"]):
+            length_rule = "2. You MAY use a numbered list if it fits the user's direction, keeping items brief."
 
         # Full prompt — anchor and latest message are at the TOP so the AI sees them first
         prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
@@ -11977,7 +12105,7 @@ You are a real person — not a bot, not a marketing tool. Direct, warm, brief.
 
 WRITING RULES (non-negotiable):
 1. Output ONLY the message text. No labels, no quotes around it, no explanation.
-2. 1-3 sentences. Short is better. WhatsApp messages are not emails.
+{length_rule}
 3. YOUR REPLY MUST DIRECTLY ADDRESS the customer's latest message shown at the top — do NOT ignore it and talk about something unrelated.
 4. USE REAL SPECIFICS: If business info is provided, name actual products, actual prices, actual offers — never say "we have great options".
 5. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
@@ -12553,6 +12681,7 @@ async def get_user_settings(user = Depends(get_current_user)):
         "booking_settings": settings.get("booking_settings", {}),
         "timezone": settings.get("timezone", "UTC"),
         "rental_availability": settings.get("rental_availability", []),
+        "payment_methods": user.get("payment_methods", settings.get("payment_methods", [])),
     }
 
 @api_router.put("/settings")
@@ -13781,11 +13910,24 @@ async def diag_test_flow(user_phone: str = Query(...)):
 
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
+app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="static")
 
 # Startup event
 @app.on_event("startup")
 async def startup_tasks():
     """Run startup tasks"""
+
+    # ---- P0: Ensure required folders exist ----
+    try:
+        static_dir = ROOT_DIR / "static"
+        static_dir.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Static folder ensured at: {static_dir}")
+        
+        uploads_dir = ROOT_DIR / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Uploads folder ensured at: {uploads_dir}")
+    except Exception as e:
+        logging.error(f"Failed to create folders: {e}")
 
     # ---- P1: Ensure database indexes ----
     try:
