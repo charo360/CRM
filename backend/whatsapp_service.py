@@ -951,7 +951,7 @@ class WhatsAppService:
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+        currency = user.get("settings", {}).get("currency", "KES")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         price = product.get('price', 0)
@@ -1065,7 +1065,7 @@ class WhatsAppService:
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+        currency = user.get("settings", {}).get("currency", "KES")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         # Show max 8 products as options 1-8
@@ -1107,7 +1107,7 @@ class WhatsAppService:
             return {"status": "error", "message": "WhatsApp not connected"}
 
         instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("settings", {}).get("currency", "USD")
+        currency = user.get("settings", {}).get("currency", "KES")
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
         price = product.get('price', 0)

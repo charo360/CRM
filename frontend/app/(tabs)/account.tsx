@@ -25,6 +25,7 @@ import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/a
 import { NotificationHandler } from '../../utils/notification-handler';
 import TeamManagementModal from '../../components/TeamManagementModal';
 import ProductActionsModal from '../../components/ProductActionsModal';
+import SubscriptionModal from '../../components/SubscriptionModal';
 // IAP stubs — real react-native-iap is linked only in native production builds
 type ProductPurchase = { purchaseToken?: string; transactionId?: string };
 type PurchaseError = { code?: string; message?: string };
@@ -121,6 +122,9 @@ export default function AccountScreen() {
 
   // Credit Top-up State
   const [extraCredits, setExtraCredits] = useState(0);
+  
+  // Subscription Modal
+  const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
   const [buyingCredits, setBuyingCredits] = useState<string | null>(null);
 
@@ -398,34 +402,16 @@ export default function AccountScreen() {
   };
 
   const handleSubscribe = async (plan: SubscriptionPlan) => {
-    if (!user) return;
+    setShowSubscriptionModal(true);
+  };
 
-    Alert.alert(
-      'Subscribe',
-      `Subscribe to ${plan.name} plan (${plan.currency || currency} ${plan.amount_display})?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Subscribe',
-          onPress: async () => {
-            setSubscribing(true);
-            try {
-              await apiClient.post('/subscription/verify-purchase', {
-                plan_id: plan.id,
-                purchase_token: `manual_${Date.now()}`,
-                platform: Platform.OS,
-              });
-              Alert.alert('Success', 'Your subscription has been activated!');
-              refreshUser();
-            } catch (error: any) {
-              Alert.alert('Error', error.response?.data?.detail || 'Failed to activate subscription');
-            } finally {
-              setSubscribing(false);
-            }
-          },
-        },
-      ]
-    );
+  const handleSubscriptionSuccess = async () => {
+    try {
+      await refreshUser();
+      await fetchData();
+    } catch (error) {
+      console.error('Error refreshing after subscription:', error);
+    }
   };
 
   const handleTogglePulse = async (value: boolean) => {
@@ -1608,6 +1594,13 @@ export default function AccountScreen() {
         onClose={() => setShowTeamModal(false)}
         userRole={user?.role || 'owner'}
         userId={user?.id || ''}
+      />
+
+      {/* Subscription Modal */}
+      <SubscriptionModal
+        visible={showSubscriptionModal}
+        onClose={() => setShowSubscriptionModal(false)}
+        onSuccess={handleSubscriptionSuccess}
       />
 
     </SafeAreaView >

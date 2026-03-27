@@ -1,0 +1,7 @@
+# Ignore everything outside the frontend project
+AppData/
+Temp/
+*.tmp
+*.temp
+node_modules/
+.git/
