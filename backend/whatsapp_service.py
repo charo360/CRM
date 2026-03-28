@@ -1076,6 +1076,7 @@ class WhatsAppService:
             return f"{_public_base}{u}" if _public_base else u
         all_imgs = [_to_public_url(u) for u in all_imgs if u]
         all_imgs = [u for u in all_imgs if u]
+        logger.info(f"[showcase] public_base={_public_base!r} all_imgs={all_imgs}")
 
         result = None
         async with httpx.AsyncClient(timeout=30) as client:
@@ -1114,6 +1115,8 @@ class WhatsAppService:
                     json={"number": clean_to, "text": caption},
                     headers=self._headers(),
                 )
+            if resp.status_code not in (200, 201):
+                logger.error(f"[showcase] sendMedia failed HTTP {resp.status_code}: {resp.text[:500]}")
             result = resp.json() if resp.status_code in (200, 201) else {}
 
             # Step 2: numbered action text using business's custom actions
