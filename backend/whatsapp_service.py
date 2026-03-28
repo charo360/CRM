@@ -1055,8 +1055,27 @@ class WhatsAppService:
         for _img in images:
             if _img and _img not in all_imgs:
                 all_imgs.append(_img)
-        from agents.tools import normalize_url as _norm_url
-        all_imgs = [_norm_url(u) for u in all_imgs if u]
+        # Build fully public URLs using SERVER_URL so Evolution API can fetch them externally
+        _public_base = (
+            os.environ.get('SERVER_URL') or
+            os.environ.get('PUBLIC_BASE_URL') or
+            ''
+        ).rstrip('/')
+        def _to_public_url(u: str) -> Optional[str]:
+            if not u:
+                return None
+            if u.startswith('http://') or u.startswith('https://'):
+                # Already absolute — but fix Docker-internal URLs to public ones
+                if 'host.docker.internal' in u or 'localhost' in u or '127.0.0.1' in u:
+                    # Extract path and prepend public base
+                    from urllib.parse import urlparse as _up
+                    _path = _up(u).path
+                    return f"{_public_base}{_path}" if _public_base else u
+                return u
+            # Relative path — prepend public base
+            return f"{_public_base}{u}" if _public_base else u
+        all_imgs = [_to_public_url(u) for u in all_imgs if u]
+        all_imgs = [u for u in all_imgs if u]
 
         result = None
         async with httpx.AsyncClient(timeout=30) as client:
