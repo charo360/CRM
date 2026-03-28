@@ -13340,14 +13340,15 @@ async def send_product_to_customer(
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
     
-    # Use interactive buttons by default for better UX
+    # Manual send from CRM: always send product card only (no action menu)
+    # Action menus are for AI conversations where the customer can reply with numbers
     if use_buttons:
         try:
             result = await whatsapp_service.send_product_showcase(
                 user_id=business_id,
                 to_number=customer["phone_number"],
                 product=product_data,
-                send_buttons=True
+                send_buttons=False
             )
             # Save to db.messages so it appears in CRM chat history
             try:
