@@ -11615,6 +11615,86 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
         for m in messages
     ])
 
+@api_router.post("/messages/fix-images")
+async def fix_broken_images(user = Depends(get_current_user)):
+    """
+    Migration endpoint: Fix existing messages with broken WhatsApp image URLs.
+    Re-downloads images from Evolution API and updates database.
+    """
+    business_id = user.get("business_id", user["_id"])
+    whatsapp_service = get_whatsapp_service(db)
+    
+    # Find all image messages with URLs that look like WhatsApp internal paths
+    broken_images = await db.messages.find({
+        "user_id": business_id,
+        "message_type": "image",
+        "image_url": {"$exists": True},
+        "$or": [
+            {"image_url": {"$regex": "^/v/"}},  # directPath format
+            {"image_url": {"$regex": "directPath"}},
+        ]
+    }).to_list(None)
+    
+    if not broken_images:
+        return {
+            "status": "success",
+            "message": "No broken images found",
+            "fixed": 0,
+            "failed": 0
+        }
+    
+    fixed_count = 0
+    failed_count = 0
+    
+    # Get user's WhatsApp instance
+    wa = user.get("whatsapp", {})
+    instance_name = wa.get("instance_name")
+    
+    if not instance_name:
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+    
+    for msg in broken_images:
+        try:
+            # We need the message key to download from Evolution API
+            # Try to reconstruct it from stored metadata
+            if not msg.get("evo_message_id") or not msg.get("remote_jid"):
+                failed_count += 1
+                continue
+            
+            message_key = {
+                "id": msg["evo_message_id"],
+                "remoteJid": msg["remote_jid"],
+                "fromMe": msg.get("direction") == "outgoing"
+            }
+            
+            # Download the image
+            from whatsapp_service import download_whatsapp_media
+            new_url = await download_whatsapp_media(instance_name, message_key, "image")
+            
+            if new_url:
+                # Update the message with the new URL
+                await db.messages.update_one(
+                    {"_id": msg["_id"]},
+                    {"$set": {"image_url": new_url}}
+                )
+                fixed_count += 1
+                logging.info(f"Fixed image for message {msg['_id']}")
+            else:
+                failed_count += 1
+                logging.warning(f"Failed to download image for message {msg['_id']}")
+                
+        except Exception as e:
+            failed_count += 1
+            logging.error(f"Error fixing image for message {msg.get('_id')}: {e}")
+    
+    return {
+        "status": "success",
+        "message": f"Fixed {fixed_count} images, {failed_count} failed",
+        "total_found": len(broken_images),
+        "fixed": fixed_count,
+        "failed": failed_count
+    }
+
 @api_router.delete("/messages/{message_id}")
 async def delete_message(message_id: str, user = Depends(get_current_user)):
     """Delete a single message from the CRM (local only, does not unsend on WhatsApp)"""
