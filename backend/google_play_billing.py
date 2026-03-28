@@ -178,7 +178,7 @@ SUBSCRIPTION_LIMITS = {
         'max_customers': 500,
         'max_products': 100,
         'max_team_members': 3,
-        'ai_messages_per_month': 1000,
+        'ai_messages_per_month': 1500,
         'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings']
     },
     'standard': {

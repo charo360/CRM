@@ -5639,7 +5639,7 @@ PLAN_FEATURES = {
     "starter": {
         "name": "Starter",
         "interval": "monthly",
-        "features": ["2,500 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"]
+        "features": ["1,500 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"]
     },
     "standard": {
         "name": "Growth",
