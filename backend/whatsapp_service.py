@@ -44,6 +44,9 @@ def get_model_credits(ai_model: str) -> float:
     """Return credit cost for a given AI model slug."""
     return MODEL_MESSAGE_CREDITS.get(ai_model or "standard", 1.6)
 
+# Absolute path to the backend folder (same dir as this file)
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+
 async def download_whatsapp_media(instance_name: str, message_obj: dict, media_type: str = "image") -> Optional[str]:
     """
     Download media from Evolution API and save it locally.
@@ -53,9 +56,11 @@ async def download_whatsapp_media(instance_name: str, message_obj: dict, media_t
     try:
         import aiofiles
         import base64
-        
-        logger.info(f"Downloading {media_type} from Evolution API for instance {instance_name}")
-        
+
+        logger.info(f"[MEDIA] Attempting {media_type} download for instance={instance_name}")
+        logger.info(f"[MEDIA] Evolution API URL: {EVOLUTION_API_URL}")
+        logger.info(f"[MEDIA] Message obj keys: {list(message_obj.keys())}")
+
         # Call Evolution API to get media base64
         # Evolution API requires the FULL message object (key + message content with encrypted keys)
         async with httpx.AsyncClient(timeout=30) as client:
@@ -64,30 +69,34 @@ async def download_whatsapp_media(instance_name: str, message_obj: dict, media_t
                 json={"message": message_obj},
                 headers={"apikey": EVOLUTION_API_KEY}
             )
-            
+
+            logger.info(f"[MEDIA] Evolution API response: HTTP {resp.status_code}")
             if resp.status_code != 200:
-                logger.error(f"Failed to download media: HTTP {resp.status_code} - {resp.text[:200]}")
+                logger.error(f"[MEDIA] Failed to download media: HTTP {resp.status_code} - {resp.text[:500]}")
                 return None
-            
+
             data = resp.json()
             base64_data = data.get("base64")
-            
+
             if not base64_data:
-                logger.error(f"No base64 data in Evolution API response: {data}")
+                logger.error(f"[MEDIA] No base64 data in Evolution API response. Keys returned: {list(data.keys())}")
                 return None
-            
+
+            logger.info(f"[MEDIA] Got base64 data, length={len(base64_data)}")
+
             # Remove data URI prefix if present (e.g., "data:image/jpeg;base64,")
             if "," in base64_data and base64_data.startswith("data:"):
                 base64_data = base64_data.split(",", 1)[1]
-            
+
             # Decode base64
             media_bytes = base64.b64decode(base64_data)
-            logger.info(f"Downloaded {len(media_bytes)} bytes of {media_type}")
-            
-            # Save to uploads folder
-            upload_dir = "uploads/whatsapp_media"
+            logger.info(f"[MEDIA] Decoded {len(media_bytes)} bytes of {media_type}")
+
+            # Save to absolute uploads folder path
+            upload_dir = os.path.join(_BACKEND_DIR, "uploads", "whatsapp_media")
             os.makedirs(upload_dir, exist_ok=True)
-            
+            logger.info(f"[MEDIA] Saving to dir: {upload_dir}")
+
             # Generate unique filename with proper extension
             if media_type == "image":
                 ext = "jpg"
@@ -95,23 +104,23 @@ async def download_whatsapp_media(instance_name: str, message_obj: dict, media_t
                 ext = "pdf"
             else:
                 ext = "bin"
-            
+
             filename = f"{uuid.uuid4()}.{ext}"
             filepath = os.path.join(upload_dir, filename)
-            
+
             async with aiofiles.open(filepath, 'wb') as f:
                 await f.write(media_bytes)
-            
-            logger.info(f"Saved {media_type} to {filepath}")
-            
+
+            logger.info(f"[MEDIA] Saved {media_type} to {filepath}")
+
             # Return public URL
             server_url = os.environ.get("SERVER_URL", "http://localhost:8000").rstrip("/")
             public_url = f"{server_url}/uploads/whatsapp_media/{filename}"
-            logger.info(f"Media accessible at: {public_url}")
+            logger.info(f"[MEDIA] Accessible at: {public_url}")
             return public_url
-            
+
     except Exception as e:
-        logger.error(f"Error downloading WhatsApp media: {e}", exc_info=True)
+        logger.error(f"[MEDIA] Error downloading WhatsApp media: {e}", exc_info=True)
         return None
 
 def _is_valid_contact_phone(phone: str, own_digits: str = "") -> bool:
