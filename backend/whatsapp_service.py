@@ -71,7 +71,7 @@ async def download_whatsapp_media(instance_name: str, message_obj: dict, media_t
             )
 
             logger.info(f"[MEDIA] Evolution API response: HTTP {resp.status_code}")
-            if resp.status_code != 200:
+            if resp.status_code not in (200, 201):
                 logger.error(f"[MEDIA] Failed to download media: HTTP {resp.status_code} - {resp.text[:500]}")
                 return None
 
