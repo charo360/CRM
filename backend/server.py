@@ -11615,6 +11615,91 @@ async def get_customer_messages(customer_id: str, limit: int = 50, user = Depend
         for m in messages
     ])
 
+@api_router.get("/admin/fix-all-images")
+async def fix_all_broken_images():
+    """
+    ADMIN: Fix ALL broken WhatsApp images across all users.
+    Call this once after deploying the image download fix.
+    """
+    total_fixed = 0
+    total_failed = 0
+    users_processed = []
+    
+    # Get all users with WhatsApp connected
+    users = await db.users.find({"whatsapp.status": "connected"}).to_list(None)
+    
+    for user in users:
+        try:
+            business_id = user.get("business_id", user["_id"])
+            instance_name = user.get("whatsapp", {}).get("instance_name")
+            
+            if not instance_name:
+                continue
+            
+            # Find broken images for this user
+            broken_images = await db.messages.find({
+                "user_id": business_id,
+                "message_type": "image",
+                "image_url": {"$exists": True},
+                "$or": [
+                    {"image_url": {"$regex": "^/v/"}},
+                    {"image_url": {"$regex": "directPath"}},
+                ]
+            }).to_list(None)
+            
+            user_fixed = 0
+            user_failed = 0
+            
+            for msg in broken_images:
+                try:
+                    if not msg.get("evo_message_id") or not msg.get("remote_jid"):
+                        user_failed += 1
+                        continue
+                    
+                    message_key = {
+                        "id": msg["evo_message_id"],
+                        "remoteJid": msg["remote_jid"],
+                        "fromMe": msg.get("direction") == "outgoing"
+                    }
+                    
+                    from whatsapp_service import download_whatsapp_media
+                    new_url = await download_whatsapp_media(instance_name, message_key, "image")
+                    
+                    if new_url:
+                        await db.messages.update_one(
+                            {"_id": msg["_id"]},
+                            {"$set": {"image_url": new_url}}
+                        )
+                        user_fixed += 1
+                    else:
+                        user_failed += 1
+                        
+                except Exception as e:
+                    user_failed += 1
+                    logging.error(f"Error fixing image: {e}")
+            
+            total_fixed += user_fixed
+            total_failed += user_failed
+            
+            if user_fixed > 0 or user_failed > 0:
+                users_processed.append({
+                    "user_id": business_id,
+                    "phone": user.get("phone_number", "unknown"),
+                    "fixed": user_fixed,
+                    "failed": user_failed
+                })
+                
+        except Exception as e:
+            logging.error(f"Error processing user {user.get('_id')}: {e}")
+    
+    return {
+        "status": "complete",
+        "total_fixed": total_fixed,
+        "total_failed": total_failed,
+        "users_processed": len(users_processed),
+        "details": users_processed
+    }
+
 @api_router.post("/messages/fix-images")
 async def fix_broken_images(user = Depends(get_current_user)):
     """
@@ -14007,6 +14092,11 @@ async def startup_tasks():
     try:
         static_dir = ROOT_DIR / "static"
         static_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create whatsapp_media folder for downloaded images
+        whatsapp_media_dir = ROOT_DIR / "uploads" / "whatsapp_media"
+        whatsapp_media_dir.mkdir(parents=True, exist_ok=True)
+        logging.info("Created uploads/whatsapp_media directory")
         logging.info(f"Static folder ensured at: {static_dir}")
         
         uploads_dir = ROOT_DIR / "uploads"
