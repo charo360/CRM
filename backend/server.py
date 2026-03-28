@@ -10450,14 +10450,51 @@ async def evolution_webhook(request: Request):
                     logging.info(f"Auto-reply BLOCKED for {from_number} (customer_override={_customer_auto_reply}, global={_global_auto_reply})")
                     return {"status": "ok", "message": "auto-reply disabled for this contact"}
 
-                # needs_human gate: if the customer was escalated to a human, don't auto-reply
-                # until the business owner clears the flag (replies manually in the app)
+                # needs_human gate: if the customer was escalated to a human, apply smart logic:
+                # 1. Auto-expire after 15 minutes (in case owner never manually responds)
+                # 2. If message is on a clearly different topic, clear escalation and reply normally
+                # 3. If still escalated, send a brief acknowledgement (don't go completely silent)
                 if customer and customer.get("needs_human"):
-                    logging.info(
-                        f"Auto-reply BLOCKED for {customer_name} ({from_number}): "
-                        f"needs_human=True reason={customer.get('needs_human_reason','')[:80]}"
-                    )
-                    return {"status": "ok", "message": "waiting for human — needs_human flag set"}
+                    _needs_human_at = customer.get("needs_human_at")
+                    _escalation_expired = False
+                    if _needs_human_at:
+                        _now_utc = datetime.now(timezone.utc)
+                        if hasattr(_needs_human_at, "tzinfo") and _needs_human_at.tzinfo is None:
+                            from datetime import timezone as _tz
+                            _needs_human_at = _needs_human_at.replace(tzinfo=_tz.utc)
+                        _mins_since = (_now_utc - _needs_human_at).total_seconds() / 60
+                        if _mins_since >= 15:
+                            _escalation_expired = True
+                            logging.info(f"[Escalation] Auto-expiring needs_human for {customer_name} — {_mins_since:.0f} min elapsed")
+                            await db.customers.update_one(
+                                {"_id": customer_id},
+                                {"$unset": {"needs_human": "", "needs_human_reason": "", "needs_human_at": ""}}
+                            )
+
+                    if not _escalation_expired:
+                        # Still within 15-min window — acknowledge politely, don't go silent
+                        logging.info(
+                            f"Auto-reply SOFT-BLOCK for {customer_name} ({from_number}): "
+                            f"needs_human=True reason={customer.get('needs_human_reason','')[:80]}"
+                        )
+                        try:
+                            import random as _rnd
+                            _ack_msgs = [
+                                "Our team has been notified and will get back to you shortly.",
+                                "I've flagged this for our team — they'll reach out to you soon.",
+                                "A team member has been notified and will follow up with you shortly.",
+                            ]
+                            _ws_ack = get_whatsapp_service(db)
+                            await _ws_ack.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message=_rnd.choice(_ack_msgs),
+                                customer_name=customer_name,
+                                send_context="auto_reply"
+                            )
+                        except Exception as _ack_err:
+                            logging.error(f"[Escalation] Ack message failed: {_ack_err}")
+                        return {"status": "ok", "message": "escalated — ack sent to customer"}
 
                 # ============================================================
                 # AGENT-BASED PIPELINE
