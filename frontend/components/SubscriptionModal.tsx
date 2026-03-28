@@ -7,9 +7,11 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Purchases, { PurchasesPackage } from 'react-native-purchases';
+import { apiClient } from '../context/api';
 
 interface SubscriptionModalProps {
   visible: boolean;
@@ -17,35 +19,62 @@ interface SubscriptionModalProps {
   onSuccess: () => void;
 }
 
+interface Plan {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  amount_display: string;
+  interval: string;
+  features: string[];
+}
+
 export default function SubscriptionModal({ visible, onClose, onSuccess }: SubscriptionModalProps) {
-  const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
 
   useEffect(() => {
     if (visible) {
-      loadOfferings();
+      loadPlans();
     }
   }, [visible]);
 
-  const loadOfferings = async () => {
+  const loadPlans = async () => {
     try {
       setLoading(true);
-      const offerings = await Purchases.getOfferings();
-      if (offerings.current && offerings.current.availablePackages.length > 0) {
-        setPackages(offerings.current.availablePackages);
-      }
+      const response = await apiClient.get('/subscription/plans');
+      setPlans(response.data);
     } catch (error) {
-      console.error('Error loading offerings:', error);
+      console.error('Error loading plans:', error);
       Alert.alert('Error', 'Failed to load subscription plans');
     } finally {
       setLoading(false);
     }
   };
 
-  const handlePurchase = async (pkg: PurchasesPackage) => {
+  const handlePurchase = async (plan: Plan) => {
     try {
       setPurchasing(true);
+      
+      // Map plan ID to RevenueCat product ID
+      const productId = `premium_${plan.id}_monthly`;
+      
+      // Get offerings from RevenueCat
+      const offerings = await Purchases.getOfferings();
+      if (!offerings.current) {
+        throw new Error('No offerings available');
+      }
+
+      // Find the matching package
+      const pkg = offerings.current.availablePackages.find(
+        p => p.identifier.includes(plan.id)
+      );
+
+      if (!pkg) {
+        throw new Error('Product not found');
+      }
+
       const { customerInfo } = await Purchases.purchasePackage(pkg);
       
       if (customerInfo.entitlements.active['premium']) {
@@ -97,44 +126,51 @@ export default function SubscriptionModal({ visible, onClose, onSuccess }: Subsc
               <ActivityIndicator size="large" color="#2DB843" />
             </View>
           ) : (
-            <>
-              <View style={styles.features}>
-                <Text style={styles.featuresTitle}>Premium Features:</Text>
-                <View style={styles.feature}>
-                  <Ionicons name="checkmark-circle" size={20} color="#2DB843" />
-                  <Text style={styles.featureText}>Unlimited customers</Text>
-                </View>
-                <View style={styles.feature}>
-                  <Ionicons name="checkmark-circle" size={20} color="#2DB843" />
-                  <Text style={styles.featureText}>AI auto-reply</Text>
-                </View>
-                <View style={styles.feature}>
-                  <Ionicons name="checkmark-circle" size={20} color="#2DB843" />
-                  <Text style={styles.featureText}>Advanced analytics</Text>
-                </View>
-                <View style={styles.feature}>
-                  <Ionicons name="checkmark-circle" size={20} color="#2DB843" />
-                  <Text style={styles.featureText}>Priority support</Text>
-                </View>
-              </View>
+            <ScrollView style={styles.scrollView}>
+              <Text style={styles.subtitle}>
+                Choose the plan that fits your business needs
+              </Text>
 
               <View style={styles.packages}>
-                {packages.map((pkg) => (
+                {plans.map((plan, index) => (
                   <TouchableOpacity
-                    key={pkg.identifier}
-                    style={styles.packageCard}
-                    onPress={() => handlePurchase(pkg)}
+                    key={plan.id}
+                    style={[
+                      styles.packageCard,
+                      index === 1 && styles.popularCard
+                    ]}
+                    onPress={() => handlePurchase(plan)}
                     disabled={purchasing}
                   >
-                    <Text style={styles.packageTitle}>
-                      {pkg.product.title}
-                    </Text>
-                    <Text style={styles.packagePrice}>
-                      {pkg.product.priceString}
-                    </Text>
-                    <Text style={styles.packageDescription}>
-                      {pkg.product.description}
-                    </Text>
+                    {index === 1 && (
+                      <View style={styles.popularBadge}>
+                        <Text style={styles.popularText}>MOST POPULAR</Text>
+                      </View>
+                    )}
+                    
+                    <Text style={styles.packageTitle}>{plan.name}</Text>
+                    
+                    <View style={styles.priceContainer}>
+                      <Text style={styles.packagePrice}>
+                        {plan.currency} {plan.amount.toLocaleString()}
+                      </Text>
+                      <Text style={styles.priceInterval}>/month</Text>
+                    </View>
+
+                    <View style={styles.featuresContainer}>
+                      {plan.features.map((feature, idx) => (
+                        <View key={idx} style={styles.feature}>
+                          <Ionicons name="checkmark-circle" size={18} color="#2DB843" />
+                          <Text style={styles.featureText}>{feature}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    <View style={styles.selectButton}>
+                      <Text style={styles.selectButtonText}>
+                        {purchasing ? 'Processing...' : 'Select Plan'}
+                      </Text>
+                    </View>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -146,7 +182,13 @@ export default function SubscriptionModal({ visible, onClose, onSuccess }: Subsc
               >
                 <Text style={styles.restoreText}>Restore Purchases</Text>
               </TouchableOpacity>
-            </>
+
+              <Text style={styles.disclaimer}>
+                • Prices shown in your local currency{'\n'}
+                • Cancel anytime from Play Store{'\n'}
+                • Free tier: 100 messages/month
+              </Text>
+            </ScrollView>
           )}
 
           {purchasing && (
@@ -191,60 +233,111 @@ const styles = StyleSheet.create({
     padding: 60,
     alignItems: 'center',
   },
-  features: {
-    padding: 20,
+  scrollView: {
+    flex: 1,
   },
-  featuresTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-    marginBottom: 12,
-  },
-  feature: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  featureText: {
-    fontSize: 15,
-    color: '#B0C4DE',
-    marginLeft: 10,
+  subtitle: {
+    fontSize: 14,
+    color: '#8B9DC3',
+    textAlign: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 8,
   },
   packages: {
     padding: 20,
-    gap: 12,
+    gap: 16,
   },
   packageCard: {
     backgroundColor: '#1E3A5F',
     padding: 20,
     borderRadius: 12,
     borderWidth: 2,
+    borderColor: '#2D4A6F',
+    position: 'relative',
+  },
+  popularCard: {
     borderColor: '#2DB843',
+    backgroundColor: '#1A3A4F',
+  },
+  popularBadge: {
+    position: 'absolute',
+    top: -10,
+    right: 20,
+    backgroundColor: '#2DB843',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  popularText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#fff',
+    letterSpacing: 0.5,
   },
   packageTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#fff',
     marginBottom: 8,
   },
+  priceContainer: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginBottom: 16,
+  },
   packagePrice: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#2DB843',
+  },
+  priceInterval: {
+    fontSize: 14,
+    color: '#8B9DC3',
+    marginLeft: 4,
+  },
+  featuresContainer: {
+    marginBottom: 16,
+  },
+  feature: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginBottom: 8,
   },
-  packageDescription: {
-    fontSize: 14,
+  featureText: {
+    fontSize: 13,
     color: '#B0C4DE',
+    marginLeft: 8,
+    flex: 1,
+  },
+  selectButton: {
+    backgroundColor: '#2DB843',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  selectButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
   },
   restoreButton: {
     alignSelf: 'center',
-    padding: 12,
+    padding: 16,
+    marginTop: 8,
   },
   restoreText: {
     fontSize: 14,
     color: '#2DB843',
     textDecorationLine: 'underline',
+  },
+  disclaimer: {
+    fontSize: 11,
+    color: '#6B7C93',
+    textAlign: 'center',
+    paddingHorizontal: 30,
+    paddingBottom: 20,
+    lineHeight: 16,
   },
   purchasingOverlay: {
     position: 'absolute',
