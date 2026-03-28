@@ -5,19 +5,26 @@ import { AuthProvider } from '../context/AuthContext';
 import { BusinessProvider } from '../context/BusinessContext';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet, Platform } from 'react-native';
-import Purchases from 'react-native-purchases';
+import Constants from 'expo-constants';
 
 export default function RootLayout() {
   useEffect(() => {
-    // Initialize RevenueCat (will fail in Expo Go, that's expected)
+    // Skip RevenueCat entirely in Expo Go — it cannot use native billing
+    const isExpoGo = Constants.appOwnership === 'expo';
+    if (isExpoGo) {
+      console.log('RevenueCat init skipped (Expo Go mode)');
+      return;
+    }
+    // Only configure in real native builds (APK / IPA)
     try {
+      const Purchases = require('react-native-purchases').default;
       if (Platform.OS === 'android') {
         Purchases.configure({ apiKey: 'goog_YOUR_GOOGLE_API_KEY' });
       } else if (Platform.OS === 'ios') {
         Purchases.configure({ apiKey: 'appl_YOUR_APPLE_API_KEY' });
       }
     } catch (error) {
-      console.log('RevenueCat init skipped (Expo Go mode)');
+      console.log('RevenueCat init failed:', error);
     }
   }, []);
 

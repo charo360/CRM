@@ -10,7 +10,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Purchases, { PurchasesPackage } from 'react-native-purchases';
+import Constants from 'expo-constants';
 import { apiClient } from '../context/api';
 
 interface SubscriptionModalProps {
@@ -55,43 +55,31 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
   };
 
   const handlePurchase = async (plan: Plan) => {
+    const isExpoGo = Constants.appOwnership === 'expo';
+    if (isExpoGo) {
+      Alert.alert(
+        'Development Mode',
+        'In-app purchases require a real build installed from the Play Store / App Store.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
     try {
       setPurchasing(true);
-      
-      // Check if running in Expo Go (RevenueCat not available)
-      try {
-        const offerings = await Purchases.getOfferings();
-        if (!offerings.current) {
-          throw new Error('No offerings available');
-        }
+      const Purchases = require('react-native-purchases').default;
+      const offerings = await Purchases.getOfferings();
+      if (!offerings.current) throw new Error('No offerings available');
 
-        // Find the matching package
-        const pkg = offerings.current.availablePackages.find(
-          p => p.identifier.includes(plan.id)
-        );
+      const pkg = offerings.current.availablePackages.find(
+        (p: any) => p.identifier.includes(plan.id)
+      );
+      if (!pkg) throw new Error('Product not found');
 
-        if (!pkg) {
-          throw new Error('Product not found');
-        }
-
-        const { customerInfo } = await Purchases.purchasePackage(pkg);
-        
-        if (customerInfo.entitlements.active['premium']) {
-          Alert.alert('Success', 'Subscription activated!');
-          onSuccess();
-          onClose();
-        }
-      } catch (revenueCatError: any) {
-        // If RevenueCat is not available (Expo Go), show helpful message
-        if (revenueCatError.message?.includes('native store is not available')) {
-          Alert.alert(
-            'Development Mode',
-            'In-app purchases require a real build. This is a preview of the subscription UI.\n\nTo test purchases:\n1. Build the app with EAS\n2. Install on a real device\n3. Set up RevenueCat with real API keys',
-            [{ text: 'OK' }]
-          );
-        } else {
-          throw revenueCatError;
-        }
+      const { customerInfo } = await Purchases.purchasePackage(pkg);
+      if (customerInfo.entitlements.active['premium']) {
+        Alert.alert('Success', 'Subscription activated!');
+        onSuccess();
+        onClose();
       }
     } catch (error: any) {
       if (!error.userCancelled) {
@@ -103,8 +91,14 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
   };
 
   const restorePurchases = async () => {
+    const isExpoGo = Constants.appOwnership === 'expo';
+    if (isExpoGo) {
+      Alert.alert('Development Mode', 'Restore purchases requires a real build.', [{ text: 'OK' }]);
+      return;
+    }
     try {
       setPurchasing(true);
+      const Purchases = require('react-native-purchases').default;
       const customerInfo = await Purchases.restorePurchases();
       
       if (customerInfo.entitlements.active['premium']) {
