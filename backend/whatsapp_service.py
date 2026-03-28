@@ -44,6 +44,74 @@ def get_model_credits(ai_model: str) -> float:
     """Return credit cost for a given AI model slug."""
     return MODEL_MESSAGE_CREDITS.get(ai_model or "standard", 1.6)
 
+async def download_whatsapp_media(instance_name: str, message_key: dict, media_type: str = "image") -> Optional[str]:
+    """
+    Download media from Evolution API and save it locally.
+    Returns a publicly accessible URL or None if download fails.
+    """
+    try:
+        import aiofiles
+        import base64
+        
+        logger.info(f"Downloading {media_type} from Evolution API for instance {instance_name}")
+        
+        # Call Evolution API to get media base64
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{EVOLUTION_API_URL}/chat/getBase64FromMediaMessage/{instance_name}",
+                json={"message": {"key": message_key}},
+                headers={"apikey": EVOLUTION_API_KEY}
+            )
+            
+            if resp.status_code != 200:
+                logger.error(f"Failed to download media: HTTP {resp.status_code} - {resp.text[:200]}")
+                return None
+            
+            data = resp.json()
+            base64_data = data.get("base64")
+            
+            if not base64_data:
+                logger.error(f"No base64 data in Evolution API response: {data}")
+                return None
+            
+            # Remove data URI prefix if present (e.g., "data:image/jpeg;base64,")
+            if "," in base64_data and base64_data.startswith("data:"):
+                base64_data = base64_data.split(",", 1)[1]
+            
+            # Decode base64
+            media_bytes = base64.b64decode(base64_data)
+            logger.info(f"Downloaded {len(media_bytes)} bytes of {media_type}")
+            
+            # Save to uploads folder
+            upload_dir = "uploads/whatsapp_media"
+            os.makedirs(upload_dir, exist_ok=True)
+            
+            # Generate unique filename with proper extension
+            if media_type == "image":
+                ext = "jpg"
+            elif media_type == "document":
+                ext = "pdf"
+            else:
+                ext = "bin"
+            
+            filename = f"{uuid.uuid4()}.{ext}"
+            filepath = os.path.join(upload_dir, filename)
+            
+            async with aiofiles.open(filepath, 'wb') as f:
+                await f.write(media_bytes)
+            
+            logger.info(f"Saved {media_type} to {filepath}")
+            
+            # Return public URL
+            server_url = os.environ.get("SERVER_URL", "http://localhost:8000").rstrip("/")
+            public_url = f"{server_url}/uploads/whatsapp_media/{filename}"
+            logger.info(f"Media accessible at: {public_url}")
+            return public_url
+            
+    except Exception as e:
+        logger.error(f"Error downloading WhatsApp media: {e}", exc_info=True)
+        return None
+
 def _is_valid_contact_phone(phone: str, own_digits: str = "") -> bool:
     """
     Central gate — returns True only if `phone` is a real E.164-style number
@@ -1394,7 +1462,7 @@ class WhatsAppService:
 
         # Extract image URL if present
         image_message = message_data.get("imageMessage", {})
-        image_url = image_message.get("url") or image_message.get("directPath")
+        has_image = bool(image_message.get("url") or image_message.get("directPath"))
 
         # Extract document if present
         # Evolution API sends documents in two variants:
@@ -1405,24 +1473,25 @@ class WhatsAppService:
             or (message_data.get("documentWithCaption") or {}).get("message", {}).get("documentMessage")
             or {}
         )
-        doc_url = doc_message.get("url") or doc_message.get("directPath")
+        has_document = bool(doc_message.get("url") or doc_message.get("directPath"))
         doc_filename = doc_message.get("fileName") or doc_message.get("title") or ""
 
-        if doc_url:
+        # Download media from Evolution API and get accessible URL
+        media_url = None
+        message_type = "text"
+        
+        if has_document:
             message_type = "document"
-            media_url = doc_url
-            # Use doc filename as body if body is empty
-            # Avoid the generic fallback string so frontend can detect it properly
+            # Download document through Evolution API
+            media_url = await download_whatsapp_media(instance_name, key, "document")
             if not body:
                 body = doc_filename or "📎 Received document"
-        elif image_url:
+        elif has_image:
             message_type = "image"
-            media_url = image_url
+            # Download image through Evolution API
+            media_url = await download_whatsapp_media(instance_name, key, "image")
             if not body:
                 body = "📷"  # placeholder so image-only messages pass the guard
-        else:
-            message_type = "text"
-            media_url = None
 
         push_name = msg.get("pushName", "")
 
