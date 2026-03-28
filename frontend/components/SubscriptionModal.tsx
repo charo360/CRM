@@ -17,6 +17,7 @@ interface SubscriptionModalProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  currentPlan?: string | null;
 }
 
 interface Plan {
@@ -29,7 +30,7 @@ interface Plan {
   features: string[];
 }
 
-export default function SubscriptionModal({ visible, onClose, onSuccess }: SubscriptionModalProps) {
+export default function SubscriptionModal({ visible, onClose, onSuccess, currentPlan }: SubscriptionModalProps) {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
@@ -146,47 +147,62 @@ export default function SubscriptionModal({ visible, onClose, onSuccess }: Subsc
               </Text>
 
               <View style={styles.packages}>
-                {plans.map((plan, index) => (
-                  <TouchableOpacity
-                    key={plan.id}
-                    style={[
-                      styles.packageCard,
-                      index === 1 && styles.popularCard
-                    ]}
-                    onPress={() => handlePurchase(plan)}
-                    disabled={purchasing}
-                  >
-                    {index === 1 && (
-                      <View style={styles.popularBadge}>
-                        <Text style={styles.popularText}>MOST POPULAR</Text>
-                      </View>
-                    )}
-                    
-                    <Text style={styles.packageTitle}>{plan.name}</Text>
-                    
-                    <View style={styles.priceContainer}>
-                      <Text style={styles.packagePrice}>
-                        {plan.currency} {plan.amount.toLocaleString()}
-                      </Text>
-                      <Text style={styles.priceInterval}>/month</Text>
-                    </View>
-
-                    <View style={styles.featuresContainer}>
-                      {plan.features.map((feature, idx) => (
-                        <View key={idx} style={styles.feature}>
-                          <Ionicons name="checkmark-circle" size={18} color="#2DB843" />
-                          <Text style={styles.featureText}>{feature}</Text>
+                {plans.map((plan, index) => {
+                  const isCurrentPlan = currentPlan === plan.id;
+                  return (
+                    <TouchableOpacity
+                      key={plan.id}
+                      style={[
+                        styles.packageCard,
+                        index === 1 && styles.popularCard,
+                        isCurrentPlan && styles.currentPlanCard
+                      ]}
+                      onPress={() => handlePurchase(plan)}
+                      disabled={purchasing || isCurrentPlan}
+                    >
+                      {index === 1 && !isCurrentPlan && (
+                        <View style={styles.popularBadge}>
+                          <Text style={styles.popularText}>MOST POPULAR</Text>
                         </View>
-                      ))}
-                    </View>
+                      )}
+                      {isCurrentPlan && (
+                        <View style={styles.currentBadge}>
+                          <Text style={styles.currentBadgeText}>CURRENT PLAN</Text>
+                        </View>
+                      )}
+                      
+                      <Text style={styles.packageTitle}>{plan.name}</Text>
+                      
+                      <View style={styles.priceContainer}>
+                        <Text style={styles.packagePrice}>
+                          {plan.currency} {plan.amount.toLocaleString()}
+                        </Text>
+                        <Text style={styles.priceInterval}>/month</Text>
+                      </View>
 
-                    <View style={styles.selectButton}>
-                      <Text style={styles.selectButtonText}>
-                        {purchasing ? 'Processing...' : 'Select Plan'}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
+                      <View style={styles.featuresContainer}>
+                        {plan.features.map((feature, idx) => (
+                          <View key={idx} style={styles.feature}>
+                            <Ionicons name="checkmark-circle" size={18} color="#2DB843" />
+                            <Text style={styles.featureText}>{feature}</Text>
+                          </View>
+                        ))}
+                      </View>
+
+                      <View style={[
+                        styles.selectButton,
+                        isCurrentPlan && styles.selectButtonDisabled
+                      ]}>
+                        <Text style={[
+                          styles.selectButtonText,
+                          isCurrentPlan && styles.selectButtonTextDisabled
+                        ]}>
+                          {isCurrentPlan ? 'Active' : purchasing ? 'Processing...' : 'Subscribe Now'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
 
               <TouchableOpacity
@@ -291,6 +307,25 @@ const styles = StyleSheet.create({
     color: '#fff',
     letterSpacing: 0.5,
   },
+  currentBadge: {
+    position: 'absolute',
+    top: -10,
+    right: 20,
+    backgroundColor: '#25D366',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  currentBadgeText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#fff',
+    letterSpacing: 0.5,
+  },
+  currentPlanCard: {
+    borderColor: '#25D366',
+    opacity: 0.7,
+  },
   packageTitle: {
     fontSize: 20,
     fontWeight: 'bold',
@@ -332,10 +367,16 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
+  selectButtonDisabled: {
+    backgroundColor: '#1E3A5F',
+  },
   selectButtonText: {
     fontSize: 15,
     fontWeight: '600',
     color: '#fff',
+  },
+  selectButtonTextDisabled: {
+    color: '#8B9DC3',
   },
   restoreButton: {
     alignSelf: 'center',

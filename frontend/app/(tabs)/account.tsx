@@ -1601,6 +1601,7 @@ export default function AccountScreen() {
         visible={showSubscriptionModal}
         onClose={() => setShowSubscriptionModal(false)}
         onSuccess={handleSubscriptionSuccess}
+        currentPlan={user?.subscription_plan}
       />
 
     </SafeAreaView >
