@@ -44,9 +44,10 @@ def get_model_credits(ai_model: str) -> float:
     """Return credit cost for a given AI model slug."""
     return MODEL_MESSAGE_CREDITS.get(ai_model or "standard", 1.6)
 
-async def download_whatsapp_media(instance_name: str, message_key: dict, media_type: str = "image") -> Optional[str]:
+async def download_whatsapp_media(instance_name: str, message_obj: dict, media_type: str = "image") -> Optional[str]:
     """
     Download media from Evolution API and save it locally.
+    message_obj must be the full Evolution API message object (with key + message fields).
     Returns a publicly accessible URL or None if download fails.
     """
     try:
@@ -56,10 +57,11 @@ async def download_whatsapp_media(instance_name: str, message_key: dict, media_t
         logger.info(f"Downloading {media_type} from Evolution API for instance {instance_name}")
         
         # Call Evolution API to get media base64
+        # Evolution API requires the FULL message object (key + message content with encrypted keys)
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{EVOLUTION_API_URL}/chat/getBase64FromMediaMessage/{instance_name}",
-                json={"message": {"key": message_key}},
+                json={"message": message_obj},
                 headers={"apikey": EVOLUTION_API_KEY}
             )
             
@@ -1482,14 +1484,14 @@ class WhatsAppService:
         
         if has_document:
             message_type = "document"
-            # Download document through Evolution API
-            media_url = await download_whatsapp_media(instance_name, key, "document")
+            # Download document through Evolution API — pass full msg object
+            media_url = await download_whatsapp_media(instance_name, msg, "document")
             if not body:
                 body = doc_filename or "📎 Received document"
         elif has_image:
             message_type = "image"
-            # Download image through Evolution API
-            media_url = await download_whatsapp_media(instance_name, key, "image")
+            # Download image through Evolution API — pass full msg object
+            media_url = await download_whatsapp_media(instance_name, msg, "image")
             if not body:
                 body = "📷"  # placeholder so image-only messages pass the guard
 

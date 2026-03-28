@@ -11656,14 +11656,18 @@ async def fix_all_broken_images():
                         user_failed += 1
                         continue
                     
-                    message_key = {
-                        "id": msg["evo_message_id"],
-                        "remoteJid": msg["remote_jid"],
-                        "fromMe": msg.get("direction") == "outgoing"
+                    # Build a minimal message object — old msgs won't have encrypted keys
+                    # so this will only work if Evolution API still has the media cached
+                    message_obj = {
+                        "key": {
+                            "id": msg["evo_message_id"],
+                            "remoteJid": msg["remote_jid"],
+                            "fromMe": msg.get("direction") == "outgoing"
+                        }
                     }
                     
                     from whatsapp_service import download_whatsapp_media
-                    new_url = await download_whatsapp_media(instance_name, message_key, "image")
+                    new_url = await download_whatsapp_media(instance_name, message_obj, "image")
                     
                     if new_url:
                         await db.messages.update_one(
@@ -11746,15 +11750,18 @@ async def fix_broken_images(user = Depends(get_current_user)):
                 failed_count += 1
                 continue
             
-            message_key = {
-                "id": msg["evo_message_id"],
-                "remoteJid": msg["remote_jid"],
-                "fromMe": msg.get("direction") == "outgoing"
+            # Build a minimal message object — old msgs won't have encrypted keys
+            message_obj = {
+                "key": {
+                    "id": msg["evo_message_id"],
+                    "remoteJid": msg["remote_jid"],
+                    "fromMe": msg.get("direction") == "outgoing"
+                }
             }
             
             # Download the image
             from whatsapp_service import download_whatsapp_media
-            new_url = await download_whatsapp_media(instance_name, message_key, "image")
+            new_url = await download_whatsapp_media(instance_name, message_obj, "image")
             
             if new_url:
                 # Update the message with the new URL
