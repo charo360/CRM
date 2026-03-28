@@ -9,11 +9,15 @@ import Purchases from 'react-native-purchases';
 
 export default function RootLayout() {
   useEffect(() => {
-    // Initialize RevenueCat
-    if (Platform.OS === 'android') {
-      Purchases.configure({ apiKey: 'goog_YOUR_GOOGLE_API_KEY' });
-    } else if (Platform.OS === 'ios') {
-      Purchases.configure({ apiKey: 'appl_YOUR_APPLE_API_KEY' });
+    // Initialize RevenueCat (will fail in Expo Go, that's expected)
+    try {
+      if (Platform.OS === 'android') {
+        Purchases.configure({ apiKey: 'goog_YOUR_GOOGLE_API_KEY' });
+      } else if (Platform.OS === 'ios') {
+        Purchases.configure({ apiKey: 'appl_YOUR_APPLE_API_KEY' });
+      }
+    } catch (error) {
+      console.log('RevenueCat init skipped (Expo Go mode)');
     }
   }, []);
 

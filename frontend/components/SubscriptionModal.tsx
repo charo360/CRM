@@ -57,30 +57,40 @@ export default function SubscriptionModal({ visible, onClose, onSuccess }: Subsc
     try {
       setPurchasing(true);
       
-      // Map plan ID to RevenueCat product ID
-      const productId = `premium_${plan.id}_monthly`;
-      
-      // Get offerings from RevenueCat
-      const offerings = await Purchases.getOfferings();
-      if (!offerings.current) {
-        throw new Error('No offerings available');
-      }
+      // Check if running in Expo Go (RevenueCat not available)
+      try {
+        const offerings = await Purchases.getOfferings();
+        if (!offerings.current) {
+          throw new Error('No offerings available');
+        }
 
-      // Find the matching package
-      const pkg = offerings.current.availablePackages.find(
-        p => p.identifier.includes(plan.id)
-      );
+        // Find the matching package
+        const pkg = offerings.current.availablePackages.find(
+          p => p.identifier.includes(plan.id)
+        );
 
-      if (!pkg) {
-        throw new Error('Product not found');
-      }
+        if (!pkg) {
+          throw new Error('Product not found');
+        }
 
-      const { customerInfo } = await Purchases.purchasePackage(pkg);
-      
-      if (customerInfo.entitlements.active['premium']) {
-        Alert.alert('Success', 'Subscription activated!');
-        onSuccess();
-        onClose();
+        const { customerInfo } = await Purchases.purchasePackage(pkg);
+        
+        if (customerInfo.entitlements.active['premium']) {
+          Alert.alert('Success', 'Subscription activated!');
+          onSuccess();
+          onClose();
+        }
+      } catch (revenueCatError: any) {
+        // If RevenueCat is not available (Expo Go), show helpful message
+        if (revenueCatError.message?.includes('native store is not available')) {
+          Alert.alert(
+            'Development Mode',
+            'In-app purchases require a real build. This is a preview of the subscription UI.\n\nTo test purchases:\n1. Build the app with EAS\n2. Install on a real device\n3. Set up RevenueCat with real API keys',
+            [{ text: 'OK' }]
+          );
+        } else {
+          throw revenueCatError;
+        }
       }
     } catch (error: any) {
       if (!error.userCancelled) {
@@ -126,7 +136,11 @@ export default function SubscriptionModal({ visible, onClose, onSuccess }: Subsc
               <ActivityIndicator size="large" color="#2DB843" />
             </View>
           ) : (
-            <ScrollView style={styles.scrollView}>
+            <ScrollView 
+              style={styles.scrollView}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+            >
               <Text style={styles.subtitle}>
                 Choose the plan that fits your business needs
               </Text>
@@ -213,8 +227,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A1628',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    paddingBottom: 40,
-    maxHeight: '90%',
+    height: '85%',
   },
   header: {
     flexDirection: 'row',
@@ -235,6 +248,9 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 40,
   },
   subtitle: {
     fontSize: 14,
