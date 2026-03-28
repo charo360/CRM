@@ -10458,9 +10458,9 @@ async def evolution_webhook(request: Request):
                     _needs_human_at = customer.get("needs_human_at")
                     _escalation_expired = False
                     if _needs_human_at:
-                        _now_utc = datetime.now(timezone.utc)
+                        from datetime import timezone as _tz
+                        _now_utc = datetime.now(_tz.utc)
                         if hasattr(_needs_human_at, "tzinfo") and _needs_human_at.tzinfo is None:
-                            from datetime import timezone as _tz
                             _needs_human_at = _needs_human_at.replace(tzinfo=_tz.utc)
                         _mins_since = (_now_utc - _needs_human_at).total_seconds() / 60
                         if _mins_since >= 15:
