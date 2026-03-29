@@ -184,6 +184,7 @@ class Router:
                 _name = _selected.get("name", "")
                 _price = _selected.get("price", 0)
                 _currency = context.get("currency", "")
+                _product_id = _selected.get("id") or _selected.get("_id")
                 if _menu_type == "service_selection":
                     _dur = _selected.get("duration")
                     _dur_str = f" ({_dur} min)" if _dur else ""
@@ -191,15 +192,18 @@ class Router:
                         f"Great choice! *{_name}*{_dur_str} — {_currency} {_price:,.0f}\n\n"
                         f"When would you like to book? Reply with your preferred date and time."
                     )
+                    return {
+                        "handled": True, "escalated": False,
+                        "messages": [{"text": _reply}],
+                    }
                 else:
-                    _reply = (
-                        f"Great choice! *{_name}* — {_currency} {_price:,.0f}\n\n"
-                        f"Would you like to:\n1️⃣  Order Now\n2️⃣  Add to Cart\n\n_Reply with 1 or 2_"
-                    )
-                return {
-                    "handled": True, "escalated": False,
-                    "messages": [{"text": _reply}],
-                }
+                    # Return showcase signal so server.py can call send_product_showcase
+                    # with full images + action buttons instead of plain text
+                    return {
+                        "handled": True, "escalated": False,
+                        "messages": [],  # server will send showcase instead
+                        "showcase_product_id": _product_id,
+                    }
             elif _sel is None:
                 # Unrelated reply — clear menu state, continue to intent analyzer
                 if customer_id:

@@ -11061,6 +11061,35 @@ async def evolution_webhook(request: Request):
 
                     ws = get_whatsapp_service(db)
 
+                    # ── PRODUCT SHOWCASE SIGNAL ──────────────────────────────────────
+                    # Router's menu selection gate returns showcase_product_id when the customer
+                    # picks a product from the AI's list. Use send_product_showcase so they get
+                    # the full image gallery + numbered action buttons (Order/Cart/Back etc.)
+                    # — exactly the same rich experience as the manual numbered reply path.
+                    _showcase_pid = agent_result.get("showcase_product_id")
+                    if _showcase_pid:
+                        _biz_id_sc = user.get("business_id", user["_id"])
+                        _showcase_product = await db.products.find_one({"_id": _showcase_pid, "user_id": _biz_id_sc})
+                        if _showcase_product:
+                            await ws.send_product_showcase(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                product=_showcase_product,
+                                send_buttons=True,
+                            )
+                            # Save context so next numbered reply (1/2/3) works correctly
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "products": [{"id": _showcase_product["_id"], "name": _showcase_product["name"],
+                                                  "price": _showcase_product.get("price", 0), "index": 1}],
+                                    "action_context": "product",
+                                    "updated_at": datetime.utcnow()
+                                }},
+                                upsert=True
+                            )
+                            logging.info(f"[Agent] Product showcase sent via AI menu selection: {_showcase_pid}")
+
                     # If agent returned catalog data, store in pending_catalogs for numbered replies
                     _ctx_update = agent_result.get("context_update", {})
                     if _ctx_update.get("catalog_all_ids"):
@@ -11090,7 +11119,7 @@ async def evolution_webhook(request: Request):
                             )
                             logging.info(f"[Agent] Stored catalog in pending_catalogs: {len(_page_products)} products, has_more={_has_more}")
 
-                    # Send all messages returned by agent
+                    # Send all messages returned by agent (skip if showcase already handled it)
                     for msg in agent_result.get("messages", []):
                         _msg_text = msg.get("text", "")
                         _msg_media = msg.get("media_url")
