@@ -7010,50 +7010,51 @@ async def evolution_webhook(request: Request):
                         logging.debug(f"Could not fetch profile pic for new contact {phone}: {e}")
                 asyncio.create_task(_fetch_pic(user["_id"], customer_id, from_number))
 
-                # Notify owner of new contact messaging for the first time
-                async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
-                    try:
-                        owner_phone = owner_user.get("phone_number") or owner_user.get("whatsapp", {}).get("phone_number")
-                        if not owner_phone:
-                            return
-                        # Don't notify if owner IS the new contact (self-message edge case)
-                        if owner_phone == cust_phone:
-                            return
-                        ws = get_whatsapp_service(db)
-                        preview = msg_body[:100] + ("..." if len(msg_body) > 100 else "")
-                        notification = (
-                            f"🆕 *New contact just messaged you!*\n\n"
-                            f"👤 *{cust_name}*\n"
-                            f"📱 {cust_phone}\n\n"
-                            f"💬 _{preview}_\n\n"
-                            f"Open your CRM app to view and reply."
-                        )
-                        await ws.send_message(
-                            user_id=owner_user["_id"],
-                            to_number=owner_phone,
-                            message=notification,
-                            send_context="auto_reply"
-                        )
-                        logging.info(f"Owner notified of new contact: {cust_name} ({cust_phone})")
-                    except Exception as e:
-                        logging.error(f"Failed to notify owner of new contact: {e}")
+                # Notify owner of new contact messaging for the first time (only for incoming messages)
+                if not from_me:
+                    async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
+                        try:
+                            owner_phone = owner_user.get("phone_number") or owner_user.get("whatsapp", {}).get("phone_number")
+                            if not owner_phone:
+                                return
+                            # Don't notify if owner IS the new contact (self-message edge case)
+                            if owner_phone == cust_phone:
+                                return
+                            ws = get_whatsapp_service(db)
+                            preview = msg_body[:100] + ("..." if len(msg_body) > 100 else "")
+                            notification = (
+                                f"🆕 *New contact just messaged you!*\n\n"
+                                f"👤 *{cust_name}*\n"
+                                f"📱 {cust_phone}\n\n"
+                                f"💬 _{preview}_\n\n"
+                                f"Open your CRM app to view and reply."
+                            )
+                            await ws.send_message(
+                                user_id=owner_user["_id"],
+                                to_number=owner_phone,
+                                message=notification,
+                                send_context="auto_reply"
+                            )
+                            logging.info(f"Owner notified of new contact: {cust_name} ({cust_phone})")
+                        except Exception as e:
+                            logging.error(f"Failed to notify owner of new contact: {e}")
 
-                asyncio.create_task(_notify_owner_new_contact(user, customer_name, from_number, body))
+                    asyncio.create_task(_notify_owner_new_contact(user, customer_name, from_number, body))
 
-                # Also send Expo push notification to owner's device(s)
-                async def _push_new_contact(owner_id, cust_name, msg_body):
-                    try:
-                        preview = msg_body[:80] + ("..." if len(msg_body) > 80 else "")
-                        await send_push_notification(
-                            user_id=owner_id,
-                            title=f"🆕 New contact: {cust_name}",
-                            body=preview,
-                            data={"type": "new_contact", "contact_name": cust_name}
-                        )
-                    except Exception as e:
-                        logging.error(f"Push for new contact failed: {e}")
+                    # Also send Expo push notification to owner's device(s)
+                    async def _push_new_contact(owner_id, cust_name, msg_body):
+                        try:
+                            preview = msg_body[:80] + ("..." if len(msg_body) > 80 else "")
+                            await send_push_notification(
+                                user_id=owner_id,
+                                title=f"🆕 New contact: {cust_name}",
+                                body=preview,
+                                data={"type": "new_contact", "contact_name": cust_name}
+                            )
+                        except Exception as e:
+                            logging.error(f"Push for new contact failed: {e}")
 
-                asyncio.create_task(_push_new_contact(user["_id"], customer_name, body))
+                    asyncio.create_task(_push_new_contact(user["_id"], customer_name, body))
 
             # Store message (both incoming and outgoing)
             if customer_id and body:
