@@ -12769,14 +12769,16 @@ async def send_digest_now(digest_type: str = "morning", user = Depends(get_curre
     # Send via WhatsApp
     if user.get("phone_number"):
         try:
-            wa_service = WhatsAppService()
+            from whatsapp_service import get_whatsapp_service
+            wa_service = get_whatsapp_service(db)
             message = digest_service.format_whatsapp_message(digest)
             result = await wa_service.send_message(
                 user_id=user["_id"],
                 to_number=user["phone_number"],
-                message=message
+                message=message,
+                send_context="manual"
             )
-            results["whatsapp"] = result.get("success", False)
+            results["whatsapp"] = result.get("status") in ("sent", "ok")
         except Exception as e:
             logging.error(f"WhatsApp delivery failed: {e}")
     
@@ -12853,13 +12855,15 @@ async def send_motivation_now(is_monday: bool = False, user = Depends(get_curren
     # Send via WhatsApp
     if user.get("phone_number"):
         try:
-            wa_service = WhatsAppService()
+            from whatsapp_service import get_whatsapp_service
+            wa_service = get_whatsapp_service(db)
             response = await wa_service.send_message(
                 user_id=user["_id"],
                 to_number=user["phone_number"],
-                message=motivation["message"]
+                message=motivation["message"],
+                send_context="manual"
             )
-            result["sent"] = response.get("success", False)
+            result["sent"] = response.get("status") in ("sent", "ok")
         except Exception as e:
             logging.error(f"WhatsApp delivery failed: {e}")
     
