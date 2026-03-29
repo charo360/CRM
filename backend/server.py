@@ -7907,6 +7907,43 @@ async def evolution_webhook(request: Request):
 
                                 else:
                                     # product context — look up user's custom action buttons
+                                    if _reply_num == 0:
+                                        # Customer wants to see all images for this product
+                                        _sc_product_id = _pending_cat["products"][0].get("id")
+                                        if _sc_product_id:
+                                            _biz_id_sc = user.get("business_id", user["_id"])
+                                            _full_p = await db.products.find_one({"_id": _sc_product_id, "user_id": _biz_id_sc})
+                                            if _full_p and _full_p.get("images"):
+                                                ws = get_whatsapp_service(db)
+                                                # Send all images EXCEPT the primary image (which was already in the showcase)
+                                                _all_imgs = []
+                                                if _full_p.get("image_url"):
+                                                    _all_imgs.append(_full_p["image_url"])
+                                                for _img in _full_p.get("images", []):
+                                                    if _img and _img not in _all_imgs:
+                                                        _all_imgs.append(_img)
+                                                
+                                                if len(_all_imgs) > 1:
+                                                    for _img_u in _all_imgs[1:]:
+                                                        await ws.send_message(
+                                                            user_id=user["_id"], to_number=from_number,
+                                                            message="", media_url=_img_u, send_context="product_images"
+                                                        )
+                                                else:
+                                                    await ws.send_message(
+                                                        user_id=user["_id"], to_number=from_number,
+                                                        message="Sorry, there are no more images available for this product.",
+                                                        send_context="product_images"
+                                                    )
+                                            else:
+                                                ws = get_whatsapp_service(db)
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message="Sorry, there are no additional images available for this product.",
+                                                    send_context="product_images"
+                                                )
+                                            return {"status": "ok", "handled_by": "product_visual_all"}
+
                                     _default_actions = [
                                         {"label": "Order Now",             "action_type": "order",       "index": 1},
                                         {"label": "Add to Cart",           "action_type": "add_to_cart", "index": 2},
@@ -10222,6 +10259,48 @@ async def evolution_webhook(request: Request):
                                     except Exception as _ne2:
                                         logging.warning(f"Checkout push notification failed: {_ne2}")
                                 return {"status": "ok", "handled_by": "checkout"}
+                            
+                            else:
+                                # Cart is empty but they clicked checkout
+                                ws = get_whatsapp_service(db)
+                                _empty_msg = "🛒 Your cart is currently empty.\n\nHere's our catalog to add some items! 👇"
+                                _all_p_empty = await db.products.find(
+                                    {"user_id": _biz_id, "in_stock": True}
+                                ).sort("name", 1).to_list(100)
+                                if _all_p_empty:
+                                    PAGE_SIZE = 8
+                                    _first_page_empty = _all_p_empty[:PAGE_SIZE]
+                                    _has_more_empty = len(_all_p_empty) > PAGE_SIZE
+                                    await ws.send_product_list(
+                                        user_id=user["_id"],
+                                        to_number=from_number,
+                                        title="Our Products",
+                                        products=_first_page_empty,
+                                        has_more=_has_more_empty,
+                                        header_text=_empty_msg
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "products": [{"id": p["_id"], "name": p["name"],
+                                                          "price": p.get("price", 0), "index": i}
+                                                         for i, p in enumerate(_first_page_empty, 1)],
+                                            "all_product_ids": [p["_id"] for p in _all_p_empty],
+                                            "page_offset": 0,
+                                            "has_more": _has_more_empty,
+                                            "action_context": "catalog_select",
+                                            "updated_at": datetime.utcnow()
+                                        }},
+                                        upsert=True
+                                    )
+                                else:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="🛒 Your cart is empty right now.",
+                                        send_context="auto_reply"
+                                    )
+                                logging.info(f"Empty cart checkout attempted by {customer_id}")
+                                return {"status": "ok", "handled_by": "empty_checkout_fallback"}
 
                         elif button_action == "cancel_cart":
                             # Customer chose "Cancel Order" from cart menu — clear cart then resend catalog
@@ -10385,7 +10464,25 @@ async def evolution_webhook(request: Request):
                                     )
                                     logging.info(f"Similar products fallback to main catalog for {button_product_id}")
                                     return {"status": "ok", "handled_by": "similar_fallback"}
-                            return {"status": "error", "message": "Product not found"}
+                            else:
+                                # Fallback if button_product_id was invalid or None
+                                _all_p = await db.products.find({"user_id": _biz_id_sim, "in_stock": True}).sort("name",1).to_list(8)
+                                await ws.send_product_list(
+                                    user_id=user["_id"], to_number=from_number,
+                                    title="Our Products", products=_all_p,
+                                    header_text="Here are all our available products! 😊"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i}
+                                                     for i, p in enumerate(_all_p, 1)],
+                                        "action_context": "catalog_select",
+                                        "updated_at": datetime.utcnow()
+                                    }}
+                                )
+                                logging.info(f"Similar products failed (no product ID), returning main catalog")
+                                return {"status": "ok", "handled_by": "similar_missing_fallback"}
 
                         elif button_action in ("book", "subscribe", "quote", "test_drive", "info", "custom"):
                             # Custom action types — craft intent message and let AI handle naturally

@@ -1208,6 +1208,7 @@ class WhatsAppService:
             _default_actions = [
                 {"label": "Order Now",      "action_type": "order",       "index": 1},
                 {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
+                {"label": "See Similar Products", "action_type": "similar",     "index": 3},
             ]
             _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
             # Always add "Back to Catalog" as the last option
@@ -1218,7 +1219,10 @@ class WhatsAppService:
             action_lines = "\n".join(
                 f"{a['index']}\ufe0f\u20e3  {a['label']}" for a in _actions_with_back
             )
-            actions_text = f"*What would you like to do?*\n\n{action_lines}\n\n_Reply with {_reply_hint}_"
+            # Add hint that 0 = view all images (mirrors catalog_select UX)
+            _has_images = bool(all_imgs)
+            _img_hint = "\n0\ufe0f\u20e3  View all images" if _has_images else ""
+            actions_text = f"*What would you like to do?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
             
             await self.send_message(
                 user_id=user_id,
