@@ -1065,8 +1065,8 @@ class WhatsAppService:
         from pathlib import Path as _Path
         _backend_dir = _Path(__file__).parent
 
-        async def _resolve_img(u: str) -> Optional[str]:
-            """Always return a base64 data URI — download remote URLs, read local files from disk."""
+        async def _resolve_img(u: str):
+            """Return (base64_str, mime_type) for local files/remote URLs, or None on failure."""
             if not u:
                 return None
 
@@ -1090,7 +1090,7 @@ class WhatsAppService:
                         _ext = _file.suffix.lower().replace('.', '') or 'jpeg'
                         _data = _b64.b64encode(_file.read_bytes()).decode()
                         logger.info(f"[showcase] local file → base64 ({_file.name})")
-                        return f"data:image/{_ext};base64,{_data}"
+                        return (_data, f"image/{_ext}")
                     except Exception as _re:
                         logger.warning(f"[showcase] Could not read local image {_file}: {_re}")
 
@@ -1103,8 +1103,8 @@ class WhatsAppService:
                         _ct = _r.headers.get("content-type", "image/jpeg")
                         _mime = _ct.split(";")[0].strip() or "image/jpeg"
                         _data = _b64.b64encode(_r.content).decode()
-                        logger.info(f"[showcase] remote URL downloaded → base64 ({len(_r.content)} bytes)")
-                        return f"data:{_mime};base64,{_data}"
+                        logger.info(f"[showcase] remote URL downloaded → base64 ({len(_r.content)} bytes, mime={_mime})")
+                        return (_data, _mime)
                     else:
                         logger.warning(f"[showcase] Failed to download image {u}: HTTP {_r.status_code}")
                 except Exception as _de:
@@ -1113,21 +1113,22 @@ class WhatsAppService:
             return None
 
         all_imgs = list(await asyncio.gather(*[_resolve_img(u) for u in all_imgs if u]))
-        all_imgs = [u for u in all_imgs if u]
-        logger.info(f"[showcase] resolved {len(all_imgs)} image(s), first={'base64' if all_imgs and all_imgs[0].startswith('data:') else all_imgs[0] if all_imgs else 'none'}")
+        all_imgs = [t for t in all_imgs if t]  # list of (base64_str, mime_type) tuples
+        logger.info(f"[showcase] resolved {len(all_imgs)} image(s)")
 
         result = None
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             if all_imgs:
                 # Send extra images first (no caption) so the captioned one arrives last
-                for _extra in all_imgs[1:]:
+                for (_extra_b64, _extra_mime) in all_imgs[1:]:
                     try:
                         await client.post(
                             f"{self.base_url}/message/sendMedia/{instance_name}",
                             json={
                                 "number": clean_to,
                                 "mediatype": "image",
-                                "media": _extra,
+                                "mimetype": _extra_mime,
+                                "media": _extra_b64,
                                 "caption": "",
                             },
                             headers=self._headers(),
@@ -1137,12 +1138,14 @@ class WhatsAppService:
                         logger.warning(f"Extra image send failed: {_ie}")
 
                 # Main image with caption
+                _main_b64, _main_mime = all_imgs[0]
                 resp = await client.post(
                     f"{self.base_url}/message/sendMedia/{instance_name}",
                     json={
                         "number": clean_to,
                         "mediatype": "image",
-                        "media": all_imgs[0],
+                        "mimetype": _main_mime,
+                        "media": _main_b64,
                         "caption": caption,
                     },
                     headers=self._headers(),
