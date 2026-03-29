@@ -1064,11 +1064,12 @@ class WhatsAppService:
         from pathlib import Path as _Path
         _backend_dir = _Path(__file__).parent
 
-        def _resolve_img(u: str) -> Optional[str]:
-            """Return a base64 data URI for local files, or a public URL for remote ones."""
+        async def _resolve_img(u: str) -> Optional[str]:
+            """Always return a base64 data URI — download remote URLs, read local files from disk."""
             if not u:
                 return None
-            # Determine the file path portion
+
+            # --- Local file path ---
             _path_part: Optional[str] = None
             if u.startswith('/uploads/') or u.startswith('uploads/'):
                 _path_part = u.lstrip('/')
@@ -1076,11 +1077,8 @@ class WhatsAppService:
                 from urllib.parse import urlparse as _up
                 _parsed = _up(u)
                 _host = _parsed.netloc
-                # localhost / docker-internal → local file
-                if 'localhost' in _host or '127.0.0.1' in _host or 'docker.internal' in _host or '10.' in _host or '192.168.' in _host:
+                if 'localhost' in _host or '127.0.0.1' in _host or 'docker.internal' in _host:
                     _path_part = _parsed.path.lstrip('/')
-                else:
-                    return u  # genuine external URL — send as-is
             else:
                 _path_part = u.lstrip('/')
 
@@ -1090,16 +1088,30 @@ class WhatsAppService:
                     try:
                         _ext = _file.suffix.lower().replace('.', '') or 'jpeg'
                         _data = _b64.b64encode(_file.read_bytes()).decode()
+                        logger.info(f"[showcase] local file → base64 ({_file.name})")
                         return f"data:image/{_ext};base64,{_data}"
                     except Exception as _re:
                         logger.warning(f"[showcase] Could not read local image {_file}: {_re}")
-            # Last resort: try building a public URL
-            _public_base = (os.environ.get('SERVER_URL') or '').rstrip('/')
-            if _public_base and _path_part:
-                return f"{_public_base}/{_path_part}"
+
+            # --- Remote URL (ImgBB, Cloudinary, S3, etc.) → download and base64 ---
+            if u.startswith('http://') or u.startswith('https://'):
+                try:
+                    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
+                        _r = await _dl.get(u, headers={"User-Agent": "Mozilla/5.0"})
+                    if _r.status_code == 200:
+                        _ct = _r.headers.get("content-type", "image/jpeg")
+                        _mime = _ct.split(";")[0].strip() or "image/jpeg"
+                        _data = _b64.b64encode(_r.content).decode()
+                        logger.info(f"[showcase] remote URL downloaded → base64 ({len(_r.content)} bytes)")
+                        return f"data:{_mime};base64,{_data}"
+                    else:
+                        logger.warning(f"[showcase] Failed to download image {u}: HTTP {_r.status_code}")
+                except Exception as _de:
+                    logger.warning(f"[showcase] Could not download image {u}: {_de}")
+
             return None
 
-        all_imgs = [_resolve_img(u) for u in all_imgs if u]
+        all_imgs = list(await asyncio.gather(*[_resolve_img(u) for u in all_imgs if u]))
         all_imgs = [u for u in all_imgs if u]
         logger.info(f"[showcase] resolved {len(all_imgs)} image(s), first={'base64' if all_imgs and all_imgs[0].startswith('data:') else all_imgs[0] if all_imgs else 'none'}")
 
