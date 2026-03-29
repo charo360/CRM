@@ -1049,6 +1049,7 @@ class WhatsAppService:
         # Collect ALL images for this product (deduplicated)
         images = product.get('images', [])
         image_url = product.get('image_url')
+        logger.info(f"[showcase] raw image_url={image_url!r} images={images}")
         all_imgs: list = []
         if image_url:
             all_imgs.append(image_url)
