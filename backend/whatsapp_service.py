@@ -1509,8 +1509,8 @@ class WhatsAppService:
         if "@g.us" in remote_jid:
             return
 
-        # Skip @lid and other non-standard JIDs (not real phone numbers)
-        if "@s.whatsapp.net" not in remote_jid:
+        # Skip status updates and broadcasts, but allow real numbers (@s.whatsapp.net) and business LIDs (@lid)
+        if "@s.whatsapp.net" not in remote_jid and "@lid" not in remote_jid:
             return
 
         # Convert JID to phone number (remove @s.whatsapp.net)
