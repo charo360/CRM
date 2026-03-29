@@ -1093,6 +1093,25 @@ class WhatsAppService:
                         return (_data, f"image/{_ext}")
                     except Exception as _re:
                         logger.warning(f"[showcase] Could not read local image {_file}: {_re}")
+                else:
+                    # File not on disk — try to fetch it via SERVER_URL (e.g. on Render / cloud deploy)
+                    _server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+                    if _server_url:
+                        _fallback_url = f"{_server_url}/{_path_part}"
+                        logger.info(f"[showcase] local file missing, trying HTTP fallback: {_fallback_url}")
+                        try:
+                            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
+                                _r = await _dl.get(_fallback_url, headers={"User-Agent": "Mozilla/5.0"})
+                            if _r.status_code == 200:
+                                _ct = _r.headers.get("content-type", "image/jpeg")
+                                _mime = _ct.split(";")[0].strip() or "image/jpeg"
+                                _data = _b64.b64encode(_r.content).decode()
+                                logger.info(f"[showcase] HTTP fallback downloaded → base64 ({len(_r.content)} bytes)")
+                                return (_data, _mime)
+                            else:
+                                logger.warning(f"[showcase] HTTP fallback failed: HTTP {_r.status_code} for {_fallback_url}")
+                        except Exception as _fbe:
+                            logger.warning(f"[showcase] HTTP fallback exception: {_fbe}")
 
             # --- Remote URL (ImgBB, Cloudinary, S3, etc.) → download and base64 ---
             if u.startswith('http://') or u.startswith('https://'):
