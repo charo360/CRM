@@ -10224,16 +10224,48 @@ async def evolution_webhook(request: Request):
                                 return {"status": "ok", "handled_by": "checkout"}
 
                         elif button_action == "cancel_cart":
-                            # Customer chose "Cancel Order" from cart menu
+                            # Customer chose "Cancel Order" from cart menu — clear cart then resend catalog
                             _biz_id_cancel = user.get("business_id", user["_id"])
                             _cart_cancel = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_cancel, "status": "active"})
                             if _cart_cancel:
                                 await db.carts.update_one({"_id": _cart_cancel["_id"]}, {"$set": {"status": "cancelled"}})
-                                ws = get_whatsapp_service(db)
+                            ws = get_whatsapp_service(db)
+                            _cancel_msg = "🗑️ Your cart has been cleared.\n\nWould you like to keep shopping? Here's our catalog:"
+                            # Auto-resend catalog so customer can continue browsing
+                            _all_p_cancel = await db.products.find(
+                                {"user_id": _biz_id_cancel, "in_stock": True}
+                            ).sort("name", 1).to_list(100)
+                            if _all_p_cancel:
+                                PAGE_SIZE = 8
+                                _first_page_c = _all_p_cancel[:PAGE_SIZE]
+                                _has_more_c = len(_all_p_cancel) > PAGE_SIZE
+                                await ws.send_product_list(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    title="Our Products",
+                                    products=_first_page_c,
+                                    has_more=_has_more_c,
+                                    header_text=_cancel_msg
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "products": [{"id": p["_id"], "name": p["name"],
+                                                      "price": p.get("price", 0), "index": i}
+                                                     for i, p in enumerate(_first_page_c, 1)],
+                                        "all_product_ids": [p["_id"] for p in _all_p_cancel],
+                                        "page_offset": 0,
+                                        "has_more": _has_more_c,
+                                        "action_context": "catalog_select",
+                                        "updated_at": datetime.utcnow()
+                                    }},
+                                    upsert=True
+                                )
+                            else:
                                 await ws.send_message(
                                     user_id=user["_id"],
                                     to_number=from_number,
-                                    message="🗑️ Your cart has been cleared.\n\nFeel free to browse our catalog anytime! 😊",
+                                    message="🗑️ Your cart has been cleared.\n\nNo products in stock right now, but check back soon! 😊",
                                     customer_name=customer_name,
                                     send_context="order_confirm"
                                 )
@@ -10241,8 +10273,8 @@ async def evolution_webhook(request: Request):
                                     {"customer_id": customer_id, "user_id": user["_id"]},
                                     {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
                                 )
-                                logging.info(f"Cart cancelled by customer: customer_id={customer_id}")
-                                return {"status": "ok", "handled_by": "cancel_cart"}
+                            logging.info(f"Cart cancelled by customer, catalog resent: customer_id={customer_id}")
+                            return {"status": "ok", "handled_by": "cancel_cart"}
 
                         elif button_action == "continue" or button_action == "back":
                             # Customer chose "Continue Shopping" or "Back to Catalog" — re-send product catalog
