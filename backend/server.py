@@ -8197,16 +8197,36 @@ async def evolution_webhook(request: Request):
                             else:
                                 # Customer cancelled
                                 ws = get_whatsapp_service(db)
-                                await ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message="No problem! If you'd like to browse our products again, just say *catalog* or let me know how I can help. 😊",
-                                    customer_name=customer_name, send_context="order_cancel"
-                                )
-                                await db.pending_catalogs.update_one(
-                                    {"customer_id": customer_id, "user_id": user["_id"]},
-                                    {"$set": {"action_context": "product", "updated_at": datetime.utcnow()}}
-                                )
-                                logging.info(f"[Order] Cancelled via NO reply for customer={customer_id}")
+                                _cancel_msg = "No problem! I've cancelled that for you. 😊\n\nIs there anything else you'd like to see from our catalog?"
+                                
+                                # Auto-resend catalog
+                                _biz_id_no = user.get("business_id", user["_id"])
+                                _all_p_no = await db.products.find({"user_id": _biz_id_no, "in_stock": True}).sort("name", 1).to_list(8)
+                                if _all_p_no:
+                                    await ws.send_product_list(
+                                        user_id=user["_id"], to_number=from_number,
+                                        title="Our Products", products=_all_p_no,
+                                        header_text=_cancel_msg
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i}
+                                                         for i, p in enumerate(_all_p_no, 1)],
+                                            "action_context": "catalog_select",
+                                            "updated_at": datetime.utcnow()
+                                        }}
+                                    )
+                                else:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_cancel_msg, customer_name=customer_name, send_context="order_cancel"
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "product", "updated_at": datetime.utcnow()}}
+                                    )
+                                logging.info(f"[Order] Cancelled via NO reply for customer={customer_id}, resent catalog")
                                 return {"status": "ok", "handled_by": "order_confirm_no"}
 
                 # BOOKING ADDON SELECT HANDLER — customer picks add-ons (or 0 to skip)
@@ -9840,16 +9860,41 @@ async def evolution_webhook(request: Request):
                                 return {"status": "ok", "handled_by": "booking_confirm_yes"}
                             else:
                                 ws = get_whatsapp_service(db)
-                                await ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message="No problem! If you'd like to book again, just say *book* or ask about our services. 😊",
-                                    customer_name=customer_name, send_context="booking_cancel"
-                                )
-                                await db.pending_catalogs.update_one(
-                                    {"customer_id": customer_id, "user_id": user["_id"]},
-                                    {"$set": {"action_context": "product", "updated_at": datetime.utcnow()}}
-                                )
-                                logging.info(f"[Booking] Cancelled via NO reply for customer={customer_id}")
+                                _re_msg = "No problem! I've cancelled that for you. 😊\n\nIs there anything else you'd like to see from our catalog?"
+                                
+                                # Auto-resend catalog to keep flow alive
+                                _biz_id_no = user.get("business_id", user["_id"])
+                                _all_products_no = await db.products.find(
+                                    {"user_id": _biz_id_no, "in_stock": True}
+                                ).sort("name", 1).to_list(100)
+                                if _all_products_no:
+                                    await ws.send_product_list(
+                                        user_id=user["_id"],
+                                        to_number=from_number,
+                                        title="Our Products",
+                                        products=_all_products_no[:8],
+                                        has_more=len(_all_products_no) > 8,
+                                        header_text=_re_msg
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i}
+                                                         for i, p in enumerate(_all_products_no[:8], 1)],
+                                            "action_context": "catalog_select",
+                                            "updated_at": datetime.utcnow()
+                                        }}
+                                    )
+                                else:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_re_msg, customer_name=customer_name, send_context="booking_cancel"
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "product", "updated_at": datetime.utcnow()}}
+                                    )
+                                logging.info(f"[Booking] Cancelled via NO reply for customer={customer_id}, resent catalog")
                                 return {"status": "ok", "handled_by": "booking_confirm_no"}
 
                 # Handle button actions
@@ -9969,12 +10014,18 @@ async def evolution_webhook(request: Request):
                                 cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
                                 cart_items = cart.get("items", []) if cart else []
                                 cart_total = sum(i.get("price", 0) * i.get("quantity", 1) for i in cart_items)
+                                
+                                # Unified, CRM-logged confirmation + "What's next?" message
                                 added_msg = (
                                     f"✅ *{product['name']}* added to cart!\n\n"
-                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}"
+                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}\n\n"
+                                    f"*What would you like to do?*\n"
+                                    f"1️⃣  Checkout Now\n"
+                                    f"2️⃣  Continue Shopping\n"
+                                    f"3️⃣  Cancel Order\n\n"
+                                    f"_Reply with 1, 2 or 3, or type *cart* to view details_"
                                 )
                                 ws = get_whatsapp_service(db)
-                                # Send confirmation message
                                 await ws.send_message(
                                     user_id=user["_id"],
                                     to_number=from_number,
@@ -9982,26 +10033,8 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name,
                                     send_context="order_confirm",
                                 )
-                                # Send "What's next?" as list (compact single button → opens clean menu)
-                                import httpx
-                                _instance = await db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1})
-                                _inst_name = (_instance or {}).get("whatsapp", {}).get("instance_name", "")
-                                if _inst_name:
-                                    async with httpx.AsyncClient(timeout=30) as client:
-                                        await asyncio.sleep(0.5)
-                                        cart_text = (
-                                            f"*What would you like to do?*\n\n"
-                                            f"1️⃣  Checkout Now\n"
-                                            f"2️⃣  Continue Shopping\n"
-                                            f"3️⃣  Cancel Order\n\n"
-                                            f"_Reply with 1, 2 or 3_"
-                                        )
-                                        await client.post(
-                                            f"{ws.base_url}/message/sendText/{_inst_name}",
-                                            json={"number": from_number.lstrip("+"), "text": cart_text},
-                                            headers=ws._headers(),
-                                        )
-                                # Store cart action context so "1"/"2" replies are understood
+                                
+                                # Store cart action context so "1"/"2"/"3" replies are understood
                                 await db.pending_catalogs.update_one(
                                     {"customer_id": customer_id, "user_id": user["_id"]},
                                     {"$set": {"action_context": "cart", "updated_at": datetime.utcnow()}},
@@ -10212,13 +10245,14 @@ async def evolution_webhook(request: Request):
                                 return {"status": "ok", "handled_by": "cancel_cart"}
 
                         elif button_action == "continue" or button_action == "back":
-                            # Customer chose "Continue Shopping" or "Back to Catalog" — re-send product catalog with pagination
+                            # Customer chose "Continue Shopping" or "Back to Catalog" — re-send product catalog
                             _biz_id_cont = user.get("business_id", user["_id"])
                             _all_products = await db.products.find(
                                 {"user_id": _biz_id_cont, "in_stock": True}
                             ).sort("name", 1).to_list(100)
                             ws = get_whatsapp_service(db)
                             if _all_products:
+                                _header = "Sure! Let's get back to the catalog. 😊" if button_action == "back" else "Great! Continuing your shopping... 🛍️"
                                 _currency_cont = user.get("settings", {}).get("currency", "KES")
                                 PAGE_SIZE = 8
                                 _first_page = _all_products[:PAGE_SIZE]
@@ -10231,7 +10265,8 @@ async def evolution_webhook(request: Request):
                                     to_number=from_number,
                                     title="Our Products",
                                     products=_first_page,
-                                    has_more=_has_more
+                                    has_more=_has_more,
+                                    header_text=_header
                                 )
                                 # Set catalog_select so next numbered reply picks a product
                                 await db.pending_catalogs.update_one(
@@ -10256,7 +10291,7 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name,
                                     send_context="auto_reply"
                                 )
-                            logging.info("Continue shopping: re-sent product catalog")
+                            logging.info(f"Navigation action '{button_action}': re-sent product catalog")
                             return {"status": "ok", "handled_by": "continue_shopping"}
 
                         elif button_action == "similar":
@@ -10264,20 +10299,17 @@ async def evolution_webhook(request: Request):
                             _biz_id_sim = user.get("business_id", user["_id"])
                             _sim_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_sim})
                             _sim_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            ws = get_whatsapp_service(db)
                             if _sim_product:
                                 _sim_category = _sim_product.get("category", "")
                                 _sim_name = _sim_product["name"]
                                 # Find products in same category, excluding the current one
-                                _sim_query = {"user_id": _biz_id_sim, "_id": {"$ne": button_product_id}}
+                                _sim_query = {"user_id": _biz_id_sim, "_id": {"$ne": button_product_id}, "in_stock": True}
                                 if _sim_category:
                                     _sim_query["category"] = _sim_category
                                 _sim_matches = await db.products.find(_sim_query).to_list(5)
-                                # If same-category has < 3 results, pad with other products
-                                if len(_sim_matches) < 3:
-                                    _other_query = {"user_id": _biz_id_sim, "_id": {"$nin": [button_product_id] + [p["_id"] for p in _sim_matches]}}
-                                    _others = await db.products.find(_other_query).to_list(5 - len(_sim_matches))
-                                    _sim_matches += _others
-                                ws = get_whatsapp_service(db)
+                                
+                                # If same-category matches found, send them
                                 if _sim_matches:
                                     _sim_lines = [f"Here are some products you might also like:\n"]
                                     for _si, _sp in enumerate(_sim_matches[:5], 1):
@@ -10300,14 +10332,28 @@ async def evolution_webhook(request: Request):
                                             "updated_at": datetime.utcnow()
                                         }}
                                     )
+                                    logging.info(f"Similar products shown for product {button_product_id}")
+                                    return {"status": "ok", "handled_by": "similar_products"}
                                 else:
-                                    await ws.send_message(
-                                        user_id=_biz_id_sim, to_number=from_number,
-                                        message=f"Sorry, we don't have other products similar to *{_sim_name}* right now. Feel free to browse our full catalog by typing *catalog*! 😊",
-                                        customer_name=customer_name, send_context="similar_products"
+                                    # Fallback to main catalog if no similar matches
+                                    _all_p = await db.products.find({"user_id": _biz_id_sim, "in_stock": True}).sort("name",1).to_list(8)
+                                    await ws.send_product_list(
+                                        user_id=user["_id"], to_number=from_number,
+                                        title="Our Products", products=_all_p,
+                                        header_text=f"I couldn't find products similar to *{_sim_name}*, but check out our other popular items! 😊"
                                     )
-                            logging.info(f"Similar products shown for product {button_product_id}")
-                            return {"status": "ok", "handled_by": "similar_products"}
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {
+                                            "products": [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i}
+                                                         for i, p in enumerate(_all_p, 1)],
+                                            "action_context": "catalog_select",
+                                            "updated_at": datetime.utcnow()
+                                        }}
+                                    )
+                                    logging.info(f"Similar products fallback to main catalog for {button_product_id}")
+                                    return {"status": "ok", "handled_by": "similar_fallback"}
+                            return {"status": "error", "message": "Product not found"}
 
                         elif button_action in ("book", "subscribe", "quote", "test_drive", "info", "custom"):
                             # Custom action types — craft intent message and let AI handle naturally

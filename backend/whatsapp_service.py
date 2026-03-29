@@ -1237,7 +1237,8 @@ class WhatsAppService:
         products: List[Dict[str, Any]],
         category: Optional[str] = None,
         has_more: bool = False,
-        page_num: int = 1
+        page_num: int = 1,
+        header_text: Optional[str] = None
     ) -> Dict:
         """Send multiple products as a numbered list (max 8 per page). If has_more, option 9 = next page."""
         user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
@@ -1250,7 +1251,11 @@ class WhatsAppService:
 
         # Show max 8 products as options 1-8
         page_label = f" (Page {page_num})" if page_num > 1 else ""
-        lines = [f"🛍️ *{title}{page_label}*\n"]
+        lines = []
+        if header_text:
+            lines.append(f"{header_text}\n")
+        lines.append(f"🛍️ *{title}{page_label}*\n")
+        
         for i, p in enumerate(products[:8], 1):
             price = p.get('price', 0)
             _p_is_rental = (p.get('service_category') == 'rental' or p.get('offering_type') == 'rental')
