@@ -1140,7 +1140,7 @@ class WhatsAppService:
         send_buttons: bool = True
     ) -> Dict:
         """Send product image with caption then interactive buttons using authenticated client"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
@@ -1240,7 +1240,7 @@ class WhatsAppService:
         page_num: int = 1
     ) -> Dict:
         """Send multiple products as a numbered list (max 8 per page). If has_more, option 9 = next page."""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
@@ -1276,7 +1276,7 @@ class WhatsAppService:
         include_share: bool = True
     ) -> Dict:
         """Send a single product with interactive buttons (no image)"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
         if not user or not user.get("whatsapp", {}).get("instance_name"):
             return {"status": "error", "message": "WhatsApp not connected"}
 
