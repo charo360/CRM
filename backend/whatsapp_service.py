@@ -695,6 +695,109 @@ class WhatsAppService:
 
     # ============ MESSAGING ============
 
+    async def resolve_media_to_base64(self, u: str) -> 'Optional[Tuple[str, str]]':
+        """Return (base64_str, mime_type) for local files/remote URLs, or None on failure."""
+        if not u:
+            return None
+
+        import base64 as _b64
+        import os
+        from pathlib import Path as _Path
+        import httpx
+        from urllib.parse import urlparse as _up
+        
+        _backend_dir = _Path(os.path.dirname(__file__))
+
+        # --- Local file path ---
+        _path_part = None
+        if u.startswith('/uploads/') or u.startswith('uploads/'):
+            _path_part = u.lstrip('/')
+        elif u.startswith('http://') or u.startswith('https://'):
+            _parsed = _up(u)
+            _host = _parsed.netloc
+            if 'localhost' in _host or '127.0.0.1' in _host or 'docker.internal' in _host:
+                _path_part = _parsed.path.lstrip('/')
+        else:
+            _path_part = u.lstrip('/')
+
+        if _path_part:
+            _file = _backend_dir / _path_part
+            if _file.exists():
+                try:
+                    _ext = _file.suffix.lower().replace('.', '') or 'jpeg'
+                    _data = _b64.b64encode(_file.read_bytes()).decode()
+                    logger.info(f"[resolve_media] local file → base64 ({_file.name})")
+                    return (_data, f"image/{_ext}")
+                except Exception as _re:
+                    logger.warning(f"[resolve_media] Could not read local image {_file}: {_re}")
+            else:
+                _server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+                if _server_url:
+                    _fallback_url = f"{_server_url}/{_path_part}"
+                    logger.info(f"[resolve_media] local file missing, trying HTTP fallback: {_fallback_url}")
+                    try:
+                        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
+                            _r = await _dl.get(_fallback_url, headers={"User-Agent": "Mozilla/5.0"})
+                        if _r.status_code == 200:
+                            _ct = _r.headers.get("content-type", "image/jpeg")
+                            _mime = _ct.split(";")[0].strip() or "image/jpeg"
+                            _data = _b64.b64encode(_r.content).decode()
+                            logger.info(f"[resolve_media] HTTP fallback downloaded → base64")
+                            return (_data, _mime)
+                        else:
+                            logger.warning(f"[resolve_media] HTTP fallback failed: HTTP {_r.status_code}")
+                    except Exception as _fbe:
+                        logger.warning(f"[resolve_media] HTTP fallback exception: {_fbe}")
+
+        # --- Remote URL (ImgBB, Cloudinary, S3, etc.) ---
+        if u.startswith('http://') or u.startswith('https://'):
+            _download_url = u
+            if '.s3.' in u or '.s3-' in u or 's3.amazonaws.com' in u:
+                try:
+                    _parsed = _up(u)
+                    _bucket = None
+                    _key = None
+                    _region = os.environ.get('AWS_REGION', 'us-east-1')
+
+                    if '.s3.' in _parsed.netloc and '.amazonaws.com' in _parsed.netloc:
+                        _parts = _parsed.netloc.split('.s3.')
+                        _bucket = _parts[0]
+                        _key = _parsed.path.lstrip('/')
+                        if '.' in _parts[1]:
+                            _region_part = _parts[1].split('.')[0]
+                            if _region_part != 'amazonaws':
+                                _region = _region_part
+
+                    if _bucket and _key:
+                        import boto3
+                        _s3 = boto3.client('s3',
+                            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                            region_name=_region
+                        )
+                        _download_url = _s3.generate_presigned_url(
+                            'get_object',
+                            Params={'Bucket': _bucket, 'Key': _key},
+                            ExpiresIn=3600
+                        )
+                except Exception as _s3e:
+                    logger.warning(f"[resolve_media] Could not regenerate S3 URL: {_s3e}")
+                
+            try:
+                async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
+                    _r = await _dl.get(_download_url, headers={"User-Agent": "Mozilla/5.0"})
+                if _r.status_code == 200:
+                    _ct = _r.headers.get("content-type", "image/jpeg")
+                    _mime = _ct.split(";")[0].strip() or "image/jpeg"
+                    _data = _b64.b64encode(_r.content).decode()
+                    return (_data, _mime)
+                else:
+                    logger.warning(f"[resolve_media] Failed to dwl {_download_url[:100]}: HTTP {_r.status_code}")
+            except Exception as _de:
+                logger.warning(f"[resolve_media] Could not download image: {_de}")
+
+        return None
+
     async def send_message(
         self,
         user_id: str,
@@ -842,10 +945,20 @@ class WhatsAppService:
                         if not clean_filename:
                             clean_filename = "image.jpg" if (media_type or "image") == "image" else "document.pdf"
                         # Send media message (FLAT structure fix)
+                        _resolved_media = None
+                        if media_url:
+                            _media_res = await self.resolve_media_to_base64(media_url)
+                            if _media_res:
+                                _base_64_str, _mime = _media_res
+                                _resolved_media = f"data:{_mime};base64,{_base_64_str}"
+                            else:
+                                _resolved_media = media_url
+
+                        # Send media message (FLAT structure fix)
                         payload = {
                             "number": clean_to,
                             "mediatype": media_type or "image",
-                            "media": media_url,
+                            "media": _resolved_media,
                             "caption": message,
                             "fileName": clean_filename,
                         }
@@ -1061,14 +1174,6 @@ class WhatsAppService:
         # - Public https:// URLs → send as-is
         # - Local /uploads/... paths → read from disk and send as base64
         # - localhost/docker-internal URLs → extract path and read from disk as base64
-        import base64 as _b64
-        from pathlib import Path as _Path
-        _backend_dir = _Path(__file__).parent
-
-        async def _resolve_img(u: str):
-            """Return (base64_str, mime_type) for local files/remote URLs, or None on failure."""
-            if not u:
-                return None
 
             # --- Local file path ---
             _path_part: Optional[str] = None
@@ -1172,7 +1277,7 @@ class WhatsAppService:
 
             return None
 
-        all_imgs = list(await asyncio.gather(*[_resolve_img(u) for u in all_imgs if u]))
+        all_imgs = list(await asyncio.gather(*[self.resolve_media_to_base64(u) for u in all_imgs if u]))
         all_imgs = [t for t in all_imgs if t]  # list of (base64_str, mime_type) tuples
         logger.info(f"[showcase] resolved {len(all_imgs)} image(s)")
 
@@ -1281,6 +1386,7 @@ class WhatsAppService:
             lines.append(f"{i}️⃣  *{p['name']}* — {price_str}" + (f" {stock}" if stock else ""))
         if has_more:
             lines.append(f"9\ufe0f\u20e3  ➡️ *See more products*")
+        lines.append(f"0\ufe0f\u20e3  🖼️ *View all images for these products*")
         lines.append("\n_Reply with a number to select_")
         payload = {"number": clean_to, "text": "\n".join(lines)}
 

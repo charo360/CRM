@@ -7257,16 +7257,16 @@ async def evolution_webhook(request: Request):
                     # Accept plain digits, emoji keycap digits, written numbers (multilingual)
                     _num_map = {
                         # Digits 1-16 (extended for time slot menus)
-                        "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+                        "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
                         "6": 6, "7": 7, "8": 8, "9": 9,
                         "10": 10, "11": 11, "12": 12, "13": 13,
                         "14": 14, "15": 15, "16": 16,
                         # Emoji keycap digits
-                        "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
+                        "0\ufe0f\u20e3": 0, "1\ufe0f\u20e3": 1, "2\ufe0f\u20e3": 2, "3\ufe0f\u20e3": 3,
                         "4\ufe0f\u20e3": 4, "5\ufe0f\u20e3": 5, "6\ufe0f\u20e3": 6,
                         "7\ufe0f\u20e3": 7, "8\ufe0f\u20e3": 8, "9\ufe0f\u20e3": 9,
                         # English words
-                        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                         "six": 6, "seven": 7, "eight": 8, "nine": 9,
                         "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
                         "the first": 1, "the second": 2, "the third": 3,
@@ -7276,7 +7276,7 @@ async def evolution_webhook(request: Request):
                         "no 1": 1, "no 2": 2, "no 3": 3, "no. 1": 1, "no. 2": 2, "no. 3": 3,
                         "#1": 1, "#2": 2, "#3": 3, "#4": 4, "#5": 5,
                         # Swahili
-                        "moja": 1, "mbili": 2, "tatu": 3, "nne": 4, "tano": 5,
+                        "sifuri": 0, "moja": 1, "mbili": 2, "tatu": 3, "nne": 4, "tano": 5,
                         "ya kwanza": 1, "ya pili": 2, "ya tatu": 3,
                         "chaguo 1": 1, "chaguo 2": 2, "chaguo 3": 3,
                         # French
@@ -7349,6 +7349,48 @@ async def evolution_webhook(request: Request):
                                             )
                                             logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
                                             return {"status": "ok", "handled_by": "catalog_next_page"}
+                                    elif _reply_num == 0:
+                                        # Send all images for the current page
+                                        _currency_pg = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                        ws = get_whatsapp_service(db)
+                                        _sent_count = 0
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message="🖼️ Sending product images...",
+                                        )
+                                        for _sp in _cat_products:
+                                            _full_p = await db.products.find_one({"_id": _sp["id"], "user_id": _biz_id_cs})
+                                            if _full_p:
+                                                _price = _full_p.get('price') or 0
+                                                _all_img_urls = []
+                                                if _full_p.get("image_url"):
+                                                    _all_img_urls.append(_full_p["image_url"])
+                                                for _img in _full_p.get("images", []):
+                                                    if _img and _img not in _all_img_urls:
+                                                        _all_img_urls.append(_img)
+                                                        
+                                                if len(_all_img_urls) > 1:
+                                                    for _img_u in _all_img_urls[:-1]:
+                                                        await ws.send_message(
+                                                            user_id=user["_id"], to_number=from_number,
+                                                            message="", media_url=_img_u, send_context="catalog_visual_all"
+                                                        )
+                                                if _all_img_urls:
+                                                    _msg_txt = f"*{_full_p['name']}*\n💰 {_currency_pg} {_price:,.0f}"
+                                                    await ws.send_message(
+                                                        user_id=user["_id"], to_number=from_number,
+                                                        message=_msg_txt, media_url=_all_img_urls[-1], send_context="catalog_visual_all"
+                                                    )
+                                                    _sent_count += 1
+                                        if _sent_count > 0:
+                                            logging.info(f"Catalog visual blast: sent {_sent_count} product image sets.")
+                                            return {"status": "ok", "handled_by": "catalog_visual_all"}
+                                        else:
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message="Sorry, there are no images available for these products."
+                                            )
+                                            return {"status": "ok", "handled_by": "catalog_visual_all"}
                                     else:
                                         # Customer picked a product from the numbered list — show full details
                                         _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
@@ -13485,7 +13527,7 @@ async def send_catalog_to_customer(
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
 
-    PAGE_SIZE = 8
+    PAGE_SIZE = 8 if use_list else 5
     page_products = products[:PAGE_SIZE]
     has_more = len(products) > PAGE_SIZE
 
@@ -13512,7 +13554,7 @@ async def send_catalog_to_customer(
     else:
         use_list = False
     
-    # Fallback to legacy method (send each product separately)
+    # Fallback to visual mode (send primary image for each product sequentially)
     if not use_list:
         server_url = os.environ.get("SERVER_URL", "").rstrip("/")
         for i, p in enumerate(page_products):
@@ -13520,37 +13562,28 @@ async def send_catalog_to_customer(
             desc = f"\n_{p.get('description', '')}_" if p.get("description") else ""
             price = p.get('price') or 0
             message_text = (
-                f"*{p['name']}*\n"
+                f"*{i+1}. {p['name']}*\n"
                 f"💰 {currency} {price:,.0f}\n"
                 f"{stock_label}{desc}\n\n"
                 f"👉 Reply *{i+1}* to select!"
             )
-            all_images = []
-            seen = set()
-            for img in list(p.get("images", [])):
-                if img and img not in seen:
-                    seen.add(img)
-                    full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-                    if full:
-                        all_images.append(full)
-            if not all_images:
-                img = p.get("image_url")
-                if img:
-                    full = img if img.startswith("http") else (f"{server_url}{img}" if server_url else None)
-                    if full:
-                        all_images.append(full)
-            if len(all_images) > 1:
-                for extra_img in all_images[:-1]:
-                    await whatsapp_service.send_message(
-                        user_id=business_id, to_number=customer["phone_number"],
-                        message="", customer_name=customer.get("name"),
-                        media_url=extra_img, send_context="product_send",
-                    )
+            
+            # Select primary image
+            primary_image = None
+            if p.get("image_url"):
+                primary_image = p.get("image_url")
+            elif p.get("images") and len(p.get("images")) > 0:
+                primary_image = p.get("images")[0]
+                
+            if primary_image and not primary_image.startswith("http") and server_url:
+                primary_image = f"{server_url}{primary_image}"
+                
             result = await whatsapp_service.send_message(
                 user_id=business_id, to_number=customer["phone_number"],
                 message=message_text, customer_name=customer.get("name"),
-                media_url=all_images[-1] if all_images else None, send_context="product_send",
+                media_url=primary_image, send_context="product_send",
             )
+            
         if has_more:
             await whatsapp_service.send_message(
                 user_id=business_id, to_number=customer["phone_number"],
