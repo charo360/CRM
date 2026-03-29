@@ -1172,189 +1172,60 @@ class WhatsAppService:
             if _img and _img not in all_imgs:
                 all_imgs.append(_img)
 
-        # Resolve each image to something Evolution API can use:
-        # - Public https:// URLs → send as-is
-        # - Local /uploads/... paths → read from disk and send as base64
-        # - localhost/docker-internal URLs → extract path and read from disk as base64
-
-            # --- Local file path ---
-            _path_part: Optional[str] = None
-            if u.startswith('/uploads/') or u.startswith('uploads/'):
-                _path_part = u.lstrip('/')
-            elif u.startswith('http://') or u.startswith('https://'):
-                from urllib.parse import urlparse as _up
-                _parsed = _up(u)
-                _host = _parsed.netloc
-                if 'localhost' in _host or '127.0.0.1' in _host or 'docker.internal' in _host:
-                    _path_part = _parsed.path.lstrip('/')
-            else:
-                _path_part = u.lstrip('/')
-
-            if _path_part:
-                _file = _backend_dir / _path_part
-                if _file.exists():
-                    try:
-                        _ext = _file.suffix.lower().replace('.', '') or 'jpeg'
-                        _data = _b64.b64encode(_file.read_bytes()).decode()
-                        logger.info(f"[showcase] local file → base64 ({_file.name})")
-                        return (_data, f"image/{_ext}")
-                    except Exception as _re:
-                        logger.warning(f"[showcase] Could not read local image {_file}: {_re}")
-                else:
-                    # File not on disk — try to fetch it via SERVER_URL (e.g. on Render / cloud deploy)
-                    _server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-                    if _server_url:
-                        _fallback_url = f"{_server_url}/{_path_part}"
-                        logger.info(f"[showcase] local file missing, trying HTTP fallback: {_fallback_url}")
-                        try:
-                            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
-                                _r = await _dl.get(_fallback_url, headers={"User-Agent": "Mozilla/5.0"})
-                            if _r.status_code == 200:
-                                _ct = _r.headers.get("content-type", "image/jpeg")
-                                _mime = _ct.split(";")[0].strip() or "image/jpeg"
-                                _data = _b64.b64encode(_r.content).decode()
-                                logger.info(f"[showcase] HTTP fallback downloaded → base64 ({len(_r.content)} bytes)")
-                                return (_data, _mime)
-                            else:
-                                logger.warning(f"[showcase] HTTP fallback failed: HTTP {_r.status_code} for {_fallback_url}")
-                        except Exception as _fbe:
-                            logger.warning(f"[showcase] HTTP fallback exception: {_fbe}")
-
-            # --- Remote URL (ImgBB, Cloudinary, S3, etc.) → download and base64 ---
-            if u.startswith('http://') or u.startswith('https://'):
-                _download_url = u
-                # If it's an S3 presigned URL, regenerate it using the correct region
-                if '.s3.' in u or '.s3-' in u or 's3.amazonaws.com' in u:
-                    try:
-                        from urllib.parse import urlparse as _up
-                        _parsed = _up(u)
-                        # Extract bucket, region, and key from URL
-                        # Format: https://bucket.s3.region.amazonaws.com/key or https://bucket.s3.amazonaws.com/key
-                        _bucket = None
-                        _key = None
-                        # Use AWS_REGION env var as default — do NOT hardcode us-east-1
-                        _region = os.environ.get('AWS_REGION', 'us-east-1')
-
-                        if '.s3.' in _parsed.netloc and '.amazonaws.com' in _parsed.netloc:
-                            # bucket.s3.region.amazonaws.com/key or bucket.s3.amazonaws.com/key
-                            _parts = _parsed.netloc.split('.s3.')
-                            _bucket = _parts[0]
-                            _key = _parsed.path.lstrip('/')
-                            # Extract region from hostname if present (e.g. bucket.s3.us-east-2.amazonaws.com)
-                            if '.' in _parts[1]:
-                                _region_part = _parts[1].split('.')[0]
-                                if _region_part != 'amazonaws':
-                                    _region = _region_part
-
-                        if _bucket and _key:
-                            # Regenerate presigned URL with boto3 using the correct region
-                            import boto3
-                            _s3 = boto3.client('s3',
-                                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-                                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-                                region_name=_region
-                            )
-                            _download_url = _s3.generate_presigned_url(
-                                'get_object',
-                                Params={'Bucket': _bucket, 'Key': _key},
-                                ExpiresIn=3600  # 1 hour
-                            )
-                            logger.info(f"[showcase] regenerated S3 presigned URL for {_bucket}/{_key} (region={_region})")
-                    except Exception as _s3e:
-                        logger.warning(f"[showcase] Could not regenerate S3 URL: {_s3e}")
-                
-                try:
-                    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
-                        _r = await _dl.get(_download_url, headers={"User-Agent": "Mozilla/5.0"})
-                    if _r.status_code == 200:
-                        _ct = _r.headers.get("content-type", "image/jpeg")
-                        _mime = _ct.split(";")[0].strip() or "image/jpeg"
-                        _data = _b64.b64encode(_r.content).decode()
-                        logger.info(f"[showcase] remote URL downloaded → base64 ({len(_r.content)} bytes, mime={_mime})")
-                        return (_data, _mime)
-                    else:
-                        logger.warning(f"[showcase] Failed to download image {_download_url[:100]}: HTTP {_r.status_code}")
-                except Exception as _de:
-                    logger.warning(f"[showcase] Could not download image: {_de}")
-
-            return None
-
-        all_imgs = list(await asyncio.gather(*[self.resolve_media_to_base64(u) for u in all_imgs if u]))
-        all_imgs = [t for t in all_imgs if t]  # list of (base64_str, mime_type) tuples
-        logger.info(f"[showcase] resolved {len(all_imgs)} image(s)")
-
         result = None
-        async with httpx.AsyncClient(timeout=60) as client:
-            if all_imgs:
-                # Send extra images first (no caption) so the captioned one arrives last
-                for (_extra_b64, _extra_mime) in all_imgs[1:]:
-                    try:
-                        await client.post(
-                            f"{self.base_url}/message/sendMedia/{instance_name}",
-                            json={
-                                "number": clean_to,
-                                "mediatype": "image",
-                                "mimetype": _extra_mime,
-                                "media": _extra_b64,
-                                "caption": "",
-                            },
-                            headers=self._headers(),
-                        )
-                        await asyncio.sleep(0.4)
-                    except Exception as _ie:
-                        logger.warning(f"Extra image send failed: {_ie}")
+        if all_imgs:
+            # Send extra images first (no caption)
+            for _extra in all_imgs[1:]:
+                await self.send_message(
+                    user_id=user_id,
+                    to_number=to_number,
+                    message="",
+                    media_url=_extra,
+                    send_context="product_showcase"
+                )
+                await asyncio.sleep(0.4)
+            # Send main image with caption
+            result = await self.send_message(
+                user_id=user_id,
+                to_number=to_number,
+                message=caption,
+                media_url=all_imgs[0],
+                send_context="product_showcase"
+            )
+        else:
+            result = await self.send_message(
+                user_id=user_id,
+                to_number=to_number,
+                message=caption,
+                send_context="product_showcase"
+            )
 
-                # Main image with caption
-                _main_b64, _main_mime = all_imgs[0]
-                resp = await client.post(
-                    f"{self.base_url}/message/sendMedia/{instance_name}",
-                    json={
-                        "number": clean_to,
-                        "mediatype": "image",
-                        "mimetype": _main_mime,
-                        "media": _main_b64,
-                        "caption": caption,
-                    },
-                    headers=self._headers(),
-                )
-            else:
-                resp = await client.post(
-                    f"{self.base_url}/message/sendText/{instance_name}",
-                    json={"number": clean_to, "text": caption},
-                    headers=self._headers(),
-                )
-            if resp.status_code not in (200, 201):
-                logger.error(f"[showcase] sendMedia failed HTTP {resp.status_code}: {resp.text[:500]}")
-            result = resp.json() if resp.status_code in (200, 201) else {}
-
-            # Step 2: numbered action text using business's custom actions
-            if send_buttons and in_stock:
-                await asyncio.sleep(1)
-                # Load user's custom product actions (or fall back to defaults)
-                _user_doc = await self.db.users.find_one({"_id": user_id}, {"settings": 1})
-                _default_actions = [
-                    {"label": "Order Now",      "action_type": "order",       "index": 1},
-                    {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
-                ]
-                _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
-                # Always add "Back to Catalog" as the last option
-                _back_index = len(_actions) + 1
-                _actions_with_back = _actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
-                _count = len(_actions_with_back)
-                _reply_hint = f"1-{_count}"
-                action_lines = "\n".join(
-                    f"{a['index']}\ufe0f\u20e3  {a['label']}" for a in _actions_with_back
-                )
-                actions_text = f"*What would you like to do?*\n\n{action_lines}\n\n_Reply with {_reply_hint}_"
-                btn_resp = await client.post(
-                    f"{self.base_url}/message/sendText/{instance_name}",
-                    json={"number": clean_to, "text": actions_text},
-                    headers=self._headers(),
-                )
-                if btn_resp.status_code not in (200, 201):
-                    logger.warning(f"sendText actions failed ({btn_resp.status_code}): {btn_resp.text[:200]}")
-                else:
-                    logger.info(f"Product action text sent OK ({_count} actions)")
+        # Step 2: numbered action text using business's custom actions
+        if send_buttons and in_stock:
+            await asyncio.sleep(1)
+            # Load user's custom product actions (or fall back to defaults)
+            _user_doc = user
+            _default_actions = [
+                {"label": "Order Now",      "action_type": "order",       "index": 1},
+                {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
+            ]
+            _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
+            # Always add "Back to Catalog" as the last option
+            _back_index = len(_actions) + 1
+            _actions_with_back = _actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
+            _count = len(_actions_with_back)
+            _reply_hint = f"1-{_count}"
+            action_lines = "\n".join(
+                f"{a['index']}\ufe0f\u20e3  {a['label']}" for a in _actions_with_back
+            )
+            actions_text = f"*What would you like to do?*\n\n{action_lines}\n\n_Reply with {_reply_hint}_"
+            
+            await self.send_message(
+                user_id=user_id,
+                to_number=to_number,
+                message=actions_text,
+                send_context="product_actions"
+            )
 
         return result or {"status": "sent"}
 
@@ -1390,19 +1261,12 @@ class WhatsAppService:
             lines.append(f"9\ufe0f\u20e3  ➡️ *See more products*")
         lines.append(f"0\ufe0f\u20e3  🖼️ *View all images for these products*")
         lines.append("\n_Reply with a number to select_")
-        payload = {"number": clean_to, "text": "\n".join(lines)}
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self.base_url}/message/sendText/{instance_name}",
-                json=payload,
-                headers=self._headers(),
-            )
-            if resp.status_code in (200, 201):
-                return {"status": "success", "data": resp.json()}
-            else:
-                logger.warning(f"sendText catalog failed ({resp.status_code}): {resp.text[:200]}")
-                raise Exception(f"sendText error: {resp.status_code} {resp.text[:200]}")
+        return await self.send_message(
+            user_id=user_id,
+            to_number=to_number,
+            message="\n".join(lines),
+            send_context="catalog_list"
+        )
 
     async def send_product_with_buttons(
         self,
