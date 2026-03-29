@@ -1055,28 +1055,53 @@ class WhatsAppService:
         for _img in images:
             if _img and _img not in all_imgs:
                 all_imgs.append(_img)
-        # Build fully public URLs using SERVER_URL so Evolution API can fetch them externally
-        _public_base = (
-            os.environ.get('SERVER_URL') or
-            os.environ.get('PUBLIC_BASE_URL') or
-            ''
-        ).rstrip('/')
-        def _to_public_url(u: str) -> Optional[str]:
+
+        # Resolve each image to something Evolution API can use:
+        # - Public https:// URLs → send as-is
+        # - Local /uploads/... paths → read from disk and send as base64
+        # - localhost/docker-internal URLs → extract path and read from disk as base64
+        import base64 as _b64
+        from pathlib import Path as _Path
+        _backend_dir = _Path(__file__).parent
+
+        def _resolve_img(u: str) -> Optional[str]:
+            """Return a base64 data URI for local files, or a public URL for remote ones."""
             if not u:
                 return None
-            if u.startswith('http://') or u.startswith('https://'):
-                # Already absolute — but fix Docker-internal URLs to public ones
-                if 'host.docker.internal' in u or 'localhost' in u or '127.0.0.1' in u:
-                    # Extract path and prepend public base
-                    from urllib.parse import urlparse as _up
-                    _path = _up(u).path
-                    return f"{_public_base}{_path}" if _public_base else u
-                return u
-            # Relative path — prepend public base
-            return f"{_public_base}{u}" if _public_base else u
-        all_imgs = [_to_public_url(u) for u in all_imgs if u]
+            # Determine the file path portion
+            _path_part: Optional[str] = None
+            if u.startswith('/uploads/') or u.startswith('uploads/'):
+                _path_part = u.lstrip('/')
+            elif u.startswith('http://') or u.startswith('https://'):
+                from urllib.parse import urlparse as _up
+                _parsed = _up(u)
+                _host = _parsed.netloc
+                # localhost / docker-internal → local file
+                if 'localhost' in _host or '127.0.0.1' in _host or 'docker.internal' in _host or '10.' in _host or '192.168.' in _host:
+                    _path_part = _parsed.path.lstrip('/')
+                else:
+                    return u  # genuine external URL — send as-is
+            else:
+                _path_part = u.lstrip('/')
+
+            if _path_part:
+                _file = _backend_dir / _path_part
+                if _file.exists():
+                    try:
+                        _ext = _file.suffix.lower().replace('.', '') or 'jpeg'
+                        _data = _b64.b64encode(_file.read_bytes()).decode()
+                        return f"data:image/{_ext};base64,{_data}"
+                    except Exception as _re:
+                        logger.warning(f"[showcase] Could not read local image {_file}: {_re}")
+            # Last resort: try building a public URL
+            _public_base = (os.environ.get('SERVER_URL') or '').rstrip('/')
+            if _public_base and _path_part:
+                return f"{_public_base}/{_path_part}"
+            return None
+
+        all_imgs = [_resolve_img(u) for u in all_imgs if u]
         all_imgs = [u for u in all_imgs if u]
-        logger.info(f"[showcase] public_base={_public_base!r} all_imgs={all_imgs}")
+        logger.info(f"[showcase] resolved {len(all_imgs)} image(s), first={'base64' if all_imgs and all_imgs[0].startswith('data:') else all_imgs[0] if all_imgs else 'none'}")
 
         result = None
         async with httpx.AsyncClient(timeout=30) as client:
