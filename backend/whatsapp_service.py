@@ -1116,7 +1116,7 @@ class WhatsAppService:
             # --- Remote URL (ImgBB, Cloudinary, S3, etc.) → download and base64 ---
             if u.startswith('http://') or u.startswith('https://'):
                 _download_url = u
-                # If it's an S3 presigned URL, regenerate it (they expire after 7 days)
+                # If it's an S3 presigned URL, regenerate it using the correct region
                 if '.s3.' in u or '.s3-' in u or 's3.amazonaws.com' in u:
                     try:
                         from urllib.parse import urlparse as _up
@@ -1125,21 +1125,22 @@ class WhatsAppService:
                         # Format: https://bucket.s3.region.amazonaws.com/key or https://bucket.s3.amazonaws.com/key
                         _bucket = None
                         _key = None
-                        _region = 'us-east-1'  # default
-                        
+                        # Use AWS_REGION env var as default — do NOT hardcode us-east-1
+                        _region = os.environ.get('AWS_REGION', 'us-east-1')
+
                         if '.s3.' in _parsed.netloc and '.amazonaws.com' in _parsed.netloc:
                             # bucket.s3.region.amazonaws.com/key or bucket.s3.amazonaws.com/key
                             _parts = _parsed.netloc.split('.s3.')
                             _bucket = _parts[0]
                             _key = _parsed.path.lstrip('/')
-                            # Extract region if present
+                            # Extract region from hostname if present (e.g. bucket.s3.us-east-2.amazonaws.com)
                             if '.' in _parts[1]:
                                 _region_part = _parts[1].split('.')[0]
                                 if _region_part != 'amazonaws':
                                     _region = _region_part
-                        
+
                         if _bucket and _key:
-                            # Regenerate presigned URL with boto3
+                            # Regenerate presigned URL with boto3 using the correct region
                             import boto3
                             _s3 = boto3.client('s3',
                                 aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
