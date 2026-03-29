@@ -10305,7 +10305,7 @@ async def evolution_webhook(request: Request):
                             {"customer_id": customer_id, "user_id": _biz_id_cart, "status": "active"}
                         )
                         ws = get_whatsapp_service(db)
-                        _currency = user.get("settings", {}).get("currency", "USD")
+                        _currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         if not _cart or not _cart.get("items"):
                             await ws.send_message(
                                 user_id=user["_id"],
@@ -11044,7 +11044,7 @@ async def evolution_webhook(request: Request):
                     
                     if matched_product:
                         _biz_id_cat = user.get("business_id", user["_id"])
-                        currency = user.get("settings", {}).get("currency", "USD")
+                        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         _price_cat = matched_product.get("price", 0)
                         _now_cat = datetime.utcnow()
                         order_id = str(uuid.uuid4())
@@ -11344,7 +11344,7 @@ async def evolution_webhook(request: Request):
                                                     all_imgs.append(img)
                                             all_imgs = [normalize_url(u) for u in all_imgs]
                                             
-                                            currency = user.get("settings", {}).get("currency", "USD")
+                                            currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                                             price_display = f"{currency} {target_product.get('price', 0):,.0f}"
                                             product_name = target_product.get('name', 'Product')
                                             caption = f"{product_name}\n💰 {price_display}"
@@ -12623,7 +12623,7 @@ async def generate_daily_pulse_message(user_id: str) -> str:
     # Get user info
     user = await db.users.find_one({"_id": user_id})
     business_name = user.get("business_name", "Your Business") if user else "Your Business"
-    currency = user.get("settings", {}).get("currency", "USD") if user else "USD"
+    currency = user.get("currency") or user.get("settings", {}).get("currency", "USD") if user else "USD"
     
     # Today's sales
     today_sales = await db.sales.find({
@@ -13328,7 +13328,7 @@ async def send_product_to_customer(
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    currency = user.get("settings", {}).get("currency", "USD")
+    currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
     
     # Prepare product data with currency
     product_data = {
@@ -13480,7 +13480,7 @@ async def send_catalog_to_customer(
     if not products:
         raise HTTPException(status_code=400, detail="No valid products found")
     
-    currency = user.get("settings", {}).get("currency", "KES")
+    currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
     
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
@@ -13619,7 +13619,7 @@ async def broadcast_catalog(
     if not target_customers:
         raise HTTPException(status_code=400, detail="No customers match this filter")
 
-    currency = user.get("settings", {}).get("currency", "USD")
+    currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
     business_name = user.get("business_name", "Our Store")
     server_url = os.environ.get("SERVER_URL", "").rstrip("/")
 
