@@ -2055,11 +2055,11 @@ export default function SalesScreen() {
         visible={paymentSettingsVisible}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}
+        onRequestClose={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setCustomMethodName(''); }}
       >
         <SafeAreaView style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}>
+            <TouchableOpacity onPress={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setCustomMethodName(''); }}>
               <Text style={styles.modalCancel}>Close</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle}>Payment Methods</Text>
@@ -2231,7 +2231,7 @@ export default function SalesScreen() {
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                   <TouchableOpacity
                     style={[styles.cancelAddButton, { flex: 1 }]}
-                    onPress={() => { setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}
+                    onPress={() => { setAddingPaymentMethod(false); setNewMethodName(''); setCustomMethodName(''); }}
                   >
                     <Text style={styles.cancelAddText}>Cancel</Text>
                   </TouchableOpacity>

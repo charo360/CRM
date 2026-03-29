@@ -102,6 +102,7 @@ from fastapi.staticfiles import StaticFiles
 from daily_scheduler import start_daily_scheduler
 from mongo_http_client import AsyncMongoHTTPClient
 from google_play_billing import check_feature_access, check_limit, SUBSCRIPTION_LIMITS
+from reminders_service import process_reminders
 
 
 
@@ -545,6 +546,22 @@ async def run_keep_alive_scheduler():
             logging.warning(f"[KeepAlive] Scheduler error: {e}")
         await asyncio.sleep(840)  # 14 minutes
 
+@app.get("/api/cron/reminders")
+async def trigger_reminders(request: Request):
+    """External cron trigger for booking reminders"""
+    # Simple secret check if provided in env
+    cron_secret = os.environ.get("CRON_SECRET")
+    auth_header = request.headers.get("Authorization")
+    if cron_secret and auth_header != f"Bearer {cron_secret}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    try:
+        await process_reminders(db)
+        return {"status": "ok", "message": "Reminders processed"}
+    except Exception as e:
+        logging.error(f"Cron reminder error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def run_automation_scheduler():
     """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
     import asyncio
@@ -557,93 +574,17 @@ async def run_automation_scheduler():
         await asyncio.sleep(3600)  # check every hour
 
 async def run_booking_reminder_scheduler():
-    """Runs every 30 minutes — sends WhatsApp reminders for upcoming bookings (24h and 1h before)"""
+    """Runs every 30 minutes — sends WhatsApp reminders for upcoming bookings (24h and 2h before)"""
     import asyncio
     await asyncio.sleep(60)  # brief delay on startup
     while True:
         try:
-            await send_booking_reminders()
+            await process_reminders(db)
         except Exception as e:
             logging.error(f"Booking reminder scheduler error: {e}")
         await asyncio.sleep(1800)  # every 30 minutes
 
-async def send_booking_reminders():
-    """Find upcoming bookings and send WhatsApp reminders at 24h and 1h windows."""
-    from whatsapp_service import get_whatsapp_service
-    now = datetime.utcnow()
-
-    upcoming = await db.bookings.find({
-        "status": {"$in": ["pending", "confirmed"]},
-        "$or": [
-            {"reminder_sent_24h": {"$ne": True}},
-            {"reminder_sent_1h": {"$ne": True}},
-        ]
-    }).to_list(None)
-
-    ws = get_whatsapp_service(db)
-
-    for booking in upcoming:
-        try:
-            date_str = booking.get("date", "")
-            time_str = booking.get("time", "")
-            if not date_str or not time_str:
-                continue
-            
-            # Skip rental bookings - they use "check-in" instead of time format
-            service_category = booking.get("service_category", "")
-            if service_category == "rental" or time_str in ("check-in", "check-out"):
-                continue
-
-            booking_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            diff_hours = (booking_dt - now).total_seconds() / 3600
-
-            user_id         = booking.get("user_id")
-            customer_phone  = booking.get("customer_phone")
-            customer_name   = booking.get("customer_name", "there")
-            service_name    = booking.get("service_name", "appointment")
-            booking_number  = booking.get("booking_number", "")
-
-            if not user_id or not customer_phone:
-                continue
-
-            # 24h reminder window: 23–25 hours before
-            if not booking.get("reminder_sent_24h") and 23 <= diff_hours <= 25:
-                msg = (
-                    f"Hi {customer_name}! \U0001f44b Just a reminder that your *{service_name}* "
-                    f"is scheduled for *tomorrow at {time_str}* \U0001f4c5\n\n"
-                    f"Ref: *{booking_number}*\n"
-                    f"_Reply to reschedule or cancel_"
-                )
-                await ws.send_message(
-                    user_id=user_id, to_number=customer_phone,
-                    message=msg, customer_name=customer_name, send_context="booking_reminder"
-                )
-                await db.bookings.update_one(
-                    {"_id": booking["_id"]},
-                    {"$set": {"reminder_sent_24h": True, "reminder_sent_24h_at": now}}
-                )
-                logging.info(f"[BookingReminder] 24h reminder sent for booking {booking['_id']}")
-
-            # 1h reminder window: 45–90 minutes before
-            if not booking.get("reminder_sent_1h") and 0.75 <= diff_hours <= 1.5:
-                msg = (
-                    f"Hi {customer_name}! \u23f0 Your *{service_name}* starts in *1 hour* "
-                    f"at *{time_str}* today \U0001f4c5\n\n"
-                    f"Ref: *{booking_number}*\n"
-                    f"See you soon! \U0001f60a"
-                )
-                await ws.send_message(
-                    user_id=user_id, to_number=customer_phone,
-                    message=msg, customer_name=customer_name, send_context="booking_reminder"
-                )
-                await db.bookings.update_one(
-                    {"_id": booking["_id"]},
-                    {"$set": {"reminder_sent_1h": True, "reminder_sent_1h_at": now}}
-                )
-                logging.info(f"[BookingReminder] 1h reminder sent for booking {booking['_id']}")
-
-        except Exception as e:
-            logging.error(f"[BookingReminder] Error on booking {booking.get('_id')}: {e}")
+# Logic moved to reminders_service.py
 
 async def execute_broadcast_automations():
     """Find and execute all due broadcast automations"""
@@ -7055,6 +6996,34 @@ async def evolution_webhook(request: Request):
                             logging.error(f"Push for new contact failed: {e}")
 
                     asyncio.create_task(_push_new_contact(user["_id"], customer_name, body))
+                
+                async def _notify_owner_new_booking(owner_user, cust_name, svc_name, bk_id, bk_date, bk_time):
+                    try:
+                        owner_phone = (owner_user or {}).get("phone_number") or (owner_user or {}).get("whatsapp", {}).get("phone_number")
+                        if not owner_phone:
+                            return
+                        ws = get_whatsapp_service(db)
+                        # Use environment variable for frontend URL, fallback to charo360.com
+                        frontend_url = os.environ.get("FRONTEND_URL", "https://charo360.com")
+                        deep_link = f"{frontend_url}/bookings/{bk_id}"
+                        
+                        notification = (
+                            f"📅 *New Booking Received!*\n\n"
+                            f"👤 *Customer:* {cust_name}\n"
+                            f"🛠️ *Service:* {svc_name}\n"
+                            f"📅 *Date:* {bk_date}\n"
+                            f"🕐 *Time:* {bk_time}\n\n"
+                            f"🔗 *Manage Booking:* {deep_link}"
+                        )
+                        await ws.send_message(
+                            user_id=(owner_user or {}).get("_id"),
+                            to_number=owner_phone,
+                            message=notification,
+                            send_context="auto_reply"
+                        )
+                        logging.info(f"Owner notified of new booking: {bk_id} for {cust_name}")
+                    except Exception as e:
+                        logging.error(f"Failed to notify owner of new booking: {e}")
 
             # Store message (both incoming and outgoing)
             if customer_id and body:
@@ -9895,6 +9864,17 @@ async def evolution_webhook(request: Request):
                                         )
                                     except Exception as _bkc_ne:
                                         logging.warning(f"Booking push failed: {_bkc_ne}")
+
+                                # WhatsApp notification to owner
+                                owner_user_for_notif = _bkc_owner if _bkc_owner else user
+                                asyncio.create_task(_notify_owner_new_booking(
+                                    owner_user=owner_user_for_notif,
+                                    cust_name=customer_name,
+                                    svc_name=_bkc_svc_name,
+                                    bk_id=_bkc_id,
+                                    bk_date=_bkc_date_str,
+                                    bk_time=_bkc_time_str
+                                ))
                                 return {"status": "ok", "handled_by": "booking_confirm_yes"}
                             else:
                                 ws = get_whatsapp_service(db)
@@ -11270,6 +11250,47 @@ async def evolution_webhook(request: Request):
                     if is_single and body_lower in ("yes", "yeah", "yep", "ok", "sure", "order", "buy", "i want", "1"):
                         matched_product = pending["products"][0]
                     
+                    # Visual Portfolio / Gallery support (Reply 0 during service selection)
+                    if body_lower == "0" and pending.get("action_context") == "booking_service_select":
+                        try:
+                            _vp_ws = get_whatsapp_service(db)
+                            _vp_biz_id = user.get("business_id", user["_id"])
+                            _vp_products = pending.get("products", [])
+                            
+                            # Fetch full products to get all images
+                            _vp_images_sent = 0
+                            for _vp_p in _vp_products[:10]: # Limit to top 10 to avoid spam
+                                _p_full = await db.products.find_one({"_id": _vp_p["id"]})
+                                if _p_full:
+                                    _p_imgs = _p_full.get("images", [])
+                                    if _p_full.get("image_url") and _p_full["image_url"] not in _p_imgs:
+                                        _p_imgs.insert(0, _p_full["image_url"])
+                                    
+                                    # Show first image for each service if available
+                                    if _p_imgs:
+                                        await _vp_ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message=f"📸 *{_p_full['name']}*",
+                                            media_url=_p_imgs[0], customer_name=customer_name
+                                        )
+                                        _vp_images_sent += 1
+                            
+                            if _vp_images_sent == 0:
+                                await _vp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="I don't have any portfolio photos to show yet. Please select a service to continue booking! 📋",
+                                    customer_name=customer_name
+                                )
+                            else:
+                                await _vp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="Above are some examples of our work! 😊\n\n_Reply with a number to book your service._",
+                                    customer_name=customer_name
+                                )
+                            return {"status": "ok", "handled_by": "booking_gallery"}
+                        except Exception as _vp_err:
+                            logging.error(f"[Gallery] Failed to send portfolio: {_vp_err}")
+
                     if not matched_product:
                         try:
                             idx = int(body_lower)

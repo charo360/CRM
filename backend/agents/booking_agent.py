@@ -184,7 +184,8 @@ class BookingAgent(BaseAgent):
                 lines.append(f"{i}️⃣  *{s['name']}* — {price_str}{dur_str}")
             if has_more:
                 lines.append(f"9️⃣  ➡️ *See more services*")
-            lines.append("\n_Reply with the number of the service you'd like to book_")
+            lines.append("0️⃣  🖼️ *View Gallery*")
+            lines.append("\n_Reply with the number to select (e.g. *1*) or *0* to see photos_")
         services_text = "\n".join(lines)
 
         # AI intro

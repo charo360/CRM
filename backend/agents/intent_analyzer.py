@@ -386,6 +386,7 @@ GREETING: "sasa", "niaje", "mambo", "hi", "habari", "bonjour", "hola", "नम�
 COMPLAINT: "bidhaa mbaya", "siko happy", "not what I ordered", "je ne suis pas satisfait", "I'm not happy", "poor quality", "this is wrong", "مشكلة"
 BOOKING_REQUEST: "I want to book", "naweza kuja lini", "je veux réserver", "quiero una cita", "book me in", "can I make an appointment", "احجز لي"
 AVAILABILITY_CHECK: "when are you available", "are you open Saturday", "do you have slots", "quand êtes-vous disponible", "متى تكونون متاحين"
+BOOKING_STATUS: "status ya booking", "my appointment", "is my booking confirmed", "ma réservation est-elle confirmée", "mis citas", "show my bookings", "booking yangu", "طلبي للموعد", "where is my booking"
 NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est trop cher", "any discount", "best price", "kuna offer"
 
 ══ GLOBAL LANGUAGE RULES ══
