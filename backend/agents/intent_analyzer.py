@@ -190,9 +190,11 @@ _CATALOG_EXACT_KEYWORDS = {
     "show catalog", "show catalogue", "show menu", "price list",
     "what are your products", "what do you offer", "your products",
     "send catalog", "send catalogue", "send menu", "list products",
-    # Swahili
+    "i want to buy", "i want to order", "order something", "buy something",
+    # Swahili / Sheng
     "bidhaa", "orodha", "bei", "nini mnacho", "mnauza nini",
-    "unacho nini", "unauzaje", "unauza nini",
+    "unacho nini", "unauzaje", "unauza nini", "nataka kununua",
+    "nataka kubuy", "nataka buy", "buy kitu", "nataka kubuy kitu",
     # French
     "catalogue", "produits", "prix",
 }
@@ -375,7 +377,7 @@ Name: {customer_name}{personal_note}{state_hint}
 
 ══ INTENT EXAMPLES (multilingual) ══
 PRICE_INQUIRY: "bei gani", "how much", "ngapi", "price ya", "combien ça coûte", "क्या दाम है", "quanto custa", "what's the price", "cost?", "جاوب بالسعر"
-CATALOG_REQUEST: "show me what you have", "niambie mnayo", "send catalog", "what are you selling", "I want to order something", "let me see your products", "je veux voir vos produits", "kuna nini", "ما عندكم"
+CATALOG_REQUEST: "show me what you have", "niambie mnayo", "send catalog", "what are you selling", "I want to order something", "nataka buy kitu", "nataka kununua", "i want to buy", "let me see your products", "je veux voir vos produits", "kuna nini", "ما عندكم"
 PRODUCT_INQUIRY: "do you have red dresses?", "tell me about the iPhone", "nina haja ya", "je cherche", "¿tienen zapatos?", "क्या आपके पास है"
 ORDER_STATUS: "order yangu iko wapi", "when delivery", "nimewait sana", "où est ma commande", "dónde está mi pedido", "where is my order", "has it shipped", "طلبي فين"
 PAYMENT_METHOD: "nipe namba ya mpesa", "send payment method", "how do I pay", "comment payer", "account number please", "¿cómo pago?", "payment details please"
