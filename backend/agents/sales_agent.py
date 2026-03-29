@@ -136,10 +136,7 @@ class SalesAgent(BaseAgent):
                     all_imgs.append(_im)
             all_imgs = [normalize_url(u) for u in all_imgs if u]
 
-            # Extra images first (no caption/text)
-            for _extra_img in all_imgs[1:]:
-                messages_out.append({"text": "", "media_url": _extra_img})
-
+            # Provide the primary image with the caption
             msg = {"text": caption}
             if all_imgs:
                 msg["media_url"] = all_imgs[0]
@@ -147,7 +144,7 @@ class SalesAgent(BaseAgent):
         
         # Add instruction text for how to select/order
         if len(to_send) > 1:
-            instruction = f"\n_Reply with the number (1-{len(to_send)}) to see details and order options_"
+            instruction = f"\n0️⃣  🖼️ *View all images for these products*\n_Reply with the number (1-{len(to_send)}) to see details and order options_"
             messages_out.append({"text": instruction})
         elif len(to_send) == 1:
             # For single product, send action buttons immediately
@@ -155,8 +152,9 @@ class SalesAgent(BaseAgent):
                 "*What would you like to do?*\n\n"
                 "1️⃣  Order Now\n"
                 "2️⃣  Add to Cart\n"
-                "3️⃣  See Similar Products\n\n"
-                "_Reply with 1, 2 or 3_"
+                "3️⃣  See Similar Products\n"
+                "0️⃣  View all images\n\n"
+                "_Reply with a number_"
             )
             messages_out.append({"text": instruction})
 
@@ -276,6 +274,7 @@ class SalesAgent(BaseAgent):
             lines.append(f"{i}️⃣  *{p['name']}* — {price_str} {stock}")
         if has_more:
             lines.append(f"9️⃣  ➡️ *See more products*")
+        lines.append(f"0️⃣  🖼️ *View all images for these products*")
         lines.append("\n_Reply with a number to select_")
         
         messages_out.append({"text": "\n".join(lines)})
