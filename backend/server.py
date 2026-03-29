@@ -7376,13 +7376,24 @@ async def evolution_webhook(request: Request):
                                                             message="", media_url=_img_u, send_context="catalog_visual_all"
                                                         )
                                                 if _all_img_urls:
-                                                    _msg_txt = f"*{_full_p['name']}*\n💰 {_currency_pg} {_price:,.0f}"
+                                                    _idx = _sp.get("index", "")
+                                                    _idx_emoji = f"{_idx}️⃣" if _idx else ""
+                                                    _msg_txt = f"{_idx_emoji} *{_full_p['name']}*\n💰 {_currency_pg} {_price:,.0f}"
                                                     await ws.send_message(
                                                         user_id=user["_id"], to_number=from_number,
                                                         message=_msg_txt, media_url=_all_img_urls[-1], send_context="catalog_visual_all"
                                                     )
                                                     _sent_count += 1
                                         if _sent_count > 0:
+                                            _prompt = "Ready to choose? Just reply with the number of your choice above! 👆"
+                                            if _pending_cat.get("has_more"):
+                                                _prompt += "\n\n(Or reply *9* to see even more products ➡️)"
+                                            
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=_prompt,
+                                                send_context="catalog_prompt"
+                                            )
                                             logging.info(f"Catalog visual blast: sent {_sent_count} product image sets.")
                                             return {"status": "ok", "handled_by": "catalog_visual_all"}
                                         else:
