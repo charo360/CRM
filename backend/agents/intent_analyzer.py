@@ -415,6 +415,7 @@ NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est t
 6. Confidence < 0.50 on business messages → intent should be "UNKNOWN"
 7. LEGAL_THREAT, FRAUD_CLAIM always → needs_escalation=true
 8. List up to 2 alternative_intents if confidence < 0.85 and there are other plausible intents
+9. SYSTEMIC DISAMBIGUATION: 'Wanting to buy/order something new' is CATALOG_REQUEST. 'Checking on a payment or delivery for an already placed order' is ORDER_STATUS. Do not confuse the action of placing a new order with checking an old one!
 
 ══ CONTACT SIGNAL RULES ══
 For contact_signal.type:
