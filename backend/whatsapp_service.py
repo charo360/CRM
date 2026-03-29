@@ -1096,9 +1096,49 @@ class WhatsAppService:
 
             # --- Remote URL (ImgBB, Cloudinary, S3, etc.) → download and base64 ---
             if u.startswith('http://') or u.startswith('https://'):
+                _download_url = u
+                # If it's an S3 presigned URL, regenerate it (they expire after 7 days)
+                if '.s3.' in u or '.s3-' in u or 's3.amazonaws.com' in u:
+                    try:
+                        from urllib.parse import urlparse as _up
+                        _parsed = _up(u)
+                        # Extract bucket, region, and key from URL
+                        # Format: https://bucket.s3.region.amazonaws.com/key or https://bucket.s3.amazonaws.com/key
+                        _bucket = None
+                        _key = None
+                        _region = 'us-east-1'  # default
+                        
+                        if '.s3.' in _parsed.netloc and '.amazonaws.com' in _parsed.netloc:
+                            # bucket.s3.region.amazonaws.com/key or bucket.s3.amazonaws.com/key
+                            _parts = _parsed.netloc.split('.s3.')
+                            _bucket = _parts[0]
+                            _key = _parsed.path.lstrip('/')
+                            # Extract region if present
+                            if '.' in _parts[1]:
+                                _region_part = _parts[1].split('.')[0]
+                                if _region_part != 'amazonaws':
+                                    _region = _region_part
+                        
+                        if _bucket and _key:
+                            # Regenerate presigned URL with boto3
+                            import boto3
+                            _s3 = boto3.client('s3',
+                                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                                region_name=_region
+                            )
+                            _download_url = _s3.generate_presigned_url(
+                                'get_object',
+                                Params={'Bucket': _bucket, 'Key': _key},
+                                ExpiresIn=3600  # 1 hour
+                            )
+                            logger.info(f"[showcase] regenerated S3 presigned URL for {_bucket}/{_key} (region={_region})")
+                    except Exception as _s3e:
+                        logger.warning(f"[showcase] Could not regenerate S3 URL: {_s3e}")
+                
                 try:
                     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
-                        _r = await _dl.get(u, headers={"User-Agent": "Mozilla/5.0"})
+                        _r = await _dl.get(_download_url, headers={"User-Agent": "Mozilla/5.0"})
                     if _r.status_code == 200:
                         _ct = _r.headers.get("content-type", "image/jpeg")
                         _mime = _ct.split(";")[0].strip() or "image/jpeg"
@@ -1106,9 +1146,9 @@ class WhatsAppService:
                         logger.info(f"[showcase] remote URL downloaded → base64 ({len(_r.content)} bytes, mime={_mime})")
                         return (_data, _mime)
                     else:
-                        logger.warning(f"[showcase] Failed to download image {u}: HTTP {_r.status_code}")
+                        logger.warning(f"[showcase] Failed to download image {_download_url[:100]}: HTTP {_r.status_code}")
                 except Exception as _de:
-                    logger.warning(f"[showcase] Could not download image {u}: {_de}")
+                    logger.warning(f"[showcase] Could not download image: {_de}")
 
             return None
 
