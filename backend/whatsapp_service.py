@@ -946,15 +946,15 @@ class WhatsAppService:
                             clean_filename = "image.jpg" if (media_type or "image") == "image" else "document.pdf"
                         # Send media message (FLAT structure fix)
                         _resolved_media = None
+                        _resolved_media = media_url
+                        _resolved_mimetype = None
                         if media_url:
                             _media_res = await self.resolve_media_to_base64(media_url)
                             if _media_res:
                                 _base_64_str, _mime = _media_res
-                                _resolved_media = f"data:{_mime};base64,{_base_64_str}"
-                            else:
-                                _resolved_media = media_url
+                                _resolved_media = _base_64_str
+                                _resolved_mimetype = _mime
 
-                        # Send media message (FLAT structure fix)
                         payload = {
                             "number": clean_to,
                             "mediatype": media_type or "image",
@@ -962,6 +962,8 @@ class WhatsAppService:
                             "caption": message,
                             "fileName": clean_filename,
                         }
+                        if _resolved_mimetype:
+                            payload["mimetype"] = _resolved_mimetype
                         logger.info(f"Sending media payload: {payload}")  # DEBUG LOG
                         resp = await client.post(
                             f"{self.base_url}/message/sendMedia/{instance_name}",
