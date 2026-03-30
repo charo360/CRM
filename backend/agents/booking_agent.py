@@ -33,13 +33,26 @@ class BookingAgent(BaseAgent):
         confidence = context.get("confidence", 1.0)
         careful_instruction = context.get("careful_instruction", "")
 
-        # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
-        # Prevents ChatAgent fallback from generating fake booking confirmations
-        if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
-            return await self._handle_customer_chat(
-                message, intent, customer_name, language,
-                business_knowledge, history, currency, context
+        # --- RESET/START OVER HANDLER ---
+        # 17: Clears both pendings and context if user wants to start afresh
+        if intent == "RESET_CONVERSATION":
+            logger.info(f"[BookingAgent] User requested reset. Clearing states for customer_id={customer_id}")
+            if customer_id:
+                try:
+                    await self.db.pending_catalogs.delete_one({"customer_id": customer_id, "user_id": user_id})
+                    await self.db.conversation_states.delete_one({"customer_id": str(customer_id), "user_id": user_id})
+                except Exception as e:
+                    logger.error(f"[BookingAgent] Error during reset: {e}")
+            
+            # Start a brand new flow
+            return await self._handle_booking_request(
+                services=[], business_hours={}, booking_settings={}, customer_name=customer_name, 
+                language=language, currency=currency, message=message, business_knowledge=business_knowledge, 
+                history=history, customer_id=customer_id, user_id=user_id, is_rental=is_rental,
+                intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="User requested to start afresh. Welcome them back!"
             )
+
+        # --- CONTEXT-AWARE SMALL TALK ---
 
         # ── Handle pending_booking_action: 1=Cancel / 2=Reschedule pick ──────
         pending_booking_action_id = conv_state.get("pending_booking_action")
@@ -130,11 +143,30 @@ class BookingAgent(BaseAgent):
                 customer_id, user_id, customer_name, language, message, is_rental
             )
 
+        # ── Handle active booking step from pending_catalogs ─────────────────
+        # This replaces the rigid server.py guards with a conversational AI-first approach
+        try:
+            pending_doc = await self.db.pending_catalogs.find_one({"customer_id": customer_id, "user_id": user_id})
+            if pending_doc and pending_doc.get("action_context"):
+                _ctx = pending_doc["action_context"]
+                logger.info(f"[BookingAgent] Active action_context detected: {_ctx}")
+                
+                # If they are just saying a date during a date request
+                if _ctx == "booking_date_input" and context.get("entities", {}).get("dates"):
+                    # We have a date! But instead of hardcoding, we tell the AI to confirm it
+                    context["careful_instruction"] = f"The user is in the 'booking_date_input' step. They just provided a date: {context['entities']['dates'][0]}. Confirm it naturally."
+                elif _ctx == "booking_service_select" and not PICK_NUMBER_RE.match(message.strip()):
+                    # User is chatting instead of picking a number
+                    context["careful_instruction"] = "The user is supposed to pick a service from the list, but they are chatting instead. Answer their question or guide them back to the list."
+        except Exception as e:
+            logger.warning(f"[BookingAgent] Error fetching pending_doc: {e}")
+
         # Default: BOOKING_REQUEST
         return await self._handle_booking_request(
             services, business_hours, booking_settings, customer_name, language, currency,
             message, business_knowledge, history, customer_id, user_id, is_rental,
             intent=intent, confidence=confidence, careful_instruction=careful_instruction,
+            active_context=pending_doc.get("action_context") if pending_doc else None
         )
 
     # ── Booking Request ────────────────────────────────────────────────────────
@@ -144,6 +176,7 @@ class BookingAgent(BaseAgent):
         customer_name, language, currency, message,
         business_knowledge, history, customer_id, user_id, is_rental=False,
         intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
+        active_context: Optional[str] = None
     ) -> Dict[str, Any]:
         if not services:
             no_listing_msg = (
@@ -192,11 +225,19 @@ class BookingAgent(BaseAgent):
         intro = await self._ai_intro(
             message, customer_name, language, business_knowledge, history, is_rental,
             intent=intent, confidence=confidence, careful_instruction=careful_instruction,
+            active_context=active_context
         )
         messages_out = []
         if intro:
             messages_out.append({"text": intro})
-        messages_out.append({"text": services_text})
+        
+        # Only send the services list if:
+        # 1. No active booking context
+        # 2. Or context is 'booking_service_select'
+        # 3. Or user specifically asked for 'what do you offer' / 'catalog'
+        _show_list = not active_context or active_context == "booking_service_select" or intent == "CATALOG_REQUEST"
+        if _show_list:
+            messages_out.append({"text": services_text})
 
         # Store in pending_catalogs for numbered reply
         if customer_id and first_page:
@@ -846,6 +887,7 @@ class BookingAgent(BaseAgent):
     async def _ai_intro(
         self, message, customer_name, language, business_knowledge, history,
         is_rental=False, intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
+        active_context: Optional[str] = None
     ) -> Optional[str]:
         try:
             from ai_service import get_drafter
@@ -858,31 +900,34 @@ class BookingAgent(BaseAgent):
             )
             if careful_instruction:
                 intent_hint += f"\n{careful_instruction}\n"
+            context_note = ""
+            if active_context:
+                context_note = f"\n⚠️ CONTEXT: The user is currently in the middle of a booking, at the '{active_context}' step. "
+                if active_context == "booking_date_input":
+                    context_note += "They were just asked for a DATE. "
+                elif active_context == "booking_service_select":
+                    context_note += "They were just asked to SELECT A SERVICE from a list. "
+                elif active_context == "booking_time_select":
+                    context_note += "They were just asked to SELECT A TIME slot. "
+                context_note += "Acknowledge their message naturally and, if they didn't provide the info needed, gently guide them back to this step."
+
             if is_rental:
                 prompt = (
-                    f"{intent_hint}"
+                    f"{intent_hint}{context_note}"
                     f"Customer is looking to book a rental/property. "
-                    f"Write 1 warm short line in {language} welcoming them to browse listings "
-                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
-                    f"STRICT RULES — breaking any of these = wrong answer:\n"
-                    f"- NEVER mention or suggest specific dates, days, or times\n"
-                    f"- NEVER state or imply a booking has been made or confirmed\n"
-                    f"- NEVER mention prices or availability\n"
-                    f"- Just a warm welcome line, nothing else"
+                    f"Write 1-2 warm lines in {language} replying to them. "
+                    f"If they are asking a question, answer it using this business info: {bk}\n"
+                    f"If they provided a date/info, acknowledge it warmly.\n"
+                    f"Output ONLY the customer-facing message. WhatsApp tone."
                 )
             else:
                 prompt = (
-                    f"{intent_hint}"
+                    f"{intent_hint}{context_note}"
                     f"Customer wants to book a service. "
-                    f"Write 1 warm short line in {language} acknowledging their request "
-                    f"and letting them know you'll show them the options "
-                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
-                    f"STRICT RULES — breaking any of these = wrong answer:\n"
-                    f"- NEVER mention or suggest specific dates, days, or times\n"
-                    f"- NEVER state or imply anything is booked, confirmed, or scheduled\n"
-                    f"- NEVER mention prices or opening hours\n"
-                    f"- NEVER reference previous bookings or past conversations\n"
-                    f"- Just a warm 1-line intro, nothing else"
+                    f"Write 1-2 warm lines in {language} replying to them. "
+                    f"If they are asking a question, answer it using this business info: {bk}\n"
+                    f"If they provided a date/info, acknowledge it warmly.\n"
+                    f"Output ONLY the customer-facing message. WhatsApp tone."
                 )
             intro = await ai._call_llm(prompt, model_pref="standard")
             if intro and len(intro.strip()) < 120:

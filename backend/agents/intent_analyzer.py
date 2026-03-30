@@ -21,7 +21,7 @@ ORDER_INTENTS = {"ORDER_STATUS", "DELIVERY_INQUIRY", "TRACKING", "ORDER_CANCEL",
 PAYMENT_INTENTS = {"PAYMENT_CONFIRM", "PAYMENT_METHOD", "PAYMENT_ISSUE", "REFUND_REQUEST"}
 COMPLAINT_INTENTS = {"COMPLAINT", "NEGATIVE_FEEDBACK", "DAMAGED_ITEM", "WRONG_ITEM", "ESCALATION"}
 CHAT_INTENTS = {"GENERAL_CHAT", "PERSONAL_CHAT", "GREETING", "SMALL_TALK", "OFF_TOPIC"}
-BOOKING_INTENTS = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "BOOKING_STATUS", "BOOKING_CANCEL", "RESCHEDULE"}
+BOOKING_INTENTS = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "BOOKING_STATUS", "BOOKING_CANCEL", "RESCHEDULE", "RESET_CONVERSATION"}
 
 # Intents that must always escalate — AI should never handle alone
 ALWAYS_ESCALATE_INTENTS = {"LEGAL_THREAT", "FRAUD_CLAIM", "ESCALATION"}
@@ -215,6 +215,13 @@ _PRICE_PATTERNS = [
     r'\bbei\s+(ya|gani)\b',  # Swahili
 ]
 
+_RESET_EXACT_KEYWORDS = {
+    "start over", "reset", "begin again", "restart", "start afresh", "afresh",
+    "clear", "forget it", "nevermind", "never mind", "go back", "back",
+    "tuanze upya", "anza upya", "safisha",  # Swahili
+    "recommencer", "annuler", "retour",    # French
+}
+
 def _deterministic_intent_override(message: str) -> dict | None:
     """
     Fast rules-only pre-check before the LLM is called.
@@ -288,10 +295,21 @@ def _deterministic_intent_override(message: str) -> dict | None:
     _looks_like_payment = _has_payment_kw or any(
         w in msg for w in ["paid", "mpesa", "transferred", "sent money", "payment", "transaction"]
     )
-    if not _looks_like_payment and len(msg.split()) <= 3:
-        # Very short message with no payment keywords — never route to PAYMENT_CONFIRM
-        # Let LLM handle it with full context instead
-        return None
+    # Reset/Start over request
+    if msg in _RESET_EXACT_KEYWORDS or any(msg.startswith(kw) for kw in _RESET_EXACT_KEYWORDS if len(kw) > 4):
+        return {
+            "intent": "RESET_CONVERSATION",
+            "sentiment": "neutral",
+            "language": "English",
+            "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+            "conversation_state": "new",
+            "confidence": 1.0,
+            "needs_escalation": False,
+            "escalation_reason": None,
+            "keywords": ["reset"],
+            "contact_signal": {"type": "customer", "confidence": 0.8, "reason": "reset keyword detected"},
+        }
+    
     return None
 
 
@@ -388,6 +406,8 @@ BOOKING_REQUEST: "I want to book", "naweza kuja lini", "je veux réserver", "qui
 AVAILABILITY_CHECK: "when are you available", "are you open Saturday", "do you have slots", "quand êtes-vous disponible", "متى تكونون متاحين"
 BOOKING_STATUS: "status ya booking", "my appointment", "is my booking confirmed", "ma réservation est-elle confirmée", "mis citas", "show my bookings", "booking yangu", "طلبي للموعد", "where is my booking"
 NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est trop cher", "any discount", "best price", "kuna offer"
+RESET_CONVERSATION: "start over", "restart", "clear everything", "wrong booking", "actually let's do something else", "begin again", "tuanze upya", "anza tena"
+GO_BACK: "ignore that last message", "wait go back", "previous step", "actually not that", "go back", "rudisha nyuma"
 
 ══ GLOBAL LANGUAGE RULES ══
 - Classify in ANY language — no language is default or assumed

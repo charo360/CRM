@@ -8773,19 +8773,12 @@ async def evolution_webhook(request: Request):
                                 )
                                 return {"status": "ok", "handled_by": "booking_date_cancelled"}
                             elif _fj_bkd_action == "tangent":
-                                await _fj_bkd_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_bkd_result.get("reply") or f"Hey! 😊 We were just picking a date for *{_bkd_svc}* — what day works for you? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_date_tangent"}
+                                # User is asking something unrelated or switching context.
+                                # Let it fall through to the AI agent pipeline for a natural response.
+                                pass
                             elif _fj_bkd_action == "unclear":
-                                await _fj_bkd_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_bkd_result.get("reply") or f"What date would you like for *{_bkd_svc}*? 📅\n_e.g. tomorrow, Monday, 15 March_",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_date_unclear"}
+                                # Message is unclear or vague. Let the AI agent generate a helpful, conversational follow-up.
+                                pass
                             # continue — use extracted_value as cleaner date input for parser
                             if _fj_bkd_result.get("extracted_value"):
                                 body = _fj_bkd_result["extracted_value"]
@@ -8844,16 +8837,8 @@ async def evolution_webhook(request: Request):
                             _parsed_bk_date = None
 
                         if not _parsed_bk_date or _parsed_bk_date < _today_bk:
-                            ws = get_whatsapp_service(db)
-                            if _parsed_bk_date and _parsed_bk_date < _today_bk:
-                                _bk_err_msg = f"That date has already passed. Please reply with a future date 📅"
-                            else:
-                                _bk_err_msg = "I didn't catch that date. Please reply with a date like *tomorrow*, *Monday*, *15 March*, or *2026-03-15* 📅"
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=_bk_err_msg, customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_date_invalid"}
+                            # Instead of a hard error, let the AI agent explain why the date was invalid or handle the conversational input.
+                            pass
 
                         # Fetch business hours to validate day + build slots
                         _bk_biz_id = user.get("business_id", user["_id"])
@@ -9310,12 +9295,9 @@ async def evolution_webhook(request: Request):
                                 )
                                 return {"status": "ok", "handled_by": "creator_timeline_cancelled"}
                             elif _fj_cr_action == "tangent":
-                                await _fj_cr_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_cr_result.get("reply") or f"Hey! 😊 We were setting a timeline for *{_cr_svc}* — when would you need it by? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "creator_timeline_tangent"}
+                                # User is asking something unrelated or switching context.
+                                # Let it fall through to the AI agent pipeline.
+                                pass
                             elif _fj_cr_action == "unclear":
                                 await _fj_cr_ws.send_message(
                                     user_id=user["_id"], to_number=from_number,
@@ -9552,15 +9534,8 @@ async def evolution_webhook(request: Request):
                                     )
                                     return {"status": "ok", "handled_by": "booking_confirm_cancelled"}
                                 elif _fj_bc_action == "tangent":
-                                    _summary_hint = (f" for *{_bc_svc}*" + (f" on {_bc_date} at {_bc_time}" if _bc_date and _bc_time else ""))
-                                    _tangent_msg = _fj_bc_result.get("reply") or (
-                                        f"Hey! 😊 We were just confirming your booking{_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
-                                    )
-                                    await _bc_ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_tangent_msg, customer_name=customer_name, send_context="booking_flow"
-                                    )
-                                    return {"status": "ok", "handled_by": "booking_confirm_tangent"}
+                                    # User is asking something unrelated. Fall through to the AI agent pipeline.
+                                    pass
                                 else:  # unclear
                                     _bkc_re_summary = (
                                         f"Just to confirm your booking:\n"
@@ -10990,19 +10965,10 @@ async def evolution_webhook(request: Request):
                                 logging.info(f"[BookingGuard] Name match: '{_bkg_body}' → '{_bkg_svc_name}' for customer {customer_id}")
                                 return {"status": "ok", "handled_by": "booking_service_name_match"}
                             else:
-                                # No match — resend numbered service list
-                                _bkg_sl = ["📋 *Our Services*\n"]
-                                for _sv in _bkg_svcs:
-                                    _sv_p = _sv.get("price", 0)
-                                    _sv_d = _sv.get("duration")
-                                    _sv_ps = f"{_bkg_currency} {_sv_p:,.0f}" if _sv_p else "Contact for price"
-                                    _sv_ds = f" · {_sv_d} min" if _sv_d else ""
-                                    _bkg_sl.append(f"{_sv.get('index','?')}️⃣  *{_sv.get('name','Service')}* — {_sv_ps}{_sv_ds}")
-                                _bkg_sl.append("\n_Reply with the number to select (e.g. *1*, *2*)_")
-                                ws = get_whatsapp_service(db)
-                                await ws.send_message(user_id=user["_id"], to_number=from_number, message="\n".join(_bkg_sl), customer_name=customer_name, send_context="booking_flow")
-                                logging.info(f"[BookingGuard] No service match for '{_bkg_body}', resent list for customer {customer_id}")
-                                return {"status": "ok", "handled_by": "booking_service_no_match_guard"}
+                                # No clear service match found in the natural language message.
+                                # Instead of blocking with a "no match" guard, we let it fall through to the AI agent pipeline.
+                                # This allows the AI to handle questions, context switches, or "start over" requests.
+                                pass
 
                 # Skip agent pipeline if button_action already set by numbered response handler
                 if not button_action:
