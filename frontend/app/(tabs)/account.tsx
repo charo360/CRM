@@ -417,7 +417,8 @@ export default function AccountScreen() {
   const handleTogglePulse = async (value: boolean) => {
     setPulseEnabled(value);
     try {
-      await apiClient.put('/settings', { daily_pulse_enabled: value });
+      const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      await apiClient.put('/settings', { daily_pulse_enabled: value, timezone: deviceTimezone });
       if (value) {
         Alert.alert('Daily Pulse Enabled', `You'll receive your business summary every day at ${formatTime(pulseTime)} via WhatsApp.`);
       }
@@ -435,7 +436,8 @@ export default function AccountScreen() {
       const newTime = `${hours}:${minutes}`;
       setPulseTime(newTime);
       try {
-        await apiClient.put('/settings', { daily_pulse_time: newTime });
+        const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        await apiClient.put('/settings', { daily_pulse_time: newTime, timezone: deviceTimezone });
       } catch (error) {
         Alert.alert('Error', 'Failed to update time');
       }

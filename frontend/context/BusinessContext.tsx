@@ -11,6 +11,7 @@ export type BusinessType =
   | 'healthcare'
   | 'creator'
   | 'rental'
+  | 'tech'
   | '';
 
 // ── Per-type config ────────────────────────────────────────────────────────────
@@ -64,9 +65,9 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     dashboardMode: 'bookings', primaryColor: '#25D366',
   },
   creator: {
-    catalogLabel: 'Products', catalogItemLabel: 'Product',
+    catalogLabel: 'Collab Packages', catalogItemLabel: 'Package',
     showDuration: false, showStock: false,
-    bookingsTabVisible: true, salesTabLabel: 'Sales',
+    bookingsTabVisible: true, salesTabLabel: 'Revenue',
     dashboardMode: 'bookings', primaryColor: '#25D366',
   },
   rental: {
@@ -74,6 +75,12 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     showDuration: false, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Revenue',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+  },
+  tech: {
+    catalogLabel: 'Plans', catalogItemLabel: 'Plan',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Revenue',
+    dashboardMode: 'hybrid', primaryColor: '#25D366',
   },
 };
 
@@ -116,7 +123,7 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { load(); }, [load]);
 
   const config = TYPE_CONFIGS[businessType] ?? DEFAULT_CONFIG;
-  const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental', 'restaurant', 'creator'].includes(businessType);
+  const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental', 'restaurant', 'creator', 'tech'].includes(businessType);
   const isRetailBusiness  = ['retail'].includes(businessType);
 
   return (

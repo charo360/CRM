@@ -75,8 +75,20 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       );
       if (!pkg) throw new Error('Product not found');
 
-      const { customerInfo } = await Purchases.purchasePackage(pkg);
+      const { customerInfo, transaction } = await Purchases.purchasePackage(pkg);
       if (customerInfo.entitlements.active['premium']) {
+        // Sync subscription to backend so subscription_plan/subscription_active are updated in DB
+        try {
+          const purchaseToken = transaction?.transactionIdentifier || transaction?.revenueCatId || '';
+          const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
+          await apiClient.post('/subscription/verify-purchase', {
+            plan_id: plan.id,
+            purchase_token: purchaseToken,
+            platform,
+          });
+        } catch (syncErr) {
+          console.warn('Backend subscription sync failed (non-fatal):', syncErr);
+        }
         Alert.alert('Success', 'Subscription activated!');
         onSuccess();
         onClose();
@@ -100,8 +112,23 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       setPurchasing(true);
       const Purchases = require('react-native-purchases').default;
       const customerInfo = await Purchases.restorePurchases();
-      
+
       if (customerInfo.entitlements.active['premium']) {
+        // Sync restored subscription to backend
+        try {
+          const entitlement = customerInfo.entitlements.active['premium'];
+          const productId = entitlement?.productIdentifier || '';
+          // Map RevenueCat product ID to plan_id (e.g. crm_pro_monthly → pro)
+          const planMatch = productId.match(/crm_(starter|standard|pro)/);
+          if (planMatch) {
+            const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
+            await apiClient.post('/subscription/restore-purchases', {
+              purchases: [{ plan_id: planMatch[1], purchase_token: entitlement?.productPlanIdentifier || productId, platform }],
+            });
+          }
+        } catch (syncErr) {
+          console.warn('Backend restore sync failed (non-fatal):', syncErr);
+        }
         Alert.alert('Success', 'Subscription restored!');
         onSuccess();
         onClose();

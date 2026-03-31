@@ -809,20 +809,23 @@ class WhatsAppService:
         media_filename: Optional[str] = None,
         send_context: str = "manual",
         ai_model: Optional[str] = None,
+        bypass_limits: bool = False,
     ) -> Dict:
         """
         Send a WhatsApp message via Evolution API.
         Auto-creates customer contact if needed.
         Enforces rate limits.
         Simulates human behavior (typing + delays) to prevent bans.
-        
-        send_context: 'manual' | 'auto_reply' | 'order_confirm' | 'broadcast'
+
+        send_context: 'manual' | 'auto_reply' | 'order_confirm' | 'broadcast' | 'system'
+        bypass_limits: skip monthly/daily credit checks (for system messages like daily pulse)
         """
         try:
-            # Check rate limits
-            limit_check = await self.check_message_limit(user_id)
-            if not limit_check["allowed"]:
-                return {"status": "limit_reached", "message": limit_check["reason"]}
+            # Check rate limits (skip for system/service messages sent to the owner)
+            if not bypass_limits:
+                limit_check = await self.check_message_limit(user_id)
+                if not limit_check["allowed"]:
+                    return {"status": "limit_reached", "message": limit_check["reason"]}
 
             # Get user's WhatsApp config and AI model
             user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
@@ -972,9 +975,11 @@ class WhatsAppService:
                         )
                     else:
                         # Send text message
-                        # Append invisible zero-width space to auto-replies so the
-                        # receiving end can identify AI-generated messages and skip replying
-                        _msg_text = message + "\u200B" if send_context == "auto_reply" else message
+                        # Append invisible zero-width space to ALL AI/automated messages so the
+                        # receiving end can identify them and skip replying (AI↔AI loop guard).
+                        # Only exclude contexts where a human owner is manually sending (broadcast, product_send).
+                        _HUMAN_SEND_CONTEXTS = {"broadcast", "product_send"}
+                        _msg_text = message + "\u200B" if send_context not in _HUMAN_SEND_CONTEXTS else message
                         payload = {
                             "number": clean_to,
                             "text": _msg_text,

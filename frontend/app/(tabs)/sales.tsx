@@ -630,25 +630,25 @@ export default function SalesScreen() {
       'How was this credit sale paid?',
       [
         ...paymentMethods.map((method) => ({
-          text: method,
+          text: method.name,
           onPress: async () => {
             try {
-              await apiClient.put(`/sales/${sale.id}/mark-paid?payment_method=${encodeURIComponent(method)}`);
+              await apiClient.put(`/sales/${sale.id}/mark-paid?payment_method=${encodeURIComponent(method.name)}`);
 
               // Update local state
               const updatedSales = sales.map((s) =>
                 s.id === sale.id
-                  ? { ...s, paid_date: new Date().toISOString(), payment_method: method }
+                  ? { ...s, paid_date: new Date().toISOString(), payment_method: method.name }
                   : s
               );
               setSales(updatedSales);
 
               // Update selected sale if it's open
               if (selectedSale?.id === sale.id) {
-                setSelectedSale({ ...sale, paid_date: new Date().toISOString(), payment_method: method });
+                setSelectedSale({ ...sale, paid_date: new Date().toISOString(), payment_method: method.name });
               }
 
-              Alert.alert('Success', `Sale marked as paid via ${method}!`);
+              Alert.alert('Success', `Sale marked as paid via ${method.name}!`);
             } catch (error) {
               Alert.alert('Error', 'Failed to mark sale as paid');
             }
@@ -1989,10 +1989,10 @@ export default function SalesScreen() {
                           'This will convert the order to a sale and remove it from orders. Choose payment method:',
                           [
                             ...paymentMethods.map((method) => ({
-                              text: method,
+                              text: method.name,
                               onPress: async () => {
                                 try {
-                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method)}`);
+                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method.name)}`);
                                   setOrders(orders.filter(o => o.id !== selectedOrder.id));
                                   setOrderDetailsVisible(false);
                                   Alert.alert('Success', 'Order converted to sale!');

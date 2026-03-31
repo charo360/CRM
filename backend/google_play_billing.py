@@ -168,11 +168,11 @@ class GooglePlayBilling:
 # Subscription tier limits
 SUBSCRIPTION_LIMITS = {
     'free': {
-        'max_customers': 0,
-        'max_products': 0,
-        'max_team_members': 1,
-        'ai_messages_per_month': 0,
-        'features': []
+        'max_customers': 100,   # free users can try the app with real data
+        'max_products': 5,      # aligned with PLAN_PRODUCT_LIMITS["free"]
+        'max_team_members': 1,  # owner only, no team
+        'ai_messages_per_month': 50,  # small quota to experience the product
+        'features': ['basic_crm']
     },
     'starter': {
         'max_customers': 500,

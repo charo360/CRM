@@ -766,11 +766,21 @@ def verify_token(token: str) -> dict:
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     payload = verify_token(credentials.credentials)
     user = await db.users.find_one({"_id": payload["user_id"]})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+
+    # Reject suspended team members on every request (JWT may still be valid)
+    if user.get("business_id") and user.get("role") in ("employee", "manager"):
+        tm = await db.team_members.find_one(
+            {"user_id": user["_id"], "business_id": user["business_id"]},
+            {"status": 1}
+        )
+        if tm and tm.get("status") == "suspended":
+            raise HTTPException(status_code=403, detail="Your account has been suspended. Contact your business owner.")
+
     return user
 
 def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
@@ -1652,6 +1662,71 @@ class BusinessKnowledge(BaseModel):
     creator_blacklisted_niches: Optional[str] = None
     creator_fan_dm_response: Optional[str] = None
     creator_media_kit_link: Optional[str] = None
+    # Tech / SaaS / Fintech-specific fields
+    tech_product_description: Optional[str] = None   # e.g. "Cloud accounting software for SMEs in East Africa"
+    tech_target_customers: Optional[str] = None      # e.g. "SMEs, accountants, NGOs, retail chains"
+    tech_pricing_plans: Optional[str] = None         # e.g. "Starter $29/mo · Pro $79/mo · Enterprise custom"
+    tech_free_trial: Optional[str] = None            # e.g. "14-day free trial, no credit card required"
+    tech_key_features: Optional[str] = None          # e.g. "Invoicing, M-Pesa integration, payroll, VAT filing"
+    tech_integrations: Optional[str] = None          # e.g. "M-Pesa, Stripe, QuickBooks, Xero, Shopify"
+    tech_demo_process: Optional[str] = None          # e.g. "Book a 30-min demo via Calendly, we'll walk you through live"
+    tech_onboarding: Optional[str] = None            # e.g. "Self-serve setup in 15 mins · Dedicated setup call for Pro+"
+    tech_support_channels: Optional[str] = None      # e.g. "Email, in-app chat (9am-6pm EAT), WhatsApp for Enterprise"
+    tech_compliance: Optional[str] = None            # e.g. "PCI-DSS compliant, GDPR ready, KRA-approved for VAT"
+    tech_contract_terms: Optional[str] = None        # e.g. "Monthly rolling, no lock-in · 20% off annual plans"
+    tech_case_studies: Optional[str] = None          # e.g. "Used by 500+ businesses incl. Naivas, Java House, KPLC"
+    # Generic service fields (used by services, salon, fitness, healthcare when no type-specific field fits)
+    booking_process: Optional[str] = None            # e.g. "Book via WhatsApp 24hrs ahead, confirmed within 1hr"
+    cancellation_policy: Optional[str] = None        # e.g. "Cancel 24hrs before or charged 50%"
+    staff_info: Optional[str] = None                 # e.g. "Maria - hair colour. John - massage"
+    # Fitness-specific fields
+    fitness_class_types: Optional[str] = None        # e.g. "Yoga, HIIT, Pilates, Spin"
+    fitness_class_schedule: Optional[str] = None     # e.g. "Mon/Wed/Fri 6am HIIT, Tue/Thu 7pm Yoga"
+    fitness_trainers: Optional[str] = None           # e.g. "Jane (Yoga), Mike (HIIT)"
+    fitness_membership_tiers: Optional[str] = None   # e.g. "Monthly KES 3500, 10-class pack KES 3000"
+    fitness_trial_offer: Optional[str] = None        # e.g. "First class free"
+    fitness_class_capacity: Optional[str] = None     # e.g. "Max 15 per class"
+    fitness_cancellation_policy: Optional[str] = None # e.g. "Cancel 2hrs before or forfeit class"
+    fitness_equipment: Optional[str] = None          # e.g. "Mats provided, bring water"
+    # Healthcare-specific fields
+    healthcare_providers: Optional[str] = None       # e.g. "Dr. Kamau (GP), Dr. Njoki (Dermatology)"
+    healthcare_specialties: Optional[str] = None     # e.g. "General Practice, Dermatology, Dentistry"
+    healthcare_appointment_types: Optional[str] = None  # e.g. "New patient consult, Follow-up, Procedure"
+    healthcare_insurance: Optional[str] = None       # e.g. "NHIF, AAR, Jubilee, Britam"
+    healthcare_consultation_fee: Optional[str] = None   # e.g. "GP KES 1500, Specialist KES 3000"
+    healthcare_patient_prep: Optional[str] = None    # e.g. "Bring previous prescriptions, fast 8hrs for blood tests"
+    healthcare_languages: Optional[str] = None       # e.g. "English, Swahili, Kikuyu"
+    # Restaurant-specific fields
+    restaurant_cuisine: Optional[str] = None         # e.g. "Kenyan, Indian fusion"
+    restaurant_menu_highlights: Optional[str] = None # e.g. "Nyama choma, biryani, fresh juices"
+    restaurant_dietary_options: Optional[str] = None # e.g. "Vegan, gluten-free, halal"
+    restaurant_price_range: Optional[str] = None     # e.g. "KES 500–2000 per person"
+    restaurant_seating: Optional[str] = None         # e.g. "Indoor, outdoor terrace, private room (10 pax)"
+    restaurant_reservation_policy: Optional[str] = None # e.g. "Deposit KES 500 for groups 6+"
+    restaurant_parking: Optional[str] = None         # e.g. "Free parking on premises"
+    restaurant_dress_code: Optional[str] = None      # e.g. "Smart casual evenings"
+    # Salon-specific fields
+    salon_stylists: Optional[str] = None             # e.g. "Amina (braids, locs), Lisa (color, cuts)"
+    salon_services_menu: Optional[str] = None        # e.g. "Box braids KES 2500, Silk press KES 1800"
+    salon_deposit_policy: Optional[str] = None       # e.g. "50% deposit required to confirm booking"
+    salon_cancellation_policy: Optional[str] = None  # e.g. "Cancel 24hrs before or lose deposit"
+    salon_walk_ins: Optional[str] = None             # e.g. "Walk-ins welcome Mon-Thu if space available"
+    salon_products_used: Optional[str] = None        # e.g. "OGX, Cantu, natural products on request"
+    # Retail-specific fields
+    retail_return_policy: Optional[str] = None       # e.g. "7-day returns, receipt required"
+    retail_discount_tiers: Optional[str] = None      # e.g. "5% off 3+ items, 10% off orders over KES 5000"
+    retail_delivery_areas: Optional[str] = None      # e.g. "Same-day Nairobi CBD, next-day countrywide"
+    retail_warranty: Optional[str] = None            # e.g. "6-month warranty on electronics"
+    retail_exchange_policy: Optional[str] = None     # e.g. "Exchanges within 14 days, item must be unworn"
+    retail_min_order: Optional[str] = None           # e.g. "Minimum order KES 500 for delivery"
+    # Rental-specific fields
+    rental_check_in_time: Optional[str] = None       # e.g. "Check-in from 2pm, check-out by 11am"
+    rental_house_rules: Optional[str] = None         # e.g. "No smoking, no pets, max 4 guests"
+    rental_amenities: Optional[str] = None           # e.g. "WiFi, pool, full kitchen, parking"
+    rental_min_stay: Optional[str] = None            # e.g. "Minimum 2 nights"
+    rental_security_deposit: Optional[str] = None    # e.g. "KES 5000 refundable deposit on arrival"
+    rental_cancellation_policy: Optional[str] = None # e.g. "Free cancellation 7 days before, 50% after"
+    rental_pet_policy: Optional[str] = None          # e.g. "Pets allowed with prior approval, KES 500 fee"
     payment_methods: Optional[List[Any]] = None
 
 # Product Catalog Models
@@ -1707,6 +1782,8 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
         "phone_number": phone,
         "status": {"$in": ["invited", "active"]}
     })
+    if team_member and team_member.get("status") == "suspended":
+        raise HTTPException(status_code=403, detail="Your account has been suspended. Contact your business owner.")
     if team_member:
         business_id = team_member["business_id"]
         # Find or create a user account for this employee
@@ -1900,7 +1977,11 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
             ws = get_whatsapp_service(db)
             await ws.fetch_contacts(uid)
             await ws.fetch_chat_history(uid)
-            await ws.fetch_profile_pictures_bulk(uid)
+            pic_result = await ws.fetch_profile_pictures_bulk(uid)
+            if pic_result.get("updated", 0) == 0:
+                logging.info(f"No profile pics on first try for {uid} — retrying in 60s")
+                await asyncio.sleep(60)
+                await ws.fetch_profile_pictures_bulk(uid)
             logging.info(f"Auto-sync complete for user {uid}")
         except Exception as e:
             logging.error(f"Auto-sync error for user {uid}: {e}")
@@ -2361,6 +2442,20 @@ async def invite_team_member(invite: TeamMemberInvite, user = Depends(get_curren
     if existing:
         raise HTTPException(status_code=400, detail="This phone number is already on your team")
 
+    # Enforce team member limit based on subscription plan
+    business_owner = await db.users.find_one({"_id": business_id})
+    plan = (business_owner or user).get("subscription_plan", "free")
+    plan_limits = SUBSCRIPTION_LIMITS.get(plan, SUBSCRIPTION_LIMITS["free"])
+    max_members = plan_limits.get("max_team_members", 1)
+    if max_members != -1:  # -1 = unlimited
+        current_count = await db.team_members.count_documents({"business_id": business_id})
+        # +1 for the owner who is not in team_members collection
+        if current_count + 1 >= max_members:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Team member limit reached ({max_members} on your {plan} plan). Upgrade to add more."
+            )
+
     # Validate role
     if invite.role not in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
         raise HTTPException(status_code=400, detail="Can only invite employees or managers")
@@ -2451,7 +2546,13 @@ async def update_team_member(member_id: str, updates: TeamMemberUpdate, user = D
     
     if update_data:
         await db.team_members.update_one({"_id": member_id}, {"$set": update_data})
-    
+        # Sync role change to the user's own doc so JWT-based permission checks stay accurate
+        if "role" in update_data and member.get("user_id"):
+            await db.users.update_one(
+                {"_id": member["user_id"]},
+                {"$set": {"role": update_data["role"]}}
+            )
+
     return {"status": "success", "message": "Team member updated"}
 
 @api_router.delete("/team/members/{member_id}")
@@ -4102,6 +4203,8 @@ async def get_revenue(user = Depends(get_current_user)):
 @api_router.get("/sales/by-employee")
 async def get_sales_by_employee(user = Depends(get_current_user)):
     """Get sales totals grouped by employee (owner/manager only)"""
+    if not check_permission(user, TeamMemberRole.MANAGER):
+        raise HTTPException(status_code=403, detail="Only owners and managers can view team analytics")
     business_id = user.get("business_id", user["_id"])
 
     pipeline = [
@@ -4750,6 +4853,10 @@ class BookingResponse(BaseModel):
     reminder_sent: bool = False
     last_reminder_at: Optional[datetime] = None
     created_at: datetime
+    # Creator-specific fields
+    deadline: Optional[str] = None
+    budget: Optional[str] = None
+    project_details: Optional[str] = None
 
 def _generate_booking_number() -> str:
     """Generate short booking reference like BK-X7K2M9"""
@@ -4904,6 +5011,9 @@ async def get_bookings(
             reminder_sent=d.get("reminder_sent", False),
             last_reminder_at=d.get("last_reminder_at"),
             created_at=d.get("created_at", datetime.utcnow()),
+            deadline=d.get("deadline"),
+            budget=d.get("budget"),
+            project_details=d.get("project_details"),
         )
         for d in docs
     ]
@@ -4937,6 +5047,9 @@ async def get_booking(booking_id: str, user = Depends(get_current_user)):
         reminder_sent=d.get("reminder_sent", False),
         last_reminder_at=d.get("last_reminder_at"),
         created_at=d.get("created_at", datetime.utcnow()),
+        deadline=d.get("deadline"),
+        budget=d.get("budget"),
+        project_details=d.get("project_details"),
     )
 
 @api_router.put("/bookings/{booking_id}", response_model=BookingResponse)
@@ -5528,17 +5641,205 @@ async def delete_product_image(
 
 @api_router.post("/ai/generate-broadcast-message")
 async def generate_broadcast_message(request: AIMessageRequest, user = Depends(get_current_user)):
-    """Generate a broadcast message using AI"""
+    """Generate a broadcast message using AI — fully business-aware."""
     try:
+        business_id = user.get("business_id", user["_id"])
+        business_name = user.get("business_name", "My Business")
+        user_settings = user.get("settings", {})
+        currency = user_settings.get("currency", "USD")
+        model_pref = user_settings.get("ai_model", "standard")
+
+        # Build business knowledge — creator-aware
+        bk_data = user.get("business_knowledge", {})
+        business_type = request.business_type or bk_data.get("business_type", "general")
+        is_creator = business_type == "creator"
+        bk_parts = []
+        if bk_data.get("business_description"):
+            bk_parts.append(bk_data["business_description"])
+
+        if is_creator:
+            # Creator-specific context — no products, no delivery
+            if bk_data.get("creator_niche"):
+                bk_parts.append(f"Content niche: {bk_data['creator_niche']}")
+            if bk_data.get("creator_platforms"):
+                bk_parts.append(f"Platforms: {bk_data['creator_platforms']}")
+            if bk_data.get("creator_audience_size"):
+                bk_parts.append(f"Audience: {bk_data['creator_audience_size']}")
+            if bk_data.get("creator_collab_types"):
+                bk_parts.append(f"Collab types: {bk_data['creator_collab_types']}")
+            if bk_data.get("creator_rate_card"):
+                bk_parts.append(f"Rates: {bk_data['creator_rate_card']}")
+            if bk_data.get("creator_min_budget"):
+                bk_parts.append(f"Minimum budget: {bk_data['creator_min_budget']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "fitness":
+            if bk_data.get("fitness_class_types"):
+                bk_parts.append(f"Classes offered: {bk_data['fitness_class_types']}")
+            if bk_data.get("fitness_class_schedule"):
+                bk_parts.append(f"Schedule: {bk_data['fitness_class_schedule']}")
+            if bk_data.get("fitness_trainers"):
+                bk_parts.append(f"Trainers: {bk_data['fitness_trainers']}")
+            if bk_data.get("fitness_membership_tiers"):
+                bk_parts.append(f"Membership/pricing: {bk_data['fitness_membership_tiers']}")
+            if bk_data.get("fitness_trial_offer"):
+                bk_parts.append(f"Trial offer: {bk_data['fitness_trial_offer']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "restaurant":
+            if bk_data.get("restaurant_cuisine"):
+                bk_parts.append(f"Cuisine: {bk_data['restaurant_cuisine']}")
+            if bk_data.get("restaurant_menu_highlights"):
+                bk_parts.append(f"Menu highlights: {bk_data['restaurant_menu_highlights']}")
+            if bk_data.get("restaurant_dietary_options"):
+                bk_parts.append(f"Dietary options: {bk_data['restaurant_dietary_options']}")
+            if bk_data.get("restaurant_price_range"):
+                bk_parts.append(f"Price range: {bk_data['restaurant_price_range']}")
+            if bk_data.get("restaurant_seating"):
+                bk_parts.append(f"Seating: {bk_data['restaurant_seating']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "healthcare":
+            if bk_data.get("healthcare_providers"):
+                bk_parts.append(f"Providers: {bk_data['healthcare_providers']}")
+            if bk_data.get("healthcare_specialties"):
+                bk_parts.append(f"Specialties: {bk_data['healthcare_specialties']}")
+            if bk_data.get("healthcare_insurance"):
+                bk_parts.append(f"Insurance accepted: {bk_data['healthcare_insurance']}")
+            if bk_data.get("healthcare_consultation_fee"):
+                bk_parts.append(f"Consultation fees: {bk_data['healthcare_consultation_fee']}")
+            if bk_data.get("healthcare_appointment_types"):
+                bk_parts.append(f"Appointment types: {bk_data['healthcare_appointment_types']}")
+        elif business_type == "salon":
+            if bk_data.get("salon_stylists"):
+                bk_parts.append(f"Stylists: {bk_data['salon_stylists']}")
+            if bk_data.get("salon_services_menu"):
+                bk_parts.append(f"Services & prices: {bk_data['salon_services_menu']}")
+            if bk_data.get("salon_deposit_policy"):
+                bk_parts.append(f"Deposit policy: {bk_data['salon_deposit_policy']}")
+            if bk_data.get("salon_walk_ins"):
+                bk_parts.append(f"Walk-ins: {bk_data['salon_walk_ins']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "retail":
+            if bk_data.get("products_services"):
+                bk_parts.append(f"Products: {bk_data['products_services']}")
+            if bk_data.get("retail_return_policy"):
+                bk_parts.append(f"Return policy: {bk_data['retail_return_policy']}")
+            if bk_data.get("retail_discount_tiers"):
+                bk_parts.append(f"Discounts: {bk_data['retail_discount_tiers']}")
+            if bk_data.get("retail_delivery_areas"):
+                bk_parts.append(f"Delivery areas: {bk_data['retail_delivery_areas']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+            # Inject live product catalog for retail
+            user_products = await db.products.find({"user_id": business_id, "in_stock": True}).to_list(20)
+            if user_products:
+                prod_lines = []
+                for p in user_products:
+                    price_str = f"{currency} {p['price']:,.0f}" if p.get("price") is not None else "price on request"
+                    desc = f" — {p['description'][:60]}" if p.get("description") else ""
+                    prod_lines.append(f"• {p['name']}: {price_str}{desc}")
+                bk_parts.append("Current stock:\n" + "\n".join(prod_lines))
+        elif business_type == "tech":
+            if bk_data.get("tech_product_description"):
+                bk_parts.append(f"Product: {bk_data['tech_product_description']}")
+            if bk_data.get("tech_target_customers"):
+                bk_parts.append(f"Target customers: {bk_data['tech_target_customers']}")
+            if bk_data.get("tech_key_features"):
+                bk_parts.append(f"Key features: {bk_data['tech_key_features']}")
+            if bk_data.get("tech_pricing_plans"):
+                bk_parts.append(f"Pricing plans: {bk_data['tech_pricing_plans']}")
+            if bk_data.get("tech_free_trial"):
+                bk_parts.append(f"Free trial: {bk_data['tech_free_trial']}")
+            if bk_data.get("tech_integrations"):
+                bk_parts.append(f"Integrations: {bk_data['tech_integrations']}")
+            if bk_data.get("tech_demo_process"):
+                bk_parts.append(f"Demo booking: {bk_data['tech_demo_process']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        else:
+            if bk_data.get("products_services"):
+                bk_parts.append(f"Products/services: {bk_data['products_services']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+            if bk_data.get("delivery_info"):
+                bk_parts.append(f"Delivery: {bk_data['delivery_info']}")
+            if bk_data.get("business_hours"):
+                bk_parts.append(f"Hours: {bk_data['business_hours']}")
+
+            # Inject live product catalog (retail/service only)
+            user_products = await db.products.find({"user_id": business_id, "in_stock": True}).to_list(20)
+            if user_products:
+                prod_lines = []
+                for p in user_products:
+                    price_str = f"{currency} {p['price']:,.0f}" if p.get("price") is not None else "price on request"
+                    desc = f" — {p['description'][:60]}" if p.get("description") else ""
+                    prod_lines.append(f"• {p['name']}: {price_str}{desc}")
+                bk_parts.append("Products:\n" + "\n".join(prod_lines))
+
+            # Payment methods (not relevant for creator broadcasts)
+            raw_pm = user.get("payment_methods", [])
+            if raw_pm:
+                pm_names = [pm.get("name", str(pm)) if isinstance(pm, dict) else str(pm) for pm in raw_pm]
+                bk_parts.append(f"Payment: {', '.join(pm_names)}")
+
+        business_knowledge = "\n".join(bk_parts)
+
+        # Learn owner's writing style from recent outgoing messages
+        style_note = ""
+        try:
+            recent_out = await db.messages.find(
+                {"user_id": business_id, "direction": "outgoing"}
+            ).sort("created_at", -1).limit(15).to_list(15)
+            out_texts = [m.get("content", "") for m in recent_out if m.get("content")]
+            if out_texts:
+                sample = "\n".join(out_texts[:6])
+                uses_emojis = bool(re.search(r'[\U0001F300-\U0001FAFF]', sample))
+                avg_len = sum(len(t.split()) for t in out_texts) / len(out_texts)
+                if uses_emojis:
+                    style_note += "- Owner uses emojis naturally — include 1-2 if they genuinely fit.\n"
+                else:
+                    style_note += "- Owner rarely uses emojis — keep it minimal.\n"
+                if avg_len < 12:
+                    style_note += "- Owner writes very short messages — keep it punchy, under 2 sentences.\n"
+                elif avg_len > 25:
+                    style_note += "- Owner writes in detail — slightly longer is acceptable.\n"
+        except Exception:
+            pass
+
         drafter = get_drafter()
-        generated_message = await drafter.draft_broadcast_message(
-            prompt=request.prompt,
-            business_type=request.business_type
+        bk_section = f"\nYOUR BUSINESS INFO:\n{business_knowledge}\n" if business_knowledge else ""
+        style_section = f"\nOWNER STYLE (match this):\n{style_note}" if style_note else ""
+
+        _broadcast_audience = "brands and collaborators" if is_creator else "customers"
+        _broadcast_specifics = (
+            "actual collab types, rates, and what's included — never say 'exciting opportunities' without naming them"
+            if is_creator else
+            "actual product names, actual prices, actual offers — never say 'amazing products' or 'great deals' without naming them"
         )
-        
-        return {"message": generated_message}
+
+        broadcast_prompt = f"""You are {business_name} writing a WhatsApp broadcast message to send to {_broadcast_audience}.
+
+OWNER'S REQUEST: "{request.prompt}"
+{bk_section}{style_section}
+RULES — read every one:
+1. Sound like a real person, not a marketing bot. Write the way this owner actually texts.
+2. Use {{{{name}}}} as the ONLY personalisation placeholder — it gets replaced with each recipient's first name.
+3. WhatsApp length: 1-4 sentences. Long messages get ignored. Short messages get read.
+4. Use REAL specifics from the business info above — {_broadcast_specifics}.
+5. Include ONE clear action: "Reply YES", "DM me", "Send me a message" — one thing only.
+6. BANNED phrases: "Hope this finds you well", "I'm excited to share", "Don't miss out", "Limited time offer", "Act now", "Exclusive deal", "I wanted to reach out", "Touch base" — these get ignored.
+7. Language: Write in the language the owner used in their request. If mixed, match that mix.
+8. Emojis: Only if the owner's style above shows they use them. Max 2. Never: 😊😇✨💯🙏
+9. NEVER invent prices, rates, or offers not listed in the business info above.
+
+Think: what would make this specific person actually reply? Write that. Output ONLY the message text."""
+
+        generated = await drafter._call_llm(broadcast_prompt, model_pref=model_pref)
+        return {"message": generated.strip().strip('"').strip("'")}
     except Exception as e:
-        logging.error(f"AI generation error: {e}")
+        logging.error(f"AI broadcast generation error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate message")
 
 # ============ IMAGE UPLOAD ENDPOINTS ============
@@ -5784,18 +6085,19 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
         logging.warning(f"IAP verification failed for user {user['_id']}: {verification.get('reason')}")
         raise HTTPException(status_code=403, detail=f"Purchase verification failed: {verification.get('reason', 'unknown')}")
 
-    # Update user subscription
+    # Update user subscription — also store purchase_token so RTDN webhook can find this user
     await db.users.update_one(
         {"_id": user["_id"]},
         {
             "$set": {
                 "subscription_plan": request.plan_id,
                 "subscription_active": True,
-                "subscription_date": datetime.utcnow()
+                "subscription_date": datetime.utcnow(),
+                "purchase_token": request.purchase_token,   # needed for RTDN lookup
             }
         }
     )
-    
+
     # Store transaction
     await db.transactions.insert_one({
         "_id": str(uuid.uuid4()),
@@ -5821,6 +6123,10 @@ async def get_subscription_status(user = Depends(get_current_user)):
     active = user.get("subscription_active", False)
     # Build limits from SUBSCRIPTION_LIMITS for the current plan
     limits = SUBSCRIPTION_LIMITS.get(plan, SUBSCRIPTION_LIMITS['free']) if plan else SUBSCRIPTION_LIMITS['free']
+    # Current-month AI usage
+    _usage = user.get("ai_usage", {})
+    _cur_month = datetime.utcnow().strftime("%Y-%m")
+    ai_messages_used = _usage.get("count", 0) if _usage.get("month") == _cur_month else 0
     return {
         "subscription_plan": plan,
         "subscription_active": active,
@@ -5829,6 +6135,7 @@ async def get_subscription_status(user = Depends(get_current_user)):
         "auto_renewing": user.get("auto_renewing", False),
         "extra_credits": user.get("extra_credits", 0),
         "limits": limits,
+        "ai_messages_used": ai_messages_used,
     }
 
 
@@ -5915,8 +6222,8 @@ async def google_play_rtdn_webhook(request: Request):
 
         # notificationType: 1=RECOVERED, 2=RENEWED, 3=CANCELED, 4=PURCHASED,
         #                    5=ON_HOLD, 6=IN_GRACE_PERIOD, 7=RESTARTED, 13=EXPIRED
-        ACTIVE_TYPES = {1, 2, 4, 7}    # subscription is active
-        INACTIVE_TYPES = {3, 5, 13}     # subscription ended or on hold
+        ACTIVE_TYPES = {1, 2, 4, 6, 7}  # 6=IN_GRACE_PERIOD: still active, payment retrying
+        INACTIVE_TYPES = {3, 5, 13}      # subscription ended or on hold
 
         if notification_type in ACTIVE_TYPES:
             plan_id = subscription_id.replace("crm_", "").replace("_monthly", "").replace("_yearly", "")
@@ -6768,11 +7075,17 @@ async def evolution_webhook(request: Request):
                                 except Exception as cls_err:
                                     logging.error(f"Post-sync classification error: {cls_err}")
                                 
-                                # Fetch profile pictures
+                                # Fetch profile pictures (with retry — Evolution API cache may not be
+                                # populated immediately after a new instance connects)
                                 try:
                                     logging.info("Starting profile picture sync...")
                                     pic_result = await whatsapp_service.fetch_profile_pictures_bulk(uid)
                                     logging.info(f"Profile pic sync: {pic_result}")
+                                    if pic_result.get("updated", 0) == 0:
+                                        logging.info("No profile pics on first try — retrying in 60s")
+                                        await asyncio.sleep(60)
+                                        pic_retry = await whatsapp_service.fetch_profile_pictures_bulk(uid)
+                                        logging.info(f"Profile pic retry: {pic_retry}")
                                 except Exception as pic_err:
                                     logging.error(f"Profile pic sync error: {pic_err}")
 
@@ -10634,6 +10947,25 @@ async def evolution_webhook(request: Request):
                     logging.info(f"Auto-reply BLOCKED for {from_number} (customer_override={_customer_auto_reply}, global={_global_auto_reply})")
                     return {"status": "ok", "message": "auto-reply disabled for this contact"}
 
+                # AI message quota gate — check monthly usage against plan limit
+                _plan = user.get("subscription_plan", "free")
+                _plan_limits = SUBSCRIPTION_LIMITS.get(_plan, SUBSCRIPTION_LIMITS["free"])
+                _monthly_quota = _plan_limits.get("ai_messages_per_month", 0)
+                if _monthly_quota != -1:  # -1 = unlimited (future tier)
+                    _cur_month = datetime.utcnow().strftime("%Y-%m")
+                    _usage_doc = user.get("ai_usage", {})
+                    _used_month = _usage_doc.get("month", "")
+                    _used_count = _usage_doc.get("count", 0) if _used_month == _cur_month else 0
+                    if _used_count >= _monthly_quota:
+                        logging.info(f"AI quota reached for user {uid}: {_used_count}/{_monthly_quota} ({_plan})")
+                        return {"status": "ok", "message": "ai_quota_reached"}
+                    # Increment counter atomically (optimistic — before send to prevent race conditions)
+                    _new_count = _used_count + 1
+                    await db.users.update_one(
+                        {"_id": uid},
+                        {"$set": {"ai_usage.month": _cur_month, "ai_usage.count": _new_count}}
+                    )
+
                 # needs_human gate: if the customer was escalated to a human, apply smart logic:
                 # 1. Auto-expire after 15 minutes (in case owner never manually responds)
                 # 2. If message is on a clearly different topic, clear escalation and reply normally
@@ -10708,22 +11040,240 @@ async def evolution_webhook(request: Request):
 
                 # Build business knowledge string for agents
                 _bk_data = user.get("business_knowledge", {})
+                _bk_biz_type_ctx = (_bk_data.get("business_type") or _user_settings.get("business_type", "")).lower()
+                _bk_is_creator_ctx = _bk_biz_type_ctx == "creator"
                 _bk_parts = []
                 if _bk_data:
                     if _bk_data.get("business_description"):
                         _bk_parts.append(f"About: {_bk_data['business_description']}")
-                    if _bk_data.get("products_services"):
-                        _bk_parts.append(f"Products/Services: {_bk_data['products_services']}")
-                    if _bk_data.get("pricing_info"):
-                        _bk_parts.append(f"Pricing/Payment notes: {_bk_data['pricing_info']}")
-                    if _bk_data.get("business_hours"):
-                        _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
-                    if _bk_data.get("delivery_info"):
-                        _bk_parts.append(f"Delivery: {_bk_data['delivery_info']}")
-                    if _bk_data.get("special_offers"):
-                        _bk_parts.append(f"Offers: {_bk_data['special_offers']}")
-                    if _bk_data.get("faqs"):
-                        _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+
+                    if _bk_is_creator_ctx:
+                        # Creator-specific knowledge — replaces generic products/services fields
+                        if _bk_data.get("creator_niche"):
+                            _bk_parts.append(f"Content niche: {_bk_data['creator_niche']}")
+                        if _bk_data.get("creator_platforms"):
+                            _bk_parts.append(f"Active platforms: {_bk_data['creator_platforms']}")
+                        if _bk_data.get("creator_audience_size"):
+                            _bk_parts.append(f"Audience size: {_bk_data['creator_audience_size']}")
+                        if _bk_data.get("creator_collab_types"):
+                            _bk_parts.append(f"Collaboration types offered: {_bk_data['creator_collab_types']}")
+                        if _bk_data.get("creator_rate_card"):
+                            _bk_parts.append(f"Rate card: {_bk_data['creator_rate_card']}")
+                        if _bk_data.get("creator_whats_included"):
+                            _bk_parts.append(f"What's included: {_bk_data['creator_whats_included']}")
+                        if _bk_data.get("creator_turnaround"):
+                            _bk_parts.append(f"Turnaround time: {_bk_data['creator_turnaround']}")
+                        if _bk_data.get("creator_booking_process"):
+                            _bk_parts.append(f"Booking/payment process: {_bk_data['creator_booking_process']}")
+                        if _bk_data.get("creator_min_budget"):
+                            _bk_parts.append(f"Minimum collab budget: {_bk_data['creator_min_budget']}")
+                        if _bk_data.get("creator_blacklisted_niches"):
+                            _bk_parts.append(f"Brands/niches I don't work with: {_bk_data['creator_blacklisted_niches']}")
+                        if _bk_data.get("creator_media_kit_link"):
+                            _bk_parts.append(f"Media kit: {_bk_data['creator_media_kit_link']}")
+                        if _bk_data.get("creator_fan_dm_response"):
+                            _bk_parts.append(f"Fan DM template (style guide): {_bk_data['creator_fan_dm_response']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                    elif _bk_biz_type_ctx == "fitness":
+                        if _bk_data.get("fitness_class_types"):
+                            _bk_parts.append(f"Classes offered: {_bk_data['fitness_class_types']}")
+
+                        if _bk_data.get("fitness_class_schedule"):
+                            _bk_parts.append(f"Class schedule: {_bk_data['fitness_class_schedule']}")
+                        if _bk_data.get("fitness_trainers"):
+                            _bk_parts.append(f"Trainers: {_bk_data['fitness_trainers']}")
+                        if _bk_data.get("fitness_membership_tiers"):
+                            _bk_parts.append(f"Membership/pricing: {_bk_data['fitness_membership_tiers']}")
+                        if _bk_data.get("fitness_trial_offer"):
+                            _bk_parts.append(f"Trial offer: {_bk_data['fitness_trial_offer']}")
+                        if _bk_data.get("fitness_class_capacity"):
+                            _bk_parts.append(f"Class capacity: {_bk_data['fitness_class_capacity']}")
+                        if _bk_data.get("fitness_cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['fitness_cancellation_policy']}")
+                        if _bk_data.get("fitness_equipment"):
+                            _bk_parts.append(f"Equipment/what to bring: {_bk_data['fitness_equipment']}")
+                        if not _bk_data.get("fitness_cancellation_policy") and _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if not _bk_data.get("fitness_trainers") and _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Trainers/Staff: {_bk_data['staff_info']}")
+                        if _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "healthcare":
+                        if _bk_data.get("healthcare_providers"):
+                            _bk_parts.append(f"Providers/doctors: {_bk_data['healthcare_providers']}")
+                        if _bk_data.get("healthcare_specialties"):
+                            _bk_parts.append(f"Specialties: {_bk_data['healthcare_specialties']}")
+                        if _bk_data.get("healthcare_appointment_types"):
+                            _bk_parts.append(f"Appointment types: {_bk_data['healthcare_appointment_types']}")
+                        if _bk_data.get("healthcare_insurance"):
+                            _bk_parts.append(f"Insurance accepted: {_bk_data['healthcare_insurance']}")
+                        if _bk_data.get("healthcare_consultation_fee"):
+                            _bk_parts.append(f"Consultation fees: {_bk_data['healthcare_consultation_fee']}")
+                        if _bk_data.get("healthcare_patient_prep"):
+                            _bk_parts.append(f"Patient preparation notes: {_bk_data['healthcare_patient_prep']}")
+                        if _bk_data.get("healthcare_languages"):
+                            _bk_parts.append(f"Languages spoken: {_bk_data['healthcare_languages']}")
+                        if not _bk_data.get("healthcare_providers") and _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Providers/Staff: {_bk_data['staff_info']}")
+                        if _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "restaurant":
+                        if _bk_data.get("restaurant_cuisine"):
+                            _bk_parts.append(f"Cuisine: {_bk_data['restaurant_cuisine']}")
+                        if _bk_data.get("restaurant_menu_highlights"):
+                            _bk_parts.append(f"Menu highlights: {_bk_data['restaurant_menu_highlights']}")
+                        if _bk_data.get("restaurant_dietary_options"):
+                            _bk_parts.append(f"Dietary options: {_bk_data['restaurant_dietary_options']}")
+                        if _bk_data.get("restaurant_price_range"):
+                            _bk_parts.append(f"Price range: {_bk_data['restaurant_price_range']}")
+                        if _bk_data.get("restaurant_seating"):
+                            _bk_parts.append(f"Seating options: {_bk_data['restaurant_seating']}")
+                        if _bk_data.get("restaurant_reservation_policy"):
+                            _bk_parts.append(f"Reservation policy: {_bk_data['restaurant_reservation_policy']}")
+                        if _bk_data.get("restaurant_parking"):
+                            _bk_parts.append(f"Parking: {_bk_data['restaurant_parking']}")
+                        if _bk_data.get("restaurant_dress_code"):
+                            _bk_parts.append(f"Dress code: {_bk_data['restaurant_dress_code']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "salon":
+                        if _bk_data.get("salon_stylists"):
+                            _bk_parts.append(f"Stylists: {_bk_data['salon_stylists']}")
+                        if _bk_data.get("salon_services_menu"):
+                            _bk_parts.append(f"Services & prices: {_bk_data['salon_services_menu']}")
+                        if _bk_data.get("salon_deposit_policy"):
+                            _bk_parts.append(f"Deposit policy: {_bk_data['salon_deposit_policy']}")
+                        if _bk_data.get("salon_cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['salon_cancellation_policy']}")
+                        if _bk_data.get("salon_walk_ins"):
+                            _bk_parts.append(f"Walk-ins: {_bk_data['salon_walk_ins']}")
+                        if _bk_data.get("salon_products_used"):
+                            _bk_parts.append(f"Products used: {_bk_data['salon_products_used']}")
+                        # Fallback to generic fields if type-specific ones not filled
+                        if not _bk_data.get("salon_stylists") and _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Team/Staff: {_bk_data['staff_info']}")
+                        if not _bk_data.get("salon_cancellation_policy") and _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if not _bk_data.get("salon_deposit_policy") and _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "retail":
+                        if _bk_data.get("products_services"):
+                            _bk_parts.append(f"Products: {_bk_data['products_services']}")
+                        if _bk_data.get("retail_return_policy"):
+                            _bk_parts.append(f"Return policy: {_bk_data['retail_return_policy']}")
+                        if _bk_data.get("retail_discount_tiers"):
+                            _bk_parts.append(f"Discounts: {_bk_data['retail_discount_tiers']}")
+                        if _bk_data.get("retail_delivery_areas"):
+                            _bk_parts.append(f"Delivery areas: {_bk_data['retail_delivery_areas']}")
+                        if _bk_data.get("retail_warranty"):
+                            _bk_parts.append(f"Warranty: {_bk_data['retail_warranty']}")
+                        if _bk_data.get("retail_exchange_policy"):
+                            _bk_parts.append(f"Exchange policy: {_bk_data['retail_exchange_policy']}")
+                        if _bk_data.get("retail_min_order"):
+                            _bk_parts.append(f"Minimum order: {_bk_data['retail_min_order']}")
+                        if _bk_data.get("pricing_info"):
+                            _bk_parts.append(f"Pricing notes: {_bk_data['pricing_info']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "tech":
+                        if _bk_data.get("tech_product_description"):
+                            _bk_parts.append(f"Product: {_bk_data['tech_product_description']}")
+                        if _bk_data.get("tech_target_customers"):
+                            _bk_parts.append(f"Target customers: {_bk_data['tech_target_customers']}")
+                        if _bk_data.get("tech_key_features"):
+                            _bk_parts.append(f"Key features: {_bk_data['tech_key_features']}")
+                        if _bk_data.get("tech_pricing_plans"):
+                            _bk_parts.append(f"Pricing plans: {_bk_data['tech_pricing_plans']}")
+                        if _bk_data.get("tech_free_trial"):
+                            _bk_parts.append(f"Free trial: {_bk_data['tech_free_trial']}")
+                        if _bk_data.get("tech_integrations"):
+                            _bk_parts.append(f"Integrations: {_bk_data['tech_integrations']}")
+                        if _bk_data.get("tech_demo_process"):
+                            _bk_parts.append(f"Demo booking: {_bk_data['tech_demo_process']}")
+                        if _bk_data.get("tech_onboarding"):
+                            _bk_parts.append(f"Onboarding: {_bk_data['tech_onboarding']}")
+                        if _bk_data.get("tech_support_channels"):
+                            _bk_parts.append(f"Support: {_bk_data['tech_support_channels']}")
+                        if _bk_data.get("tech_compliance"):
+                            _bk_parts.append(f"Compliance/security: {_bk_data['tech_compliance']}")
+                        if _bk_data.get("tech_contract_terms"):
+                            _bk_parts.append(f"Contract terms: {_bk_data['tech_contract_terms']}")
+                        if _bk_data.get("tech_case_studies"):
+                            _bk_parts.append(f"Customers/case studies: {_bk_data['tech_case_studies']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "rental":
+                        if _bk_data.get("products_services"):
+                            _bk_parts.append(f"Listings: {_bk_data['products_services']}")
+                        if _bk_data.get("rental_check_in_time"):
+                            _bk_parts.append(f"Check-in/out: {_bk_data['rental_check_in_time']}")
+                        if _bk_data.get("rental_amenities"):
+                            _bk_parts.append(f"Amenities: {_bk_data['rental_amenities']}")
+                        if _bk_data.get("rental_house_rules"):
+                            _bk_parts.append(f"House rules: {_bk_data['rental_house_rules']}")
+                        if _bk_data.get("rental_min_stay"):
+                            _bk_parts.append(f"Minimum stay: {_bk_data['rental_min_stay']}")
+                        if _bk_data.get("rental_security_deposit"):
+                            _bk_parts.append(f"Security deposit: {_bk_data['rental_security_deposit']}")
+                        if _bk_data.get("rental_cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['rental_cancellation_policy']}")
+                        if _bk_data.get("rental_pet_policy"):
+                            _bk_parts.append(f"Pet policy: {_bk_data['rental_pet_policy']}")
+                        if _bk_data.get("pricing_info"):
+                            _bk_parts.append(f"Pricing notes: {_bk_data['pricing_info']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    else:
+                        # Generic services / general fallback
+                        if _bk_data.get("products_services"):
+                            _bk_parts.append(f"Products/Services: {_bk_data['products_services']}")
+                        if _bk_data.get("pricing_info"):
+                            _bk_parts.append(f"Pricing/Payment notes: {_bk_data['pricing_info']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("delivery_info"):
+                            _bk_parts.append(f"Delivery: {_bk_data['delivery_info']}")
+                        if _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Team/Staff: {_bk_data['staff_info']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
                 # Inject structured payment methods from user doc
                 _raw_pm = user.get("payment_methods", [])
                 if _raw_pm:
@@ -11104,6 +11654,67 @@ async def evolution_webhook(request: Request):
                         return {"status": "ok", "handled_by": "escalation"}
 
                     ws = get_whatsapp_service(db)
+
+                    # ── GALLERY SIGNAL — customer pressed "0" (view all images) ─────────
+                    # Router returns show_gallery: True when the customer presses 0 from any
+                    # AI-generated menu (catalog_selection, service_selection, etc.).
+                    # Fetch all products on the current page and send their images.
+                    if agent_result.get("show_gallery"):
+                        _gal_cat = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"]
+                        })
+                        _gal_products = (_gal_cat or {}).get("products", [])
+                        _biz_id_gal = user.get("business_id", user["_id"])
+                        _currency_gal = user.get("currency") or user.get("settings", {}).get("currency", "KES")
+                        _gal_sent = 0
+                        if _gal_products:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="🖼️ Here are the images...",
+                                customer_name=customer_name, send_context="auto_reply"
+                            )
+                            for _gsp in _gal_products:
+                                _gal_pid = _gsp.get("id") or _gsp.get("_id")
+                                _gfull = await db.products.find_one({"_id": _gal_pid, "user_id": _biz_id_gal})
+                                if not _gfull:
+                                    continue
+                                _gimgs = []
+                                if _gfull.get("image_url"):
+                                    _gimgs.append(_gfull["image_url"])
+                                for _gi in _gfull.get("images", []):
+                                    if _gi and _gi not in _gimgs:
+                                        _gimgs.append(_gi)
+                                if not _gimgs:
+                                    continue
+                                _gidx = _gsp.get("index", "")
+                                _gidx_e = f"{_gidx}️⃣ " if _gidx else ""
+                                _gprice = _gfull.get("price", 0)
+                                _gcaption = f"{_gidx_e}*{_gfull['name']}*\n💰 {_currency_gal} {_gprice:,.0f}" if _gprice else f"{_gidx_e}*{_gfull['name']}*"
+                                for _gimg_u in _gimgs[:-1]:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="", media_url=_gimg_u, send_context="catalog_visual_all"
+                                    )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_gcaption, media_url=_gimgs[-1], send_context="catalog_visual_all"
+                                )
+                                _gal_sent += 1
+                        if _gal_sent > 0:
+                            _gal_prompt = "Ready to choose? Reply with the number of your pick above! 👆"
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=_gal_prompt, send_context="auto_reply",
+                                customer_name=customer_name
+                            )
+                            logging.info(f"[Agent] Gallery sent: {_gal_sent} items for customer {customer_id}")
+                        else:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="Sorry, no images are available for these items right now. Reply with a number to select! 😊",
+                                customer_name=customer_name, send_context="auto_reply"
+                            )
+                        return {"status": "ok", "handled_by": "gallery_signal"}
 
                     # ── PRODUCT SHOWCASE SIGNAL ──────────────────────────────────────
                     # Router's menu selection gate returns showcase_product_id when the customer
@@ -12161,6 +12772,7 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         for m in raw_pm
     ]
     return {
+        # Global fields
         "products_services": knowledge.get('products_services', ''),
         "pricing_info": knowledge.get('pricing_info', ''),
         "business_hours": knowledge.get('business_hours', ''),
@@ -12169,6 +12781,10 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         "special_offers": knowledge.get('special_offers', ''),
         "business_description": knowledge.get('business_description', ''),
         "business_type": knowledge.get('business_type', 'general'),
+        "booking_process": knowledge.get('booking_process', ''),
+        "cancellation_policy": knowledge.get('cancellation_policy', ''),
+        "staff_info": knowledge.get('staff_info', ''),
+        # Creator fields
         "creator_niche": knowledge.get('creator_niche', ''),
         "creator_platforms": knowledge.get('creator_platforms', ''),
         "creator_audience_size": knowledge.get('creator_audience_size', ''),
@@ -12181,6 +12797,67 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         "creator_blacklisted_niches": knowledge.get('creator_blacklisted_niches', ''),
         "creator_fan_dm_response": knowledge.get('creator_fan_dm_response', ''),
         "creator_media_kit_link": knowledge.get('creator_media_kit_link', ''),
+        # Fitness fields
+        "fitness_class_types": knowledge.get('fitness_class_types', ''),
+        "fitness_class_schedule": knowledge.get('fitness_class_schedule', ''),
+        "fitness_trainers": knowledge.get('fitness_trainers', ''),
+        "fitness_membership_tiers": knowledge.get('fitness_membership_tiers', ''),
+        "fitness_trial_offer": knowledge.get('fitness_trial_offer', ''),
+        "fitness_class_capacity": knowledge.get('fitness_class_capacity', ''),
+        "fitness_cancellation_policy": knowledge.get('fitness_cancellation_policy', ''),
+        "fitness_equipment": knowledge.get('fitness_equipment', ''),
+        # Healthcare fields
+        "healthcare_providers": knowledge.get('healthcare_providers', ''),
+        "healthcare_specialties": knowledge.get('healthcare_specialties', ''),
+        "healthcare_appointment_types": knowledge.get('healthcare_appointment_types', ''),
+        "healthcare_insurance": knowledge.get('healthcare_insurance', ''),
+        "healthcare_consultation_fee": knowledge.get('healthcare_consultation_fee', ''),
+        "healthcare_patient_prep": knowledge.get('healthcare_patient_prep', ''),
+        "healthcare_languages": knowledge.get('healthcare_languages', ''),
+        # Restaurant fields
+        "restaurant_cuisine": knowledge.get('restaurant_cuisine', ''),
+        "restaurant_menu_highlights": knowledge.get('restaurant_menu_highlights', ''),
+        "restaurant_dietary_options": knowledge.get('restaurant_dietary_options', ''),
+        "restaurant_price_range": knowledge.get('restaurant_price_range', ''),
+        "restaurant_seating": knowledge.get('restaurant_seating', ''),
+        "restaurant_reservation_policy": knowledge.get('restaurant_reservation_policy', ''),
+        "restaurant_parking": knowledge.get('restaurant_parking', ''),
+        "restaurant_dress_code": knowledge.get('restaurant_dress_code', ''),
+        # Salon fields
+        "salon_stylists": knowledge.get('salon_stylists', ''),
+        "salon_services_menu": knowledge.get('salon_services_menu', ''),
+        "salon_deposit_policy": knowledge.get('salon_deposit_policy', ''),
+        "salon_cancellation_policy": knowledge.get('salon_cancellation_policy', ''),
+        "salon_walk_ins": knowledge.get('salon_walk_ins', ''),
+        "salon_products_used": knowledge.get('salon_products_used', ''),
+        # Retail fields
+        "retail_return_policy": knowledge.get('retail_return_policy', ''),
+        "retail_discount_tiers": knowledge.get('retail_discount_tiers', ''),
+        "retail_delivery_areas": knowledge.get('retail_delivery_areas', ''),
+        "retail_warranty": knowledge.get('retail_warranty', ''),
+        "retail_exchange_policy": knowledge.get('retail_exchange_policy', ''),
+        "retail_min_order": knowledge.get('retail_min_order', ''),
+        # Rental fields
+        "rental_check_in_time": knowledge.get('rental_check_in_time', ''),
+        "rental_house_rules": knowledge.get('rental_house_rules', ''),
+        "rental_amenities": knowledge.get('rental_amenities', ''),
+        "rental_min_stay": knowledge.get('rental_min_stay', ''),
+        "rental_security_deposit": knowledge.get('rental_security_deposit', ''),
+        "rental_cancellation_policy": knowledge.get('rental_cancellation_policy', ''),
+        "rental_pet_policy": knowledge.get('rental_pet_policy', ''),
+        # Tech / SaaS / Fintech fields
+        "tech_product_description": knowledge.get('tech_product_description', ''),
+        "tech_target_customers": knowledge.get('tech_target_customers', ''),
+        "tech_pricing_plans": knowledge.get('tech_pricing_plans', ''),
+        "tech_free_trial": knowledge.get('tech_free_trial', ''),
+        "tech_key_features": knowledge.get('tech_key_features', ''),
+        "tech_integrations": knowledge.get('tech_integrations', ''),
+        "tech_demo_process": knowledge.get('tech_demo_process', ''),
+        "tech_onboarding": knowledge.get('tech_onboarding', ''),
+        "tech_support_channels": knowledge.get('tech_support_channels', ''),
+        "tech_compliance": knowledge.get('tech_compliance', ''),
+        "tech_contract_terms": knowledge.get('tech_contract_terms', ''),
+        "tech_case_studies": knowledge.get('tech_case_studies', ''),
         "payment_methods": payment_methods,
     }
 
@@ -12191,10 +12868,31 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     fields = [
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
         'faqs', 'special_offers', 'business_description', 'business_type',
+        'booking_process', 'cancellation_policy', 'staff_info',
         'creator_niche', 'creator_platforms', 'creator_audience_size',
         'creator_collab_types', 'creator_rate_card', 'creator_whats_included',
         'creator_turnaround', 'creator_booking_process', 'creator_min_budget',
         'creator_blacklisted_niches', 'creator_fan_dm_response', 'creator_media_kit_link',
+        'fitness_class_types', 'fitness_class_schedule', 'fitness_trainers',
+        'fitness_membership_tiers', 'fitness_trial_offer', 'fitness_class_capacity',
+        'fitness_cancellation_policy', 'fitness_equipment',
+        'healthcare_providers', 'healthcare_specialties', 'healthcare_appointment_types',
+        'healthcare_insurance', 'healthcare_consultation_fee', 'healthcare_patient_prep',
+        'healthcare_languages',
+        'restaurant_cuisine', 'restaurant_menu_highlights', 'restaurant_dietary_options',
+        'restaurant_price_range', 'restaurant_seating', 'restaurant_reservation_policy',
+        'restaurant_parking', 'restaurant_dress_code',
+        'salon_stylists', 'salon_services_menu', 'salon_deposit_policy',
+        'salon_cancellation_policy', 'salon_walk_ins', 'salon_products_used',
+        'retail_return_policy', 'retail_discount_tiers', 'retail_delivery_areas',
+        'retail_warranty', 'retail_exchange_policy', 'retail_min_order',
+        'rental_check_in_time', 'rental_house_rules', 'rental_amenities',
+        'rental_min_stay', 'rental_security_deposit', 'rental_cancellation_policy',
+        'rental_pet_policy',
+        'tech_product_description', 'tech_target_customers', 'tech_pricing_plans',
+        'tech_free_trial', 'tech_key_features', 'tech_integrations',
+        'tech_demo_process', 'tech_onboarding', 'tech_support_channels',
+        'tech_compliance', 'tech_contract_terms', 'tech_case_studies',
     ]
     for field in fields:
         val = getattr(knowledge, field, None)
@@ -12233,6 +12931,12 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         requested_mode = (request.mode or "auto").strip().lower()
         if requested_mode not in ("auto", "business", "personal"):
             requested_mode = "auto"
+        # Upgrade model for customers with complaints, VIP status, or explicit regenerate
+        # — these conversations need more nuanced replies
+        _is_vip = customer.get("is_vip", False) or customer.get("tags", []) and "vip" in [t.lower() for t in customer.get("tags", [])]
+        _has_complaint = customer.get("had_complaint", False) or customer.get("sentiment") in ("angry", "frustrated")
+        if _is_vip or _has_complaint or regenerate_count >= 2:
+            model_pref = "advanced"
 
         # Build business knowledge string
         bk_data = user.get('business_knowledge', {})
@@ -12267,6 +12971,106 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
                 bk_parts.append(f"Media kit: {bk_data['creator_media_kit_link']}")
             if bk_data.get('creator_fan_dm_response'):
                 bk_parts.append(f"Fan DM response template: {bk_data['creator_fan_dm_response']}")
+        elif business_type == 'fitness':
+            if bk_data.get('fitness_class_types'):
+                bk_parts.append(f"Classes offered: {bk_data['fitness_class_types']}")
+            if bk_data.get('fitness_class_schedule'):
+                bk_parts.append(f"Class schedule: {bk_data['fitness_class_schedule']}")
+            if bk_data.get('fitness_trainers'):
+                bk_parts.append(f"Trainers: {bk_data['fitness_trainers']}")
+            if bk_data.get('fitness_membership_tiers'):
+                bk_parts.append(f"Membership/pricing: {bk_data['fitness_membership_tiers']}")
+            if bk_data.get('fitness_trial_offer'):
+                bk_parts.append(f"Trial offer: {bk_data['fitness_trial_offer']}")
+            if bk_data.get('fitness_class_capacity'):
+                bk_parts.append(f"Class capacity: {bk_data['fitness_class_capacity']}")
+            if bk_data.get('fitness_cancellation_policy'):
+                bk_parts.append(f"Cancellation policy: {bk_data['fitness_cancellation_policy']}")
+            if bk_data.get('fitness_equipment'):
+                bk_parts.append(f"Equipment/what to bring: {bk_data['fitness_equipment']}")
+        elif business_type == 'healthcare':
+            if bk_data.get('healthcare_providers'):
+                bk_parts.append(f"Providers/doctors: {bk_data['healthcare_providers']}")
+            if bk_data.get('healthcare_specialties'):
+                bk_parts.append(f"Specialties: {bk_data['healthcare_specialties']}")
+            if bk_data.get('healthcare_appointment_types'):
+                bk_parts.append(f"Appointment types: {bk_data['healthcare_appointment_types']}")
+            if bk_data.get('healthcare_insurance'):
+                bk_parts.append(f"Insurance accepted: {bk_data['healthcare_insurance']}")
+            if bk_data.get('healthcare_consultation_fee'):
+                bk_parts.append(f"Consultation fees: {bk_data['healthcare_consultation_fee']}")
+            if bk_data.get('healthcare_patient_prep'):
+                bk_parts.append(f"Patient preparation: {bk_data['healthcare_patient_prep']}")
+            if bk_data.get('healthcare_languages'):
+                bk_parts.append(f"Languages: {bk_data['healthcare_languages']}")
+        elif business_type == 'restaurant':
+            if bk_data.get('restaurant_cuisine'):
+                bk_parts.append(f"Cuisine: {bk_data['restaurant_cuisine']}")
+            if bk_data.get('restaurant_menu_highlights'):
+                bk_parts.append(f"Menu highlights: {bk_data['restaurant_menu_highlights']}")
+            if bk_data.get('restaurant_dietary_options'):
+                bk_parts.append(f"Dietary options: {bk_data['restaurant_dietary_options']}")
+            if bk_data.get('restaurant_price_range'):
+                bk_parts.append(f"Price range: {bk_data['restaurant_price_range']}")
+            if bk_data.get('restaurant_seating'):
+                bk_parts.append(f"Seating: {bk_data['restaurant_seating']}")
+            if bk_data.get('restaurant_reservation_policy'):
+                bk_parts.append(f"Reservation policy: {bk_data['restaurant_reservation_policy']}")
+            if bk_data.get('restaurant_parking'):
+                bk_parts.append(f"Parking: {bk_data['restaurant_parking']}")
+            if bk_data.get('restaurant_dress_code'):
+                bk_parts.append(f"Dress code: {bk_data['restaurant_dress_code']}")
+        elif business_type == 'salon':
+            if bk_data.get('salon_stylists'):
+                bk_parts.append(f"Stylists: {bk_data['salon_stylists']}")
+            if bk_data.get('salon_services_menu'):
+                bk_parts.append(f"Services & prices: {bk_data['salon_services_menu']}")
+            if bk_data.get('salon_deposit_policy'):
+                bk_parts.append(f"Deposit policy: {bk_data['salon_deposit_policy']}")
+            if bk_data.get('salon_cancellation_policy'):
+                bk_parts.append(f"Cancellation policy: {bk_data['salon_cancellation_policy']}")
+            if bk_data.get('salon_walk_ins'):
+                bk_parts.append(f"Walk-ins: {bk_data['salon_walk_ins']}")
+            if bk_data.get('salon_products_used'):
+                bk_parts.append(f"Products used: {bk_data['salon_products_used']}")
+        elif business_type == 'retail':
+            if bk_data.get('products_services'):
+                bk_parts.append(f"Products: {bk_data['products_services']}")
+            if bk_data.get('retail_return_policy'):
+                bk_parts.append(f"Return policy: {bk_data['retail_return_policy']}")
+            if bk_data.get('retail_discount_tiers'):
+                bk_parts.append(f"Discounts: {bk_data['retail_discount_tiers']}")
+            if bk_data.get('retail_delivery_areas'):
+                bk_parts.append(f"Delivery areas: {bk_data['retail_delivery_areas']}")
+            if bk_data.get('retail_warranty'):
+                bk_parts.append(f"Warranty: {bk_data['retail_warranty']}")
+            if bk_data.get('delivery_info'):
+                bk_parts.append(f"Delivery: {bk_data['delivery_info']}")
+        elif business_type == 'tech':
+            if bk_data.get('tech_product_description'):
+                bk_parts.append(f"Product: {bk_data['tech_product_description']}")
+            if bk_data.get('tech_target_customers'):
+                bk_parts.append(f"Target customers: {bk_data['tech_target_customers']}")
+            if bk_data.get('tech_key_features'):
+                bk_parts.append(f"Key features: {bk_data['tech_key_features']}")
+            if bk_data.get('tech_pricing_plans'):
+                bk_parts.append(f"Pricing plans: {bk_data['tech_pricing_plans']}")
+            if bk_data.get('tech_free_trial'):
+                bk_parts.append(f"Free trial: {bk_data['tech_free_trial']}")
+            if bk_data.get('tech_integrations'):
+                bk_parts.append(f"Integrations: {bk_data['tech_integrations']}")
+            if bk_data.get('tech_demo_process'):
+                bk_parts.append(f"Demo booking: {bk_data['tech_demo_process']}")
+            if bk_data.get('tech_onboarding'):
+                bk_parts.append(f"Onboarding: {bk_data['tech_onboarding']}")
+            if bk_data.get('tech_support_channels'):
+                bk_parts.append(f"Support: {bk_data['tech_support_channels']}")
+            if bk_data.get('tech_compliance'):
+                bk_parts.append(f"Compliance/security: {bk_data['tech_compliance']}")
+            if bk_data.get('tech_contract_terms'):
+                bk_parts.append(f"Contract terms: {bk_data['tech_contract_terms']}")
+            if bk_data.get('tech_case_studies'):
+                bk_parts.append(f"Customers/case studies: {bk_data['tech_case_studies']}")
         else:
             if bk_data.get('products_services'):
                 bk_parts.append(f"Products/Services: {bk_data['products_services']}")
@@ -12281,14 +13085,22 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
             bk_parts.append(f"Current offers: {bk_data['special_offers']}")
         if bk_data.get('faqs'):
             bk_parts.append(f"FAQs: {bk_data['faqs']}")
-        # Inject structured payment methods
+        # Inject structured payment methods (including multi-field formats like Paybill, Bank)
         raw_pm = user.get('payment_methods', [])
         if raw_pm:
             pm_lines = []
             for pm in raw_pm:
                 if isinstance(pm, dict):
                     line = pm.get('name', '')
-                    if pm.get('details'):
+                    if pm.get('fields'):
+                        field_parts = [
+                            f"{f['label']}: {f['value']}"
+                            for f in pm['fields']
+                            if f.get('value') and str(f['value']).strip()
+                        ]
+                        if field_parts:
+                            line += " — " + ", ".join(field_parts)
+                    elif pm.get('details'):
                         line += f": {pm['details']}"
                 else:
                     line = str(pm)
@@ -12380,15 +13192,27 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         has_bk = bool(business_knowledge.strip()) if business_knowledge else False
 
         if effective_personal_mode and last_incoming_text:
-            scenario_block = f"""SCENARIO: This is a PERSONAL chat with {customer_name}, not a business customer.
+            # Build a short recent thread so the AI has real context
+            _personal_thread = []
+            for m in history[-10:]:
+                role = "Them" if m["direction"] == "incoming" else "You"
+                _personal_thread.append(f"{role}: {m['content']}")
+            _thread_text = "\n".join(_personal_thread) if _personal_thread else "(No prior messages)"
 
-LATEST MESSAGE: "{last_incoming_text}"
+            scenario_block = f"""SCENARIO: Personal WhatsApp chat with {customer_name} — a friend or family member, NOT a business customer.
 
-GOAL: Reply like a real person texting normally.
-- Keep it casual, warm, and natural
-- No sales language, no product mentions, no business pitch
-- If it's just a greeting or playful message, reply to that energy only
-- Short WhatsApp style — not polished, not formal"""
+Their latest message: "{last_incoming_text}"
+
+Recent thread (read this to understand the conversation flow):
+{_thread_text}
+
+GOAL: Reply exactly the way a real person texts a close friend or family member.
+- Match their exact language, tone, and energy — Sheng stays Sheng, Swahili stays Swahili, casual stays casual
+- If they said something funny, be funny back. If they're venting, be warm. If they asked a question, answer it directly.
+- Do NOT mention the business, products, prices, or anything sales-related — this is a personal conversation
+- Do NOT give generic "just checking in" energy — reply to what they ACTUALLY said
+- Short and natural — the way you'd actually text someone you know well
+- If they asked for help with something (drafting a message, advice, a question), do it well and briefly"""
 
         elif is_casual_social and last_incoming_text:
             scenario_block = f"""SCENARIO: {customer_name} sent a casual message: "{last_incoming_text}"
@@ -12554,8 +13378,26 @@ GOAL: Re-engage them with one short, genuine message.
         if custom_direction and any(word in custom_direction.lower() for word in ["list", "catalog", "menu", "products", "options"]):
             length_rule = "2. You MAY use a numbered list if it fits the user's direction, keeping items brief."
 
-        # Full prompt — anchor and latest message are at the TOP so the AI sees them first
-        prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
+        # Personal mode uses a stripped-down prompt — no business rules, no product mentions
+        if effective_personal_mode:
+            prompt = f"""You are writing a WhatsApp message to {customer_name}, a personal contact (friend or family).
+
+{latest_msg_block}
+{scenario_block}{repetition_block}{direction_block}
+
+RULES:
+1. Output ONLY the message text. No labels, no explanation.
+2. Sound like a real person texting someone they know — casual, warm, direct.
+3. LANGUAGE: Match exactly what they wrote — Sheng, Swahili, English, mixed — whatever they used.
+4. LENGTH: 1-2 sentences unless they asked something that needs more.
+5. BANNED: "Sure thing", "Absolutely", "I hope this finds you well", "I understand your concern", "I'd be happy to" — these are robotic.
+6. Do NOT mention the business, products, prices, or anything work-related.
+7. NEVER invent facts about them or make up details about their life.
+
+Output only the message text."""
+        else:
+            # Full prompt — anchor and latest message are at the TOP so the AI sees them first
+            prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
 You are a real person — not a bot, not a marketing tool. Direct, warm, brief.
 
 {latest_msg_block}
@@ -12573,7 +13415,7 @@ WRITING RULES (non-negotiable):
 7. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
 8. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
 
-Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message."""
+Think one sentence about what this person actually needs right now, then reply. Output only the message text."""
 
         # Call LLM directly
         from ai_service import get_drafter
@@ -12864,15 +13706,26 @@ async def send_motivation_now(is_monday: bool = False, user = Depends(get_curren
 
 async def generate_daily_pulse_message(user_id: str) -> str:
     """Generate the daily business pulse summary message"""
+    import pytz
     from datetime import timedelta
-    
-    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow = today + timedelta(days=1)
-    
-    # Get user info
+
+    # Get user info first so we can use their timezone for date boundaries
     user = await db.users.find_one({"_id": user_id})
     business_name = user.get("business_name", "Your Business") if user else "Your Business"
     currency = user.get("currency") or user.get("settings", {}).get("currency", "USD") if user else "USD"
+
+    # Use user's local timezone so "today" matches their calendar day
+    user_tz_str = (user or {}).get("settings", {}).get("timezone", "UTC")
+    try:
+        user_tz = pytz.timezone(user_tz_str)
+    except Exception:
+        user_tz = pytz.UTC
+    user_now = datetime.utcnow().replace(tzinfo=pytz.UTC).astimezone(user_tz)
+    today_local = user_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_local = today_local + timedelta(days=1)
+    # Convert back to UTC naive for MongoDB queries (DB stores UTC)
+    today = today_local.astimezone(pytz.UTC).replace(tzinfo=None)
+    tomorrow = tomorrow_local.astimezone(pytz.UTC).replace(tzinfo=None)
     
     # Today's sales
     today_sales = await db.sales.find({
@@ -12933,8 +13786,8 @@ async def generate_daily_pulse_message(user_id: str) -> str:
     }).to_list(1000)
     overdue_followups = [f for f in pending_followups if f.get("reminder_date", tomorrow) < today]
     
-    # Build message
-    date_str = today.strftime("%a, %b %d")
+    # Build message (use local date for display)
+    date_str = today_local.strftime("%a, %b %d")
     
     lines = [f"📊 *Daily Pulse — {date_str}*"]
     lines.append(f"_{business_name}_\n")
@@ -13010,9 +13863,14 @@ async def send_daily_pulse(user = Depends(get_current_user)):
             to_number=phone,
             message=message,
             customer_name=user.get("owner_name", "Business Owner"),
-            send_context="auto_reply",
+            send_context="system",
+            bypass_limits=True,
         )
+        if result.get("status") not in ("success", "sent"):
+            raise HTTPException(status_code=500, detail=result.get("message", "Failed to send"))
         return {"status": "success", "message": "Daily pulse sent!", "preview": message}
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Failed to send daily pulse: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send: {str(e)}")
@@ -13021,57 +13879,70 @@ async def send_daily_pulse(user = Depends(get_current_user)):
 async def run_daily_pulse_scheduler():
     """Background task that checks every minute and sends daily pulse to users at their scheduled time"""
     import asyncio
-    
+    import pytz
+
     while True:
         try:
-            now = datetime.utcnow()
-            current_time = now.strftime("%H:%M")
-            
-            # Find users who have daily pulse enabled and it's their scheduled time
-            users_cursor = db.users.find({
-                "settings.daily_pulse_enabled": True,
-                "settings.daily_pulse_time": current_time
-            })
-            
+            utc_now = datetime.utcnow()
+
+            # Fetch all pulse-enabled users; time matching happens per-user using their timezone
+            users_cursor = db.users.find({"settings.daily_pulse_enabled": True})
+
             async for user in users_cursor:
                 try:
                     phone = user.get("phone_number")
                     if not phone:
                         continue
-                    
-                    # Check if we already sent today (prevent duplicates)
-                    today_key = now.strftime("%Y-%m-%d")
+
+                    # Resolve user's local time
+                    user_tz_str = user.get("settings", {}).get("timezone", "UTC")
+                    try:
+                        user_tz = pytz.timezone(user_tz_str)
+                    except Exception:
+                        user_tz = pytz.UTC
+                    user_now = utc_now.replace(tzinfo=pytz.UTC).astimezone(user_tz)
+                    user_time = user_now.strftime("%H:%M")
+
+                    scheduled_time = user.get("settings", {}).get("daily_pulse_time", "20:00")
+                    if user_time != scheduled_time:
+                        continue
+
+                    # Check if we already sent today using the user's local date
+                    today_key = user_now.strftime("%Y-%m-%d")
                     last_sent = user.get("settings", {}).get("daily_pulse_last_sent")
                     if last_sent == today_key:
                         continue
-                    
+
                     message = await generate_daily_pulse_message(user["_id"])
-                    
+
                     from whatsapp_service import get_whatsapp_service
                     whatsapp_service = get_whatsapp_service(db)
-                    
-                    await whatsapp_service.send_message(
+
+                    result = await whatsapp_service.send_message(
                         user_id=user["_id"],
                         to_number=phone,
                         message=message,
                         customer_name=user.get("owner_name", "Business Owner"),
-                        send_context="auto_reply",
+                        send_context="system",
+                        bypass_limits=True,
                     )
-                    
-                    # Mark as sent today
-                    await db.users.update_one(
-                        {"_id": user["_id"]},
-                        {"$set": {"settings.daily_pulse_last_sent": today_key}}
-                    )
-                    
-                    logging.info(f"Daily pulse sent to {user.get('business_name', user['_id'])}")
-                    
+
+                    # Only mark as sent if the message was actually delivered
+                    if result.get("status") in ("success", "sent"):
+                        await db.users.update_one(
+                            {"_id": user["_id"]},
+                            {"$set": {"settings.daily_pulse_last_sent": today_key}}
+                        )
+                        logging.info(f"Daily pulse sent to {user.get('business_name', user['_id'])}")
+                    else:
+                        logging.warning(f"Daily pulse failed for {user.get('_id')}: {result.get('message', result.get('status'))}")
+
                 except Exception as e:
                     logging.error(f"Failed to send daily pulse to user {user.get('_id')}: {e}")
-            
+
         except Exception as e:
             logging.error(f"Daily pulse scheduler error: {e}")
-        
+
         # Check every 60 seconds
         await asyncio.sleep(60)
 

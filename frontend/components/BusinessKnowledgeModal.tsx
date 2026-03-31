@@ -140,14 +140,16 @@ function FAQField({
 
 const GLOBAL_TO_BK_TYPE: Record<string, string> = {
     retail: 'retail', restaurant: 'restaurant', creator: 'creator',
-    salon: 'service', services: 'service', fitness: 'service', healthcare: 'service',
-    rental: 'rental',
+    salon: 'salon', services: 'services', fitness: 'fitness', healthcare: 'healthcare',
+    rental: 'rental', tech: 'tech',
     '': 'general',
 };
 
 const BK_TYPE_LABELS: Record<string, string> = {
     general: 'General', retail: 'Retail', creator: 'Creator',
-    restaurant: 'Restaurant', service: 'Services / Salon', rental: 'Rental / Airbnb',
+    restaurant: 'Restaurant', salon: 'Salon / Beauty', services: 'Services',
+    fitness: 'Fitness / Gym', healthcare: 'Healthcare / Clinic', rental: 'Rental / Airbnb',
+    tech: 'Tech / SaaS / Fintech',
 };
 
 const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'Twitter/X', 'Facebook', 'Snapchat', 'LinkedIn', 'Podcast'];
@@ -185,6 +187,74 @@ export default function BusinessKnowledgeModal({
         creator_blacklisted_niches: '',
         creator_fan_dm_response: '',
         creator_media_kit_link: '',
+    });
+    const [fitness, setFitness] = useState({
+        fitness_class_types: '',
+        fitness_class_schedule: '',
+        fitness_trainers: '',
+        fitness_membership_tiers: '',
+        fitness_trial_offer: '',
+        fitness_class_capacity: '',
+        fitness_cancellation_policy: '',
+        fitness_equipment: '',
+    });
+    const [healthcare, setHealthcare] = useState({
+        healthcare_providers: '',
+        healthcare_specialties: '',
+        healthcare_appointment_types: '',
+        healthcare_insurance: '',
+        healthcare_consultation_fee: '',
+        healthcare_patient_prep: '',
+        healthcare_languages: '',
+    });
+    const [restaurant, setRestaurant] = useState({
+        restaurant_cuisine: '',
+        restaurant_menu_highlights: '',
+        restaurant_dietary_options: '',
+        restaurant_price_range: '',
+        restaurant_seating: '',
+        restaurant_reservation_policy: '',
+        restaurant_parking: '',
+        restaurant_dress_code: '',
+    });
+    const [salon, setSalon] = useState({
+        salon_stylists: '',
+        salon_services_menu: '',
+        salon_deposit_policy: '',
+        salon_cancellation_policy: '',
+        salon_walk_ins: '',
+        salon_products_used: '',
+    });
+    const [retail, setRetail] = useState({
+        retail_return_policy: '',
+        retail_discount_tiers: '',
+        retail_delivery_areas: '',
+        retail_warranty: '',
+        retail_exchange_policy: '',
+        retail_min_order: '',
+    });
+    const [rental, setRental] = useState({
+        rental_check_in_time: '',
+        rental_house_rules: '',
+        rental_amenities: '',
+        rental_min_stay: '',
+        rental_security_deposit: '',
+        rental_cancellation_policy: '',
+        rental_pet_policy: '',
+    });
+    const [tech, setTech] = useState({
+        tech_product_description: '',
+        tech_target_customers: '',
+        tech_pricing_plans: '',
+        tech_free_trial: '',
+        tech_key_features: '',
+        tech_integrations: '',
+        tech_demo_process: '',
+        tech_onboarding: '',
+        tech_support_channels: '',
+        tech_compliance: '',
+        tech_contract_terms: '',
+        tech_case_studies: '',
     });
     const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
 
@@ -244,6 +314,74 @@ export default function BusinessKnowledgeModal({
                 setSelectedPlatforms(
                     data.creator_platforms ? data.creator_platforms.split(',').map((s: string) => s.trim()).filter(Boolean) : []
                 );
+                setFitness({
+                    fitness_class_types: data.fitness_class_types || '',
+                    fitness_class_schedule: data.fitness_class_schedule || '',
+                    fitness_trainers: data.fitness_trainers || '',
+                    fitness_membership_tiers: data.fitness_membership_tiers || '',
+                    fitness_trial_offer: data.fitness_trial_offer || '',
+                    fitness_class_capacity: data.fitness_class_capacity || '',
+                    fitness_cancellation_policy: data.fitness_cancellation_policy || '',
+                    fitness_equipment: data.fitness_equipment || '',
+                });
+                setHealthcare({
+                    healthcare_providers: data.healthcare_providers || '',
+                    healthcare_specialties: data.healthcare_specialties || '',
+                    healthcare_appointment_types: data.healthcare_appointment_types || '',
+                    healthcare_insurance: data.healthcare_insurance || '',
+                    healthcare_consultation_fee: data.healthcare_consultation_fee || '',
+                    healthcare_patient_prep: data.healthcare_patient_prep || '',
+                    healthcare_languages: data.healthcare_languages || '',
+                });
+                setRestaurant({
+                    restaurant_cuisine: data.restaurant_cuisine || '',
+                    restaurant_menu_highlights: data.restaurant_menu_highlights || '',
+                    restaurant_dietary_options: data.restaurant_dietary_options || '',
+                    restaurant_price_range: data.restaurant_price_range || '',
+                    restaurant_seating: data.restaurant_seating || '',
+                    restaurant_reservation_policy: data.restaurant_reservation_policy || '',
+                    restaurant_parking: data.restaurant_parking || '',
+                    restaurant_dress_code: data.restaurant_dress_code || '',
+                });
+                setSalon({
+                    salon_stylists: data.salon_stylists || '',
+                    salon_services_menu: data.salon_services_menu || '',
+                    salon_deposit_policy: data.salon_deposit_policy || '',
+                    salon_cancellation_policy: data.salon_cancellation_policy || '',
+                    salon_walk_ins: data.salon_walk_ins || '',
+                    salon_products_used: data.salon_products_used || '',
+                });
+                setRetail({
+                    retail_return_policy: data.retail_return_policy || '',
+                    retail_discount_tiers: data.retail_discount_tiers || '',
+                    retail_delivery_areas: data.retail_delivery_areas || '',
+                    retail_warranty: data.retail_warranty || '',
+                    retail_exchange_policy: data.retail_exchange_policy || '',
+                    retail_min_order: data.retail_min_order || '',
+                });
+                setRental({
+                    rental_check_in_time: data.rental_check_in_time || '',
+                    rental_house_rules: data.rental_house_rules || '',
+                    rental_amenities: data.rental_amenities || '',
+                    rental_min_stay: data.rental_min_stay || '',
+                    rental_security_deposit: data.rental_security_deposit || '',
+                    rental_cancellation_policy: data.rental_cancellation_policy || '',
+                    rental_pet_policy: data.rental_pet_policy || '',
+                });
+                setTech({
+                    tech_product_description: data.tech_product_description || '',
+                    tech_target_customers: data.tech_target_customers || '',
+                    tech_pricing_plans: data.tech_pricing_plans || '',
+                    tech_free_trial: data.tech_free_trial || '',
+                    tech_key_features: data.tech_key_features || '',
+                    tech_integrations: data.tech_integrations || '',
+                    tech_demo_process: data.tech_demo_process || '',
+                    tech_onboarding: data.tech_onboarding || '',
+                    tech_support_channels: data.tech_support_channels || '',
+                    tech_compliance: data.tech_compliance || '',
+                    tech_contract_terms: data.tech_contract_terms || '',
+                    tech_case_studies: data.tech_case_studies || '',
+                });
                 // Load payment methods — keep all entries that have a name
                 if (data.payment_methods && data.payment_methods.length > 0) {
                     const loaded = data.payment_methods
@@ -311,6 +449,13 @@ export default function BusinessKnowledgeModal({
             business_type: businessType,
             ...creator,
             creator_platforms: selectedPlatforms.join(', '),
+            ...fitness,
+            ...healthcare,
+            ...restaurant,
+            ...salon,
+            ...retail,
+            ...rental,
+            ...tech,
         };
         try {
             await settingsAPI.updateBusinessKnowledge({
@@ -329,8 +474,16 @@ export default function BusinessKnowledgeModal({
     };
 
     const isCreator = businessType === 'creator';
-    const isService = businessType === 'service' || isServiceBusiness;
-    const itemLabel = config.catalogItemLabel;    // 'Product' | 'Service' | 'Class'
+    const isFitness = businessType === 'fitness';
+    const isHealthcare = businessType === 'healthcare';
+    const isRestaurant = businessType === 'restaurant';
+    const isSalon = businessType === 'salon';
+    const isRetail = businessType === 'retail';
+    const isRental = businessType === 'rental';
+    const isGenericService = businessType === 'services';
+    const isTech = businessType === 'tech';
+    const isService = isFitness || isHealthcare || isSalon || isGenericService;
+    const itemLabel = config.catalogItemLabel;
 
     return (
         <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -593,101 +746,397 @@ export default function BusinessKnowledgeModal({
                             </>
                         )}
 
-                        {/* ── SERVICE-SPECIFIC FIELDS ── */}
-                        {isService && (
+                        {/* ── FITNESS FIELDS ── */}
+                        {isFitness && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="barbell-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Fitness / Gym Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Classes Offered *</Text>
+                                    <Text style={styles.hint}>e.g. "Yoga, HIIT, Pilates, Spin, Zumba"</Text>
+                                    <TextInput style={styles.input} placeholder="What classes do you offer?" placeholderTextColor="#555" value={fitness.fitness_class_types} onChangeText={t => setFitness({...fitness, fitness_class_types: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Class Schedule *</Text>
+                                    <Text style={styles.hint}>e.g. "Mon/Wed/Fri 6am HIIT · Tue/Thu 7pm Yoga · Sat 9am Pilates"</Text>
+                                    <TextInput style={styles.input} placeholder="Days, times, and class names" placeholderTextColor="#555" value={fitness.fitness_class_schedule} onChangeText={t => setFitness({...fitness, fitness_class_schedule: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Membership & Pricing *</Text>
+                                    <Text style={styles.hint}>e.g. "Monthly KES 3,500 · 10-class pack KES 3,000 · Drop-in KES 500"</Text>
+                                    <TextInput style={styles.input} placeholder="Membership tiers and prices" placeholderTextColor="#555" value={fitness.fitness_membership_tiers} onChangeText={t => setFitness({...fitness, fitness_membership_tiers: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Trainers / Instructors</Text>
+                                    <Text style={styles.hint}>e.g. "Jane (Yoga, Pilates) · Mike (HIIT, Strength) · Amina (Zumba)"</Text>
+                                    <TextInput style={styles.input} placeholder="Names and their specialties" placeholderTextColor="#555" value={fitness.fitness_trainers} onChangeText={t => setFitness({...fitness, fitness_trainers: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Trial Offer</Text>
+                                    <Text style={styles.hint}>e.g. "First class free" or "1-week trial KES 500"</Text>
+                                    <TextInput style={styles.input} placeholder="Any intro/trial offer?" placeholderTextColor="#555" value={fitness.fitness_trial_offer} onChangeText={t => setFitness({...fitness, fitness_trial_offer: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Class Capacity</Text>
+                                    <Text style={styles.hint}>e.g. "Max 15 per class — book in advance to secure your spot"</Text>
+                                    <TextInput style={styles.input} placeholder="Max students per class" placeholderTextColor="#555" value={fitness.fitness_class_capacity} onChangeText={t => setFitness({...fitness, fitness_class_capacity: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Cancellation Policy</Text>
+                                    <Text style={styles.hint}>e.g. "Cancel 2hrs before or forfeit the class"</Text>
+                                    <TextInput style={styles.input} placeholder="Cancellation & no-show policy" placeholderTextColor="#555" value={fitness.fitness_cancellation_policy} onChangeText={t => setFitness({...fitness, fitness_cancellation_policy: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Equipment / What to Bring</Text>
+                                    <Text style={styles.hint}>e.g. "Mats provided · Bring water bottle and towel · Lockers available"</Text>
+                                    <TextInput style={styles.input} placeholder="What should members bring?" placeholderTextColor="#555" value={fitness.fitness_equipment} onChangeText={t => setFitness({...fitness, fitness_equipment: t})} multiline numberOfLines={2} />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── HEALTHCARE FIELDS ── */}
+                        {isHealthcare && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="medical-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Healthcare / Clinic Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Doctors / Providers *</Text>
+                                    <Text style={styles.hint}>e.g. "Dr. Kamau (GP) · Dr. Njoki (Dermatology) · Dr. Omondi (Dentist)"</Text>
+                                    <TextInput style={styles.input} placeholder="Names and specialties" placeholderTextColor="#555" value={healthcare.healthcare_providers} onChangeText={t => setHealthcare({...healthcare, healthcare_providers: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Specialties Offered *</Text>
+                                    <Text style={styles.hint}>e.g. "General Practice, Dermatology, Dentistry, Physiotherapy"</Text>
+                                    <TextInput style={styles.input} placeholder="What medical services do you offer?" placeholderTextColor="#555" value={healthcare.healthcare_specialties} onChangeText={t => setHealthcare({...healthcare, healthcare_specialties: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Consultation Fees *</Text>
+                                    <Text style={styles.hint}>e.g. "GP KES 1,500 · Specialist KES 3,000 · Follow-up KES 800"</Text>
+                                    <TextInput style={styles.input} placeholder="Fees per appointment type" placeholderTextColor="#555" value={healthcare.healthcare_consultation_fee} onChangeText={t => setHealthcare({...healthcare, healthcare_consultation_fee: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Insurance Accepted</Text>
+                                    <Text style={styles.hint}>e.g. "NHIF, AAR, Jubilee, Britam, Madison, CIC"</Text>
+                                    <TextInput style={styles.input} placeholder="Which insurance schemes do you accept?" placeholderTextColor="#555" value={healthcare.healthcare_insurance} onChangeText={t => setHealthcare({...healthcare, healthcare_insurance: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Appointment Types</Text>
+                                    <Text style={styles.hint}>e.g. "New patient consult, Follow-up, Procedure, Lab tests, X-ray"</Text>
+                                    <TextInput style={styles.input} placeholder="Types of appointments available" placeholderTextColor="#555" value={healthcare.healthcare_appointment_types} onChangeText={t => setHealthcare({...healthcare, healthcare_appointment_types: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Patient Preparation Notes</Text>
+                                    <Text style={styles.hint}>e.g. "Bring previous prescriptions · Fast 8hrs before blood tests · Bring ID"</Text>
+                                    <TextInput style={styles.input} placeholder="What should patients bring or do before their visit?" placeholderTextColor="#555" value={healthcare.healthcare_patient_prep} onChangeText={t => setHealthcare({...healthcare, healthcare_patient_prep: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Languages Spoken</Text>
+                                    <Text style={styles.hint}>e.g. "English, Swahili, Kikuyu, Luo"</Text>
+                                    <TextInput style={styles.input} placeholder="Languages your staff speaks" placeholderTextColor="#555" value={healthcare.healthcare_languages} onChangeText={t => setHealthcare({...healthcare, healthcare_languages: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Booking Process</Text>
+                                    <Text style={styles.hint}>e.g. "Walk-ins welcome · Or book via WhatsApp for guaranteed slot"</Text>
+                                    <TextInput style={styles.input} placeholder="How do patients book?" placeholderTextColor="#555" value={knowledge.booking_process} onChangeText={t => setKnowledge({...knowledge, booking_process: t})} multiline numberOfLines={2} />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── RESTAURANT FIELDS ── */}
+                        {isRestaurant && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="restaurant-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Restaurant Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Cuisine Type *</Text>
+                                    <Text style={styles.hint}>e.g. "Kenyan, Indian fusion, Continental, BBQ"</Text>
+                                    <TextInput style={styles.input} placeholder="What type of food do you serve?" placeholderTextColor="#555" value={restaurant.restaurant_cuisine} onChangeText={t => setRestaurant({...restaurant, restaurant_cuisine: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Menu Highlights *</Text>
+                                    <Text style={styles.hint}>e.g. "Nyama choma, biryani, tilapia, fresh juices, wood-fired pizza"</Text>
+                                    <TextInput style={styles.input} placeholder="Your most popular or signature dishes" placeholderTextColor="#555" value={restaurant.restaurant_menu_highlights} onChangeText={t => setRestaurant({...restaurant, restaurant_menu_highlights: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Price Range *</Text>
+                                    <Text style={styles.hint}>e.g. "KES 500–2,000 per person" or "$$$ (upscale)"</Text>
+                                    <TextInput style={styles.input} placeholder="Typical spend per person" placeholderTextColor="#555" value={restaurant.restaurant_price_range} onChangeText={t => setRestaurant({...restaurant, restaurant_price_range: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Dietary Options</Text>
+                                    <Text style={styles.hint}>e.g. "Vegan menu available · Halal certified · Gluten-free options"</Text>
+                                    <TextInput style={styles.input} placeholder="Any special dietary menus?" placeholderTextColor="#555" value={restaurant.restaurant_dietary_options} onChangeText={t => setRestaurant({...restaurant, restaurant_dietary_options: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Seating Options</Text>
+                                    <Text style={styles.hint}>e.g. "Indoor 80 pax · Outdoor terrace 40 pax · Private room 20 pax"</Text>
+                                    <TextInput style={styles.input} placeholder="Indoor, outdoor, private dining?" placeholderTextColor="#555" value={restaurant.restaurant_seating} onChangeText={t => setRestaurant({...restaurant, restaurant_seating: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Reservation Policy</Text>
+                                    <Text style={styles.hint}>e.g. "Walk-ins welcome · Reservations required Fri-Sat · KES 500 deposit for groups 6+"</Text>
+                                    <TextInput style={styles.input} placeholder="How should customers book a table?" placeholderTextColor="#555" value={restaurant.restaurant_reservation_policy} onChangeText={t => setRestaurant({...restaurant, restaurant_reservation_policy: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Parking</Text>
+                                    <Text style={styles.hint}>e.g. "Free parking on premises · Street parking available"</Text>
+                                    <TextInput style={styles.input} placeholder="Is parking available?" placeholderTextColor="#555" value={restaurant.restaurant_parking} onChangeText={t => setRestaurant({...restaurant, restaurant_parking: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Dress Code</Text>
+                                    <Text style={styles.hint}>e.g. "Smart casual · No slippers or shorts in evenings"</Text>
+                                    <TextInput style={styles.input} placeholder="Any dress code?" placeholderTextColor="#555" value={restaurant.restaurant_dress_code} onChangeText={t => setRestaurant({...restaurant, restaurant_dress_code: t})} />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── SALON FIELDS ── */}
+                        {isSalon && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="cut-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Salon / Beauty Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Stylists / Staff *</Text>
+                                    <Text style={styles.hint}>e.g. "Amina (braids, locs, natural hair) · Lisa (color, cuts, relaxers)"</Text>
+                                    <TextInput style={styles.input} placeholder="Names and what each person specializes in" placeholderTextColor="#555" value={salon.salon_stylists} onChangeText={t => setSalon({...salon, salon_stylists: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Services & Prices *</Text>
+                                    <Text style={styles.hint}>e.g. "Box braids KES 2,500 · Silk press KES 1,800 · Color KES 3,500+"</Text>
+                                    <TextInput style={styles.input} placeholder="List your services with prices" placeholderTextColor="#555" value={salon.salon_services_menu} onChangeText={t => setSalon({...salon, salon_services_menu: t})} multiline numberOfLines={4} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Deposit Policy</Text>
+                                    <Text style={styles.hint}>e.g. "50% deposit required to confirm booking"</Text>
+                                    <TextInput style={styles.input} placeholder="Do you require a deposit?" placeholderTextColor="#555" value={salon.salon_deposit_policy} onChangeText={t => setSalon({...salon, salon_deposit_policy: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Cancellation Policy</Text>
+                                    <Text style={styles.hint}>e.g. "Cancel 24hrs before or lose deposit · Reschedule once free"</Text>
+                                    <TextInput style={styles.input} placeholder="Cancellation & rescheduling rules" placeholderTextColor="#555" value={salon.salon_cancellation_policy} onChangeText={t => setSalon({...salon, salon_cancellation_policy: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Walk-ins</Text>
+                                    <Text style={styles.hint}>e.g. "Walk-ins welcome Mon–Thu if space available · Weekends by appointment only"</Text>
+                                    <TextInput style={styles.input} placeholder="Do you accept walk-in clients?" placeholderTextColor="#555" value={salon.salon_walk_ins} onChangeText={t => setSalon({...salon, salon_walk_ins: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Products Used</Text>
+                                    <Text style={styles.hint}>e.g. "OGX, Cantu, SheaMoisture · Natural/organic products on request"</Text>
+                                    <TextInput style={styles.input} placeholder="What brands or products do you use?" placeholderTextColor="#555" value={salon.salon_products_used} onChangeText={t => setSalon({...salon, salon_products_used: t})} />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── RETAIL FIELDS ── */}
+                        {isRetail && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="bag-handle-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Retail Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="pricetag-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Products & Prices *</Text>
+                                    </View>
+                                    <Text style={styles.hint}>Add each product with its price</Text>
+                                    <ListField items={productItems} onUpdate={setProductItems} placeholder="Product - price" icon="cart-outline" />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Return Policy *</Text>
+                                    <Text style={styles.hint}>e.g. "7-day returns with receipt · Item must be unused and in original packaging"</Text>
+                                    <TextInput style={styles.input} placeholder="Can customers return items?" placeholderTextColor="#555" value={retail.retail_return_policy} onChangeText={t => setRetail({...retail, retail_return_policy: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Exchange Policy</Text>
+                                    <Text style={styles.hint}>e.g. "Exchanges within 14 days · Item must be unworn with tags attached"</Text>
+                                    <TextInput style={styles.input} placeholder="Exchange rules" placeholderTextColor="#555" value={retail.retail_exchange_policy} onChangeText={t => setRetail({...retail, retail_exchange_policy: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Discount Tiers</Text>
+                                    <Text style={styles.hint}>e.g. "Buy 3+ items get 5% off · Orders over KES 5,000 get 10% off"</Text>
+                                    <TextInput style={styles.input} placeholder="Bulk or loyalty discounts" placeholderTextColor="#555" value={retail.retail_discount_tiers} onChangeText={t => setRetail({...retail, retail_discount_tiers: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Delivery Areas & Costs</Text>
+                                    <Text style={styles.hint}>e.g. "Same-day Nairobi CBD KES 200 · Next-day countrywide KES 350"</Text>
+                                    <ListField items={deliveryItems} onUpdate={setDeliveryItems} placeholder="Area - delivery cost" icon="location-outline" />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Minimum Order</Text>
+                                    <Text style={styles.hint}>e.g. "Minimum order KES 500 for delivery"</Text>
+                                    <TextInput style={styles.input} placeholder="Any minimum order amount?" placeholderTextColor="#555" value={retail.retail_min_order} onChangeText={t => setRetail({...retail, retail_min_order: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Warranty</Text>
+                                    <Text style={styles.hint}>e.g. "6-month warranty on electronics · 1-year on appliances"</Text>
+                                    <TextInput style={styles.input} placeholder="Any product warranties?" placeholderTextColor="#555" value={retail.retail_warranty} onChangeText={t => setRetail({...retail, retail_warranty: t})} />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── RENTAL FIELDS ── */}
+                        {isRental && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="home-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Rental / Listing Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Check-in / Check-out Times *</Text>
+                                    <Text style={styles.hint}>e.g. "Check-in from 2pm · Check-out by 11am"</Text>
+                                    <TextInput style={styles.input} placeholder="Check-in and check-out times" placeholderTextColor="#555" value={rental.rental_check_in_time} onChangeText={t => setRental({...rental, rental_check_in_time: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Amenities *</Text>
+                                    <Text style={styles.hint}>e.g. "WiFi, pool, full kitchen, parking, generator, Smart TV"</Text>
+                                    <TextInput style={styles.input} placeholder="What's included in the listing?" placeholderTextColor="#555" value={rental.rental_amenities} onChangeText={t => setRental({...rental, rental_amenities: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>House Rules *</Text>
+                                    <Text style={styles.hint}>e.g. "No smoking indoors · No pets · Max 4 guests · Quiet hours after 10pm"</Text>
+                                    <TextInput style={styles.input} placeholder="Rules guests must follow" placeholderTextColor="#555" value={rental.rental_house_rules} onChangeText={t => setRental({...rental, rental_house_rules: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Minimum Stay</Text>
+                                    <Text style={styles.hint}>e.g. "Minimum 2 nights · Weekly discount available (7+ nights)"</Text>
+                                    <TextInput style={styles.input} placeholder="Minimum booking duration" placeholderTextColor="#555" value={rental.rental_min_stay} onChangeText={t => setRental({...rental, rental_min_stay: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Security Deposit</Text>
+                                    <Text style={styles.hint}>e.g. "KES 5,000 refundable deposit collected on arrival"</Text>
+                                    <TextInput style={styles.input} placeholder="Is there a security deposit?" placeholderTextColor="#555" value={rental.rental_security_deposit} onChangeText={t => setRental({...rental, rental_security_deposit: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Cancellation Policy</Text>
+                                    <Text style={styles.hint}>e.g. "Free cancellation 7 days before · 50% refund within 7 days · No refund within 24hrs"</Text>
+                                    <TextInput style={styles.input} placeholder="Refund and cancellation rules" placeholderTextColor="#555" value={rental.rental_cancellation_policy} onChangeText={t => setRental({...rental, rental_cancellation_policy: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Pet Policy</Text>
+                                    <Text style={styles.hint}>e.g. "Pets allowed with prior approval · KES 500 cleaning fee applies"</Text>
+                                    <TextInput style={styles.input} placeholder="Are pets allowed?" placeholderTextColor="#555" value={rental.rental_pet_policy} onChangeText={t => setRental({...rental, rental_pet_policy: t})} />
+                                </View>
+                            </>
+                        )}
+
+                        {/* ── GENERIC SERVICES FIELDS ── */}
+                        {/* ── TECH / SAAS / FINTECH FIELDS ── */}
+                        {isTech && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="laptop-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Tech / SaaS / Fintech Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>What Your Product Does *</Text>
+                                    <Text style={styles.hint}>e.g. "Cloud accounting software for SMEs — automates invoicing, payroll and VAT filing"</Text>
+                                    <TextInput style={styles.input} placeholder="Describe your product or platform in 1-2 sentences" placeholderTextColor="#555" value={tech.tech_product_description} onChangeText={t => setTech({...tech, tech_product_description: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Target Customers *</Text>
+                                    <Text style={styles.hint}>e.g. "SMEs, accountants, NGOs, retail chains, restaurants"</Text>
+                                    <TextInput style={styles.input} placeholder="Who is this for?" placeholderTextColor="#555" value={tech.tech_target_customers} onChangeText={t => setTech({...tech, tech_target_customers: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Key Features *</Text>
+                                    <Text style={styles.hint}>e.g. "Invoicing, M-Pesa integration, payroll, expense tracking, VAT filing, multi-user"</Text>
+                                    <TextInput style={styles.input} placeholder="Your most important features" placeholderTextColor="#555" value={tech.tech_key_features} onChangeText={t => setTech({...tech, tech_key_features: t})} multiline numberOfLines={3} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Pricing Plans *</Text>
+                                    <Text style={styles.hint}>e.g. "Starter $29/mo · Pro $79/mo · Enterprise custom · 20% off annual"</Text>
+                                    <TextInput style={styles.input} placeholder="Your plan tiers and prices" placeholderTextColor="#555" value={tech.tech_pricing_plans} onChangeText={t => setTech({...tech, tech_pricing_plans: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Free Trial</Text>
+                                    <Text style={styles.hint}>e.g. "14-day free trial, no credit card required"</Text>
+                                    <TextInput style={styles.input} placeholder="Do you offer a trial or freemium plan?" placeholderTextColor="#555" value={tech.tech_free_trial} onChangeText={t => setTech({...tech, tech_free_trial: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Integrations</Text>
+                                    <Text style={styles.hint}>e.g. "M-Pesa, Stripe, QuickBooks, Xero, Shopify, Slack, Zapier"</Text>
+                                    <TextInput style={styles.input} placeholder="What does your product connect with?" placeholderTextColor="#555" value={tech.tech_integrations} onChangeText={t => setTech({...tech, tech_integrations: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Demo Booking Process</Text>
+                                    <Text style={styles.hint}>e.g. "Book a 30-min live demo via Calendly — link sent on request" or "Reply to schedule a call"</Text>
+                                    <TextInput style={styles.input} placeholder="How do prospects book a demo or trial?" placeholderTextColor="#555" value={tech.tech_demo_process} onChangeText={t => setTech({...tech, tech_demo_process: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Onboarding</Text>
+                                    <Text style={styles.hint}>e.g. "Self-serve setup in 15 mins · Dedicated onboarding call for Pro+ · Data migration included for Enterprise"</Text>
+                                    <TextInput style={styles.input} placeholder="How do new customers get started?" placeholderTextColor="#555" value={tech.tech_onboarding} onChangeText={t => setTech({...tech, tech_onboarding: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Support Channels</Text>
+                                    <Text style={styles.hint}>e.g. "Email (24hr response) · In-app chat Mon-Fri 9am-6pm · WhatsApp for Enterprise"</Text>
+                                    <TextInput style={styles.input} placeholder="How do customers get help?" placeholderTextColor="#555" value={tech.tech_support_channels} onChangeText={t => setTech({...tech, tech_support_channels: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Compliance & Security</Text>
+                                    <Text style={styles.hint}>e.g. "PCI-DSS compliant · GDPR ready · KRA-approved for VAT · ISO 27001 certified"</Text>
+                                    <TextInput style={styles.input} placeholder="Any certifications or compliance standards?" placeholderTextColor="#555" value={tech.tech_compliance} onChangeText={t => setTech({...tech, tech_compliance: t})} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Contract Terms</Text>
+                                    <Text style={styles.hint}>e.g. "Month-to-month, cancel anytime · 20% discount on annual plans · No setup fees"</Text>
+                                    <TextInput style={styles.input} placeholder="Billing cycle, lock-in, cancellation policy" placeholderTextColor="#555" value={tech.tech_contract_terms} onChangeText={t => setTech({...tech, tech_contract_terms: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Customers / Case Studies</Text>
+                                    <Text style={styles.hint}>e.g. "Used by 500+ businesses including Naivas, Java House, KPLC · Reduced invoicing time by 80%"</Text>
+                                    <TextInput style={styles.input} placeholder="Notable customers or results you can share" placeholderTextColor="#555" value={tech.tech_case_studies} onChangeText={t => setTech({...tech, tech_case_studies: t})} multiline numberOfLines={2} />
+                                </View>
+                            </>
+                        )}
+
+                        {isGenericService && (
                             <>
                                 <View style={styles.sectionDivider}>
                                     <Ionicons name="briefcase-outline" size={16} color="#25D366" />
                                     <Text style={styles.sectionDividerText}>Service Details</Text>
                                 </View>
-
-                                {/* Services Menu */}
                                 <View style={styles.field}>
                                     <View style={styles.sectionHeader}>
                                         <Ionicons name="list-outline" size={18} color="#25D366" />
-                                        <Text style={styles.label}>{config.catalogLabel} & Pricing</Text>
+                                        <Text style={styles.label}>Services & Pricing *</Text>
                                     </View>
-                                    <Text style={styles.hint}>Add each {itemLabel.toLowerCase()} with its price and duration</Text>
-                                    <ListField
-                                        items={productItems}
-                                        onUpdate={setProductItems}
-                                        placeholder={`${itemLabel} - price - duration`}
-                                        icon="timer-outline"
-                                    />
+                                    <Text style={styles.hint}>Add each service with its price and duration</Text>
+                                    <ListField items={productItems} onUpdate={setProductItems} placeholder="Service - price - duration" icon="timer-outline" />
                                 </View>
-
-                                {/* Booking Process */}
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="people-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Team / Staff</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Maria - plumbing specialist · John - electrician"</Text>
+                                    <TextInput style={styles.input} placeholder="Who are your team members and their specialties?" placeholderTextColor="#555" value={knowledge.staff_info} onChangeText={t => setKnowledge({...knowledge, staff_info: t})} multiline numberOfLines={2} />
+                                </View>
                                 <View style={styles.field}>
                                     <View style={styles.sectionHeader}>
                                         <Ionicons name="calendar-outline" size={18} color="#25D366" />
                                         <Text style={styles.label}>Booking Process</Text>
                                     </View>
                                     <Text style={styles.hint}>e.g. "Book via WhatsApp 24hrs in advance. We confirm within 1 hour."</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        placeholder="How do clients book appointments?"
-                                        placeholderTextColor="#555"
-                                        value={knowledge.booking_process}
-                                        onChangeText={(text) => setKnowledge({ ...knowledge, booking_process: text })}
-                                        multiline
-                                        numberOfLines={2}
-                                    />
+                                    <TextInput style={styles.input} placeholder="How do clients book?" placeholderTextColor="#555" value={knowledge.booking_process} onChangeText={t => setKnowledge({...knowledge, booking_process: t})} multiline numberOfLines={2} />
                                 </View>
-
-                                {/* Cancellation Policy */}
                                 <View style={styles.field}>
                                     <View style={styles.sectionHeader}>
                                         <Ionicons name="close-circle-outline" size={18} color="#FF9800" />
                                         <Text style={styles.label}>Cancellation Policy</Text>
                                     </View>
                                     <Text style={styles.hint}>e.g. "Cancel at least 24hrs before. Late cancellations charged 50%."</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        placeholder="Your cancellation & rescheduling policy"
-                                        placeholderTextColor="#555"
-                                        value={knowledge.cancellation_policy}
-                                        onChangeText={(text) => setKnowledge({ ...knowledge, cancellation_policy: text })}
-                                        multiline
-                                        numberOfLines={2}
-                                    />
-                                </View>
-
-                                {/* Staff Info */}
-                                <View style={styles.field}>
-                                    <View style={styles.sectionHeader}>
-                                        <Ionicons name="people-outline" size={18} color="#25D366" />
-                                        <Text style={styles.label}>Team / Staff</Text>
-                                    </View>
-                                    <Text style={styles.hint}>e.g. "Maria - hair colouring specialist. John - massage therapist."</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        placeholder="Who are your team members and their specialties?"
-                                        placeholderTextColor="#555"
-                                        value={knowledge.staff_info}
-                                        onChangeText={(text) => setKnowledge({ ...knowledge, staff_info: text })}
-                                        multiline
-                                        numberOfLines={2}
-                                    />
-                                </View>
-                            </>
-                        )}
-
-                        {/* ── STANDARD FIELDS (retail / restaurant / general) ── */}
-                        {!isCreator && !isService && (
-                            <>
-                                {/* Products & Prices */}
-                                <View style={styles.field}>
-                                    <View style={styles.sectionHeader}>
-                                        <Ionicons name="pricetag-outline" size={18} color="#25D366" />
-                                        <Text style={styles.label}>Products & Prices</Text>
-                                    </View>
-                                    <Text style={styles.hint}>Add each product with its price</Text>
-                                    <ListField
-                                        items={productItems}
-                                        onUpdate={setProductItems}
-                                        placeholder="Product - price"
-                                        icon="cart-outline"
-                                    />
+                                    <TextInput style={styles.input} placeholder="Your cancellation & rescheduling policy" placeholderTextColor="#555" value={knowledge.cancellation_policy} onChangeText={t => setKnowledge({...knowledge, cancellation_policy: t})} multiline numberOfLines={2} />
                                 </View>
                             </>
                         )}
@@ -709,8 +1158,8 @@ export default function BusinessKnowledgeModal({
                             />
                         </View>
 
-                        {/* Delivery - only for retail/restaurant, not service businesses or creators */}
-                        {!isCreator && !isService && (
+                        {/* Delivery - only for restaurant and general, not retail (has own section) or service/creator */}
+                        {(isRestaurant || (!isCreator && !isService && !isRetail && !isRental)) && (
                             <View style={styles.field}>
                                 <View style={styles.sectionHeader}>
                                     <Ionicons name="bicycle-outline" size={18} color="#25D366" />
