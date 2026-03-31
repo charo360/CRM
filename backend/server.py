@@ -2195,7 +2195,62 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
 DEFAULT_PRODUCT_ACTIONS = [
     {"label": "Order Now",       "action_type": "order",       "index": 1, "ai_prompt": ""},
     {"label": "Add to Cart",     "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
+    {"label": "Ask a Question",  "action_type": "ask",         "index": 3, "ai_prompt": ""},
 ]
+
+# Business-type-aware defaults — used when no customization has been saved
+BUSINESS_TYPE_DEFAULT_ACTIONS: dict = {
+    "retail": [
+        {"label": "Order Now",      "action_type": "order",       "index": 1, "ai_prompt": ""},
+        {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question", "action_type": "ask",         "index": 3, "ai_prompt": ""},
+    ],
+    "restaurant": [
+        {"label": "Order Now",        "action_type": "order", "index": 1, "ai_prompt": ""},
+        {"label": "Make Reservation", "action_type": "book",  "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",   "action_type": "ask",   "index": 3, "ai_prompt": ""},
+    ],
+    "salon": [
+        {"label": "Book Appointment", "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "View Services",    "action_type": "info",  "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",   "action_type": "ask",   "index": 3, "ai_prompt": ""},
+    ],
+    "fitness": [
+        {"label": "Join / Enroll",   "action_type": "order", "index": 1, "ai_prompt": ""},
+        {"label": "Book a Class",    "action_type": "book",  "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",  "action_type": "ask",   "index": 3, "ai_prompt": ""},
+    ],
+    "healthcare": [
+        {"label": "Book Appointment", "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",      "action_type": "quote", "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",   "action_type": "ask",   "index": 3, "ai_prompt": ""},
+    ],
+    "rental": [
+        {"label": "Check Availability", "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",        "action_type": "quote", "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",     "action_type": "ask",   "index": 3, "ai_prompt": ""},
+    ],
+    "tech": [
+        {"label": "Start Free Trial", "action_type": "subscribe", "index": 1, "ai_prompt": ""},
+        {"label": "Book a Demo",      "action_type": "book",      "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",   "action_type": "ask",       "index": 3, "ai_prompt": ""},
+    ],
+    "creator": [
+        {"label": "Subscribe / Buy",  "action_type": "subscribe", "index": 1, "ai_prompt": ""},
+        {"label": "Learn More",       "action_type": "info",      "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",   "action_type": "ask",       "index": 3, "ai_prompt": ""},
+    ],
+    "services": [
+        {"label": "Book Now",        "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",     "action_type": "quote", "index": 2, "ai_prompt": ""},
+        {"label": "Ask a Question",  "action_type": "ask",   "index": 3, "ai_prompt": ""},
+    ],
+}
+
+def get_default_actions_for_user(user: dict) -> list:
+    """Return the right default product actions based on the user's business type."""
+    biz_type = (user.get("settings") or {}).get("business_type", "retail").lower()
+    return BUSINESS_TYPE_DEFAULT_ACTIONS.get(biz_type, DEFAULT_PRODUCT_ACTIONS)
 
 # All action types supported + what they do
 PRODUCT_ACTION_TYPES = {
@@ -2213,7 +2268,7 @@ PRODUCT_ACTION_TYPES = {
 @api_router.get("/settings/product-actions")
 async def get_product_actions(user = Depends(get_current_user)):
     """Get business's customized WhatsApp product action buttons"""
-    actions = user.get("settings", {}).get("product_actions") or DEFAULT_PRODUCT_ACTIONS
+    actions = user.get("settings", {}).get("product_actions") or get_default_actions_for_user(user)
     return {"actions": actions, "available_types": PRODUCT_ACTION_TYPES}
 
 @api_router.put("/settings/product-actions")
@@ -8306,17 +8361,12 @@ async def evolution_webhook(request: Request):
                                                 )
                                             return {"status": "ok", "handled_by": "product_visual_all"}
 
-                                    _default_actions = [
-                                        {"label": "Order Now",             "action_type": "order",       "index": 1},
-                                        {"label": "Add to Cart",           "action_type": "add_to_cart", "index": 2},
-                                        {"label": "See Similar Products",  "action_type": "similar",     "index": 3},
-                                    ]
                                     _user_actions_doc = await db.users.find_one(
-                                        {"_id": user["_id"]}, {"settings.product_actions": 1}
+                                        {"_id": user["_id"]}, {"settings": 1}
                                     )
                                     _user_actions = (
                                         (_user_actions_doc or {}).get("settings", {}).get("product_actions")
-                                        or _default_actions
+                                        or get_default_actions_for_user(_user_actions_doc or user)
                                     )
                                     # Add "Back to Catalog" as last option (matches whatsapp_service.py)
                                     _back_index = len(_user_actions) + 1

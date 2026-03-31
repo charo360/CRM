@@ -1214,14 +1214,40 @@ class WhatsAppService:
         # Step 2: numbered action text using business's custom actions
         if send_buttons and in_stock:
             await asyncio.sleep(1)
-            # Load user's custom product actions (or fall back to defaults)
+            # Load user's custom product actions (or fall back to business-type defaults)
             _user_doc = user
-            _default_actions = [
-                {"label": "Order Now",      "action_type": "order",       "index": 1},
-                {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
-                {"label": "See Similar Products", "action_type": "similar",     "index": 3},
-            ]
-            _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
+            _biz_type_wa = ((_user_doc or {}).get("settings") or {}).get("business_type", "retail").lower()
+            _type_defaults = {
+                "retail":     [{"label": "Order Now",          "action_type": "order",       "index": 1},
+                               {"label": "Add to Cart",        "action_type": "add_to_cart", "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "restaurant": [{"label": "Order Now",          "action_type": "order",       "index": 1},
+                               {"label": "Make Reservation",   "action_type": "book",        "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "salon":      [{"label": "Book Appointment",   "action_type": "book",        "index": 1},
+                               {"label": "View Services",      "action_type": "info",        "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "fitness":    [{"label": "Join / Enroll",      "action_type": "order",       "index": 1},
+                               {"label": "Book a Class",       "action_type": "book",        "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "healthcare": [{"label": "Book Appointment",   "action_type": "book",        "index": 1},
+                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "rental":     [{"label": "Check Availability", "action_type": "book",        "index": 1},
+                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "tech":       [{"label": "Start Free Trial",   "action_type": "subscribe",   "index": 1},
+                               {"label": "Book a Demo",        "action_type": "book",        "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "creator":    [{"label": "Subscribe / Buy",    "action_type": "subscribe",   "index": 1},
+                               {"label": "Learn More",         "action_type": "info",        "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+                "services":   [{"label": "Book Now",           "action_type": "book",        "index": 1},
+                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
+                               {"label": "Ask a Question",     "action_type": "ask",         "index": 3}],
+            }
+            _fallback_actions = _type_defaults.get(_biz_type_wa, _type_defaults["retail"])
+            _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _fallback_actions
             # Always add "Back to Catalog" as the last option
             _back_index = len(_actions) + 1
             _actions_with_back = _actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
