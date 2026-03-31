@@ -8529,15 +8529,10 @@ async def evolution_webhook(request: Request):
                                     )
                                     return {"status": "ok", "handled_by": "order_confirm_cancelled"}
                                 elif _fj_oc_action == "tangent":
-                                    _oc_summary_hint = f" for *{_oc_prod_name}*" + (f" ({_oc_price_str})" if _oc_price_str else "")
-                                    _oc_tangent_msg = _fj_oc_result.get("reply") or (
-                                        f"Hey! 😊 We were just confirming your order{_oc_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
-                                    )
-                                    await _oc_ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_oc_tangent_msg, customer_name=customer_name, send_context="order_flow"
-                                    )
-                                    return {"status": "ok", "handled_by": "order_confirm_tangent"}
+                                    # Fall through to AI agent for a natural response
+                                    pass
+                                elif False:  # placeholder for elif chain
+                                    pass
                                 else:  # unclear
                                     _oc_re_summary = (
                                         f"Just to confirm your order:\n"
@@ -8822,20 +8817,9 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "checkin_cancelled"}
-                            elif _fj_ci_action == "tangent":
-                                await _fj_ci_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_ci_result.get("reply") or f"Hey! 😊 We were picking your check-in date for *{_ci_svc}* — what date works for you? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkin_tangent"}
-                            elif _fj_ci_action == "unclear":
-                                await _fj_ci_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_ci_result.get("reply") or "What date would you like to check in? 📅\n_e.g. tomorrow, Monday, 15 March_",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkin_unclear"}
+                            elif _fj_ci_action in ("tangent", "unclear"):
+                                # Fall through to AI agent for a natural response
+                                pass
                             if _fj_ci_result.get("extracted_value"):
                                 body = _fj_ci_result["extracted_value"]
                         except Exception as _fj_ci_err:
@@ -9084,20 +9068,9 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "checkout_cancelled"}
-                            elif _fj_co_action == "tangent":
-                                await _fj_co_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_co_result.get("reply") or f"Hey! 😊 Check-in: *{_co_ci}* is set. What date would you like to check out? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkout_tangent"}
-                            elif _fj_co_action == "unclear":
-                                await _fj_co_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_co_result.get("reply") or f"What date would you like to check out? 📅\n_Check-in is {_co_ci}_",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkout_unclear"}
+                            elif _fj_co_action in ("tangent", "unclear"):
+                                # Fall through to AI agent for a natural response
+                                pass
                             if _fj_co_result.get("extracted_value"):
                                 body = _fj_co_result["extracted_value"]
                         except Exception as _fj_co_err:
@@ -9137,83 +9110,80 @@ async def evolution_webhook(request: Request):
                                             _m4 = _re_co.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _co_body)
                                             if _m4: _parsed_co = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
                             except Exception: _parsed_co = None
-                            ws = get_whatsapp_service(db)
                             if not _parsed_co or _parsed_co <= _ci_date:
-                                await ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=f"Check-out must be after check-in (*{_ci_date_str}*). Please reply with a valid check-out date 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_checkout_invalid"}
-                            _co_user_doc = await db.users.find_one({"_id": user["_id"]})
-                            _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability") or []
-                            _co_svc_id = _co_state.get("booking_service_id", "")
-                            _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
-                            _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates") or []
-                            _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
-                            _nights_check = (_parsed_co - _ci_date).days
-                            _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
-                            if _blocked_in_range:
-                                await ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=(
-                                        f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
-                                        f"📅 Please reply with a different check-out date."
-                                    ),
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_checkout_blocked"}
-                            _nights = _nights_check
-                            _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-                            _co_base_price = _co_state.get("booking_service_price", 0)
-                            _co_addons = _co_state.get("booking_selected_addons", [])
-                            _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
-                            _co_price_unit = _co_state.get("booking_price_unit", "night")
-                            _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
-                            _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
-                            if _co_price_unit == "week":
-                                _co_periods = max(1, round(_nights / 7))
-                            elif _co_price_unit == "month":
-                                _co_periods = max(1, round(_nights / 30))
-                            elif _co_price_unit == "year":
-                                _co_periods = max(1, round(_nights / 365))
-                            elif _co_price_unit == "person":
-                                _co_periods = 1
+                                # No valid date — fall through to AI agent for a natural response
+                                pass
                             else:
-                                _co_periods = _nights
-                            _co_total = (_co_base_price * _co_periods) + _co_addon_total
-                            _co_svc_name = _co_state.get("booking_service_name", "Service")
-                            _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
-                            _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
-                            _co_summary = (
-                                f"📋 *Booking Summary*\n\n"
-                                f"🏠 *{_co_svc_name}*\n"
-                                f"📅 Check-in: *{_ci_date_str}*\n"
-                                f"📅 Check-out: *{str(_parsed_co)}*\n"
-                                f"⏱ Duration: *{_co_dur_label}*\n"
-                            )
-                            if _co_addons:
-                                _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
-                            if _co_price_str:
-                                _co_summary += f"💰 Total: *{_co_price_str}*\n"
-                            _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
-                            await db.pending_catalogs.update_one(
-                                {"customer_id": customer_id, "user_id": user["_id"]},
-                                {"$set": {
-                                    "action_context": "booking_confirm",
-                                    "booking_checkout_date": str(_parsed_co),
-                                    "booking_nights": _nights,
-                                    "booking_total_price": _co_total,
-                                    "booking_time": "check-in",
-                                    "booking_date": _ci_date_str,
-                                    "updated_at": datetime.utcnow(),
-                                }}
-                            )
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=_co_summary, customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_checkout_input"}
+                                ws = get_whatsapp_service(db)
+                                _co_user_doc = await db.users.find_one({"_id": user["_id"]})
+                                _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability") or []
+                                _co_svc_id = _co_state.get("booking_service_id", "")
+                                _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
+                                _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates") or []
+                                _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
+                                _nights_check = (_parsed_co - _ci_date).days
+                                _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
+                                if _blocked_in_range:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=(
+                                            f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
+                                            f"📅 Please reply with a different check-out date."
+                                        ),
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_checkout_blocked"}
+                                _nights = _nights_check
+                                _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                _co_base_price = _co_state.get("booking_service_price", 0)
+                                _co_addons = _co_state.get("booking_selected_addons", [])
+                                _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
+                                _co_price_unit = _co_state.get("booking_price_unit", "night")
+                                _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
+                                _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
+                                if _co_price_unit == "week":
+                                    _co_periods = max(1, round(_nights / 7))
+                                elif _co_price_unit == "month":
+                                    _co_periods = max(1, round(_nights / 30))
+                                elif _co_price_unit == "year":
+                                    _co_periods = max(1, round(_nights / 365))
+                                elif _co_price_unit == "person":
+                                    _co_periods = 1
+                                else:
+                                    _co_periods = _nights
+                                _co_total = (_co_base_price * _co_periods) + _co_addon_total
+                                _co_svc_name = _co_state.get("booking_service_name", "Service")
+                                _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
+                                _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
+                                _co_summary = (
+                                    f"📋 *Booking Summary*\n\n"
+                                    f"🏠 *{_co_svc_name}*\n"
+                                    f"📅 Check-in: *{_ci_date_str}*\n"
+                                    f"📅 Check-out: *{str(_parsed_co)}*\n"
+                                    f"⏱ Duration: *{_co_dur_label}*\n"
+                                )
+                                if _co_addons:
+                                    _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
+                                if _co_price_str:
+                                    _co_summary += f"💰 Total: *{_co_price_str}*\n"
+                                _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "action_context": "booking_confirm",
+                                        "booking_checkout_date": str(_parsed_co),
+                                        "booking_nights": _nights,
+                                        "booking_total_price": _co_total,
+                                        "booking_time": "check-in",
+                                        "booking_date": _ci_date_str,
+                                        "updated_at": datetime.utcnow(),
+                                    }}
+                                )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_co_summary, customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkout_input"}
 
                 # BOOKING DATE INPUT HANDLER — customer types a date for a pending booking
                 if not button_action and not from_me and body:

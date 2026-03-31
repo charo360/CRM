@@ -454,6 +454,37 @@ class BookingAgent(BaseAgent):
                         step_hint=f"You need project details for *{_svc_name}* (deadline: {_deadline}, budget: {_budget}). After answering their question, ask them to describe what they need.",
                     )
 
+                elif _ctx == "booking_checkin_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the rental")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_checkin_input",
+                        step_hint=f"They're booking *{_svc_name}* and you need their check-in date. After answering their question, naturally ask what date they'd like to check in.",
+                    )
+
+                elif _ctx == "booking_checkout_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the rental")
+                    _ci_date = pending_doc.get("booking_checkin_date", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_checkout_input",
+                        step_hint=f"They're booking *{_svc_name}*, check-in is *{_ci_date}*. You need their check-out date. After answering their question, ask what date they'd like to check out.",
+                    )
+
+                elif _ctx == "order_confirm":
+                    _prod_name = pending_doc.get("product_name") or pending_doc.get("booking_service_name", "this item")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="order_confirm",
+                        step_hint=f"They have a pending order for *{_prod_name}* awaiting confirmation. Answer their question naturally, then remind them to reply YES to confirm or NO to cancel.",
+                    )
+
         except Exception as e:
             logger.warning(f"[BookingAgent] Error fetching pending_doc: {e}")
 
