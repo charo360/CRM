@@ -9533,7 +9533,8 @@ async def evolution_webhook(request: Request):
                             lines.append("\n" + " · ".join(nav_hints))
                             return "\n".join(lines), objs, has_more
 
-                        # Navigation word detection
+                        # Navigation word detection — fuzzy (contains), not exact match
+                        # so "Afternoon at 3pm" or "show me morning" all work
                         _bk_ts_nav_action = None
                         _bk_ts_jump_period = None
                         _next_words = {"next", "more", "zaidi", "show more", "more slots", "siguiente", "suivant"}
@@ -9541,17 +9542,35 @@ async def evolution_webhook(request: Request):
                         _afternoon_words = {"afternoon", "mchana", "après-midi", "tarde", "dopogiorno", "بعد الظهر"}
                         _evening_words = {"evening", "jioni", "soir", "noche", "sera", "مساء"}
 
-                        if _bk_ts_body in _next_words:
+                        if any(w in _bk_ts_body for w in _next_words):
                             _bk_ts_nav_action = "next"
-                        elif _bk_ts_body in _morning_words:
-                            _bk_ts_nav_action = "jump"
-                            _bk_ts_jump_period = "morning"
-                        elif _bk_ts_body in _afternoon_words:
+                        elif any(w in _bk_ts_body for w in _afternoon_words):
                             _bk_ts_nav_action = "jump"
                             _bk_ts_jump_period = "afternoon"
-                        elif _bk_ts_body in _evening_words:
+                        elif any(w in _bk_ts_body for w in _evening_words):
                             _bk_ts_nav_action = "jump"
                             _bk_ts_jump_period = "evening"
+                        elif any(w in _bk_ts_body for w in _morning_words):
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "morning"
+
+                        # Extract specific requested time from message (e.g. "3pm", "15:00", "3:30 pm")
+                        import re as _re_bk_ts
+                        _bk_ts_requested_time = None
+                        _bk_ts_tm = _re_bk_ts.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', _bk_ts_body)
+                        if not _bk_ts_tm:
+                            _bk_ts_tm = _re_bk_ts.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', _bk_ts_body)
+                            if _bk_ts_tm:
+                                _bk_ts_requested_time = f"{int(_bk_ts_tm.group(1)):02d}:{_bk_ts_tm.group(2)}"
+                        if _bk_ts_tm and not _bk_ts_requested_time:
+                            _bk_ts_h = int(_bk_ts_tm.group(1))
+                            _bk_ts_m = int(_bk_ts_tm.group(2) or 0)
+                            _bk_ts_mer = (_bk_ts_tm.group(3) or "").lower()
+                            if _bk_ts_mer == "pm" and _bk_ts_h < 12:
+                                _bk_ts_h += 12
+                            elif _bk_ts_mer == "am" and _bk_ts_h == 12:
+                                _bk_ts_h = 0
+                            _bk_ts_requested_time = f"{_bk_ts_h:02d}:{_bk_ts_m:02d}"
 
                         if _bk_ts_nav_action == "next" and _bk_ts_all:
                             # If a period is active, paginate within that period's slots only
@@ -9592,6 +9611,37 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "booking_time_period_empty"}
+                            # If customer also named a specific time (e.g. "Afternoon at 3pm"), auto-select it
+                            if _bk_ts_requested_time:
+                                _bk_ts_auto = next((s for s in _bk_ts_period_slots if s["time"] == _bk_ts_requested_time), None)
+                                if _bk_ts_auto:
+                                    _bk_ts_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                                    _bk_ts_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                    _bk_ts_price = _bk_ts_nav_state.get("booking_service_price", 0)
+                                    _bk_ts_price_str = f"{_bk_ts_currency} {_bk_ts_price:,.0f}" if _bk_ts_price else ""
+                                    if _bk_ts_biz_type == "restaurant":
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": "restaurant_party_size_input", "booking_time": _bk_ts_auto["time"], "updated_at": datetime.utcnow()}}
+                                        )
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(user_id=user["_id"], to_number=from_number, message=f"✅ Time: *{_bk_ts_auto['time']}*\n\n👥 *How many people?*\n_Reply with the party size (1-50)_", customer_name=customer_name, send_context="booking_flow")
+                                        return {"status": "ok", "handled_by": "booking_time_auto_select_restaurant"}
+                                    _bk_ts_summary = (
+                                        f"✅ *Booking Summary*\n\n"
+                                        f"📋 Service: *{_bk_ts_nav_state.get('booking_service_name', '')}*\n"
+                                        f"📅 Date: *{_bk_ts_nav_state.get('booking_date', '')}*\n"
+                                        f"🕐 Time: *{_bk_ts_auto['time']}*\n"
+                                        + (f"💰 Price: *{_bk_ts_price_str}*\n" if _bk_ts_price_str else "")
+                                        + f"\nReply *YES* to confirm or *NO* to cancel"
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "booking_confirm", "booking_time": _bk_ts_auto["time"], "updated_at": datetime.utcnow()}}
+                                    )
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_summary, customer_name=customer_name, send_context="booking_flow")
+                                    return {"status": "ok", "handled_by": "booking_time_auto_select"}
                             _bk_ts_plabel = _bk_ts_jump_period.capitalize()
                             _bk_ts_msg, _bk_ts_objs, _ = _bk_ts_build_and_send(_bk_ts_period_slots, _bk_ts_plabel, 0, _bk_ts_all)
                             await db.pending_catalogs.update_one(
@@ -9601,6 +9651,38 @@ async def evolution_webhook(request: Request):
                             ws = get_whatsapp_service(db)
                             await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_msg, customer_name=customer_name, send_context="booking_flow")
                             return {"status": "ok", "handled_by": "booking_time_jump_period"}
+
+                        # Direct time selection: customer typed e.g. "3pm" or "15:00" without a period word
+                        elif not _bk_ts_nav_action and _bk_ts_requested_time and _bk_ts_all:
+                            _bk_ts_direct = next((s for s in _bk_ts_all if s["time"] == _bk_ts_requested_time), None)
+                            if _bk_ts_direct:
+                                _bk_ts_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                                _bk_ts_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                _bk_ts_price = _bk_ts_nav_state.get("booking_service_price", 0)
+                                _bk_ts_price_str = f"{_bk_ts_currency} {_bk_ts_price:,.0f}" if _bk_ts_price else ""
+                                if _bk_ts_biz_type == "restaurant":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "restaurant_party_size_input", "booking_time": _bk_ts_direct["time"], "updated_at": datetime.utcnow()}}
+                                    )
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message=f"✅ Time: *{_bk_ts_direct['time']}*\n\n👥 *How many people?*\n_Reply with the party size (1-50)_", customer_name=customer_name, send_context="booking_flow")
+                                    return {"status": "ok", "handled_by": "booking_time_direct_select_restaurant"}
+                                _bk_ts_summary = (
+                                    f"✅ *Booking Summary*\n\n"
+                                    f"📋 Service: *{_bk_ts_nav_state.get('booking_service_name', '')}*\n"
+                                    f"📅 Date: *{_bk_ts_nav_state.get('booking_date', '')}*\n"
+                                    f"🕐 Time: *{_bk_ts_direct['time']}*\n"
+                                    + (f"💰 Price: *{_bk_ts_price_str}*\n" if _bk_ts_price_str else "")
+                                    + f"\nReply *YES* to confirm or *NO* to cancel"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_confirm", "booking_time": _bk_ts_direct["time"], "updated_at": datetime.utcnow()}}
+                                )
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_summary, customer_name=customer_name, send_context="booking_flow")
+                                return {"status": "ok", "handled_by": "booking_time_direct_select"}
 
                 # RESTAURANT PARTY SIZE HANDLER — after time slot selection
                 if not button_action and not from_me and body:

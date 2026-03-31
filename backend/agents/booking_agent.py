@@ -369,6 +369,33 @@ class BookingAgent(BaseAgent):
                         history=history, services=services, currency=currency,
                         step="booking_service_select", step_hint="They were picking a service from the list. After answering their question, naturally guide them back to choose.",
                     )
+
+                elif _ctx == "booking_time_select":
+                    # Server.py already handled numbers, "next", period words, and "3pm"-style time.
+                    # Anything reaching here is a general question or context change — handle naturally.
+                    _svc_name = pending_doc.get("booking_service_name", "your service")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_time_select",
+                        step_hint=f"They were choosing a time slot to book *{_svc_name}* on *{_bk_date}*. After answering their question, naturally bring them back to pick a time (they can reply with a number or say e.g. '3pm').",
+                    )
+
+                elif _ctx == "booking_confirm":
+                    # They're at the YES/NO confirmation step — handle questions naturally
+                    _svc_name = pending_doc.get("booking_service_name", "your service")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    _bk_time = pending_doc.get("booking_time", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_confirm",
+                        step_hint=f"They have a pending booking for *{_svc_name}* on *{_bk_date}* at *{_bk_time}* awaiting confirmation. After answering their question, remind them to reply YES to confirm or NO to cancel.",
+                    )
+
         except Exception as e:
             logger.warning(f"[BookingAgent] Error fetching pending_doc: {e}")
 
