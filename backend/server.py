@@ -7726,13 +7726,78 @@ async def evolution_webhook(request: Request):
                                     logging.warning(f"Catalog select #{_reply_num}: no product at that index")
 
                                 elif _ctx == "cart":
-                                    # 1 = checkout, 2 = continue shopping, 3 = cancel order
-                                    _num_to_action = {1: "checkout", 2: "continue", 3: "cancel_cart"}
+                                    # 1 = checkout, 2 = continue shopping, 3 = remove item, 4 = cancel order
+                                    _num_to_action = {1: "checkout", 2: "continue", 3: "remove_item", 4: "cancel_cart"}
                                     _matched = _num_to_action.get(_reply_num)
                                     if _matched:
                                         button_action = _matched
                                         button_product_id = None
                                         logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
+
+                                elif _ctx == "remove_item_select":
+                                    # Customer replied with the index of the item they want to remove
+                                    _biz_id_ris = user.get("business_id", user["_id"])
+                                    _ris_cart = await db.carts.find_one(
+                                        {"customer_id": customer_id, "user_id": _biz_id_ris, "status": "active"}
+                                    )
+                                    ws = get_whatsapp_service(db)
+                                    _currency_ris = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                    if _ris_cart and _ris_cart.get("items"):
+                                        _ris_items = _ris_cart["items"]
+                                        _ris_idx = _reply_num - 1  # convert 1-based reply to 0-based index
+                                        if 0 <= _ris_idx < len(_ris_items):
+                                            _removed = _ris_items[_ris_idx]
+                                            _new_items = [it for i, it in enumerate(_ris_items) if i != _ris_idx]
+                                            await db.carts.update_one(
+                                                {"_id": _ris_cart["_id"]},
+                                                {"$set": {"items": _new_items, "updated_at": datetime.utcnow()}}
+                                            )
+                                            if _new_items:
+                                                _new_total = sum(it.get("price", 0) * it.get("quantity", 1) for it in _new_items)
+                                                _new_count = len(_new_items)
+                                                _item_word = "item" if _new_count == 1 else "items"
+                                                _ris_lines = [f"✅ *{_removed['product_name']}* removed from your cart.\n"]
+                                                _ris_lines.append(f"🛒 *Cart: {_new_count} {_item_word}* — {_currency_ris} {_new_total:,.0f}")
+                                                for _ri2, _it2 in enumerate(_new_items, 1):
+                                                    _ris_lines.append(f"  {_ri2}. {_it2['product_name']} — {_currency_ris} {_it2.get('price', 0):,.0f}")
+                                                _ris_lines.append(f"\n1️⃣  ✅ Checkout Now")
+                                                _ris_lines.append(f"2️⃣  🛍️ Continue Shopping")
+                                                _ris_lines.append(f"3️⃣  ❌ Remove Another Item")
+                                                _ris_lines.append(f"4️⃣  🗑️ Cancel Order")
+                                                _ris_lines.append(f"\n_Reply with a number_")
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message="\n".join(_ris_lines),
+                                                    customer_name=customer_name, send_context="auto_reply"
+                                                )
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {"action_context": "cart", "updated_at": datetime.utcnow()}}
+                                                )
+                                            else:
+                                                # Cart now empty
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message=f"✅ *{_removed['product_name']}* removed. Your cart is now empty.\n\nType *catalog* to browse products 🛍️",
+                                                    customer_name=customer_name, send_context="auto_reply"
+                                                )
+                                                await db.carts.update_one(
+                                                    {"_id": _ris_cart["_id"]},
+                                                    {"$set": {"status": "cancelled"}}
+                                                )
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                                )
+                                            logging.info(f"Item removed from cart: {_removed['product_name']}, customer={customer_id}")
+                                            return {"status": "ok", "handled_by": "remove_item_done"}
+                                        else:
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=f"Please reply with a number between 1 and {len(_ris_items)}.",
+                                                customer_name=customer_name, send_context="auto_reply"
+                                            )
+                                            return {"status": "ok", "handled_by": "remove_item_invalid"}
 
                                 elif _ctx == "duplicate_order_choice":
                                     # 1 = create new (double), 2 = keep existing, 3 = cancel existing & create new
@@ -10216,7 +10281,7 @@ async def evolution_webhook(request: Request):
                                 return {"status": "ok", "handled_by": "booking_confirm_no"}
 
                 # Handle button actions
-                if button_action and (button_product_id or button_action in ("checkout", "continue", "cancel_cart")):
+                if button_action and (button_product_id or button_action in ("checkout", "continue", "cancel_cart", "remove_item")):
                     try:
                         if button_action == "order":
                             # Customer clicked "Order Now" — ask for confirmation first, don't create order yet
@@ -10334,14 +10399,19 @@ async def evolution_webhook(request: Request):
                                 cart_total = sum(i.get("price", 0) * i.get("quantity", 1) for i in cart_items)
                                 
                                 # Unified, CRM-logged confirmation + "What's next?" message
+                                _item_lines = "\n".join(
+                                    f"  • {it['product_name']}" for it in cart_items
+                                )
                                 added_msg = (
                                     f"✅ *{product['name']}* added to cart!\n\n"
-                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}\n\n"
+                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}\n"
+                                    f"{_item_lines}\n\n"
                                     f"*What would you like to do?*\n"
                                     f"1️⃣  Checkout Now\n"
                                     f"2️⃣  Continue Shopping\n"
-                                    f"3️⃣  Cancel Order\n\n"
-                                    f"_Reply with 1, 2 or 3, or type *cart* to view details_"
+                                    f"3️⃣  ❌ Remove an Item\n"
+                                    f"4️⃣  🗑️ Cancel Order\n\n"
+                                    f"_Reply with a number, or type *cart* to view details_"
                                 )
                                 ws = get_whatsapp_service(db)
                                 await ws.send_message(
@@ -10582,6 +10652,40 @@ async def evolution_webhook(request: Request):
                                     )
                                 logging.info(f"Empty cart checkout attempted by {customer_id}")
                                 return {"status": "ok", "handled_by": "empty_checkout_fallback"}
+
+                        elif button_action == "remove_item":
+                            # Customer wants to remove an item — show numbered cart items to pick from
+                            _biz_id_ri = user.get("business_id", user["_id"])
+                            _ri_cart = await db.carts.find_one(
+                                {"customer_id": customer_id, "user_id": _biz_id_ri, "status": "active"}
+                            )
+                            ws = get_whatsapp_service(db)
+                            _currency_ri = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            if _ri_cart and _ri_cart.get("items"):
+                                _ri_items = _ri_cart["items"]
+                                _ri_lines = ["Which item would you like to remove?\n"]
+                                for _idx, _it in enumerate(_ri_items, 1):
+                                    _ri_price = f"{_currency_ri} {_it.get('price', 0):,.0f}"
+                                    _ri_lines.append(f"{_idx}️⃣  {_it['product_name']} — {_ri_price}")
+                                _ri_lines.append("\n_Reply with the number of the item_")
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="\n".join(_ri_lines),
+                                    customer_name=customer_name, send_context="auto_reply"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "remove_item_select", "updated_at": datetime.utcnow()}},
+                                    upsert=True
+                                )
+                            else:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="🛒 Your cart is already empty!",
+                                    customer_name=customer_name, send_context="auto_reply"
+                                )
+                            logging.info(f"Remove item menu shown for customer={customer_id}")
+                            return {"status": "ok", "handled_by": "remove_item_menu"}
 
                         elif button_action == "cancel_cart":
                             # Customer chose "Cancel Order" from cart menu — clear cart then resend catalog
@@ -10851,6 +10955,8 @@ async def evolution_webhook(request: Request):
                             _lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*\n")
                             _lines.append("1️⃣  ✅ *Checkout Now*")
                             _lines.append("2️⃣  🛍️ *Continue Shopping*")
+                            _lines.append("3️⃣  ❌ *Remove an Item*")
+                            _lines.append("4️⃣  🗑️ *Cancel Order*")
                             _lines.append("\n_Reply with a number_")
                             await ws.send_message(
                                 user_id=user["_id"],
