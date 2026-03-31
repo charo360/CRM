@@ -45,15 +45,25 @@ MIN_REPLY_CHARS = 20          # minimum characters for non-chat intents
 MAX_REPLY_CHARS = 600         # ~150 words — WhatsApp readability limit
 MAX_REPLY_CHARS_COMPLAINT = 800  # complaint/booking can be a bit longer
 
-# 12.6: Booking hallucination patterns — inventing availability or prices
+# 12.6: Booking hallucination patterns — inventing availability slots (NOT prices — prices are valid)
+# Price patterns are intentionally excluded here: booking agents CAN and SHOULD quote prices
+# when the customer asks "how much is X?" (PRICE_INQUIRY intent). The price_blocking check
+# below is intent-gated and only fires when the agent has NOT been asked about price.
 BOOKING_HALLUCINATION_PATTERNS = [
     r'\bavailable\s+(on|at|for)\s+\w+\s+(at\s+)?\d+',   # "available on Monday at 3"
     r'\b(slot|appointment|booking)\s+(is\s+)?available\b',
     r'\bwe have\s+(a\s+)?(slot|opening|appointment|space)\b',
     r'\b(come in|come\s+at|be here)\s+(on\s+)?\w+\s+at\s+\d+',
-    r'\bprice\s+(is|for)\s+[\$\£\€\₦\₹\¥]?\s*\d+',     # inventing service prices
+]
+
+# Separate price-inventing patterns — only applied when intent is NOT a price inquiry
+BOOKING_PRICE_HALLUCINATION_PATTERNS = [
+    r'\bprice\s+(is|for)\s+[\$\£\€\₦\₹\¥]?\s*\d+',
     r'\bcosts?\s+[\$\£\€\₦\₹\¥]?\s*\d+',
 ]
+
+# Intents where quoting a price is the correct response
+_PRICE_OK_INTENTS = {"PRICE_INQUIRY", "PRODUCT_INQUIRY", "BOOKING_REQUEST", "CATALOG_REQUEST"}
 
 # 12.7: Sales hallucination patterns — refusing to sell or claiming lack of access
 SALES_HALLUCINATION_PATTERNS = [
@@ -66,33 +76,48 @@ SALES_HALLUCINATION_PATTERNS = [
 # 12.8: Fake confirmation patterns — AI pretends to book/order/schedule without DB writes
 # These MUST be broad enough to catch every creative variation the LLM generates.
 FAKE_CONFIRMATION_PATTERNS = [
-    # Direct confirmation language
+    # ── English ──────────────────────────────────────────────────────────────
     r'\b(is\s+now\s+booked|has\s+been\s+booked|is\s+confirmed|has\s+been\s+confirmed)\b',
     r'\b(booked\s+you\s+(for|in|at)|booking\s+you\s+(for|in|at))\b',
     r'\b(you\'?re\s+(all\s+)?booked|all\s+booked|you\s+are\s+booked)\b',
     r'\b(booked\s+for\s+(the|a|your|haircut|massage|service|appointment))\b',
-    r'\b(booked\s+for\s+[\w\s]+at\s+\$[\d,]+)\b',  # "Booked for haircut at $500"
+    r'\b(booked\s+for\s+[\w\s]+at\s+\$[\d,]+)\b',
     r'(✅\s*booked|booked\s*✅|✅\s*confirmed|confirmed\s*✅)',
-    # "See you" language
-    r'\b(see\s+you\s+(then|at|on|there|soon|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
+    # "See you" — only block with specific day/time (not "see you soon")
+    r'\b(see\s+you\s+(on\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(at\s+)?\d)\b',
+    r'\b(see\s+you\s+at\s+\d{1,2}(:\d{2})?\s*(am|pm))\b',
     r'\b(see\s+you\s+in\s+a\s+bit)\b',
-    # Appointment/booking confirmations
     r'\b(appointment\s+(is|has\s+been)\s+(set|scheduled|confirmed|booked))\b',
     r'\b(your\s+(order|booking|appointment|reservation)\s+(is|has\s+been)\s+(placed|confirmed|set|ready|booked))\b',
     r'\b(reservation\s+(is|has\s+been)\s+(made|confirmed|booked))\b',
-    # Inventing opening hours / availability
-    r'\b(we(\'re|\s+are)\s+open\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
-    r'\b(our\s+hours\s+are|we\s+open\s+at|hours\s+of\s+operation)\b',
-    r'\b(open\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday).*(am|pm))\b',
-    r'\b(we\'?re\s+closed\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
-    r'\b(\d{1,2}\s*am\s*[\-–to]+\s*\d{1,2}\s*pm)\b',  # "8am-5pm", "8am–5pm", "8am to 5pm"
-    # Specific time confirmations without DB context
+    r'\b(our\s+(working\s+)?hours\s+are\s+\d)',
+    r'\b(we\s+open\s+at\s+\d{1,2}(:\d{2})?\s*(am|pm))\b',
     r'\b(you\'?re\s+set\s+for|you\'?re\s+all\s+set)\b',
     r'\b((monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+works)\b',
     r'\b(\d{1,2}(:\d{2})?\s*(am|pm)?\s+(on\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+works)\b',
     r'\b(we\'?ll\s+see\s+you\s+(at|on))\b',
     r'\b(confirmed\s+for\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today))\b',
     r'\b(slot\s+(is|has been)\s+(reserved|booked|confirmed))\b',
+    # ── Swahili ───────────────────────────────────────────────────────────────
+    r'\b(umehifadhiwa|umewekwa|imehifadhiwa)\b',         # "reserved/booked (you)"
+    r'\b(nafasi\s+imehifadhiwa)\b',                       # "slot has been reserved"
+    r'\b(miadi\s+(imewekwa|imethibitishwa|imepangwa))\b', # "appointment is set/confirmed/arranged"
+    r'\b(imethibitishwa|imeidhinishwa)\b',                # "confirmed/approved"
+    r'\b(agizo\s+lako\s+limepokewa)\b',                   # "your order has been received"
+    r'\b(tutakuona\s+(siku\s+ya\s+)?(jumatatu|jumanne|jumatano|alhamisi|ijumaa|jumamosi|jumapili))\b',  # "we'll see you Monday..."
+    r'\b(nafasi\s+yako\s+imehifadhiwa)\b',               # "your slot is reserved"
+    # ── Sheng ─────────────────────────────────────────────────────────────────
+    r'\b(umebook(wa|iwa)|nimekubook)\b',                  # "you're booked / I've booked you"
+    r'\b(sawa\s+umeconfirm(wa|iwa))\b',                  # "ok you're confirmed"
+    r'\b(tunakulinda\s+nafasi)\b',                        # "we're holding the slot for you"
+    # ── French ────────────────────────────────────────────────────────────────
+    r'\b(votre\s+(rendez-vous|réservation|commande)\s+(est\s+)?(confirmé|réservé|planifié|enregistré))\b',
+    r'\b(c\'est\s+confirmé|c\'est\s+réservé)\b',
+    r'\b(vous\s+êtes\s+(réservé|confirmé|attendu\s+le))\b',
+    # ── Arabic ────────────────────────────────────────────────────────────────
+    r'(تم\s+الحجز|تم\s+التأكيد|تم\s+تأكيد\s+حجزك)',     # "booking done / confirmed"
+    r'(موعدك\s+(محجوز|مؤكد|تم\s+تحديده))',               # "your appointment is booked/confirmed"
+    r'(طلبك\s+(تم\s+استلامه|مؤكد))',                     # "your order was received / confirmed"
 ]
 
 
@@ -173,15 +198,25 @@ async def validate_reply(
             "suggestion": "Keep the reply under 600 characters. Be direct and WhatsApp-natural.",
         }
 
-    # Rule 7: Booking agent must not invent availability slots or prices
+    # Rule 7: Booking agent must not invent availability slots
     if agent_name == "booking":
         for pattern in BOOKING_HALLUCINATION_PATTERNS:
             if re.search(pattern, reply_lower):
                 return {
                     "result": RESULT_REJECT,
-                    "reason": "Booking reply appears to invent availability or prices not from business data",
-                    "suggestion": "Do NOT invent specific time slots or prices. Ask the customer what date works and let the owner confirm.",
+                    "reason": "Booking reply appears to invent availability slots not from business data",
+                    "suggestion": "Do NOT invent specific time slots or claim availability. Ask the customer what date works and let the owner confirm.",
                 }
+        # Only block invented prices when this was NOT a price inquiry
+        # (booking agent should freely quote catalog prices when asked)
+        if intent not in _PRICE_OK_INTENTS:
+            for pattern in BOOKING_PRICE_HALLUCINATION_PATTERNS:
+                if re.search(pattern, reply_lower):
+                    return {
+                        "result": RESULT_REJECT,
+                        "reason": "Booking reply appears to invent a price not from the service catalog",
+                        "suggestion": "Do NOT invent prices. Use the service price from the catalog, or ask the customer to contact you for pricing.",
+                    }
 
     # Rule 8: Sales agent must not hallucinate lack of knowledge or access
     if agent_name == "sales":

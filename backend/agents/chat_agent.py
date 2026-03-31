@@ -177,17 +177,29 @@ class ChatAgent(BaseAgent):
             else:
                 # Build persona instructions
                 if is_personal:
+                    # Build a short thread so the AI has real conversation context
+                    _p_thread = []
+                    for _hm in history[-10:]:
+                        _role = "Them" if _hm.get("direction") == "incoming" else "You"
+                        _p_thread.append(f"{_role}: {_hm.get('content', '')}")
+                    _p_thread_text = "\n".join(_p_thread) if _p_thread else "(No prior messages)"
+
                     instructions = (
-                        f"{intent_hint}"
-                        f"You're texting {customer_name} who is a friend or family of the business owner — NOT a customer. "
-                        "Write exactly how a real person texts a close friend: casual, warm, sometimes informal. "
-                        "MATCH THEIR LANGUAGE AND ENERGY — if they write in Sheng, Pidgin, Swahili, mixed, you match it exactly. "
-                        "No corporate tone, no formality, no 'I hope this message finds you well'. "
-                        "Help with whatever they ask — drafting something, answering a question, just chatting. "
-                        "Keep it real, keep it short. Sound like a person, not a product. "
-                        "CRITICAL: ONLY use information from the conversation. NEVER invent facts or personal details. "
-                        "NEVER share sensitive info (passwords, account numbers, IDs, payment details)."
+                        f"You are replying on WhatsApp to {customer_name} — a personal contact (friend or family), NOT a customer.\n\n"
+                        f"Their latest message: \"{message}\"\n\n"
+                        f"Recent thread:\n{_p_thread_text}\n\n"
+                        "Reply the way a real person texts someone they actually know:\n"
+                        "- Match their exact language and energy — Sheng, Swahili, English, mixed — whatever they used\n"
+                        "- If they said something funny, be funny. If they're venting, be warm. If they asked something, answer it.\n"
+                        "- Do NOT mention the business, products, or anything sales-related\n"
+                        "- Do NOT use corporate phrases: 'I hope this helps', 'I understand your concern', 'I'd be happy to'\n"
+                        "- 1-2 sentences unless they asked something that needs more\n"
+                        "- NEVER invent facts or personal details about them\n"
+                        "- NEVER share sensitive info (passwords, bank details, IDs)\n"
+                        "Output ONLY the reply text."
                     )
+                    # Suppress business knowledge entirely for personal chats
+                    business_knowledge = None
                 else:
                     instructions = (
                         f"{intent_hint}"
