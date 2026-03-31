@@ -94,6 +94,46 @@ const PRESETS: { name: string; icon: string; desc: string; actions: ProductActio
             { label: 'Ask a Question', action_type: 'ask',   index: 3, ai_prompt: '' },
         ],
     },
+    {
+        name: 'Fitness / Gym',
+        icon: '🏋️',
+        desc: 'Classes & memberships',
+        actions: [
+            { label: 'Join / Enroll',    action_type: 'order',     index: 1, ai_prompt: '' },
+            { label: 'Book a Class',     action_type: 'book',      index: 2, ai_prompt: '' },
+            { label: 'Ask a Question',   action_type: 'ask',       index: 3, ai_prompt: '' },
+        ],
+    },
+    {
+        name: 'Healthcare',
+        icon: '🏥',
+        desc: 'Clinic & medical',
+        actions: [
+            { label: 'Book Appointment', action_type: 'book',  index: 1, ai_prompt: '' },
+            { label: 'Get a Quote',      action_type: 'quote', index: 2, ai_prompt: '' },
+            { label: 'Ask a Question',   action_type: 'ask',   index: 3, ai_prompt: '' },
+        ],
+    },
+    {
+        name: 'Rental / Airbnb',
+        icon: '🏡',
+        desc: 'Short-stay rentals',
+        actions: [
+            { label: 'Check Availability', action_type: 'book',  index: 1, ai_prompt: '' },
+            { label: 'Get a Quote',        action_type: 'quote', index: 2, ai_prompt: '' },
+            { label: 'Ask a Question',     action_type: 'ask',   index: 3, ai_prompt: '' },
+        ],
+    },
+    {
+        name: 'Tech / SaaS',
+        icon: '💻',
+        desc: 'Software & platforms',
+        actions: [
+            { label: 'Start Free Trial', action_type: 'subscribe', index: 1, ai_prompt: '' },
+            { label: 'Book a Demo',      action_type: 'book',      index: 2, ai_prompt: '' },
+            { label: 'Ask a Question',   action_type: 'ask',       index: 3, ai_prompt: '' },
+        ],
+    },
 ];
 
 const DEFAULT_ACTIONS: ProductAction[] = [

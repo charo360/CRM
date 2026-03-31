@@ -8342,10 +8342,10 @@ async def evolution_webhook(request: Request):
                         "➕ add to cart": "add_to_cart",
                         "🛒 add to cart": "add_to_cart",
                         "add to cart": "add_to_cart",
-                        "💬 ask a question": "similar",
-                        "💬 ask question": "similar",
-                        "ask a question": "similar",
-                        "ask question": "similar",
+                        "💬 ask a question": "ask",
+                        "💬 ask question": "ask",
+                        "ask a question": "ask",
+                        "ask question": "ask",
                         "see similar": "similar",
                         "similar products": "similar",
                         "📋 more info": "details",
@@ -10889,12 +10889,13 @@ async def evolution_webhook(request: Request):
                                 logging.info(f"Similar products failed (no product ID), returning main catalog")
                                 return {"status": "ok", "handled_by": "similar_missing_fallback"}
 
-                        elif button_action in ("book", "subscribe", "quote", "test_drive", "info", "custom"):
+                        elif button_action in ("ask", "book", "subscribe", "quote", "test_drive", "info", "custom"):
                             # Custom action types — craft intent message and let AI handle naturally
                             _biz_id_ca = user.get("business_id", user["_id"])
                             _ca_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_ca})
                             _pname = _ca_product["name"] if _ca_product else "this product"
                             _intent_map = {
+                                "ask":        f"I have a question about {_pname}",
                                 "book":       f"I want to book an appointment for {_pname}",
                                 "subscribe":  f"I want to subscribe to {_pname}",
                                 "quote":      f"I want to get a quote for {_pname}",
