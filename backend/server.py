@@ -7693,10 +7693,65 @@ async def evolution_webhook(request: Request):
                             })
                             if _pending_cat:
                                 _ctx = _pending_cat.get("action_context", "product")
+                                _cat_products_top = _pending_cat.get("products", [])
+                                _biz_id_top = user.get("business_id", user["_id"])
+
+                                # ── "0" = View Gallery — works for ALL menu contexts ──────────
+                                # Move this check to the top so it fires regardless of whether
+                                # the menu was sent by catalog_select, service_select, or the AI.
+                                if _reply_num == 0 and _ctx not in ("cart", "remove_item_select", "duplicate_order_choice"):
+                                    _currency_pg = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                    ws = get_whatsapp_service(db)
+                                    _sent_count = 0
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="🖼️ Here's a look at what we have...",
+                                    )
+                                    for _sp in _cat_products_top:
+                                        _full_p = await db.products.find_one({"_id": _sp["id"], "user_id": _biz_id_top})
+                                        if _full_p:
+                                            _price = _full_p.get('price') or 0
+                                            _all_img_urls = []
+                                            if _full_p.get("image_url"):
+                                                _all_img_urls.append(_full_p["image_url"])
+                                            for _img in _full_p.get("images", []):
+                                                if _img and _img not in _all_img_urls:
+                                                    _all_img_urls.append(_img)
+                                            if len(_all_img_urls) > 1:
+                                                for _img_u in _all_img_urls[:-1]:
+                                                    await ws.send_message(
+                                                        user_id=user["_id"], to_number=from_number,
+                                                        message="", media_url=_img_u, send_context="catalog_visual_all"
+                                                    )
+                                            if _all_img_urls:
+                                                _idx = _sp.get("index", "")
+                                                _idx_emoji = f"{_idx}️⃣" if _idx else ""
+                                                _msg_txt = f"{_idx_emoji} *{_full_p['name']}*\n💰 {_currency_pg} {_price:,.0f}"
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message=_msg_txt, media_url=_all_img_urls[-1], send_context="catalog_visual_all"
+                                                )
+                                                _sent_count += 1
+                                    if _sent_count > 0:
+                                        _prompt = "Ready to choose? Just reply with the number of your choice above! 👆"
+                                        if _pending_cat.get("has_more"):
+                                            _prompt += "\n\n(Or reply *9* to see even more products ➡️)"
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message=_prompt,
+                                            send_context="catalog_prompt"
+                                        )
+                                        logging.info(f"Catalog visual blast: sent {_sent_count} items (ctx={_ctx}).")
+                                    else:
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message="Sorry, no images are available right now. Reply with a number to select! 😊"
+                                        )
+                                    return {"status": "ok", "handled_by": "catalog_visual_all"}
 
                                 if _ctx == "catalog_select":
-                                    _cat_products = _pending_cat.get("products", [])
-                                    _biz_id_cs = user.get("business_id", user["_id"])
+                                    _cat_products = _cat_products_top
+                                    _biz_id_cs = _biz_id_top
                                     # Check if customer wants next page (reply=9 and has_more=True)
                                     if _reply_num == 9 and _pending_cat.get("has_more"):
                                         _all_ids = _pending_cat.get("all_product_ids", [])
@@ -7736,59 +7791,6 @@ async def evolution_webhook(request: Request):
                                             )
                                             logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
                                             return {"status": "ok", "handled_by": "catalog_next_page"}
-                                    elif _reply_num == 0:
-                                        # Send all images for the current page
-                                        _currency_pg = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-                                        ws = get_whatsapp_service(db)
-                                        _sent_count = 0
-                                        await ws.send_message(
-                                            user_id=user["_id"], to_number=from_number,
-                                            message="🖼️ Sending product images...",
-                                        )
-                                        for _sp in _cat_products:
-                                            _full_p = await db.products.find_one({"_id": _sp["id"], "user_id": _biz_id_cs})
-                                            if _full_p:
-                                                _price = _full_p.get('price') or 0
-                                                _all_img_urls = []
-                                                if _full_p.get("image_url"):
-                                                    _all_img_urls.append(_full_p["image_url"])
-                                                for _img in _full_p.get("images", []):
-                                                    if _img and _img not in _all_img_urls:
-                                                        _all_img_urls.append(_img)
-                                                        
-                                                if len(_all_img_urls) > 1:
-                                                    for _img_u in _all_img_urls[:-1]:
-                                                        await ws.send_message(
-                                                            user_id=user["_id"], to_number=from_number,
-                                                            message="", media_url=_img_u, send_context="catalog_visual_all"
-                                                        )
-                                                if _all_img_urls:
-                                                    _idx = _sp.get("index", "")
-                                                    _idx_emoji = f"{_idx}️⃣" if _idx else ""
-                                                    _msg_txt = f"{_idx_emoji} *{_full_p['name']}*\n💰 {_currency_pg} {_price:,.0f}"
-                                                    await ws.send_message(
-                                                        user_id=user["_id"], to_number=from_number,
-                                                        message=_msg_txt, media_url=_all_img_urls[-1], send_context="catalog_visual_all"
-                                                    )
-                                                    _sent_count += 1
-                                        if _sent_count > 0:
-                                            _prompt = "Ready to choose? Just reply with the number of your choice above! 👆"
-                                            if _pending_cat.get("has_more"):
-                                                _prompt += "\n\n(Or reply *9* to see even more products ➡️)"
-                                            
-                                            await ws.send_message(
-                                                user_id=user["_id"], to_number=from_number,
-                                                message=_prompt,
-                                                send_context="catalog_prompt"
-                                            )
-                                            logging.info(f"Catalog visual blast: sent {_sent_count} product image sets.")
-                                            return {"status": "ok", "handled_by": "catalog_visual_all"}
-                                        else:
-                                            await ws.send_message(
-                                                user_id=user["_id"], to_number=from_number,
-                                                message="Sorry, there are no images available for these products."
-                                            )
-                                            return {"status": "ok", "handled_by": "catalog_visual_all"}
                                     else:
                                         # Customer picked a product from the numbered list — show full details
                                         _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
