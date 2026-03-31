@@ -2193,57 +2193,59 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
 # ============ PRODUCT ACTIONS ============
 
 DEFAULT_PRODUCT_ACTIONS = [
-    {"label": "Order Now",       "action_type": "order",       "index": 1, "ai_prompt": ""},
-    {"label": "Add to Cart",     "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
-    {"label": "Ask a Question",  "action_type": "ask",         "index": 3, "ai_prompt": ""},
+    {"label": "Order Now",      "action_type": "order",       "index": 1, "ai_prompt": ""},
+    {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
+    {"label": "See Similar",    "action_type": "similar",     "index": 3, "ai_prompt": ""},
 ]
 
 # Business-type-aware defaults — used when no customization has been saved
+# "Ask a Question" is intentionally excluded — the customer is already in a WhatsApp chat
+# and can type freely. The system auto-appends "Back to Catalog" so no need to add navigation here.
 BUSINESS_TYPE_DEFAULT_ACTIONS: dict = {
     "retail": [
         {"label": "Order Now",      "action_type": "order",       "index": 1, "ai_prompt": ""},
         {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question", "action_type": "ask",         "index": 3, "ai_prompt": ""},
+        {"label": "See Similar",    "action_type": "similar",     "index": 3, "ai_prompt": ""},
     ],
     "restaurant": [
         {"label": "Order Now",        "action_type": "order", "index": 1, "ai_prompt": ""},
         {"label": "Make Reservation", "action_type": "book",  "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",   "action_type": "ask",   "index": 3, "ai_prompt": ""},
+        {"label": "View Menu",        "action_type": "info",  "index": 3, "ai_prompt": ""},
     ],
     "salon": [
         {"label": "Book Appointment", "action_type": "book",  "index": 1, "ai_prompt": ""},
-        {"label": "View Services",    "action_type": "info",  "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",   "action_type": "ask",   "index": 3, "ai_prompt": ""},
+        {"label": "View Price List",  "action_type": "info",  "index": 2, "ai_prompt": ""},
+        {"label": "See Similar",      "action_type": "similar","index": 3, "ai_prompt": ""},
     ],
     "fitness": [
-        {"label": "Join / Enroll",   "action_type": "order", "index": 1, "ai_prompt": ""},
-        {"label": "Book a Class",    "action_type": "book",  "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",  "action_type": "ask",   "index": 3, "ai_prompt": ""},
+        {"label": "Join / Enroll",    "action_type": "order", "index": 1, "ai_prompt": ""},
+        {"label": "Book a Class",     "action_type": "book",  "index": 2, "ai_prompt": ""},
+        {"label": "View Schedule",    "action_type": "info",  "index": 3, "ai_prompt": ""},
     ],
     "healthcare": [
-        {"label": "Book Appointment", "action_type": "book",  "index": 1, "ai_prompt": ""},
-        {"label": "Get a Quote",      "action_type": "quote", "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",   "action_type": "ask",   "index": 3, "ai_prompt": ""},
+        {"label": "Book Appointment", "action_type": "book",    "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",      "action_type": "quote",   "index": 2, "ai_prompt": ""},
+        {"label": "Learn More",       "action_type": "info",    "index": 3, "ai_prompt": ""},
     ],
     "rental": [
         {"label": "Check Availability", "action_type": "book",  "index": 1, "ai_prompt": ""},
         {"label": "Get a Quote",        "action_type": "quote", "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",     "action_type": "ask",   "index": 3, "ai_prompt": ""},
+        {"label": "View Details",       "action_type": "info",  "index": 3, "ai_prompt": ""},
     ],
     "tech": [
         {"label": "Start Free Trial", "action_type": "subscribe", "index": 1, "ai_prompt": ""},
         {"label": "Book a Demo",      "action_type": "book",      "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",   "action_type": "ask",       "index": 3, "ai_prompt": ""},
+        {"label": "View Pricing",     "action_type": "info",      "index": 3, "ai_prompt": ""},
     ],
     "creator": [
         {"label": "Subscribe / Buy",  "action_type": "subscribe", "index": 1, "ai_prompt": ""},
-        {"label": "Learn More",       "action_type": "info",      "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",   "action_type": "ask",       "index": 3, "ai_prompt": ""},
+        {"label": "Get a Quote",      "action_type": "quote",     "index": 2, "ai_prompt": ""},
+        {"label": "Learn More",       "action_type": "info",      "index": 3, "ai_prompt": ""},
     ],
     "services": [
-        {"label": "Book Now",        "action_type": "book",  "index": 1, "ai_prompt": ""},
-        {"label": "Get a Quote",     "action_type": "quote", "index": 2, "ai_prompt": ""},
-        {"label": "Ask a Question",  "action_type": "ask",   "index": 3, "ai_prompt": ""},
+        {"label": "Book Now",         "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",      "action_type": "quote", "index": 2, "ai_prompt": ""},
+        {"label": "Learn More",       "action_type": "info",  "index": 3, "ai_prompt": ""},
     ],
 }
 
