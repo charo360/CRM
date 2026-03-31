@@ -9724,20 +9724,9 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "party_size_go_back"}
-                            elif _fj_rp_action == "tangent":
-                                await _fj_rp_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_rp_result.get("reply") or "Hey! 😊 How many people will be dining? 👥",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "party_size_tangent"}
-                            elif _fj_rp_action == "unclear":
-                                await _fj_rp_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_rp_result.get("reply") or "How many people will be joining? (e.g. reply *2* for 2 people) 👥",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "party_size_unclear"}
+                            elif _fj_rp_action in ("tangent", "unclear"):
+                                # Fall through to the AI agent pipeline for a natural response
+                                pass
                             if _fj_rp_result.get("extracted_value"):
                                 body = _fj_rp_result["extracted_value"]
                         except Exception as _fj_rp_err:
@@ -9752,35 +9741,31 @@ async def evolution_webhook(request: Request):
                         except Exception:
                             pass
                         
-                        ws = get_whatsapp_service(db)
                         if not _party_size:
+                            # Not a number — fall through to AI agent for a natural response
+                            pass
+                        else:
+                            ws = get_whatsapp_service(db)
+                            # Ask for special requests
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "restaurant_party_size": _party_size,
+                                    "action_context": "restaurant_requests_input",
+                                    "updated_at": datetime.utcnow()
+                                }}
+                            )
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message="Please reply with a valid party size (1-50 people) 👥",
+                                message=(
+                                    f"✅ Party size: *{_party_size} {'person' if _party_size == 1 else 'people'}*\n\n"
+                                    f"📝 *Any special requests?*\n"
+                                    f"_e.g. window seat, high chair, dietary restrictions_\n\n"
+                                    f"Reply *NONE* if no special requests"
+                                ),
                                 customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "restaurant_party_invalid"}
-                        
-                        # Ask for special requests
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "restaurant_party_size": _party_size,
-                                "action_context": "restaurant_requests_input",
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=(
-                                f"✅ Party size: *{_party_size} {'person' if _party_size == 1 else 'people'}*\n\n"
-                                f"📝 *Any special requests?*\n"
-                                f"_e.g. window seat, high chair, dietary restrictions_\n\n"
-                                f"Reply *NONE* if no special requests"
-                            ),
-                            customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "restaurant_party_size_input"}
+                            return {"status": "ok", "handled_by": "restaurant_party_size_input"}
 
                 # RESTAURANT SPECIAL REQUESTS HANDLER
                 if not button_action and not from_me and body:
@@ -9790,8 +9775,38 @@ async def evolution_webhook(request: Request):
                     })
                     if _rest_req_state:
                         _req_body = body.strip()
+                        # ── FlowJudge: detect cancel / tangent before saving as special request ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_rreq
+                            _fj_rreq = _get_fj_rreq()
+                            _fj_rreq_result = await _fj_rreq.understand(
+                                message=body,
+                                current_step="waiting for special requests or NONE",
+                                waiting_for="any special requests for the reservation, or NONE if none",
+                                pending_state=_rest_req_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_rreq_action = _fj_rreq_result.get("action", "continue")
+                            _fj_rreq_ws = get_whatsapp_service(db)
+                            if _fj_rreq_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _rest_req_state["_id"]})
+                                await _fj_rreq_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rreq_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "restaurant_requests_cancelled"}
+                            elif _fj_rreq_action in ("tangent", "unclear"):
+                                # Fall through to AI agent for a natural response
+                                pass
+                            elif _fj_rreq_result.get("extracted_value"):
+                                _req_body = _fj_rreq_result["extracted_value"]
+                        except Exception as _fj_rreq_err:
+                            logging.warning(f"[FlowJudge/restaurant_requests] {_fj_rreq_err}")
+
                         _special_requests = "" if _req_body.lower() in ("none", "no", "nope", "nothing") else _req_body
-                        
+
                         # Show booking summary
                         _rest_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         _rest_svc_name = _rest_req_state.get("booking_service_name", "")
@@ -9930,34 +9945,30 @@ async def evolution_webhook(request: Request):
                         except Exception:
                             _parsed_deadline = None
                         
-                        ws = get_whatsapp_service(db)
                         if not _parsed_deadline or _parsed_deadline < _today_cr:
+                            # Couldn't parse a deadline — fall through to AI agent for a natural response
+                            pass
+                        else:
+                            ws = get_whatsapp_service(db)
+                            # Ask for budget
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "creator_deadline": str(_parsed_deadline),
+                                    "action_context": "creator_budget_input",
+                                    "updated_at": datetime.utcnow()
+                                }}
+                            )
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message="I didn't catch that deadline. Please reply with a date like *in 3 days*, *next Friday*, or *March 20* 📅",
+                                message=(
+                                    f"✅ Deadline: *{_parsed_deadline.strftime('%A %d %B %Y')}*\n\n"
+                                    f"💰 *What's your budget?*\n"
+                                    f"_Reply with an amount or *FLEXIBLE* if negotiable_"
+                                ),
                                 customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "creator_timeline_invalid"}
-                        
-                        # Ask for budget
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "creator_deadline": str(_parsed_deadline),
-                                "action_context": "creator_budget_input",
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=(
-                                f"✅ Deadline: *{_parsed_deadline.strftime('%A %d %B %Y')}*\n\n"
-                                f"💰 *What's your budget?*\n"
-                                f"_Reply with an amount or *FLEXIBLE* if negotiable_"
-                            ),
-                            customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "creator_timeline_input"}
+                            return {"status": "ok", "handled_by": "creator_timeline_input"}
 
                 # CREATOR BUDGET HANDLER
                 if not button_action and not from_me and body:
@@ -9967,10 +9978,39 @@ async def evolution_webhook(request: Request):
                     })
                     if _cr_budget_state:
                         _budget_body = body.strip()
+                        # ── FlowJudge: detect cancel / tangent before saving budget ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_cbdg
+                            _fj_cbdg = _get_fj_cbdg()
+                            _fj_cbdg_result = await _fj_cbdg.understand(
+                                message=body,
+                                current_step="waiting for project budget",
+                                waiting_for="a budget amount or FLEXIBLE",
+                                pending_state=_cr_budget_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_cbdg_action = _fj_cbdg_result.get("action", "continue")
+                            _fj_cbdg_ws = get_whatsapp_service(db)
+                            if _fj_cbdg_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _cr_budget_state["_id"]})
+                                await _fj_cbdg_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cbdg_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_budget_cancelled"}
+                            elif _fj_cbdg_action in ("tangent", "unclear"):
+                                pass  # fall through to AI agent
+                            elif _fj_cbdg_result.get("extracted_value"):
+                                _budget_body = _fj_cbdg_result["extracted_value"]
+                        except Exception as _fj_cbdg_err:
+                            logging.warning(f"[FlowJudge/creator_budget] {_fj_cbdg_err}")
+
                         _budget_lower = _budget_body.lower()
                         _budget_amount = None
                         _budget_text = _budget_body
-                        
+
                         if _budget_lower in ("flexible", "negotiable", "open", "tbd"):
                             _budget_text = "Flexible/Negotiable"
                         else:
@@ -9981,29 +10021,32 @@ async def evolution_webhook(request: Request):
                                     _budget_amount = int(_num_match.group().replace(",", ""))
                             except Exception:
                                 pass
-                        
-                        # Ask for project details
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "creator_budget": _budget_text,
-                                "creator_budget_amount": _budget_amount,
-                                "action_context": "creator_details_input",
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        
-                        ws = get_whatsapp_service(db)
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=(
-                                f"✅ Budget: *{_budget_text}*\n\n"
-                                f"📝 *Tell me about your project*\n"
-                                f"_What do you need? Include any specific requirements, deliverables, or details_"
-                            ),
-                            customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "creator_budget_input"}
+
+                        if not _budget_amount and _budget_text == _budget_body and _budget_lower not in ("flexible", "negotiable", "open", "tbd"):
+                            # No number and not a recognized keyword — fall through to AI agent
+                            pass
+                        else:
+                            ws = get_whatsapp_service(db)
+                            # Ask for project details
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "creator_budget": _budget_text,
+                                    "creator_budget_amount": _budget_amount,
+                                    "action_context": "creator_details_input",
+                                    "updated_at": datetime.utcnow()
+                                }}
+                            )
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    f"✅ Budget: *{_budget_text}*\n\n"
+                                    f"📝 *Tell me about your project*\n"
+                                    f"_What do you need? Include any specific requirements, deliverables, or details_"
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "creator_budget_input"}
 
                 # CREATOR PROJECT DETAILS HANDLER
                 if not button_action and not from_me and body:
@@ -10013,7 +10056,35 @@ async def evolution_webhook(request: Request):
                     })
                     if _cr_details_state:
                         _details_body = body.strip()
-                        
+                        # ── FlowJudge: detect cancel / tangent before saving project details ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_cdet
+                            _fj_cdet = _get_fj_cdet()
+                            _fj_cdet_result = await _fj_cdet.understand(
+                                message=body,
+                                current_step="waiting for project details/description",
+                                waiting_for="a description of the project, requirements, or deliverables",
+                                pending_state=_cr_details_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_cdet_action = _fj_cdet_result.get("action", "continue")
+                            _fj_cdet_ws = get_whatsapp_service(db)
+                            if _fj_cdet_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _cr_details_state["_id"]})
+                                await _fj_cdet_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cdet_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_details_cancelled"}
+                            elif _fj_cdet_action in ("tangent", "unclear"):
+                                pass  # fall through to AI agent
+                            elif _fj_cdet_result.get("extracted_value"):
+                                _details_body = _fj_cdet_result["extracted_value"]
+                        except Exception as _fj_cdet_err:
+                            logging.warning(f"[FlowJudge/creator_details] {_fj_cdet_err}")
+
                         # Show booking summary
                         _cr_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         _cr_svc_name = _cr_details_state.get("booking_service_name", "")

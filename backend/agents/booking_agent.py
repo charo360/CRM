@@ -396,6 +396,64 @@ class BookingAgent(BaseAgent):
                         step_hint=f"They have a pending booking for *{_svc_name}* on *{_bk_date}* at *{_bk_time}* awaiting confirmation. After answering their question, remind them to reply YES to confirm or NO to cancel.",
                     )
 
+                elif _ctx == "restaurant_party_size_input":
+                    _svc_name = pending_doc.get("booking_service_name", "your reservation")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    _bk_time = pending_doc.get("booking_time", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="restaurant_party_size_input",
+                        step_hint=f"They're booking *{_svc_name}* on *{_bk_date}* at *{_bk_time}* and you need to know how many people. After answering their question, naturally ask for the party size.",
+                    )
+
+                elif _ctx == "restaurant_requests_input":
+                    _svc_name = pending_doc.get("booking_service_name", "your reservation")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    _bk_time = pending_doc.get("booking_time", "")
+                    _party = pending_doc.get("restaurant_party_size", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="restaurant_requests_input",
+                        step_hint=f"They're booking *{_svc_name}* for {_party} people on *{_bk_date}* at *{_bk_time}*. After answering their question, ask if they have any special requests (or reply NONE if not).",
+                    )
+
+                elif _ctx == "creator_timeline_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the project")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="creator_timeline_input",
+                        step_hint=f"You need a deadline/timeline for *{_svc_name}*. After answering their question, naturally ask when they need it completed.",
+                    )
+
+                elif _ctx == "creator_budget_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the project")
+                    _deadline = pending_doc.get("creator_deadline", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="creator_budget_input",
+                        step_hint=f"You need their budget for *{_svc_name}* (deadline: {_deadline}). After answering their question, naturally ask what their budget is or if it's flexible.",
+                    )
+
+                elif _ctx == "creator_details_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the project")
+                    _deadline = pending_doc.get("creator_deadline", "")
+                    _budget = pending_doc.get("creator_budget", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="creator_details_input",
+                        step_hint=f"You need project details for *{_svc_name}* (deadline: {_deadline}, budget: {_budget}). After answering their question, ask them to describe what they need.",
+                    )
+
         except Exception as e:
             logger.warning(f"[BookingAgent] Error fetching pending_doc: {e}")
 
