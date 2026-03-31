@@ -1142,7 +1142,8 @@ class WhatsAppService:
         user_id: str,
         to_number: str,
         product: Dict[str, Any],
-        send_buttons: bool = True
+        send_buttons: bool = True,
+        cart_context: Optional[Dict] = None,
     ) -> Dict:
         """Send product image with caption then interactive buttons using authenticated client"""
         user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
@@ -1227,7 +1228,16 @@ class WhatsAppService:
             # Add hint that 0 = view all images (mirrors catalog_select UX)
             _has_images = bool(all_imgs)
             _img_hint = "\n0\ufe0f\u20e3  View all images" if _has_images else ""
-            actions_text = f"*What would you like to do?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
+            if cart_context and cart_context.get("item_count", 0) > 0:
+                _cc = cart_context
+                _cart_currency = _cc.get("currency", "")
+                _cart_count = _cc.get("item_count", 0)
+                _cart_total = _cc.get("total", 0)
+                _item_word = "item" if _cart_count == 1 else "items"
+                _cart_line = f"🛒 *Your cart: {_cart_count} {_item_word}* — {_cart_currency} {_cart_total:,.0f}\n\n"
+                actions_text = f"{_cart_line}*What would you like to add to your cart?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
+            else:
+                actions_text = f"*What would you like to do?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
             
             await self.send_message(
                 user_id=user_id,

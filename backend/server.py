@@ -7692,11 +7692,23 @@ async def evolution_webhook(request: Request):
                                             _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
                                             if _full_p:
                                                 ws = get_whatsapp_service(db)
+                                                # Check for active cart so showcase can show context-aware prompt
+                                                _active_cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
+                                                _cart_items = _active_cart.get("items", []) if _active_cart else []
+                                                _cart_ctx = None
+                                                if _cart_items:
+                                                    _cart_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                                    _cart_ctx = {
+                                                        "item_count": len(_cart_items),
+                                                        "total": sum(i.get("price", 0) * i.get("quantity", 1) for i in _cart_items),
+                                                        "currency": _cart_currency,
+                                                    }
                                                 await ws.send_product_showcase(
                                                     user_id=user["_id"],
                                                     to_number=from_number,
                                                     product=_full_p,
                                                     send_buttons=True,
+                                                    cart_context=_cart_ctx,
                                                 )
                                                 # Switch context to product actions so next 1/2/3 = order/cart/ask
                                                 await db.pending_catalogs.update_one(
@@ -10632,7 +10644,25 @@ async def evolution_webhook(request: Request):
                             ).sort("name", 1).to_list(100)
                             ws = get_whatsapp_service(db)
                             if _all_products:
-                                _header = "Sure! Let's get back to the catalog. 😊" if button_action == "back" else "Great! Continuing your shopping... 🛍️"
+                                if button_action == "back":
+                                    _header = "Sure! Let's get back to the catalog. 😊"
+                                else:
+                                    # Build a cart-aware header so the customer knows what's in their cart
+                                    _cont_cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
+                                    _cont_items = _cont_cart.get("items", []) if _cont_cart else []
+                                    if _cont_items:
+                                        _cont_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                        _cont_total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _cont_items)
+                                        _cont_count = len(_cont_items)
+                                        _item_word = "item" if _cont_count == 1 else "items"
+                                        _cart_summary = "\n".join(f"  • {i['product_name']}" for i in _cont_items)
+                                        _header = (
+                                            f"🛒 *Your cart ({_cont_count} {_item_word}) — {_cont_currency} {_cont_total:,.0f}*\n"
+                                            f"{_cart_summary}\n\n"
+                                            f"What else would you like to add? 👇"
+                                        )
+                                    else:
+                                        _header = "Great! What would you like to add? 🛍️"
                                 _currency_cont = user.get("settings", {}).get("currency", "KES")
                                 PAGE_SIZE = 8
                                 _first_page = _all_products[:PAGE_SIZE]
