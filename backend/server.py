@@ -372,6 +372,29 @@ app = FastAPI(title="WhatsApp CRM")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
+# ── Webhook deduplication ─────────────────────────────────────────────────────
+# Evolution API runs in a cluster; every webhook is delivered by N pods in
+# parallel (typically 3). We deduplicate by a fingerprint so only the first
+# delivery is processed and the rest are silently dropped.
+import threading as _threading
+_webhook_seen: dict = {}          # fingerprint → expiry float (epoch seconds)
+_webhook_seen_lock = _threading.Lock()
+
+def _webhook_is_duplicate(fingerprint: str, ttl: float = 10.0) -> bool:
+    """Return True if this fingerprint was seen within the last `ttl` seconds."""
+    import time as _time
+    now = _time.monotonic()
+    with _webhook_seen_lock:
+        # Purge expired entries (keep dict small)
+        expired = [k for k, v in _webhook_seen.items() if v < now]
+        for k in expired:
+            del _webhook_seen[k]
+        if fingerprint in _webhook_seen:
+            return True
+        _webhook_seen[fingerprint] = now + ttl
+        return False
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Configure CORS — use ALLOWED_ORIGINS env var in production (comma-separated)
 _allowed_origins = os.environ.get('ALLOWED_ORIGINS', '*')
 _origins_list = [o.strip() for o in _allowed_origins.split(',')] if _allowed_origins != '*' else ["*"]
@@ -7078,15 +7101,37 @@ async def evolution_webhook(request: Request):
         raw_event = payload.get("event", "")
         instance_name = payload.get("instance", "")
         data = payload.get("data", payload)
-        
+
         # Normalize event name: Evolution API may send "messages.update" or "MESSAGES_UPDATE"
         event = raw_event.lower().replace("_", ".")
-        
+
+        # ── Cluster deduplication ────────────────────────────────────────────
+        # Evolution API runs as multiple pods; each webhook is delivered N times
+        # in parallel.  Build a fingerprint and drop duplicates within 10 s.
+        import time as _time, hashlib as _hashlib, json as _json
+        if event == "messages.upsert":
+            # Deduplicate by message ID (most stable key)
+            _msg_data = data.get("data", data) if isinstance(data, dict) else {}
+            if isinstance(_msg_data, list):
+                _msg_data = _msg_data[0] if _msg_data else {}
+            _msg_id = (_msg_data.get("key") or {}).get("id") or ""
+            _fp = f"msg:{instance_name}:{_msg_id}" if _msg_id else ""
+        elif event == "connection.update":
+            # Deduplicate by state + 2-second time bucket (state rarely changes twice in 2s)
+            _state = data.get("state") or data.get("instance", {}).get("state", "")
+            _bucket = int(_time.time() / 2)
+            _fp = f"conn:{instance_name}:{_state}:{_bucket}"
+        else:
+            _fp = ""
+
+        if _fp and _webhook_is_duplicate(_fp):
+            return {"status": "ok"}  # silent drop — another pod is handling this
+        # ────────────────────────────────────────────────────────────────────
+
         logging.info(f"Evolution webhook: raw_event={raw_event!r}, normalized={event!r}, instance={instance_name}")
-        
-        
+
         whatsapp_service = get_whatsapp_service(db)
-        
+
         # Handle connection status changes
         if event == "connection.update":
             await whatsapp_service.handle_connection_update(instance_name, data)
