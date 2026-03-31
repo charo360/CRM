@@ -514,13 +514,23 @@ class AIMessageDrafter:
         if context.get('conversation_log'):
             conversation_history = "\n".join(context['conversation_log'][-12:])
 
-        is_ongoing = context.get('conversation_log') and len(context['conversation_log']) > 2
+        is_ongoing = bool(context.get('conversation_log') and len(context['conversation_log']) > 2)
 
         # Anti-repetition: block same opener as last outgoing message
         repetition_block = ""
         if context.get('last_outgoing_message'):
             first_words = ' '.join(context['last_outgoing_message'].split()[:4])
-            repetition_block = f'\nDon\'t start with "{first_words}" — open differently.'
+            repetition_block = f'\nAlso do NOT start with "{first_words}" — vary your opener.'
+
+        # Hard no-greeting rule for ongoing conversations
+        greeting_rule = ""
+        if is_ongoing:
+            greeting_rule = (
+                "\n⛔ NO GREETING. The conversation is already in progress. "
+                "NEVER open with: Hey, Hi, Hello, Hey there, Habari, Mambo, Hujambo, "
+                "Good morning, Good afternoon, Thanks for reaching out, or any other opener. "
+                "Go straight to the point — pretend you're already mid-conversation."
+            )
 
         # Customer notes hint
         notes_hint = f"\nNote about them: {context['notes'][:120]}" if context.get('notes') else ""
@@ -530,21 +540,19 @@ class AIMessageDrafter:
 Chat:
 {conversation_history}
 
-Read the whole chat above. Understand what's going on between you two. Then reply to their last message like a real person would — naturally, briefly, on-point.
+Read the whole conversation above. Understand what's going on. Then reply to their last message like a real person texting — natural, brief, on-point.
 
-How to reply:
-- Match their vibe. If they're casual, be casual. If they're serious, match that.
-- Match their language exactly. If they wrote in Swahili, reply in Swahili. If they mixed (Sheng, Pidgin, code-switch), do the same. Never translate or repeat in two languages.
-- If the chat is already going ({is_ongoing}), skip any greeting — just continue naturally.
-- If it's a simple message ("ok", "sure", "thanks"), give a simple reply. Don't over-explain.
-- If they asked a question, answer it directly. Don't stall, don't say "let me check" if you already have the answer above.
-- 1-3 sentences max. Never pad. Never corporate speak.
-- No banned phrases: "Absolutely", "Certainly", "Of course", "Great choice", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for reaching out", "As per", "Kindly note", "Hope this finds you well". These sound like a bot.
-- Emojis only when they genuinely fit. Never: 😊😇🙏✨💯 — bot emojis.
-- Only use facts you actually have. Never invent prices, dates, or promises.
-- If something genuinely needs human attention (complaint, custom request, something you can't answer), start with [NEEDS_HUMAN] then give a natural holding reply.{repetition_block}
+Rules:
+- Match their energy and language exactly. Swahili → Swahili. Sheng → Sheng. Mixed → mix the same way. Never translate.
+- Simple message = simple reply. "ok", "thanks", "sure" gets a one-liner back, not a paragraph.
+- Answer questions directly from the info you have. Never say "let me check" when the answer is right there.
+- 1-3 sentences. No padding. No corporate speak.
+- Never use: "Absolutely", "Certainly", "Of course", "Great choice", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for reaching out", "As per", "Kindly note", "Hope this finds you well" — all bot phrases.
+- Emojis only when they genuinely fit. Never: 😊😇🙏✨💯
+- Only use facts you actually know. Never invent prices, dates, stock, or promises.
+- If something genuinely needs a real person (complaint, custom request, unanswerable question), start with [NEEDS_HUMAN] then give a natural holding reply.{greeting_rule}{repetition_block}
 
-Output ONLY the reply text. Nothing else."""
+Output ONLY the reply. Nothing else."""
 
         return prompt
 
