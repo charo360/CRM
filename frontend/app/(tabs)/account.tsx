@@ -431,7 +431,6 @@ export default function AccountScreen() {
 
   const handleSubscriptionSuccess = async () => {
     try {
-      await refreshUser();
       await fetchData();
     } catch (error) {
       console.error('Error refreshing after subscription:', error);
@@ -599,6 +598,8 @@ export default function AccountScreen() {
                     ? 'WhatsApp was opened on another device and replaced this connection. Your bot is not responding to messages.'
                     : waDisconnectReason === 'logged_out'
                     ? 'Your WhatsApp session was logged out. You need to reconnect to resume your bot.'
+                    : waDisconnectReason === 'reconnect_timeout'
+                    ? 'WhatsApp failed to reconnect after 60 seconds. Tap below to re-link your number.'
                     : 'Your WhatsApp connection dropped. Your bot is not responding to messages.'}
                 </Text>
                 <TouchableOpacity

@@ -486,6 +486,7 @@ class WhatsAppService:
 
                     disconnect_reason = wa.get("disconnect_reason") if not is_open else None
                     disconnected_at = wa.get("disconnected_at").isoformat() if (not is_open and wa.get("disconnected_at")) else None
+                    reconnecting_since = wa.get("reconnecting_since")
                     return {
                         "connected": is_open,
                         "status": new_status,
@@ -493,6 +494,7 @@ class WhatsAppService:
                         "instance_name": instance_name,
                         "disconnect_reason": disconnect_reason,
                         "disconnected_at": disconnected_at,
+                        "reconnecting": bool(reconnecting_since and is_open),
                     }
                 else:
                     return {"connected": False, "status": "unknown", "number": wa.get("number"),
@@ -1517,6 +1519,9 @@ class WhatsAppService:
             logger.debug(f"No user found for instance {instance_name} — ignoring")
             return
 
+        # Always log the state so we can see what Evolution is actually reporting
+        logger.info(f"connection.update: instance={instance_name}, state={state!r}, user={user['_id']}")
+
         if state == "open":
             await self.db.users.update_one(
                 {"_id": user["_id"]},
@@ -1525,9 +1530,11 @@ class WhatsAppService:
                     "whatsapp.connected_at": datetime.utcnow(),
                     "whatsapp.disconnect_reason": None,
                     "whatsapp.disconnected_at": None,
+                    "whatsapp.reconnecting_since": None,
                 }}
             )
-            logger.info(f"Instance {instance_name} connected for user {user['_id']}")
+            logger.info(f"Instance {instance_name} → CONNECTED for user {user['_id']}")
+
         elif state in ("close", "refused"):
             # Detect specific disconnect reasons from Evolution API payload
             # "conflict" means WhatsApp was opened on another device and kicked us out
@@ -1551,9 +1558,41 @@ class WhatsAppService:
                     "whatsapp.status": "disconnected",
                     "whatsapp.disconnect_reason": disconnect_reason,
                     "whatsapp.disconnected_at": datetime.utcnow(),
+                    "whatsapp.reconnecting_since": None,
                 }}
             )
-            logger.warning(f"Instance {instance_name} disconnected ({disconnect_reason}) for user {user['_id']}")
+            logger.warning(f"Instance {instance_name} → DISCONNECTED ({disconnect_reason}) for user {user['_id']}")
+
+        elif state == "connecting":
+            # Evolution is in a reconnect loop.
+            # Set reconnecting_since only if not already set, so we can measure how long it takes.
+            wa_doc = (await self.db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1}) or {}).get("whatsapp", {})
+            reconnecting_since = wa_doc.get("reconnecting_since")
+            now = datetime.utcnow()
+
+            if not reconnecting_since:
+                # First "connecting" event — record when the loop started
+                await self.db.users.update_one(
+                    {"_id": user["_id"]},
+                    {"$set": {"whatsapp.reconnecting_since": now}}
+                )
+                logger.info(f"Instance {instance_name} → RECONNECTING (loop started) for user {user['_id']}")
+            else:
+                # Already in a loop — check how long it's been
+                elapsed = (now - reconnecting_since).total_seconds()
+                logger.info(f"Instance {instance_name} → still reconnecting ({elapsed:.0f}s) for user {user['_id']}")
+                if elapsed > 60:
+                    # Stuck for >60s — mark as disconnected so the UI shows the banner
+                    await self.db.users.update_one(
+                        {"_id": user["_id"]},
+                        {"$set": {
+                            "whatsapp.status": "disconnected",
+                            "whatsapp.disconnect_reason": "reconnect_timeout",
+                            "whatsapp.disconnected_at": now,
+                            "whatsapp.reconnecting_since": None,
+                        }}
+                    )
+                    logger.warning(f"Instance {instance_name} → DISCONNECTED (reconnect timeout >60s) for user {user['_id']}")
 
     async def handle_incoming_message(self, instance_name: str, data: Dict):
         """Handle messages.upsert webhook from Evolution API.
