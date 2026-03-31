@@ -534,6 +534,22 @@ export default function BusinessKnowledgeModal({
                             <Text style={styles.hint}>
                                 {isCreator
                                     ? 'e.g. "I\'m a lifestyle creator based in Nairobi, I create content on fashion, travel and daily life."'
+                                    : isFitness
+                                    ? 'e.g. "We\'re a fitness studio in Karen offering HIIT, yoga and pilates classes for all levels."'
+                                    : isHealthcare
+                                    ? 'e.g. "We\'re a family clinic offering GP, dental and physiotherapy services in Westlands."'
+                                    : isRestaurant
+                                    ? 'e.g. "We serve authentic Kenyan cuisine — famous for our nyama choma and fresh juices."'
+                                    : isSalon
+                                    ? 'e.g. "We\'re a natural hair salon specializing in braids, locs and protective styles."'
+                                    : isRetail
+                                    ? 'e.g. "We sell handmade jewellery and accessories. We specialize in custom orders."'
+                                    : isRental
+                                    ? 'e.g. "We offer a fully-furnished 2BR Airbnb in Westlands with pool and gym access."'
+                                    : isTech
+                                    ? 'e.g. "We build cloud accounting software that automates invoicing and VAT filing for SMEs."'
+                                    : isGenericService
+                                    ? 'e.g. "We provide professional plumbing and electrical services across Nairobi — fast, reliable, affordable."'
                                     : 'e.g. "We sell fresh cakes and pastries. We specialize in custom birthday cakes."'}
                             </Text>
                             <TextInput
@@ -1111,31 +1127,47 @@ export default function BusinessKnowledgeModal({
                                         <Ionicons name="list-outline" size={18} color="#25D366" />
                                         <Text style={styles.label}>Services & Pricing *</Text>
                                     </View>
-                                    <Text style={styles.hint}>Add each service with its price and duration</Text>
+                                    <Text style={styles.hint}>Add each service with its price and estimated duration</Text>
                                     <ListField items={productItems} onUpdate={setProductItems} placeholder="Service - price - duration" icon="timer-outline" />
                                 </View>
                                 <View style={styles.field}>
                                     <View style={styles.sectionHeader}>
-                                        <Ionicons name="people-outline" size={18} color="#25D366" />
-                                        <Text style={styles.label}>Team / Staff</Text>
+                                        <Ionicons name="location-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Service Area *</Text>
                                     </View>
-                                    <Text style={styles.hint}>e.g. "Maria - plumbing specialist · John - electrician"</Text>
-                                    <TextInput style={styles.input} placeholder="Who are your team members and their specialties?" placeholderTextColor="#555" value={knowledge.staff_info} onChangeText={t => setKnowledge({...knowledge, staff_info: t})} multiline numberOfLines={2} />
+                                    <Text style={styles.hint}>e.g. "We cover Nairobi and surroundings within 20km · Travel fee applies outside CBD"</Text>
+                                    <TextInput style={styles.input} placeholder="Where do you provide services?" placeholderTextColor="#555" value={knowledge.delivery_info} onChangeText={t => setKnowledge({...knowledge, delivery_info: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="people-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>Team / Specialists</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "James - senior plumber (10 yrs exp) · Grace - electrician, solar specialist"</Text>
+                                    <TextInput style={styles.input} placeholder="Who does the work and their specialties?" placeholderTextColor="#555" value={knowledge.staff_info} onChangeText={t => setKnowledge({...knowledge, staff_info: t})} multiline numberOfLines={2} />
                                 </View>
                                 <View style={styles.field}>
                                     <View style={styles.sectionHeader}>
                                         <Ionicons name="calendar-outline" size={18} color="#25D366" />
-                                        <Text style={styles.label}>Booking Process</Text>
+                                        <Text style={styles.label}>Booking Process *</Text>
                                     </View>
-                                    <Text style={styles.hint}>e.g. "Book via WhatsApp 24hrs in advance. We confirm within 1 hour."</Text>
-                                    <TextInput style={styles.input} placeholder="How do clients book?" placeholderTextColor="#555" value={knowledge.booking_process} onChangeText={t => setKnowledge({...knowledge, booking_process: t})} multiline numberOfLines={2} />
+                                    <Text style={styles.hint}>e.g. "Book via WhatsApp · We confirm within 1 hour · Free quote given before any work starts"</Text>
+                                    <TextInput style={styles.input} placeholder="How do clients book and what happens next?" placeholderTextColor="#555" value={knowledge.booking_process} onChangeText={t => setKnowledge({...knowledge, booking_process: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="flash-outline" size={18} color="#FF9800" />
+                                        <Text style={styles.label}>Emergency / Same-Day Service</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Emergency callouts available 24/7 · Extra charge applies after 6pm and weekends"</Text>
+                                    <TextInput style={styles.input} placeholder="Do you offer urgent or same-day service?" placeholderTextColor="#555" value={knowledge.pricing_info} onChangeText={t => setKnowledge({...knowledge, pricing_info: t})} multiline numberOfLines={2} />
                                 </View>
                                 <View style={styles.field}>
                                     <View style={styles.sectionHeader}>
                                         <Ionicons name="close-circle-outline" size={18} color="#FF9800" />
                                         <Text style={styles.label}>Cancellation Policy</Text>
                                     </View>
-                                    <Text style={styles.hint}>e.g. "Cancel at least 24hrs before. Late cancellations charged 50%."</Text>
+                                    <Text style={styles.hint}>e.g. "Cancel at least 24hrs before · Late cancellations charged 50% of job fee"</Text>
                                     <TextInput style={styles.input} placeholder="Your cancellation & rescheduling policy" placeholderTextColor="#555" value={knowledge.cancellation_policy} onChangeText={t => setKnowledge({...knowledge, cancellation_policy: t})} multiline numberOfLines={2} />
                                 </View>
                             </>
@@ -1143,11 +1175,21 @@ export default function BusinessKnowledgeModal({
 
                         {/* Business Hours */}
                         <View style={styles.field}>
-                            <Text style={styles.label}>{isCreator ? 'Response Hours' : 'Business Hours'}</Text>
+                            <Text style={styles.label}>
+                                {isCreator ? 'Response Hours' : isRestaurant ? 'Opening Hours' : isRental ? 'Check-in Support Hours' : isFitness ? 'Studio Hours' : isHealthcare ? 'Clinic Hours' : 'Business Hours'}
+                            </Text>
                             <Text style={styles.hint}>
                                 {isCreator
                                     ? 'e.g. "I check DMs Mon-Fri 9am-5pm EAT"'
-                                    : 'e.g. "Mon-Sat 8am-6pm, Sunday closed"'}
+                                    : isRestaurant
+                                    ? 'e.g. "Mon-Thu 11am-10pm · Fri-Sat 11am-midnight · Sun 12pm-9pm"'
+                                    : isRental
+                                    ? 'e.g. "Check-in support available 8am-10pm daily · Emergency line 24/7"'
+                                    : isFitness
+                                    ? 'e.g. "Mon-Fri 5:30am-9pm · Sat 7am-5pm · Sun 8am-2pm"'
+                                    : isHealthcare
+                                    ? 'e.g. "Mon-Fri 8am-6pm · Sat 9am-1pm · Closed Sunday"'
+                                    : 'e.g. "Mon-Sat 8am-6pm · Sunday closed"'}
                             </Text>
                             <TextInput
                                 style={styles.input}
@@ -1158,18 +1200,22 @@ export default function BusinessKnowledgeModal({
                             />
                         </View>
 
-                        {/* Delivery - only for restaurant and general, not retail (has own section) or service/creator */}
-                        {(isRestaurant || (!isCreator && !isService && !isRetail && !isRental)) && (
+                        {/* Delivery - restaurant and general only; not for service/creator/retail(has own)/rental/tech */}
+                        {(isRestaurant || (!isCreator && !isService && !isRetail && !isRental && !isTech)) && (
                             <View style={styles.field}>
                                 <View style={styles.sectionHeader}>
                                     <Ionicons name="bicycle-outline" size={18} color="#25D366" />
-                                    <Text style={styles.label}>Delivery Zones</Text>
+                                    <Text style={styles.label}>{isRestaurant ? 'Food Delivery Areas & Costs' : 'Delivery Zones'}</Text>
                                 </View>
-                                <Text style={styles.hint}>Add each delivery area with cost</Text>
+                                <Text style={styles.hint}>
+                                    {isRestaurant
+                                        ? 'e.g. "CBD - KES 150 · Westlands - KES 200 · Karen - KES 350"'
+                                        : 'Add each delivery area with cost'}
+                                </Text>
                                 <ListField
                                     items={deliveryItems}
                                     onUpdate={setDeliveryItems}
-                                    placeholder="Area - delivery cost"
+                                    placeholder={isRestaurant ? 'Area - delivery cost' : 'Area - delivery cost'}
                                     icon="location-outline"
                                 />
                             </View>
@@ -1264,6 +1310,22 @@ export default function BusinessKnowledgeModal({
                             <Text style={styles.hint}>
                                 {isCreator
                                     ? 'e.g. "Do you do gifting collabs? / Do you negotiate rates?"'
+                                    : isFitness
+                                    ? 'e.g. "Do I need to book in advance? / What should I bring? / Can I pause my membership?"'
+                                    : isHealthcare
+                                    ? 'e.g. "Do you accept walk-ins? / How long is a consultation? / Do you accept NHIF?"'
+                                    : isRestaurant
+                                    ? 'e.g. "Can I make a group reservation? / Do you have parking? / Is there a kids menu?"'
+                                    : isSalon
+                                    ? 'e.g. "How far in advance should I book? / Do you do natural hair? / Can I walk in?"'
+                                    : isRetail
+                                    ? 'e.g. "Do you deliver countrywide? / Can I return an item? / How long does delivery take?"'
+                                    : isRental
+                                    ? 'e.g. "Is parking available? / How do I check in? / Is the pool heated?"'
+                                    : isTech
+                                    ? 'e.g. "Is there a free trial? / Do you offer training? / How do I cancel my plan?"'
+                                    : isGenericService
+                                    ? 'e.g. "Do you offer emergency callouts? / How soon can you come? / Do you give free quotes?"'
                                     : 'Add questions customers always ask and your answers'}
                             </Text>
                             <FAQField
@@ -1289,6 +1351,22 @@ export default function BusinessKnowledgeModal({
                             <Text style={styles.hint}>
                                 {isCreator
                                     ? 'e.g. "Q1 bundle: Reel + 5 stories for $500 (limited spots)"'
+                                    : isFitness
+                                    ? 'e.g. "First month 50% off, 2-month deal, refer a friend and get 1 free class"'
+                                    : isHealthcare
+                                    ? 'e.g. "Free BMI check for new patients, 20% off dental cleanings this month"'
+                                    : isRestaurant
+                                    ? 'e.g. "Happy hour 4–7pm 50% off drinks, lunch special KES 600 (main + drink)"'
+                                    : isSalon
+                                    ? 'e.g. "New client 20% off first visit, refer a friend and get a free deep condition"'
+                                    : isRetail
+                                    ? 'e.g. "Buy 2 get 1 free, 15% off orders over KES 5,000, free delivery this week"'
+                                    : isRental
+                                    ? 'e.g. "7-night stay: 15% discount, last-minute weekend deal available now"'
+                                    : isTech
+                                    ? 'e.g. "2 months free on annual plan, free onboarding for teams of 5+"'
+                                    : isGenericService
+                                    ? 'e.g. "10% off first callout, free quote this week, seasonal tune-up special"'
                                     : 'Add active promotions or deals'}
                             </Text>
                             <ListField
