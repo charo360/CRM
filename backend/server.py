@@ -11193,12 +11193,12 @@ async def evolution_webhook(request: Request):
                     _used_month = _usage_doc.get("month", "")
                     _used_count = _usage_doc.get("count", 0) if _used_month == _cur_month else 0
                     if _used_count >= _monthly_quota:
-                        logging.info(f"AI quota reached for user {uid}: {_used_count}/{_monthly_quota} ({_plan})")
+                        logging.info(f"AI quota reached for user {user['_id']}: {_used_count}/{_monthly_quota} ({_plan})")
                         return {"status": "ok", "message": "ai_quota_reached"}
                     # Increment counter atomically (optimistic — before send to prevent race conditions)
                     _new_count = _used_count + 1
                     await db.users.update_one(
-                        {"_id": uid},
+                        {"_id": user["_id"]},
                         {"$set": {"ai_usage.month": _cur_month, "ai_usage.count": _new_count}}
                     )
 
