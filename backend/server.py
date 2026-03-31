@@ -9328,149 +9328,152 @@ async def evolution_webhook(request: Request):
                             _parsed_bk_date = None
 
                         if not _parsed_bk_date or _parsed_bk_date < _today_bk:
-                            # Instead of a hard error, let the AI agent explain why the date was invalid or handle the conversational input.
-                            pass
+                            # Date couldn't be parsed or is in the past — fall through to the AI agent
+                            logging.info(f"[Booking] Date parse failed or past date (raw='{_body_bk}') — skipping time-slot block")
+                            _parsed_bk_date = None  # ensure guard below fires
 
                         # Fetch business hours to validate day + build slots
-                        _bk_biz_id = user.get("business_id", user["_id"])
-                        _bk_user_doc = await db.users.find_one({"_id": _bk_biz_id})
-                        _bk_settings = (_bk_user_doc or {}).get("settings", {})
-                        _bk_biz_hours = _bk_settings.get("business_hours", {})
-                        _bk_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
-                        _bk_day_key = _bk_wd_keys[_parsed_bk_date.weekday()]
-                        _bk_day_hours = _bk_biz_hours.get(_bk_day_key, {})
-                        
-                        # Debug logging for business hours validation
-                        logging.info(f"[Booking] Date={_parsed_bk_date.strftime('%A %Y-%m-%d')}, day_key={_bk_day_key}, day_hours={_bk_day_hours}, closed={_bk_day_hours.get('closed')}")
+                        # Only run if we have a valid future date — otherwise fall through to AI agent
+                        if _parsed_bk_date:
+                            _bk_biz_id = user.get("business_id", user["_id"])
+                            _bk_user_doc = await db.users.find_one({"_id": _bk_biz_id})
+                            _bk_settings = (_bk_user_doc or {}).get("settings", {})
+                            _bk_biz_hours = _bk_settings.get("business_hours", {})
+                            _bk_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
+                            _bk_day_key = _bk_wd_keys[_parsed_bk_date.weekday()]
+                            _bk_day_hours = _bk_biz_hours.get(_bk_day_key, {})
 
-                        if _bk_day_hours.get("closed"):
-                            ws = get_whatsapp_service(db)
-                            _closed_msg = f"Sorry, we're closed on {_parsed_bk_date.strftime('%A %d %B')}. Please choose another date 📅"
+                            # Debug logging for business hours validation
+                            logging.info(f"[Booking] Date={_parsed_bk_date.strftime('%A %Y-%m-%d')}, day_key={_bk_day_key}, day_hours={_bk_day_hours}, closed={_bk_day_hours.get('closed')}")
+
+                            if _bk_day_hours.get("closed"):
+                                ws = get_whatsapp_service(db)
+                                _closed_msg = f"Sorry, we're closed on {_parsed_bk_date.strftime('%A %d %B')}. Please choose another date 📅"
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"last_bot_message": _closed_msg, "updated_at": datetime.utcnow()}}
+                                )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_closed_msg, customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_closed"}
+
+                            _bk_open = _bk_day_hours.get("open", "08:00")
+                            _bk_close = _bk_day_hours.get("close", "17:00")
+
+                            # Get existing bookings for that date and count per time slot
+                            _bk_existing = await db.bookings.find({
+                                "user_id": user["_id"],
+                                "date": str(_parsed_bk_date),
+                                "status": {"$nin": ["cancelled"]}
+                            }).to_list(100)
+                            _bk_slot_counts = {}
+                            for _b in _bk_existing:
+                                _bt = _b.get("time")
+                                if _bt:
+                                    _bk_slot_counts[_bt] = _bk_slot_counts.get(_bt, 0) + 1
+
+                            # Get service capacity (default 1 for backward compatibility)
+                            _bk_capacity = 1
+                            _bk_service_id = _bk_date_state.get("booking_service_id")
+                            if _bk_service_id:
+                                _bk_svc_doc = await db.products.find_one({"_id": _bk_service_id})
+                                if _bk_svc_doc:
+                                    _bk_capacity = _bk_svc_doc.get("capacity", 1)
+
+                            # Build slots using service duration (or default 60 min)
+                            _bk_slot_mins = 60
+                            try:
+                                _raw_dur = _bk_date_state.get("booking_service_duration")
+                                if _raw_dur and int(_raw_dur) >= 15:
+                                    _bk_slot_mins = int(_raw_dur)
+                            except Exception:
+                                pass
+                            try:
+                                _bk_oh, _bk_om = map(int, _bk_open.split(":"))
+                                _bk_ch, _bk_cm = map(int, _bk_close.split(":"))
+                                _bk_cur = _bk_oh * 60 + _bk_om
+                                _bk_end = _bk_ch * 60 + _bk_cm
+                                _bk_avail = []
+                                while _bk_cur + _bk_slot_mins <= _bk_end:
+                                    _t = f"{_bk_cur // 60:02d}:{_bk_cur % 60:02d}"
+                                    _booked_count = _bk_slot_counts.get(_t, 0)
+                                    if _booked_count < _bk_capacity:
+                                        _remaining = _bk_capacity - _booked_count
+                                        _bk_avail.append({"time": _t, "remaining": _remaining})
+                                    _bk_cur += _bk_slot_mins
+                            except Exception:
+                                _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
+
+                            if not _bk_avail:
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"No available slots on {_parsed_bk_date.strftime('%A %d %B')}. Please try another date 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_no_slots"}
+
+                            # ── Paginated time slots: show 5 per page ──
+                            _BK_PAGE_SIZE = 5
+                            _bk_all_slots = [{"time": s["time"], "remaining": s["remaining"]} for s in _bk_avail]
+                            _bk_page_slots = _bk_all_slots[:_BK_PAGE_SIZE]
+                            _bk_has_more = len(_bk_all_slots) > _BK_PAGE_SIZE
+
+                            # Detect time-of-day period of first slot for header
+                            def _bk_slot_period(t):
+                                h = int(t.split(":")[0])
+                                if h < 12: return "Morning"
+                                if h < 17: return "Afternoon"
+                                return "Evening"
+
+                            _bk_date_label = _parsed_bk_date.strftime("%A %d %B")
+                            _bk_period_label = _bk_slot_period(_bk_page_slots[0]["time"])
+                            _bk_slot_lines = [f"🕐 *{_bk_period_label} — {_bk_date_label}:*\n"]
+                            _bk_page_objs = []
+                            for _bk_i, _bk_slot in enumerate(_bk_page_slots, 1):
+                                _bk_time = _bk_slot["time"]
+                                _bk_rem = _bk_slot["remaining"]
+                                if _bk_capacity > 1 and _bk_rem > 1:
+                                    _bk_slot_lines.append(f"{_bk_i}. {_bk_time} ({_bk_rem} spots left)")
+                                elif _bk_capacity > 1 and _bk_rem == 1:
+                                    _bk_slot_lines.append(f"{_bk_i}. {_bk_time} (1 spot left)")
+                                else:
+                                    _bk_slot_lines.append(f"{_bk_i}. {_bk_time}")
+                                _bk_page_objs.append({"index": _bk_i, "time": _bk_time, "remaining": _bk_rem})
+
+                            _bk_nav_hints = ["_Reply with a number to select_"]
+                            if _bk_has_more:
+                                _bk_nav_hints.append('_"next" for more slots_')
+                            # Check if afternoon/evening slots exist
+                            _bk_has_afternoon = any(int(s["time"].split(":")[0]) >= 12 for s in _bk_all_slots)
+                            _bk_has_evening = any(int(s["time"].split(":")[0]) >= 17 for s in _bk_all_slots)
+                            if _bk_has_afternoon and _bk_period_label == "Morning":
+                                _bk_nav_hints.append('_"afternoon" for afternoon slots_')
+                            if _bk_has_evening and _bk_period_label != "Evening":
+                                _bk_nav_hints.append('_"evening" for evening slots_')
+                            _bk_slot_lines.append("\n" + " · ".join(_bk_nav_hints))
+
                             await db.pending_catalogs.update_one(
                                 {"customer_id": customer_id, "user_id": user["_id"]},
-                                {"$set": {"last_bot_message": _closed_msg, "updated_at": datetime.utcnow()}}
+                                {"$set": {
+                                    "action_context": "booking_time_select",
+                                    "booking_date": str(_parsed_bk_date),
+                                    "all_slots": _bk_all_slots,
+                                    "time_slots": _bk_page_objs,
+                                    "time_slots_page": 0,
+                                    "time_slots_period": None,
+                                    "updated_at": datetime.utcnow()
+                                }}
                             )
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=_closed_msg, customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_date_closed"}
-
-                        _bk_open = _bk_day_hours.get("open", "08:00")
-                        _bk_close = _bk_day_hours.get("close", "17:00")
-
-                        # Get existing bookings for that date and count per time slot
-                        _bk_existing = await db.bookings.find({
-                            "user_id": user["_id"],
-                            "date": str(_parsed_bk_date),
-                            "status": {"$nin": ["cancelled"]}
-                        }).to_list(100)
-                        _bk_slot_counts = {}
-                        for _b in _bk_existing:
-                            _bt = _b.get("time")
-                            if _bt:
-                                _bk_slot_counts[_bt] = _bk_slot_counts.get(_bt, 0) + 1
-
-                        # Get service capacity (default 1 for backward compatibility)
-                        _bk_capacity = 1
-                        _bk_service_id = _bk_date_state.get("booking_service_id")
-                        if _bk_service_id:
-                            _bk_svc_doc = await db.products.find_one({"_id": _bk_service_id})
-                            if _bk_svc_doc:
-                                _bk_capacity = _bk_svc_doc.get("capacity", 1)
-
-                        # Build slots using service duration (or default 60 min)
-                        _bk_slot_mins = 60
-                        try:
-                            _raw_dur = _bk_date_state.get("booking_service_duration")
-                            if _raw_dur and int(_raw_dur) >= 15:
-                                _bk_slot_mins = int(_raw_dur)
-                        except Exception:
-                            pass
-                        try:
-                            _bk_oh, _bk_om = map(int, _bk_open.split(":"))
-                            _bk_ch, _bk_cm = map(int, _bk_close.split(":"))
-                            _bk_cur = _bk_oh * 60 + _bk_om
-                            _bk_end = _bk_ch * 60 + _bk_cm
-                            _bk_avail = []
-                            while _bk_cur + _bk_slot_mins <= _bk_end:
-                                _t = f"{_bk_cur // 60:02d}:{_bk_cur % 60:02d}"
-                                _booked_count = _bk_slot_counts.get(_t, 0)
-                                if _booked_count < _bk_capacity:
-                                    _remaining = _bk_capacity - _booked_count
-                                    _bk_avail.append({"time": _t, "remaining": _remaining})
-                                _bk_cur += _bk_slot_mins
-                        except Exception:
-                            _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
-                        
-                        if not _bk_avail:
                             ws = get_whatsapp_service(db)
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message=f"No available slots on {_parsed_bk_date.strftime('%A %d %B')}. Please try another date 📅",
-                                customer_name=customer_name, send_context="booking_flow"
+                                message="\n".join(_bk_slot_lines), customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "booking_date_no_slots"}
-
-                        # ── Paginated time slots: show 5 per page ──
-                        _BK_PAGE_SIZE = 5
-                        _bk_all_slots = [{"time": s["time"], "remaining": s["remaining"]} for s in _bk_avail]
-                        _bk_page_slots = _bk_all_slots[:_BK_PAGE_SIZE]
-                        _bk_has_more = len(_bk_all_slots) > _BK_PAGE_SIZE
-
-                        # Detect time-of-day period of first slot for header
-                        def _bk_slot_period(t):
-                            h = int(t.split(":")[0])
-                            if h < 12: return "Morning"
-                            if h < 17: return "Afternoon"
-                            return "Evening"
-
-                        _bk_date_label = _parsed_bk_date.strftime("%A %d %B")
-                        _bk_period_label = _bk_slot_period(_bk_page_slots[0]["time"])
-                        _bk_slot_lines = [f"🕐 *{_bk_period_label} — {_bk_date_label}:*\n"]
-                        _bk_page_objs = []
-                        for _bk_i, _bk_slot in enumerate(_bk_page_slots, 1):
-                            _bk_time = _bk_slot["time"]
-                            _bk_rem = _bk_slot["remaining"]
-                            if _bk_capacity > 1 and _bk_rem > 1:
-                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} ({_bk_rem} spots left)")
-                            elif _bk_capacity > 1 and _bk_rem == 1:
-                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} (1 spot left)")
-                            else:
-                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time}")
-                            _bk_page_objs.append({"index": _bk_i, "time": _bk_time, "remaining": _bk_rem})
-
-                        _bk_nav_hints = ["_Reply with a number to select_"]
-                        if _bk_has_more:
-                            _bk_nav_hints.append('_"next" for more slots_')
-                        # Check if afternoon/evening slots exist
-                        _bk_has_afternoon = any(int(s["time"].split(":")[0]) >= 12 for s in _bk_all_slots)
-                        _bk_has_evening = any(int(s["time"].split(":")[0]) >= 17 for s in _bk_all_slots)
-                        if _bk_has_afternoon and _bk_period_label == "Morning":
-                            _bk_nav_hints.append('_"afternoon" for afternoon slots_')
-                        if _bk_has_evening and _bk_period_label != "Evening":
-                            _bk_nav_hints.append('_"evening" for evening slots_')
-                        _bk_slot_lines.append("\n" + " · ".join(_bk_nav_hints))
-
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "action_context": "booking_time_select",
-                                "booking_date": str(_parsed_bk_date),
-                                "all_slots": _bk_all_slots,
-                                "time_slots": _bk_page_objs,
-                                "time_slots_page": 0,
-                                "time_slots_period": None,
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        ws = get_whatsapp_service(db)
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message="\n".join(_bk_slot_lines), customer_name=customer_name, send_context="booking_flow"
-                        )
-                        logging.info(f"[Booking] Date={_parsed_bk_date}, total_slots={len(_bk_all_slots)}, page=0, shown={len(_bk_page_slots)} for customer={customer_id}")
-                        return {"status": "ok", "handled_by": "booking_date_input"}
+                            logging.info(f"[Booking] Date={_parsed_bk_date}, total_slots={len(_bk_all_slots)}, page=0, shown={len(_bk_page_slots)} for customer={customer_id}")
+                            return {"status": "ok", "handled_by": "booking_date_input"}
 
                 # TIME SLOT NAVIGATION HANDLER — handles "next", "morning", "afternoon", "evening"
                 # when customer is in booking_time_select state (navigating paginated slots)
