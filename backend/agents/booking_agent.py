@@ -318,7 +318,6 @@ class BookingAgent(BaseAgent):
                 logger.info(f"[BookingAgent] Active action_context detected: {_ctx}")
 
                 if _ctx == "booking_date_input":
-                    # Customer is providing a date — detect it broadly
                     _dates_ent = context.get("entities", {}).get("dates", [])
                     _date_keywords = ("tomorrow", "today", "monday", "tuesday", "wednesday",
                                       "thursday", "friday", "saturday", "sunday", "next",
@@ -328,36 +327,27 @@ class BookingAgent(BaseAgent):
                                       "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
                     _msg_lower = message.lower()
                     _has_date = bool(_dates_ent) or any(k in _msg_lower for k in _date_keywords)
-                    # Also accept anything that looks like a date pattern (digits with separators)
                     import re as _re_bk
                     if not _has_date and _re_bk.search(r'\b\d{1,2}[\/\-\.]\d{1,2}', _msg_lower):
                         _has_date = True
-
-                    # Customer asking about availability — show available slots instead of re-asking for date
-                    _avail_keywords = ("availability", "available", "when", "schedule", "slot", "slots",
-                                       "open", "free", "free slot", "what days", "which days", "options")
-                    _asking_availability = any(k in _msg_lower for k in _avail_keywords)
 
                     if _has_date:
                         return await self._handle_booking_date_received(
                             pending_doc, message, customer_name, language, currency,
                             customer_id, user_id, context
                         )
-                    elif _asking_availability:
-                        # Route to availability handler so they get actual available dates/times
-                        return await self._handle_availability(
-                            services, business_hours, booking_settings, customer_name, language,
-                            currency, message, customer_id, user_id, is_rental
-                        )
                     else:
-                        # Customer in date step but didn't provide a date — gently guide back
-                        context["careful_instruction"] = (
-                            "The customer was asked for a booking date but hasn't provided one yet. "
-                            "Gently remind them to share when they'd like to book (date and time). "
-                            "If they're unsure, let them know they can ask about availability first."
+                        # Customer asked something else mid-booking (price, availability, hours, anything).
+                        # Answer naturally and guide back to the date step — no rigid gate.
+                        _svc_name = pending_doc.get("booking_service_name", "your service")
+                        return await self._handle_off_script(
+                            message=message, customer_name=customer_name, language=language,
+                            business_knowledge=business_knowledge, business_hours=business_hours,
+                            history=history, services=services, currency=currency,
+                            step="booking_date_input", step_hint=f"You already asked them which date they want to book *{_svc_name}*. After answering their question, naturally bring them back to that.",
                         )
+
                 elif _ctx == "rental_dates_input":
-                    # Rental: customer providing new check-in and check-out dates
                     _rdates = self._parse_dates_from_message(message)
                     if len(_rdates) >= 2:
                         return await self._handle_rental_dates_received(
@@ -365,12 +355,20 @@ class BookingAgent(BaseAgent):
                             language, currency, customer_id, user_id
                         )
                     else:
-                        context["careful_instruction"] = (
-                            "The customer is booking a rental and needs to provide BOTH a check-in AND a check-out date. "
-                            "Gently ask them to share both dates, e.g. '15 April to 20 April'."
+                        return await self._handle_off_script(
+                            message=message, customer_name=customer_name, language=language,
+                            business_knowledge=business_knowledge, business_hours=business_hours,
+                            history=history, services=services, currency=currency,
+                            step="rental_dates_input", step_hint="You need both a check-in AND check-out date from them. After answering their question, naturally ask for both dates.",
                         )
+
                 elif _ctx == "booking_service_select" and not PICK_NUMBER_RE.match(message.strip()):
-                    context["careful_instruction"] = "The user is supposed to pick a service from the list, but they are chatting instead. Answer their question or guide them back to the list."
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_service_select", step_hint="They were picking a service from the list. After answering their question, naturally guide them back to choose.",
+                    )
         except Exception as e:
             logger.warning(f"[BookingAgent] Error fetching pending_doc: {e}")
 
@@ -1480,6 +1478,75 @@ class BookingAgent(BaseAgent):
             logger.error(f"[BookingAgent] AI intro error: {e}")
 
         return {"intro": None, "header": fallback_header, "footer": fallback_footer}
+
+    async def _handle_off_script(
+        self, message: str, customer_name: str, language: str,
+        business_knowledge: str, business_hours: str,
+        history, services, currency: str,
+        step: str, step_hint: str,
+    ) -> Dict[str, Any]:
+        """
+        A customer said something off-script during an active booking step
+        (asked about price, hours, availability, anything).
+        Answer their actual question naturally, then bring them back to where they were.
+        Never go silent. Never be robotic.
+        """
+        try:
+            from ai_service import get_drafter
+            ai = get_drafter()
+
+            _bk = (business_knowledge or "")[:600]
+            _hrs = (business_hours or "")[:200]
+            _hist = ""
+            if history:
+                _recent = history[-6:] if len(history) > 6 else history
+                _hist = "\n".join(f"{'Customer' if m.get('role')=='user' else 'You'}: {m.get('content','')}" for m in _recent)
+
+            _svc_list = ""
+            if services:
+                _svc_list = ", ".join(s.get("name","") for s in services[:6])
+
+            prompt = f"""You are a business owner replying on WhatsApp to {customer_name}.
+You're helping them book. Mid-booking, they asked: "{message}"
+
+Business info: {_bk}
+Hours: {_hrs}
+Services/products: {_svc_list}
+Currency: {currency}
+
+Recent chat:
+{_hist}
+
+Instructions:
+- Answer their question directly and honestly. Be natural, brief, warm.
+- {step_hint}
+- Do NOT repeat the full menu or list. Just answer + one soft nudge back.
+- No bullet lists unless the question needs one. No corporate tone.
+- Reply in: {language}
+- 1-3 sentences max unless the question genuinely needs more.
+
+Output only the WhatsApp reply. Nothing else."""
+
+            reply = await ai._call_llm(prompt, model_pref="standard")
+            reply = (reply or "").strip().strip('"').strip()
+            if not reply:
+                raise ValueError("Empty AI reply")
+
+            logger.info(f"[BookingAgent] off-script reply (step={step}): {reply[:80]}")
+            return {
+                "handled": True,
+                "messages": [{"text": reply}],
+                "escalate": False,
+                "context_update": {"state": "ongoing"},
+            }
+        except Exception as e:
+            logger.error(f"[BookingAgent] _handle_off_script error: {e}")
+            # Hard fallback — never go silent
+            return {
+                "handled": True,
+                "messages": [{"text": f"Sorry, I didn't quite catch that — could you let me know what you'd like to book? 😊"}],
+                "escalate": False,
+            }
 
     async def _handle_customer_chat(
         self, message, intent, customer_name, language,
