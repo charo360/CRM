@@ -12361,15 +12361,44 @@ async def evolution_webhook(request: Request):
                         
                         bk = user.get("business_knowledge", {})
                         business_knowledge = "\n".join([f"{k}: {v}" for k, v in bk.items() if v]) if bk else ""
+                        # Always inject currency so AI never uses the wrong one
+                        _ai_currency = (
+                            user.get("currency") or
+                            user_settings.get("currency") or
+                            user.get("settings", {}).get("currency") or
+                            "USD"
+                        )
+                        business_knowledge = f"Currency: {_ai_currency}\n" + business_knowledge
                         
                         log_trace(f"Starting AI generation for {from_number}")
                         
                         _ai_biz_id = user.get("business_id", user["_id"])
-                        user_products = await db.products.find({"user_id": _ai_biz_id}).to_list(50)
+                        # Currency: prefer user doc > settings > fallback
+                        currency = (
+                            user.get("currency") or
+                            user_settings.get("currency") or
+                            user.get("settings", {}).get("currency") or
+                            "USD"
+                        )
+
+                        # Only inject the product catalog when the customer is actually asking
+                        # about products, prices, availability, or ordering — not for simple replies
+                        _body_lower_ai = body.strip().lower()
+                        _catalog_keywords = (
+                            "price", "cost", "how much", "buy", "order", "stock", "available",
+                            "service", "product", "offer", "menu", "catalog", "catalogue",
+                            "what do you", "what can", "what have", "do you have", "do you sell",
+                            "show me", "send me", "list", "booking", "book", "appointment",
+                            "package", "deal", "discount", "rate", "fee", "charge",
+                            # Swahili
+                            "bei", "nini", "niambie", "tuma", "nunua", "oda",
+                        )
+                        _needs_catalog = any(kw in _body_lower_ai for kw in _catalog_keywords)
+
+                        user_products = await db.products.find({"user_id": _ai_biz_id}).to_list(50) if _needs_catalog else []
                         product_catalog_map = {}  # product_id -> image_url
                         product_name_map = {}     # lowercase product name -> {id, image_url, name}
                         if user_products:
-                            currency = user_settings.get("currency", "USD")
                             catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
                             for p in user_products:
                                 stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
@@ -12420,8 +12449,8 @@ async def evolution_webhook(request: Request):
                                 "Example reply: 'Here are the dresses: [SEND_IMAGE:123] [SEND_IMAGE:456]'"
                             )
                             business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
-                        else:
-                            # No products in catalog - tell AI to avoid hallucinating
+                        elif _needs_catalog:
+                            # Customer asked about products but catalog is empty — tell AI not to hallucinate
                             no_products_msg = "\nIMPORTANT: You do not have access to any product information. DO NOT make up product names, prices, descriptions, or inventory. DO NOT pretend specific products exist. If customers ask about specific products or prices, respond naturally based on the conversation context without inventing details. You can discuss general topics, answer questions, and help customers, but never fabricate product information."
                             business_knowledge = (business_knowledge or "") + no_products_msg
                         
