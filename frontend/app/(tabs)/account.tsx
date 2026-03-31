@@ -708,7 +708,15 @@ export default function AccountScreen() {
                 <Text style={{ color: '#8B9DC3', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection...</Text>
                 <TouchableOpacity
                   style={{ marginTop: 14, alignItems: 'center' }}
-                  onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaPhoneInput(''); }}
+                  onPress={async () => {
+                    clearWaTimers();
+                    setWaPairingCode('');
+                    // Delete the stale instance on Evolution API so the next connect starts fresh
+                    try { await whatsappAPI.disconnect(); } catch (_e) { /* ignore — instance may already be gone */ }
+                    setWaConnected(false);
+                    setWaStatus('not_connected');
+                    setWaDisconnectReason(null);
+                  }}
                 >
                   <Text style={{ color: '#8B9DC3', fontSize: 14 }}>Cancel</Text>
                 </TouchableOpacity>
