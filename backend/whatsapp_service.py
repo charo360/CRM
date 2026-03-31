@@ -1512,9 +1512,9 @@ class WhatsAppService:
         """Handle connection.update webhook from Evolution API"""
         state = data.get("state") or data.get("instance", {}).get("state", "")
 
-        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        user = await self.find_user_by_instance(instance_name)
         if not user:
-            logger.warning(f"No user found for instance {instance_name}")
+            logger.debug(f"No user found for instance {instance_name} — ignoring")
             return
 
         if state == "open":
@@ -1560,9 +1560,9 @@ class WhatsAppService:
         Captures BOTH incoming and outgoing messages so AI has full conversation context.
         """
         # Find the business user who owns this instance
-        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        user = await self.find_user_by_instance(instance_name)
         if not user:
-            logger.warning(f"No user found for instance {instance_name}")
+            logger.debug(f"No user found for instance {instance_name} — ignoring")
             return
 
         # Extract message data from Evolution API webhook payload
@@ -1711,10 +1711,10 @@ class WhatsAppService:
           1 = sent (server), 2 = delivered, 3 = read, 4 = played (audio)
         """
         logger.info(f"handle_message_update called, data type={type(data).__name__}")
-        
-        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+
+        user = await self.find_user_by_instance(instance_name)
         if not user:
-            logger.warning(f"No user for instance {instance_name}")
+            logger.debug(f"No user for instance {instance_name} — ignoring")
             return
 
         # data can be a list of updates or a single update
@@ -2015,8 +2015,41 @@ class WhatsAppService:
         return {"updated": updated, "errors": errors}
 
     async def find_user_by_instance(self, instance_name: str) -> Optional[Dict]:
-        """Find user by their Evolution API instance name"""
-        return await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        """Find user by their Evolution API instance name.
+        Falls back to stripping a timestamp suffix (e.g. user_xxx_1774922784 → user_xxx)
+        and auto-deletes the orphaned instance from Evolution so it stops sending webhooks.
+        """
+        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        if user:
+            return user
+
+        # Check if this is a stale force_new instance (base_name_<10-digit-ts>)
+        import re as _re
+        base_name = _re.sub(r'_\d{9,13}$', '', instance_name)
+        if base_name == instance_name:
+            return None  # no suffix to strip
+
+        user = await self.db.users.find_one({"whatsapp.instance_name": base_name})
+        if not user:
+            return None
+
+        # Found via base name — this is an orphaned ghost instance. Delete it silently.
+        logger.info(f"Orphaned instance {instance_name} (base={base_name}) — auto-deleting from Evolution")
+        try:
+            async with httpx.AsyncClient(timeout=10) as _client:
+                await _client.delete(
+                    f"{self.base_url}/instance/logout/{instance_name}",
+                    headers=self._headers(),
+                )
+                await _client.delete(
+                    f"{self.base_url}/instance/delete/{instance_name}",
+                    headers=self._headers(),
+                )
+            logger.info(f"Orphaned instance {instance_name} deleted successfully")
+        except Exception as _e:
+            logger.warning(f"Could not delete orphaned instance {instance_name}: {_e}")
+
+        return None  # Don't process this webhook — it's from the old dead instance
 
     # ============ CONTACT & HISTORY SYNC ============
 
