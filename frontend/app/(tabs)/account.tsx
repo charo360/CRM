@@ -812,14 +812,15 @@ export default function AccountScreen() {
         {/* Business Type */}
         {(() => {
           const BT_OPTIONS = [
-            { id: 'retail',     label: '🛍️ Retail',      desc: 'Physical / online shop' },
-            { id: 'salon',      label: '✂️ Salon',        desc: 'Beauty & hair' },
-            { id: 'services',   label: '🔧 Services',     desc: 'Freelance & trades' },
-            { id: 'fitness',    label: '🏋️ Fitness',      desc: 'Gym & classes' },
-            { id: 'restaurant', label: '🍽️ Restaurant',   desc: 'Food & dining' },
-            { id: 'healthcare', label: '🏥 Healthcare',   desc: 'Clinic & medical' },
-            { id: 'creator',    label: '🎨 Creator',      desc: 'Digital products' },
-            { id: 'rental',     label: '🏠 Rental / Airbnb', desc: 'Properties, cars & equipment' },
+            { id: 'retail',     label: '🛍️ Retail',          desc: 'Physical / online shop' },
+            { id: 'salon',      label: '✂️ Salon',            desc: 'Beauty & hair' },
+            { id: 'services',   label: '🔧 Services',         desc: 'Freelance & trades' },
+            { id: 'fitness',    label: '🏋️ Fitness',          desc: 'Gym & classes' },
+            { id: 'restaurant', label: '🍽️ Restaurant',       desc: 'Food & dining' },
+            { id: 'healthcare', label: '🏥 Healthcare',       desc: 'Clinic & medical' },
+            { id: 'creator',    label: '🎨 Creator',          desc: 'Digital products' },
+            { id: 'rental',     label: '🏠 Rental / Airbnb',  desc: 'Properties, cars & equipment' },
+            { id: 'tech',       label: '💻 Tech / SaaS',      desc: 'Software, fintech & agencies' },
           ];
           const selected = BT_OPTIONS.find(b => b.id === businessType) || BT_OPTIONS[0];
           return (
