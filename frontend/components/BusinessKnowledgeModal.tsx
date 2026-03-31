@@ -809,6 +809,14 @@ export default function BusinessKnowledgeModal({
                                     <Text style={styles.hint}>e.g. "Mats provided · Bring water bottle and towel · Lockers available"</Text>
                                     <TextInput style={styles.input} placeholder="What should members bring?" placeholderTextColor="#555" value={fitness.fitness_equipment} onChangeText={t => setFitness({...fitness, fitness_equipment: t})} multiline numberOfLines={2} />
                                 </View>
+                                <View style={styles.field}>
+                                    <View style={styles.sectionHeader}>
+                                        <Ionicons name="calendar-outline" size={18} color="#25D366" />
+                                        <Text style={styles.label}>How to Book a Class *</Text>
+                                    </View>
+                                    <Text style={styles.hint}>e.g. "Book via WhatsApp or our app at least 2hrs before · Walk-ins welcome if space available"</Text>
+                                    <TextInput style={styles.input} placeholder="How do members reserve their spot?" placeholderTextColor="#555" value={knowledge.booking_process} onChangeText={t => setKnowledge({...knowledge, booking_process: t})} multiline numberOfLines={2} />
+                                </View>
                             </>
                         )}
 
@@ -997,6 +1005,11 @@ export default function BusinessKnowledgeModal({
                                     <Text style={styles.hint}>e.g. "6-month warranty on electronics · 1-year on appliances"</Text>
                                     <TextInput style={styles.input} placeholder="Any product warranties?" placeholderTextColor="#555" value={retail.retail_warranty} onChangeText={t => setRetail({...retail, retail_warranty: t})} />
                                 </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Payment & Order Notes</Text>
+                                    <Text style={styles.hint}>e.g. "Cash on delivery available · Pay before dispatch for new customers · M-Pesa accepted"</Text>
+                                    <TextInput style={styles.input} placeholder="Any important payment or order notes?" placeholderTextColor="#555" value={knowledge.pricing_info} onChangeText={t => setKnowledge({...knowledge, pricing_info: t})} multiline numberOfLines={2} />
+                                </View>
                             </>
                         )}
 
@@ -1006,6 +1019,16 @@ export default function BusinessKnowledgeModal({
                                 <View style={styles.sectionDivider}>
                                     <Ionicons name="home-outline" size={16} color="#25D366" />
                                     <Text style={styles.sectionDividerText}>Rental / Listing Details</Text>
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Listing Name / Description *</Text>
+                                    <Text style={styles.hint}>e.g. "Luxury 2BR with pool in Westlands · Sleeps 4 · Full kitchen"</Text>
+                                    <TextInput style={styles.input} placeholder="What are you renting out?" placeholderTextColor="#555" value={knowledge.products_services} onChangeText={t => setKnowledge({...knowledge, products_services: t})} multiline numberOfLines={2} />
+                                </View>
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Nightly Rate / Pricing *</Text>
+                                    <Text style={styles.hint}>e.g. "Weekday KES 8,000/night · Weekend KES 10,000/night · Weekly discount 15% off"</Text>
+                                    <TextInput style={styles.input} placeholder="Your rates per night or period" placeholderTextColor="#555" value={knowledge.pricing_info} onChangeText={t => setKnowledge({...knowledge, pricing_info: t})} multiline numberOfLines={2} />
                                 </View>
                                 <View style={styles.field}>
                                     <Text style={styles.label}>Check-in / Check-out Times *</Text>
