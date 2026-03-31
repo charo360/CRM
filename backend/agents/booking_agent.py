@@ -332,16 +332,29 @@ class BookingAgent(BaseAgent):
                     import re as _re_bk
                     if not _has_date and _re_bk.search(r'\b\d{1,2}[\/\-\.]\d{1,2}', _msg_lower):
                         _has_date = True
+
+                    # Customer asking about availability — show available slots instead of re-asking for date
+                    _avail_keywords = ("availability", "available", "when", "schedule", "slot", "slots",
+                                       "open", "free", "free slot", "what days", "which days", "options")
+                    _asking_availability = any(k in _msg_lower for k in _avail_keywords)
+
                     if _has_date:
                         return await self._handle_booking_date_received(
                             pending_doc, message, customer_name, language, currency,
                             customer_id, user_id, context
                         )
+                    elif _asking_availability:
+                        # Route to availability handler so they get actual available dates/times
+                        return await self._handle_availability(
+                            services, business_hours, booking_settings, customer_name, language,
+                            currency, message, customer_id, user_id, is_rental
+                        )
                     else:
                         # Customer in date step but didn't provide a date — gently guide back
                         context["careful_instruction"] = (
                             "The customer was asked for a booking date but hasn't provided one yet. "
-                            "Gently remind them to share when they'd like to book (date and time)."
+                            "Gently remind them to share when they'd like to book (date and time). "
+                            "If they're unsure, let them know they can ask about availability first."
                         )
                 elif _ctx == "rental_dates_input":
                     # Rental: customer providing new check-in and check-out dates
@@ -439,7 +452,7 @@ class BookingAgent(BaseAgent):
         messages_out = []
         if intro_text:
             messages_out.append({"text": intro_text})
-        
+
         # Only send the services list if:
         # 1. No active booking context
         # 2. Or context is 'booking_service_select'
@@ -447,6 +460,15 @@ class BookingAgent(BaseAgent):
         _show_list = not active_context or active_context == "booking_service_select" or intent == "CATALOG_REQUEST"
         if _show_list:
             messages_out.append({"text": services_text})
+
+        # Safety net: if we're in the middle of a booking step and somehow ended up here
+        # with no message (AI failed + list suppressed), send a fallback so the bot never
+        # goes completely silent.
+        if not messages_out:
+            if active_context == "booking_date_input":
+                messages_out.append({"text": "What date works best for you? You can say something like *tomorrow*, *Monday*, or *15 April*. 😊"})
+            else:
+                messages_out.append({"text": services_text})
 
         # Store in pending_catalogs for numbered reply
         if customer_id and first_page:
