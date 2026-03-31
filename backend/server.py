@@ -12479,14 +12479,36 @@ async def evolution_webhook(request: Request):
                         print(f"DEBUG: AI drafter obtained, clients={list(ai_service.clients.keys())}", flush=True)
                         user_country_code = user_settings.get("country_code", "")
                         customer_phone = customer_data.get("phone", from_number) if customer_data else from_number
+
+                        # Detect personal contact — different instructions apply
+                        _is_personal_contact = (customer_data or {}).get("is_personal", False) or \
+                                               (customer_data or {}).get("contact_type") == "KNOWN_PERSONAL"
+
+                        if _is_personal_contact:
+                            _custom_instr = (
+                                "This is a personal contact, not a business customer. "
+                                "Reply like a real person texting a friend or family member — warm, natural, no business tone. "
+                                "IMPORTANT: If the topic involves money (loans, sending money, investments, financial promises, payments, debts), "
+                                "do NOT make any promises or commitments. Instead acknowledge what they said and naturally let them know "
+                                "this is something that needs a real conversation — e.g. 'Let me get back to you on that' or 'We should talk about this properly'. "
+                                "Never promise amounts, timelines, or financial outcomes. "
+                                "For everything else, just chat like a normal person would."
+                            )
+                        else:
+                            _custom_instr = (
+                                "Reply naturally to what they actually said. "
+                                "If it's a simple message, keep it short. "
+                                "Don't repeat anything already said in the chat above."
+                            )
+
                         result = await ai_service.draft_followup_message(
                             customer_name=c_name,
                             customer_data=customer_data or {},
                             messages=[{"direction": m.get("direction", "incoming"), "content": m.get("content", "")} for m in recent_messages],
                             business_name=user.get("business_name", "Our Business"),
                             tone=user_settings.get("message_tone", "friendly"),
-                            business_knowledge=business_knowledge,
-                            custom_instructions=f"Their latest message: '{body}'. Reply naturally to what they actually said right now. Don't repeat yourself.",
+                            business_knowledge=business_knowledge if not _is_personal_contact else None,
+                            custom_instructions=_custom_instr,
                             user_id=user["_id"],
                             db=db,
                             customer_id=customer_id,
