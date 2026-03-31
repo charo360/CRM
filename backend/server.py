@@ -11176,7 +11176,7 @@ async def evolution_webhook(request: Request):
 
                 # Build business knowledge string for agents
                 _bk_data = user.get("business_knowledge", {})
-                _bk_biz_type_ctx = (_bk_data.get("business_type") or _user_settings.get("business_type", "")).lower()
+                _bk_biz_type_ctx = (_user_settings.get("business_type") or _bk_data.get("business_type", "")).lower()
                 _bk_is_creator_ctx = _bk_biz_type_ctx == "creator"
                 _bk_parts = []
                 if _bk_data:
