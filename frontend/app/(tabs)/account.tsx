@@ -106,6 +106,8 @@ export default function AccountScreen() {
   const [waMsgLimit, setWaMsgLimit] = useState(50);
   const [waCountdown, setWaCountdown] = useState(0);
   const [waCopied, setWaCopied] = useState(false);
+  const [waDisconnectReason, setWaDisconnectReason] = useState<string | null>(null);
+  const waHealthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -205,6 +207,7 @@ export default function AccountScreen() {
         setWaNumber(waRes.number || '');
         setWaMsgSent(waRes.messages_sent || 0);
         setWaMsgLimit(waRes.messages_limit || 50);
+        setWaDisconnectReason(waRes.disconnect_reason || null);
       } catch (e) {
         console.log('WhatsApp status not available');
       }
@@ -269,11 +272,32 @@ export default function AccountScreen() {
     if (waCountdownRef.current) { clearInterval(waCountdownRef.current); waCountdownRef.current = null; }
     if (waPollingRef.current) { clearInterval(waPollingRef.current); waPollingRef.current = null; }
     if (waRefreshRef.current) { clearTimeout(waRefreshRef.current); waRefreshRef.current = null; }
+    if (waHealthPollRef.current) { clearInterval(waHealthPollRef.current); waHealthPollRef.current = null; }
   }, []);
 
   useEffect(() => {
     return () => clearWaTimers();
   }, [clearWaTimers]);
+
+  // Poll WhatsApp health every 30s — detect silent disconnects without user needing to refresh
+  useEffect(() => {
+    if (waHealthPollRef.current) clearInterval(waHealthPollRef.current);
+    waHealthPollRef.current = setInterval(async () => {
+      try {
+        const waRes = await whatsappAPI.getStatus();
+        setWaConnected(waRes.connected);
+        setWaStatus(waRes.status);
+        setWaDisconnectReason(waRes.disconnect_reason || null);
+        if (waRes.connected) {
+          setWaMsgSent(waRes.messages_sent || 0);
+          setWaMsgLimit(waRes.messages_limit || 50);
+        }
+      } catch (_e) { /* ignore network errors — don't flash false disconnects */ }
+    }, 30000);
+    return () => {
+      if (waHealthPollRef.current) clearInterval(waHealthPollRef.current);
+    };
+  }, []);
 
   const startPairingTimers = useCallback((code: string) => {
     clearWaTimers();
@@ -563,6 +587,52 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>WhatsApp Business</Text>
           <View style={styles.settingsCard}>
+            {/* Disconnection warning banner */}
+            {!waConnected && waStatus === 'disconnected' && (
+              <View style={{ backgroundColor: 'rgba(255,68,68,0.12)', borderRadius: 10, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(255,68,68,0.3)' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                  <Ionicons name="warning" size={18} color="#FF4444" />
+                  <Text style={{ color: '#FF4444', fontSize: 14, fontWeight: '700', marginLeft: 8 }}>WhatsApp Disconnected</Text>
+                </View>
+                <Text style={{ color: '#FFB3B3', fontSize: 13, lineHeight: 19, marginBottom: 10 }}>
+                  {waDisconnectReason === 'conflict'
+                    ? 'WhatsApp was opened on another device and replaced this connection. Your bot is not responding to messages.'
+                    : waDisconnectReason === 'logged_out'
+                    ? 'Your WhatsApp session was logged out. You need to reconnect to resume your bot.'
+                    : 'Your WhatsApp connection dropped. Your bot is not responding to messages.'}
+                </Text>
+                <TouchableOpacity
+                  style={{ backgroundColor: '#FF4444', borderRadius: 8, paddingVertical: 10, alignItems: 'center' }}
+                  onPress={async () => {
+                    const phoneToUse = waNumber || waPhoneInput;
+                    if (!phoneToUse) {
+                      Alert.alert('Reconnect', 'Please enter your phone number below to reconnect.');
+                      return;
+                    }
+                    setWaConnecting(true);
+                    setWaPairingCode('');
+                    try {
+                      const res = await whatsappAPI.connect(phoneToUse);
+                      if (res.pairing_code) {
+                        setWaDisconnectReason(null);
+                        startPairingTimers(res.pairing_code);
+                      } else {
+                        Alert.alert('Error', res.message || 'Failed to get pairing code');
+                      }
+                    } catch (e: any) {
+                      Alert.alert('Error', e.response?.data?.detail || 'Could not start reconnection. Try again.');
+                    } finally {
+                      setWaConnecting(false);
+                    }
+                  }}
+                  disabled={waConnecting}
+                >
+                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>
+                    {waConnecting ? 'Connecting...' : '🔄 Reconnect WhatsApp'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
             {waConnected ? (
               <View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>

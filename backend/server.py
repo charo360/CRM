@@ -6429,6 +6429,8 @@ async def whatsapp_status(user = Depends(get_current_user)):
         "daily_sent": limits.get("daily_sent", 0),
         "daily_limit": limits.get("daily_limit", 500),
         "plan": limits.get("plan", "free"),
+        "disconnect_reason": status.get("disconnect_reason"),
+        "disconnected_at": status.get("disconnected_at"),
     }
 
 @api_router.post("/whatsapp/sync")

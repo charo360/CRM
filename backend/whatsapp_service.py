@@ -484,14 +484,19 @@ class WhatsAppService:
                             {"$set": {"whatsapp.status": new_status}}
                         )
 
+                    disconnect_reason = wa.get("disconnect_reason") if not is_open else None
+                    disconnected_at = wa.get("disconnected_at").isoformat() if (not is_open and wa.get("disconnected_at")) else None
                     return {
                         "connected": is_open,
                         "status": new_status,
                         "number": wa.get("number"),
                         "instance_name": instance_name,
+                        "disconnect_reason": disconnect_reason,
+                        "disconnected_at": disconnected_at,
                     }
                 else:
-                    return {"connected": False, "status": "unknown", "number": wa.get("number")}
+                    return {"connected": False, "status": "unknown", "number": wa.get("number"),
+                            "disconnect_reason": wa.get("disconnect_reason")}
 
         except httpx.ConnectError:
             return {"connected": False, "status": "service_unavailable"}
@@ -1492,15 +1497,37 @@ class WhatsAppService:
                 {"$set": {
                     "whatsapp.status": "connected",
                     "whatsapp.connected_at": datetime.utcnow(),
+                    "whatsapp.disconnect_reason": None,
+                    "whatsapp.disconnected_at": None,
                 }}
             )
             logger.info(f"Instance {instance_name} connected for user {user['_id']}")
         elif state in ("close", "refused"):
+            # Detect specific disconnect reasons from Evolution API payload
+            # "conflict" means WhatsApp was opened on another device and kicked us out
+            status_reason = data.get("statusReason", "")
+            last_disconnect = data.get("lastDisconnect", {})
+            reason_tag = (
+                last_disconnect.get("error", {}).get("output", {}).get("statusCode")
+                or data.get("reasonNode", {}).get("tag")
+                or ""
+            )
+            if "conflict" in str(data).lower() or reason_tag == "conflict":
+                disconnect_reason = "conflict"
+            elif status_reason == 401 or "logged_out" in str(data).lower():
+                disconnect_reason = "logged_out"
+            else:
+                disconnect_reason = "unknown"
+
             await self.db.users.update_one(
                 {"_id": user["_id"]},
-                {"$set": {"whatsapp.status": "disconnected"}}
+                {"$set": {
+                    "whatsapp.status": "disconnected",
+                    "whatsapp.disconnect_reason": disconnect_reason,
+                    "whatsapp.disconnected_at": datetime.utcnow(),
+                }}
             )
-            logger.info(f"Instance {instance_name} disconnected for user {user['_id']}")
+            logger.warning(f"Instance {instance_name} disconnected ({disconnect_reason}) for user {user['_id']}")
 
     async def handle_incoming_message(self, instance_name: str, data: Dict):
         """Handle messages.upsert webhook from Evolution API.
