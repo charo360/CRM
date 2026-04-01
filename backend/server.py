@@ -406,6 +406,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+async def _auto_promote_to_customer(customer_id: str, user_id: str):
+    """
+    Automatically promote a contact to is_customer=True when they place an order.
+    No manual confirmation needed — ordering is proof of being a customer.
+    Also clears any pending classification suggestion for this contact.
+    """
+    if not customer_id or customer_id == "walk-in":
+        return
+    try:
+        await db.customers.update_one(
+            {"_id": customer_id, "user_id": user_id},
+            {"$set": {
+                "is_customer": True,
+                "classification_confirmed": True,
+                "classification_type": "customer",
+                "promoted_via": "order",
+                "promoted_at": datetime.utcnow(),
+            }}
+        )
+        # Remove any pending classification so it doesn't show up in the queue
+        await db.pending_classifications.delete_many({
+            "customer_id": customer_id,
+            "user_id": user_id,
+        })
+    except Exception as e:
+        logging.warning(f"[AutoPromote] Failed to promote {customer_id}: {e}")
+
+
 @app.on_event("startup")
 async def fix_team_members_index():
     try:
@@ -4387,14 +4415,15 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
     )
 
     await db.orders.insert_one(order_doc)
-    
+    await _auto_promote_to_customer(order.customer_id, business_id)
+
     # Handle created_at safely
     created_at_val = order_doc["created_at"]
     if isinstance(created_at_val, datetime):
         created_at_str = created_at_val.isoformat()
     else:
         created_at_str = created_at_val
-    
+
     return OrderResponse(
         id=order_id,
         customer_id=order.customer_id,
@@ -7938,6 +7967,7 @@ async def evolution_webhook(request: Request):
                                             "created_at": datetime.utcnow(),
                                             "source": "cart_checkout_duplicate"
                                         })
+                                        await _auto_promote_to_customer(customer_id, _biz_id_dup)
                                         # Clear cart
                                         _cart_dup = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
                                         if _cart_dup:
@@ -8045,6 +8075,7 @@ async def evolution_webhook(request: Request):
                                             "created_at": datetime.utcnow(),
                                             "source": "cart_checkout_replaced"
                                         })
+                                        await _auto_promote_to_customer(customer_id, _biz_id_dup)
                                         # Clear cart
                                         _cart_dup3 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
                                         if _cart_dup3:
@@ -8593,6 +8624,7 @@ async def evolution_webhook(request: Request):
                                         "created_at": _now_conf,
                                         "source": "whatsapp_confirmed"
                                     })
+                                    await _auto_promote_to_customer(customer_id, _biz_id_conf)
                                     # Create sales record so order appears in CRM sales tab
                                     await db.sales.insert_one({
                                         "_id": str(uuid.uuid4()),
@@ -10762,6 +10794,7 @@ async def evolution_webhook(request: Request):
                                     "created_at": _now,
                                     "source": "cart_checkout"
                                 })
+                                await _auto_promote_to_customer(customer_id, _biz_id)
                                 await db.customers.update_one(
                                     {"_id": customer_id},
                                     {"$set": {"last_contacted": _now}}
@@ -11230,6 +11263,7 @@ async def evolution_webhook(request: Request):
                                 "created_at": _now_ck,
                                 "source": "whatsapp_cart",
                             })
+                            await _auto_promote_to_customer(customer_id, _biz_id_ck)
                             await db.sales.insert_one({
                                 "_id": str(uuid.uuid4()),
                                 "user_id": _biz_id_ck,
@@ -12285,6 +12319,7 @@ async def evolution_webhook(request: Request):
                             "created_at": _now_cat,
                             "source": "catalog_reply",
                         })
+                        await _auto_promote_to_customer(customer_id, _biz_id_cat)
                         await db.sales.insert_one({
                             "_id": str(uuid.uuid4()),
                             "user_id": _biz_id_cat,
