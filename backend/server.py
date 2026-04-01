@@ -576,6 +576,9 @@ async def fix_team_members_index():
     # Start automation scheduler in background
     asyncio.create_task(run_automation_scheduler())
 
+    # Start subscription discount reminder scheduler (day 45, 83, 90 notifications)
+    asyncio.create_task(run_subscription_reminder_scheduler())
+
 async def _purge_invalid_contacts_for_user(user_id: str) -> int:
     """
     Remove auto-created contacts whose phone numbers are invalid:
@@ -683,6 +686,94 @@ async def run_booking_reminder_scheduler():
         except Exception as e:
             logging.error(f"Booking reminder scheduler error: {e}")
         await asyncio.sleep(1800)  # every 30 minutes
+
+
+async def run_subscription_reminder_scheduler():
+    """
+    Runs once daily — sends push notifications to users on introductory pricing:
+    - Day 45: "Your 50% discount ends in 30 days"  (mid-way warning)
+    - Day 83: "Your discount ends in 7 days"        (final nudge)
+    - Day 90: "You're now on full access"           (soft transition notice)
+    Only fires for users with subscription_date set and subscription_active=True.
+    """
+    await asyncio.sleep(120)  # delay on startup
+    while True:
+        try:
+            now = datetime.utcnow()
+            # Find all active subscribers with a subscription_date
+            subscribers = await db.users.find({
+                "subscription_active": True,
+                "subscription_started_at": {"$exists": True, "$ne": None},
+                "push_tokens": {"$exists": True, "$not": {"$size": 0}},
+            }, {"_id": 1, "subscription_started_at": 1, "subscription_plan": 1, "business_name": 1}).to_list(5000)
+
+            for user in subscribers:
+                try:
+                    sub_date = user.get("subscription_started_at")
+                    if not sub_date:
+                        continue
+                    if isinstance(sub_date, str):
+                        sub_date = datetime.fromisoformat(sub_date)
+
+                    days_since = (now - sub_date).days
+                    user_id = user["_id"]
+
+                    # Day 45 — 30-day warning
+                    if days_since == 45:
+                        already = await db.subscription_reminders.find_one({"user_id": user_id, "type": "day_45"})
+                        if not already:
+                            await send_push_notification(
+                                user_id,
+                                title="Your early access discount ends in 30 days",
+                                body="You've been on 50% off — full price kicks in at day 90. Check what you've built so far 🚀",
+                                data={"screen": "subscription"}
+                            )
+                            await db.subscription_reminders.insert_one({
+                                "_id": str(uuid.uuid4()), "user_id": user_id,
+                                "type": "day_45", "sent_at": now
+                            })
+                            logging.info(f"[SubReminder] Day-45 reminder sent to {user_id}")
+
+                    # Day 83 — 7-day final nudge
+                    elif days_since == 83:
+                        already = await db.subscription_reminders.find_one({"user_id": user_id, "type": "day_83"})
+                        if not already:
+                            await send_push_notification(
+                                user_id,
+                                title="7 days left on your discount",
+                                body="Your 50% early access rate ends in 7 days. After that you move to the full plan — nothing changes, keep going 💪",
+                                data={"screen": "subscription"}
+                            )
+                            await db.subscription_reminders.insert_one({
+                                "_id": str(uuid.uuid4()), "user_id": user_id,
+                                "type": "day_83", "sent_at": now
+                            })
+                            logging.info(f"[SubReminder] Day-83 reminder sent to {user_id}")
+
+                    # Day 90 — transition notice
+                    elif days_since == 90:
+                        already = await db.subscription_reminders.find_one({"user_id": user_id, "type": "day_90"})
+                        if not already:
+                            plan = user.get("subscription_plan", "starter").capitalize()
+                            await send_push_notification(
+                                user_id,
+                                title="You're now on full access 🎉",
+                                body=f"Your early access period is complete. You're on the {plan} plan — same features, full speed ahead.",
+                                data={"screen": "subscription"}
+                            )
+                            await db.subscription_reminders.insert_one({
+                                "_id": str(uuid.uuid4()), "user_id": user_id,
+                                "type": "day_90", "sent_at": now
+                            })
+                            logging.info(f"[SubReminder] Day-90 transition notice sent to {user_id}")
+
+                except Exception as ue:
+                    logging.warning(f"[SubReminder] Failed for user {user.get('_id')}: {ue}")
+
+        except Exception as e:
+            logging.error(f"Subscription reminder scheduler error: {e}")
+
+        await asyncio.sleep(86400)  # run once every 24 hours
 
 # Logic moved to reminders_service.py
 
@@ -6304,16 +6395,20 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
         raise HTTPException(status_code=403, detail=f"Purchase verification failed: {verification.get('reason', 'unknown')}")
 
     # Update user subscription — also store purchase_token so RTDN webhook can find this user
+    _now_sub = datetime.utcnow()
+    _sub_update: dict = {
+        "subscription_plan": request.plan_id,
+        "subscription_active": True,
+        "subscription_date": _now_sub,
+        "purchase_token": request.purchase_token,   # needed for RTDN lookup
+    }
+    # Only set subscription_started_at on FIRST activation — renewals don't reset the intro clock
+    existing_start = user.get("subscription_started_at")
+    if not existing_start:
+        _sub_update["subscription_started_at"] = _now_sub
     await db.users.update_one(
         {"_id": user["_id"]},
-        {
-            "$set": {
-                "subscription_plan": request.plan_id,
-                "subscription_active": True,
-                "subscription_date": datetime.utcnow(),
-                "purchase_token": request.purchase_token,   # needed for RTDN lookup
-            }
-        }
+        {"$set": _sub_update}
     )
 
     # Store transaction
