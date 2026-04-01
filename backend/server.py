@@ -6452,6 +6452,74 @@ async def get_subscription_status(user = Depends(get_current_user)):
     }
 
 
+@api_router.get("/subscription/discount-status")
+async def get_discount_status(user = Depends(get_current_user)):
+    """
+    Returns the user's introductory discount status for display in the app.
+    Used to show the early access banner on the subscription screen.
+
+    Response when on intro pricing:
+      { on_intro_pricing: true, days_remaining: 65, days_elapsed: 25,
+        saving_per_month: 750, full_price: 1500, currency: "KES",
+        percent_off: 50, phase: "active" | "warning" | "final" }
+
+    Response when not on intro pricing:
+      { on_intro_pricing: false }
+    """
+    sub_started = user.get("subscription_started_at")
+    plan = user.get("subscription_plan")
+    active = user.get("subscription_active", False)
+
+    # Not subscribed or no start date recorded
+    if not sub_started or not active or not plan or plan == "free":
+        return {"on_intro_pricing": False}
+
+    if isinstance(sub_started, str):
+        try:
+            sub_started = datetime.fromisoformat(sub_started)
+        except Exception:
+            return {"on_intro_pricing": False}
+
+    days_elapsed = (datetime.utcnow() - sub_started).days
+    intro_days = 90  # 3-month introductory period
+
+    if days_elapsed >= intro_days:
+        return {"on_intro_pricing": False}
+
+    days_remaining = intro_days - days_elapsed
+
+    # Get regional full price for their plan
+    currency = user.get("currency") or user.get("settings", {}).get("currency", "USD") or "USD"
+    prices = REGIONAL_PRICING.get(currency, REGIONAL_PRICING["USD"])
+    plan_index = {"starter": 0, "standard": 1, "pro": 2}.get(plan, 0)
+    full_price = prices[plan_index]
+    discounted_price = round(full_price * 0.5)
+    saving_per_month = full_price - discounted_price
+
+    # Phase tells the frontend which visual to show
+    if days_remaining > 30:
+        phase = "active"    # green — plenty of time
+    elif days_remaining > 7:
+        phase = "warning"   # amber — getting close
+    else:
+        phase = "final"     # red — last week
+
+    return {
+        "on_intro_pricing": True,
+        "days_remaining": days_remaining,
+        "days_elapsed": days_elapsed,
+        "intro_days": intro_days,
+        "percent_off": 50,
+        "full_price": full_price,
+        "discounted_price": discounted_price,
+        "saving_per_month": saving_per_month,
+        "currency": currency,
+        "phase": phase,
+        "started_at": sub_started.isoformat(),
+        "ends_at": (sub_started + timedelta(days=intro_days)).isoformat(),
+    }
+
+
 class RestorePurchasesRequest(BaseModel):
     purchases: list  # [{purchase_token, plan_id, platform}]
 
