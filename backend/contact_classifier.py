@@ -41,6 +41,25 @@ OUTGOING_SUPPLIER_PATTERNS = [
     "price for", "how much for bulk", "wholesale price",
 ]
 
+# Personal/non-commercial signals — these conversations should NOT be classified.
+# Only used by _keyword_classify as a pre-filter. AI handles nuanced cases.
+# Keep these specific — phrases that almost never appear in a real business chat.
+PERSONAL_KEYWORDS = [
+    # Family clearly stated
+    "my child", "my kid", "my son", "my daughter", "my baby",
+    "my wife", "my husband", "my mum", "my mom", "my dad",
+    "my father", "my mother", "my sister", "my brother",
+    "my family", "my aunt", "my uncle", "my cousin",
+    "my boyfriend", "my girlfriend", "my partner",
+    # Swahili family (specific enough)
+    "mwanangu", "binti yangu", "mke wangu", "mume wangu",
+    # Strong personal-only phrases
+    "miss you", "thinking of you", "hope you're well",
+    "catch up soon", "let's hang", "just checking on you",
+    "get well soon", "pray for you", "praying for you",
+    "happy birthday", "happy anniversary",
+]
+
 
 class ContactClassifier:
     """Classifies contacts as Customer or Supplier based on chat analysis"""
@@ -102,6 +121,10 @@ class ContactClassifier:
         else:
             result = keyword_result
 
+        # Never suggest personal or unknown contacts
+        if result["type"] in ("personal", "unknown"):
+            return None
+
         # Only return if we have reasonable confidence
         if result["confidence"] < 0.4:
             return None
@@ -118,6 +141,7 @@ class ContactClassifier:
 
     def _keyword_classify(self, messages: List[Dict]) -> Dict:
         """Fast keyword-based classification"""
+        all_text = " ".join([m.get("content", "").lower() for m in messages])
         incoming_text = " ".join([
             m.get("content", "").lower() for m in messages
             if m.get("direction") == "incoming"
@@ -149,9 +173,19 @@ class ContactClassifier:
                 supplier_score += 3  # Strong signal — you're treating them as supplier
                 reasons.append(f"You asked them '{kw}'")
 
+        # Personal signals: check AFTER business scores so we can use them
+        personal_score = sum(1 for kw in PERSONAL_KEYWORDS if kw in all_text)
+        has_business_signal = (supplier_score + customer_score) > 0
+        if personal_score >= 2:
+            return {"type": "personal", "confidence": 0.0, "reason": "Personal conversation", "details": {}}
+        # Single personal keyword with zero business signal → personal
+        if personal_score == 1 and not has_business_signal:
+            return {"type": "personal", "confidence": 0.0, "reason": "Personal conversation", "details": {}}
+
         total = supplier_score + customer_score
         if total == 0:
-            return {"type": "customer", "confidence": 0.2, "reason": "No clear signals", "details": {}}
+            # No clear signals — don't guess, return low confidence so it gets dropped
+            return {"type": "unknown", "confidence": 0.1, "reason": "No clear signals", "details": {}}
 
         if supplier_score > customer_score:
             confidence = min(0.9, supplier_score / (total + 2))
@@ -170,6 +204,30 @@ class ContactClassifier:
                 "details": {},
             }
 
+    async def _get_business_context(self, user_id: str) -> str:
+        """Fetch business info for the user to give AI context on what this business does"""
+        try:
+            user = await self.db.users.find_one({"_id": user_id})
+            if not user:
+                return ""
+            parts = []
+            name = user.get("business_name") or user.get("name") or user.get("whatsapp_name") or ""
+            btype = user.get("business_type") or ""
+            bk = user.get("business_knowledge") or {}
+            if name:
+                parts.append(f"Business name: {name}")
+            if btype:
+                parts.append(f"Business type: {btype}")
+            if isinstance(bk, dict):
+                for k, v in bk.items():
+                    if v:
+                        parts.append(f"{k}: {v}")
+            elif isinstance(bk, str) and bk:
+                parts.append(bk)
+            return "\n".join(parts)
+        except Exception:
+            return ""
+
     async def _ai_classify(self, messages: List[Dict], contact: Dict) -> Optional[Dict]:
         """Use OpenAI to classify contact with high accuracy"""
         try:
@@ -178,29 +236,50 @@ class ContactClassifier:
                 role = "THEM" if m.get("direction") == "incoming" else "YOU"
                 conversation += f"{role}: {m.get('content', '')}\n"
 
-            prompt = f"""Analyze this WhatsApp business conversation and classify the contact.
+            # Fetch business context so the AI knows what this business actually does
+            biz_context = await self._get_business_context(contact.get("user_id", ""))
+            biz_section = f"\nABOUT THIS BUSINESS:\n{biz_context}\n" if biz_context else ""
 
-CONTACT: {contact.get('name', 'Unknown')} ({contact.get('phone_number', '')})
+            prompt = f"""You are an expert at reading WhatsApp conversations and understanding business relationships.
+
+Read the conversation below carefully — the full thing, not just individual words.{biz_section}
+CONTACT: {contact.get('name', 'Unknown')}
 
 CONVERSATION:
 {conversation}
 
-Based on the conversation, classify this contact as either:
-- CUSTOMER: Someone who buys from you (asks prices, places orders, inquires about products)
-- SUPPLIER: Someone who sells/supplies to you (sends invoices, quotes prices for bulk, discusses stock/delivery)
+Your job: figure out who this person is to the business.
+
+Think holistically:
+- What is the conversation actually about?
+- Is this a commercial interaction (buying, selling, services, orders, prices)?
+- Or is it personal (family, friends, casual life, health, social)?
+- Or is it ambiguous / too vague to tell?
+
+Classify as ONE of:
+- CUSTOMER — this person is buying or wants to buy from the business (inquires about products/services, asks prices, places orders, books appointments)
+- SUPPLIER — this person is selling/supplying TO the business (quotes, invoices, bulk stock, delivery)
+- PERSONAL — friend, family, or non-commercial contact (no business intent in the conversation)
+- UNKNOWN — genuinely unclear; conversation doesn't have enough commercial signal to decide either way
+
+Rules:
+- If the conversation is mostly greetings, small talk, or life updates → PERSONAL or UNKNOWN
+- If there's ANY doubt → lean toward UNKNOWN, never guess
+- Don't classify based on one word — read the full intent
+- Consider what the business does (above) when reading what "THEM" is asking about
 
 Respond in EXACTLY this format (no other text):
-TYPE: customer OR supplier
+TYPE: customer OR supplier OR personal OR unknown
 CONFIDENCE: 0.0 to 1.0
-REASON: Brief explanation (max 20 words)
-CATEGORY: If supplier, suggest category (Electronics/Clothing/Food & Beverage/Beauty & Health/Home & Garden/Automotive/Raw Materials/Packaging/Stationery/Services/Other). If customer, write "N/A"
-PRODUCTS: Comma-separated list of products discussed (max 5), or "N/A" if unclear"""
+REASON: One clear sentence explaining your decision
+CATEGORY: If supplier — suggest category (Electronics/Clothing/Food & Beverage/Beauty & Health/Home & Garden/Automotive/Raw Materials/Packaging/Stationery/Services/Other). Otherwise write N/A
+PRODUCTS: Comma-separated products/services discussed, or N/A"""
 
             response = await asyncio.to_thread(
                 self.client.chat.completions.create,
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                temperature=0.1,
                 max_tokens=150,
             )
 
@@ -222,7 +301,7 @@ PRODUCTS: Comma-separated list of products discussed (max 5), or "N/A" if unclea
                     result[key.strip().upper()] = val.strip()
 
             contact_type = result.get("TYPE", "customer").lower()
-            if contact_type not in ("customer", "supplier"):
+            if contact_type not in ("customer", "supplier", "personal"):
                 contact_type = "customer"
 
             confidence = float(result.get("CONFIDENCE", "0.5"))
