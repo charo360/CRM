@@ -1,5 +1,6 @@
 from .base_agent import BaseAgent
 from .tools import find_product_matches, find_product_matches_ai, normalize_url, format_product_catalog
+from .ui_strings import t
 from typing import List, Dict, Any
 import logging
 
@@ -43,6 +44,43 @@ class SalesAgent(BaseAgent):
             logger.error(f"[SalesAgent] DB error fetching products: {e}")
             return {"handled": False}
 
+        # --- PENDING ORDER CREATION: customer is providing delivery details ---
+        if conv_state.get("pending_order_creation"):
+            product_name = conv_state.get("pending_order_product_name", "your item")
+            product_price = conv_state.get("pending_order_price", 0)
+            try:
+                from ai_service import get_drafter
+                ai = get_drafter()
+                prompt = f"""You are a business owner on WhatsApp. A customer selected "{product_name}" (price: {currency} {product_price:,.0f}) and has now replied with delivery details or questions.
+
+Customer message: "{message}"
+Customer name: {customer_name}
+Language: {language}
+
+Write a warm, natural {language} reply that:
+1. Acknowledges what they shared (address, qty, pickup preference)
+2. Confirms you've received their request and will be in touch shortly to finalise the order
+3. NEVER confirm the order is placed — just say you'll confirm soon
+4. 2 sentences max. WhatsApp tone.
+
+Output only the customer-facing message."""
+                reply = await ai._call_llm(prompt, model_pref="standard")
+            except Exception as e:
+                logger.error(f"[SalesAgent] pending order creation error: {e}")
+                reply = f"Got it {customer_name}! I've noted your details for *{product_name}* and will confirm your order shortly. 📦"
+            return {
+                "handled": True,
+                "messages": [{"text": reply}],
+                "escalate": False,
+                "flag_for_human": True,
+                "flag_reason": f"Customer provided delivery details for order: {product_name} — needs owner confirmation",
+                "context_update": {
+                    "pending_order_creation": False,  # clear after acknowledging
+                    "state": "ongoing",
+                    "last_intent": intent,
+                },
+            }
+
         # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
         if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
             relationship = context.get("_relationship", "new_conversation")
@@ -65,7 +103,9 @@ class SalesAgent(BaseAgent):
             last_price = conv_state.get("last_price_offered")
             return await self._handle_negotiation(
                 message, last_product_name, last_product_id, last_price,
-                customer_name, language, currency, business_knowledge, history, products
+                customer_name, language, currency, business_knowledge, history, products,
+                confidence=confidence, careful_instruction=careful_instruction,
+                discount_policy=discount_policy,
             )
 
         # --- PRODUCT MATCH: find relevant products ---
@@ -91,7 +131,8 @@ class SalesAgent(BaseAgent):
             # We know it's a sales intent but couldn't find a product match
             relationship = context.get("_relationship", "new_conversation")
             return await self._handle_no_match(
-                message, intent, customer_name, language, business_knowledge, history, products, relationship
+                message, intent, customer_name, language, business_knowledge, history, products, relationship,
+                confidence=confidence, careful_instruction=careful_instruction,
             )
 
         # Limit to 5 matches
@@ -142,9 +183,10 @@ class SalesAgent(BaseAgent):
                 msg["media_url"] = all_imgs[0]
             messages_out.append(msg)
         
-        # Add instruction text for how to select/order
+        # Add instruction text for how to select/order — labels in customer's language
+        lang = context.get("language") or "English"
         if len(to_send) > 1:
-            instruction = f"\n0️⃣  🖼️ *View all images for these products*\n_Reply with the number (1-{len(to_send)}) to see details and order options_"
+            instruction = f"\n{t('view_gallery', lang)}\n{t('select_number_instruction', lang)}"
             messages_out.append({"text": instruction})
         elif len(to_send) == 1:
             # For single product, send action buttons immediately
@@ -153,8 +195,8 @@ class SalesAgent(BaseAgent):
                 "1️⃣  Order Now\n"
                 "2️⃣  Add to Cart\n"
                 "3️⃣  See Similar Products\n"
-                "0️⃣  View all images\n\n"
-                "_Reply with a number_"
+                f"{t('view_gallery', lang)}\n\n"
+                f"{t('select_number_instruction', lang)}"
             )
             messages_out.append({"text": instruction})
 
@@ -248,36 +290,72 @@ class SalesAgent(BaseAgent):
         products_with_currency = [{"currency": currency, **p} for p in first_page]
 
         messages_out = []
-        
-        # Optional AI intro (brief, context-aware)
+
+        # Single AI call: get intro + localised list header + footer instruction
+        # No extra latency — one call returns all three pieces
+        import json as _json, re as _re
+        lang = language or "English"
+        list_header = None
+        list_footer = None
         try:
             from ai_service import get_drafter
             ai = get_drafter()
             bk = (business_knowledge or "")[:300]
             if relationship in ("follow_up", "continuation"):
-                tone_instruction = "Mid-conversation — NO greetings. Just 1 short natural line like 'Sure, here's what we have:' or 'Here you go:'"
+                tone_note = "Mid-conversation — NO greeting. Jump straight in with 1 short natural line."
             else:
-                tone_instruction = "Brief intro — 1 sentence max. Natural WhatsApp tone."
-            prompt = f"""Customer asked for catalog. Business: {bk}. {tone_instruction} Reply:"""
-            intro = await ai._call_llm(prompt, model_pref="standard")
-            if intro and len(intro) < 100:
-                messages_out.append({"text": intro.strip()})
+                tone_note = "New conversation — brief, warm 1-sentence intro."
+            prompt = (
+                f"You are a business owner on WhatsApp. A customer asked to see your products.\n"
+                f"Business info: {bk}\n"
+                f"Customer language: {lang}\n"
+                f"Tone note: {tone_note}\n\n"
+                f"Return ONLY valid JSON with exactly these 3 keys:\n"
+                f'{{\n'
+                f'  "intro": "1 short warm sentence in {lang} introducing the catalog. {tone_note} Think: what would a real shopkeeper say?",\n'
+                f'  "header": "A short bold title for the products list — in {lang}. With a shopping emoji. E.g. in English: \'🛍️ *Our Products*\'. Adapt naturally.",\n'
+                f'  "footer": "A short instruction in {lang} telling them to reply with a number to select. In italics (_underscores_). Natural, informal."\n'
+                f'}}\n\nJSON only. No markdown fences.'
+            )
+            raw = await ai._call_llm(prompt, model_pref="standard")
+            match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            if match:
+                data = _json.loads(match.group())
+                intro_text = (data.get("intro") or "").strip()
+                list_header = (data.get("header") or "").strip()
+                list_footer = (data.get("footer") or "").strip()
+                if intro_text and len(intro_text) < 120:
+                    messages_out.append({"text": intro_text})
         except Exception as e:
             logger.error(f"[SalesAgent] catalog intro error: {e}")
 
-        # Build numbered list
-        lines = ["🛍️ *Our Products*\n"]
+        # Fallback to ui_strings if AI didn't return labels
+        if not list_header:
+            list_header = t("products_header", lang)
+        if not list_footer:
+            list_footer = t("select_number_instruction", lang)
+
+        # Build numbered list — header and footer are now in the customer's language
+        lines = [list_header + "\n"]
         for i, p in enumerate(first_page, 1):
             price = p.get('price', 0)
             stock = "✅" if p.get('in_stock', True) else "❌"
             price_str = f"{currency} {price:,.0f}" if price else "POA"
             lines.append(f"{i}️⃣  *{p['name']}* — {price_str} {stock}")
         if has_more:
-            lines.append(f"9️⃣  ➡️ *See more products*")
-        lines.append(f"0️⃣  🖼️ *View all images for these products*")
-        lines.append("\n_Reply with a number to select_")
-        
+            lines.append(t("see_more", lang))
+        lines.append(t("view_gallery", lang))
+        lines.append("\n" + list_footer)
+
         messages_out.append({"text": "\n".join(lines)})
+
+        from datetime import datetime as _dt
+        _menu_items_catalog = {
+            str(i): {"name": p["name"], "price": p.get("price", 0), "id": str(p["_id"]), "type": "product"}
+            for i, p in enumerate(first_page, 1)
+        }
+        if has_more:
+            _menu_items_catalog["9"] = {"type": "see_more", "offset": PAGE_SIZE}
 
         return {
             "handled": True,
@@ -287,14 +365,21 @@ class SalesAgent(BaseAgent):
                 "state": "ongoing",
                 "last_intent": "CATALOG_REQUEST",
                 "catalog_all_ids": [str(p["_id"]) for p in all_products],
-                "catalog_page_offset": 0,
-                "catalog_has_more": has_more
+                "catalog_has_more": has_more,
+                # Menu state — enables numbered selection + "9 = see more" pagination
+                "active_menu": True,
+                "waiting_for_selection": True,
+                "menu_type": "catalog_selection",
+                "menu_sent_at": _dt.utcnow().isoformat(),
+                "preferred_language": language,
+                "menu_items": _menu_items_catalog,
             },
         }
 
     async def _handle_negotiation(
         self, message, last_product_name, last_product_id, last_price,
-        customer_name, language, currency, business_knowledge, history, products
+        customer_name, language, currency, business_knowledge, history, products,
+        confidence=1.0, careful_instruction="", discount_policy="",
     ) -> Dict[str, Any]:
         """Handle price negotiation — never promise a lower price, escalate if needed."""
         # Find the product being negotiated
@@ -379,7 +464,8 @@ Rules:
             }
 
     async def _handle_no_match(
-        self, message, intent, customer_name, language, business_knowledge, history, products, relationship="new_conversation"
+        self, message, intent, customer_name, language, business_knowledge, history, products,
+        relationship="new_conversation", confidence=1.0, careful_instruction="",
     ) -> Dict[str, Any]:
         """No products found matching the query — honest reply, no hallucination."""
         has_products = len(products) > 0
@@ -483,25 +569,29 @@ They just sent a casual message or greeting: "{message}"
 
 Business info: {bk}
 
-Think one sentence about how to warmly acknowledge their message, then pivot to asking if they need help or want to see the catalog. Output only the customer-facing message.
+Output only the customer-facing message. Think: what would a real shopkeeper say back when a regular customer walks in and says hi?
 
 Rules:
-- Be warm and natural, match their energy.
-- MUST end by gently asking if they want to see the catalog, menu, or browse products.
-- Do NOT push specific products yet, just offer the catalog.
-- Max 2 sentences. WhatsApp tone.
+- Be warm and genuinely human — match their energy and language exactly.
+- Acknowledge their greeting naturally first (1 short line).
+- Then ask ONE simple open question: what brings them in today, or if they need anything.
+- Do NOT immediately list products or push the catalog — let them respond first.
+- Max 2 sentences. Pure WhatsApp tone — contractions, informal phrasing is fine.
 - Language: {language}
-- CRITICAL: NEVER say an order has been placed, confirmed, or is being processed.
-- CRITICAL: NEVER say a booking or appointment has been made or scheduled.
-- CRITICAL: NEVER suggest specific dates, times, or time slots.
-- ONLY invite them to browse — do NOT imply any action has been taken."""
+- CRITICAL: NEVER confirm or imply any order, booking, or appointment has been made."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
             return {
                 "handled": True,
                 "messages": [{"text": reply}],
                 "escalate": False,
-                "context_update": {"state": "ongoing", "last_intent": intent},
+                "context_update": {
+                    "state": "ongoing",
+                    "last_intent": intent,
+                    # If customer replies "yes/sure/ok", route them to catalog instead of ChatAgent
+                    "waiting_for_service_request": True,
+                    "preferred_language": language,
+                },
             }
         except Exception as e:
             logger.error(f"[SalesAgent] customer_chat handler error: {e}")

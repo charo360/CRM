@@ -21,7 +21,7 @@ ORDER_INTENTS = {"ORDER_STATUS", "DELIVERY_INQUIRY", "TRACKING", "ORDER_CANCEL",
 PAYMENT_INTENTS = {"PAYMENT_CONFIRM", "PAYMENT_METHOD", "PAYMENT_ISSUE", "REFUND_REQUEST"}
 COMPLAINT_INTENTS = {"COMPLAINT", "NEGATIVE_FEEDBACK", "DAMAGED_ITEM", "WRONG_ITEM", "ESCALATION"}
 CHAT_INTENTS = {"GENERAL_CHAT", "PERSONAL_CHAT", "GREETING", "SMALL_TALK", "OFF_TOPIC"}
-BOOKING_INTENTS = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "BOOKING_STATUS", "BOOKING_CANCEL", "RESCHEDULE"}
+BOOKING_INTENTS = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "BOOKING_STATUS", "BOOKING_CANCEL", "RESCHEDULE", "RESET_CONVERSATION"}
 
 # Intents that must always escalate — AI should never handle alone
 ALWAYS_ESCALATE_INTENTS = {"LEGAL_THREAT", "FRAUD_CLAIM", "ESCALATION"}
@@ -182,6 +182,22 @@ _PAYMENT_CONFIRM_KEYWORDS = {
     "sent the money", "money sent", "mpesa sent", "i sent", "transferred",
     "i transferred", "done paying", "check your mpesa", "paid",
     "i've made the payment", "payment complete", "transaction done",
+    # Swahili
+    "nimelipa", "nimetuma pesa", "nimetuma", "pesa imekwenda", "malipo yamefanyika",
+    "angalia mpesa", "nimesend", "lipa imefanyika",
+    # French
+    "j'ai payé", "paiement effectué", "j'ai envoyé l'argent", "virement fait",
+    "transaction faite", "j'ai fait le virement",
+    # Spanish
+    "ya pagué", "hice el pago", "transferí", "pago realizado", "te mandé el dinero",
+    # Portuguese
+    "já paguei", "fiz o pagamento", "transferi", "enviei o dinheiro",
+    # Hausa
+    "na biya", "na aika kudi", "biya ya yi",
+    # Pidgin
+    "i don pay", "i don send the money", "payment don go", "money don enter",
+    # Hindi/Hinglish
+    "pay kar diya", "paise bhej diye", "payment ho gaya", "transfer kar diya",
 }
 
 _CATALOG_EXACT_KEYWORDS = {
@@ -195,8 +211,28 @@ _CATALOG_EXACT_KEYWORDS = {
     "bidhaa", "orodha", "bei", "nini mnacho", "mnauza nini",
     "unacho nini", "unauzaje", "unauza nini", "nataka kununua",
     "nataka kubuy", "nataka buy", "buy kitu", "nataka kubuy kitu",
+    "nipe orodha", "niambie bei", "mnauza nini", "una nini",
     # French
-    "catalogue", "produits", "prix",
+    "catalogue", "produits", "prix", "qu'est-ce que vous vendez",
+    "montrez-moi vos produits", "liste des produits", "je veux acheter",
+    "je veux commander", "qu'avez-vous", "vos produits",
+    # Spanish
+    "catálogo", "productos", "qué vendes", "qué tienen", "lista de precios",
+    "quiero comprar", "quiero pedir", "qué tienes", "muéstrame",
+    # Portuguese
+    "catálogo", "produtos", "o que você vende", "lista de preços",
+    "quero comprar", "quero pedir", "o que tem",
+    # Hausa
+    "kaya", "abin da kuke da shi", "farashin kaya", "nuna mini kayan",
+    # Yoruba
+    "ohun ti e ta", "elo ni", "fi han mi",
+    # Igbo
+    "ihe i na-ere", "ego ole", "gosi m",
+    # Pidgin
+    "wetin you dey sell", "show me wetin you get", "wetin dey",
+    "price list abeg", "send me your tings",
+    # Hindi/Hinglish
+    "kya hai", "price batao", "products dikhao", "kya milega", "list bhejo",
 }
 
 _BOOKING_EXACT_KEYWORDS = {
@@ -204,7 +240,23 @@ _BOOKING_EXACT_KEYWORDS = {
     "make appointment", "i need an appointment", "schedule",
     "i want an appointment", "book appointment", "reserve",
     # Swahili
-    "nipangie", "nataka kupanga", "booking",
+    "nipangie", "nataka kupanga", "nataka kuhifadhi", "panga appointment",
+    "hifadhi nafasi", "nataka nafasi", "panga nafasi",
+    # French
+    "réserver", "prendre rendez-vous", "je veux réserver", "une réservation",
+    "fixer un rendez-vous", "prendre un créneau",
+    # Spanish
+    "reservar", "quiero reservar", "hacer una cita", "necesito una cita",
+    "una reserva", "agendar", "hacer una reservación",
+    # Portuguese
+    "reservar", "quero reservar", "fazer uma reserva", "marcar consulta",
+    "agendar", "uma consulta",
+    # Hausa
+    "ina son alƙawari", "yi alƙawari", "ɗauki lokaci",
+    # Pidgin
+    "i wan book", "book me abeg", "make appointment abeg",
+    # Hindi/Hinglish
+    "booking chahiye", "appointment chahiye", "book karna hai", "reserve karo",
 }
 
 _PRICE_PATTERNS = [
@@ -215,20 +267,132 @@ _PRICE_PATTERNS = [
     r'\bbei\s+(ya|gani)\b',  # Swahili
 ]
 
+_RESET_EXACT_KEYWORDS = {
+    "start over", "reset", "begin again", "restart", "start afresh", "afresh",
+    "clear", "forget it", "nevermind", "never mind", "go back", "back",
+    "tuanze upya", "anza upya", "safisha",  # Swahili
+    "recommencer", "annuler", "retour",    # French
+}
+
+def _detect_language(message: str) -> str:
+    """
+    Fast keyword-based language detection for deterministic overrides.
+    Returns a language name string. Falls back to 'English' if unknown.
+    Covers 15+ languages including African, Asian, and European variants.
+    """
+    msg = message.lower()
+
+    # Arabic script — check character range first (fast)
+    if any('\u0600' <= c <= '\u06ff' for c in message):
+        return "Arabic"
+    # Amharic/Ethiopic script
+    if any('\u1200' <= c <= '\u137f' for c in message):
+        return "Amharic"
+    # Hindi/Devanagari script
+    if any('\u0900' <= c <= '\u097f' for c in message):
+        return "Hindi"
+
+    # Sheng — check BEFORE Swahili because they share words like "niaje", "mambo"
+    # Sheng is identified by slang markers absent from standard Swahili
+    _sheng_markers = {"manze", "buda", "dame", "si unajua", "fiti", "nilikuwa naomba", "maze",
+                      "gani hii", "mtu wangu", "naomba hiyo", "uko poa", "niko poa", "wacha", "kweli kabisa"}
+    if any(kw in msg for kw in _sheng_markers):
+        return "Sheng"
+
+    # Swahili indicators (standard)
+    _sw_words = {"habari", "mambo", "niaje", "sasa", "shikamoo", "asante", "pole", "karibu",
+                 "samahani", "bidhaa", "nataka", "mpesa", "nzuri", "poa", "nipe", "tuma", "lipa",
+                 "nunua", "kununua", "niambie", "orodha", "unacho", "mnauza", "nakuomba",
+                 "naomba", "sawa", "bei", "gani", "chakula", "huduma", "agiza", "amri"}
+    _sw_substrings = ("nataka", "bidhaa", "mpesa", "habari", "karibu", "asante", "niambie", "bei gani")
+    if any(w in msg.split() for w in _sw_words) or any(kw in msg for kw in _sw_substrings):
+        return "Swahili"
+
+    # Hausa (West Africa — Nigeria, Niger, Ghana)
+    _ha = {"sannu", "ina kwana", "yaya", "kaya", "sayi", "tsada", "nawa", "farashin",
+           "ina son", "abin da kuke da shi", "nemo", "littafin farashi", "don allah"}
+    if any(w in msg.split() for w in _ha) or any(kw in msg for kw in ("ina kwana", "don allah", "ina son")):
+        return "Hausa"
+
+    # Yoruba (Nigeria)
+    _yo = {"ẹ jọ", "e jo", "bawo", "jọwọ", "nibo", "elo", "daadaa", "ẹ káàbọ̀", "e kaabo",
+           "mo fẹ", "mo fe", "ki lo ni", "kini owo re", "wa fun mi"}
+    if any(kw in msg for kw in _yo):
+        return "Yoruba"
+
+    # Igbo (Nigeria)
+    _ig = {"biko", "kedu", "olee", "ego ole", "achọrọ m", "achoro m", "ọ dị mma",
+           "o di mma", "gwa m", "ihe ị na-ere"}
+    if any(kw in msg for kw in _ig):
+        return "Igbo"
+
+    # Somali
+    _so = {"salaan", "mahadsanid", "waa maxay", "intee", "fadlan", "rabanahay", "waxaan rabo",
+           "qiimaha", "liiska", "buug", "ballan"}
+    if any(w in msg.split() for w in _so) or any(kw in msg for kw in ("waxaan rabo", "qiimaha", "mahadsanid")):
+        return "Somali"
+
+    # Luganda (Uganda)
+    _lg = {"gyebale", "webale", "ssebo", "nnyabo", "nsaba", "nyiga", "ffene", "wasuze otya",
+           "ndi", "nkwagala", "kiki", "wadde"}
+    if any(w in msg.split() for w in _lg):
+        return "Luganda"
+
+    # Pidgin English (West/Central Africa — Nigeria, Ghana, Cameroon)
+    _pid = {"abeg", "oya", "wetin", "how far", "no wahala", "i dey", "na wetin",
+            "make i", "shey", "e dey", "na im", "dey find", "how e dey", "dey sell"}
+    if any(kw in msg for kw in _pid):
+        return "Pidgin"
+
+    # French indicators
+    _fr_words = {"bonjour", "bonsoir", "salut", "merci", "produits", "catalogue",
+                 "combien", "réserver", "disponible", "annuler", "je veux", "je cherche",
+                 "s'il vous plaît", "qu'est-ce", "pouvez-vous", "quel est"}
+    _fr_sub = ("je veux", "je cherche", "combien", "s'il vous", "bonjour", "bonsoir")
+    if any(w in msg.split() for w in _fr_words) or any(kw in msg for kw in _fr_sub):
+        return "French"
+
+    # Spanish indicators
+    _es_words = {"hola", "buenos", "buenas", "gracias", "por favor", "cuánto", "cuanto",
+                 "quiero", "necesito", "tienes", "tienen", "precio", "catálogo", "reservar",
+                 "disponible", "cuándo", "cuando", "puedo", "puedes"}
+    _es_sub = ("hola", "buenos", "quiero", "por favor", "cuánto", "necesito")
+    if any(w in msg.split() for w in _es_words) or any(kw in msg for kw in _es_sub):
+        return "Spanish"
+
+    # Portuguese indicators
+    _pt_words = {"olá", "ola", "bom dia", "boa tarde", "obrigado", "obrigada", "quanto",
+                 "produto", "preço", "reservar", "disponível", "quero", "preciso",
+                 "quanto custa", "tem", "qual"}
+    _pt_sub = ("bom dia", "boa tarde", "quanto custa", "obrigado", "preciso")
+    if any(w in msg.split() for w in _pt_words) or any(kw in msg for kw in _pt_sub):
+        return "Portuguese"
+
+    # Hinglish (Hindi–English code-switching, Latin script)
+    _hi_latin = {"kya", "kitna", "hai", "nahi", "karo", "chahiye", "milega", "dedo",
+                 "bata", "price batao", "kab", "kaise", "kyun", "thik hai", "sahi hai"}
+    if any(w in msg.split() for w in _hi_latin) or any(kw in msg for kw in ("price batao", "kitna hai", "kya hai", "chahiye")):
+        return "Hinglish"
+
+    return "English"
+
+
 def _deterministic_intent_override(message: str) -> dict | None:
     """
     Fast rules-only pre-check before the LLM is called.
     Returns a result dict if the intent is unambiguous, else None.
     This is the primary stability mechanism — these keywords NEVER touch the LLM.
+    Language is auto-detected from the message so non-English speakers get replies in their language.
     """
     msg = message.strip().lower()
+    lang = _detect_language(message)
 
     # Catalog/product request → always CATALOG_REQUEST
     if msg in _CATALOG_EXACT_KEYWORDS or any(msg.startswith(kw) for kw in _CATALOG_EXACT_KEYWORDS if len(kw) > 3):
         return {
             "intent": "CATALOG_REQUEST",
             "sentiment": "neutral",
-            "language": "English",
+            "language": lang,
             "entities": {"products": [], "amounts": [], "dates": [], "other": []},
             "conversation_state": "ongoing",
             "confidence": 1.0,
@@ -243,7 +407,7 @@ def _deterministic_intent_override(message: str) -> dict | None:
         return {
             "intent": "BOOKING_REQUEST",
             "sentiment": "neutral",
-            "language": "English",
+            "language": lang,
             "entities": {"products": [], "amounts": [], "dates": [], "other": []},
             "conversation_state": "ongoing",
             "confidence": 1.0,
@@ -259,7 +423,7 @@ def _deterministic_intent_override(message: str) -> dict | None:
             return {
                 "intent": "PRICE_INQUIRY",
                 "sentiment": "neutral",
-                "language": "English",
+                "language": lang,
                 "entities": {"products": [], "amounts": [], "dates": [], "other": []},
                 "conversation_state": "ongoing",
                 "confidence": 1.0,
@@ -274,13 +438,14 @@ def _deterministic_intent_override(message: str) -> dict | None:
         return {
             "intent": "AVAILABILITY_CHECK",
             "sentiment": "neutral",
-            "language": "English",
+            "language": lang,
             "entities": {"products": [], "amounts": [], "dates": [], "other": []},
             "conversation_state": "ongoing",
             "confidence": 1.0,
             "needs_escalation": False,
             "escalation_reason": None,
             "keywords": ["availability"],
+            "contact_signal": {"type": "customer", "confidence": 0.95, "reason": "business keyword detected"},
         }
     # Only classify as PAYMENT_CONFIRM if the message actually looks like one
     # Prevent short ambiguous words from being misrouted to PaymentAgent
@@ -288,10 +453,21 @@ def _deterministic_intent_override(message: str) -> dict | None:
     _looks_like_payment = _has_payment_kw or any(
         w in msg for w in ["paid", "mpesa", "transferred", "sent money", "payment", "transaction"]
     )
-    if not _looks_like_payment and len(msg.split()) <= 3:
-        # Very short message with no payment keywords — never route to PAYMENT_CONFIRM
-        # Let LLM handle it with full context instead
-        return None
+    # Reset/Start over request
+    if msg in _RESET_EXACT_KEYWORDS or any(msg.startswith(kw) for kw in _RESET_EXACT_KEYWORDS if len(kw) > 4):
+        return {
+            "intent": "RESET_CONVERSATION",
+            "sentiment": "neutral",
+            "language": lang,
+            "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+            "conversation_state": "new",
+            "confidence": 1.0,
+            "needs_escalation": False,
+            "escalation_reason": None,
+            "keywords": ["reset"],
+            "contact_signal": {"type": "customer", "confidence": 0.8, "reason": "reset keyword detected"},
+        }
+
     return None
 
 
@@ -313,6 +489,37 @@ async def analyze_intent(
     _override = _deterministic_intent_override(message)
     if _override:
         return _override
+
+    # Affirmation gate: if the agent asked "want to see our services/catalog?"
+    # and the customer replies with a simple yes/ok/sure → treat as catalog/booking intent
+    # This prevents "yes" from looping back to ChatAgent and losing the thread.
+    _AFFIRMATIONS = {"yes", "yeah", "yep", "yah", "sure", "ok", "okay", "ok!", "yes!", "sure!",
+                     "yep!", "yes please", "sure thing", "go ahead", "show me", "proceed",
+                     "ndio", "sawa", "karibu", "ndiyo",  # Swahili
+                     "oui", "bien sûr", "d'accord",      # French
+                     "نعم", "أجل",                       # Arabic
+    }
+    _msg_stripped = message.strip().lower().rstrip("!?.,'")
+    if _msg_stripped in _AFFIRMATIONS and conversation_state.get("waiting_for_service_request"):
+        _target_intent = "BOOKING_REQUEST" if any(k in (business_type or "").lower() for k in (
+            "salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service",
+            "rental", "airbnb", "restaurant", "hotel", "saloon",
+        )) else "CATALOG_REQUEST"
+        lang = _detect_language(message) if _msg_stripped not in {"yes", "yeah", "yep", "sure", "ok", "okay"} else conversation_state.get("preferred_language", "English") or "English"
+        return {
+            "intent": _target_intent,
+            "sentiment": "neutral",
+            "language": lang,
+            "entities": {"products": [], "amounts": [], "dates": [], "other": []},
+            "conversation_state": "ongoing",
+            "confidence": 0.95,
+            "needs_escalation": False,
+            "escalation_reason": None,
+            "keywords": ["affirmation"],
+            "contact_signal": {"type": "customer", "confidence": 0.9, "reason": "affirmation after service offer"},
+            "_relationship": "follow_up",
+            "_hours_since_last": None,
+        }
 
     try:
         from ai_service import get_drafter
@@ -346,10 +553,65 @@ async def analyze_intent(
         SERVICE_BUSINESS_TYPES = {"salon", "saloon", "barbershop", "spa", "clinic", "healthcare", "fitness", "gym", "services", "restaurant", "hotel", "beauty", "rental"}
         _btype = (business_type or "").lower().strip()
         booking_bias = ""
-        if _btype in SERVICE_BUSINESS_TYPES or any(k in _btype for k in ("salon", "spa", "clinic", "barber", "beauty", "fitness", "gym", "service", "rental", "airbnb")):
+        if _btype == "creator":
             booking_bias = (
-                f"\n� BUSINESS TYPE: '{business_type}' — This business offers SERVICES/APPOINTMENTS/RENTALS."
-                f"\n   • When customer asks 'what do you offer', 'show me services', 'what do you have' → classify naturally (CATALOG_REQUEST or BOOKING_REQUEST both acceptable)"
+                f"\n🎨 BUSINESS TYPE: 'creator' — This is a content creator / influencer business."
+                f"\n   • Incoming messages are from brands wanting collabs, fans, or personal contacts."
+                f"\n   • When someone asks about collabs, sponsorships, rates, what's included → CATALOG_REQUEST or BOOKING_REQUEST"
+                f"\n   • When someone asks about deadlines, budgets, deliverables → BOOKING_REQUEST"
+                f"\n   • When someone is a fan sending praise or casual messages → GENERAL_CHAT"
+                f"\n   • NEVER classify a fan DM as a booking request unless they explicitly mention a collab."
+            )
+        elif _btype == "fitness" or any(k in _btype for k in ("gym", "yoga", "pilates", "crossfit", "zumba")):
+            booking_bias = (
+                f"\n🏋️ BUSINESS TYPE: 'fitness' — This is a gym / fitness studio."
+                f"\n   • When customer asks about classes, schedule, timetable → AVAILABILITY_CHECK"
+                f"\n   • When customer asks about membership, pricing, packages → CATALOG_REQUEST"
+                f"\n   • When customer wants to join a class, sign up, book a session → BOOKING_REQUEST"
+                f"\n   • When customer asks about a trainer → CATALOG_REQUEST or BOOKING_REQUEST"
+                f"\n   • NEVER treat class schedule questions as ORDER_INQUIRY — they are AVAILABILITY_CHECK."
+            )
+        elif _btype == "healthcare" or any(k in _btype for k in ("clinic", "hospital", "doctor", "dental", "pharmacy", "medical", "health")):
+            booking_bias = (
+                f"\n🏥 BUSINESS TYPE: 'healthcare' — This is a medical/health practice."
+                f"\n   • When patient asks about doctors, specialists, services offered → CATALOG_REQUEST"
+                f"\n   • When patient asks about availability, slots, appointment times → AVAILABILITY_CHECK"
+                f"\n   • When patient says 'I need to see a doctor', 'book appointment', 'schedule a visit' → BOOKING_REQUEST"
+                f"\n   • When patient asks about insurance, NHIF, cost → PRODUCT_INQUIRY"
+                f"\n   • NEVER classify appointment booking as ORDER_INQUIRY."
+            )
+        elif _btype == "restaurant" or any(k in _btype for k in ("cafe", "eatery", "bistro", "hotel", "canteen")):
+            booking_bias = (
+                f"\n🍽️ BUSINESS TYPE: 'restaurant' — This is a food/dining establishment."
+                f"\n   • When customer asks about the menu, what's available, food options → CATALOG_REQUEST"
+                f"\n   • When customer wants to make a reservation, book a table → BOOKING_REQUEST"
+                f"\n   • When customer asks about dietary options, halal, vegan → PRODUCT_INQUIRY"
+                f"\n   • When customer asks about availability / table for a specific time → AVAILABILITY_CHECK"
+                f"\n   • NEVER classify a table reservation as an ORDER_INQUIRY."
+            )
+        elif _btype == "salon" or any(k in _btype for k in ("saloon", "barbershop", "beauty", "spa", "barber", "nail", "lash")):
+            booking_bias = (
+                f"\n💇 BUSINESS TYPE: 'salon' — This is a hair/beauty salon or spa."
+                f"\n   • When customer asks about services, prices, what's available → CATALOG_REQUEST"
+                f"\n   • When customer asks about a specific stylist → CATALOG_REQUEST"
+                f"\n   • When customer wants to book, make appointment → BOOKING_REQUEST"
+                f"\n   • When customer asks about availability, free slots, when is [stylist] free → AVAILABILITY_CHECK"
+                f"\n   • NEVER treat a service inquiry as ORDER_INQUIRY."
+            )
+        elif _btype == "tech" or any(k in _btype for k in ("saas", "fintech", "software", "app", "platform", "agency", "startup", "digital")):
+            booking_bias = (
+                f"\n💻 BUSINESS TYPE: 'tech' — This is a software/SaaS/fintech/digital product company."
+                f"\n   • When prospect asks about features, what the product does → PRODUCT_INQUIRY or CATALOG_REQUEST"
+                f"\n   • When prospect asks about pricing, plans, cost → PRODUCT_INQUIRY"
+                f"\n   • When prospect wants a demo, trial, walkthrough, onboarding call → BOOKING_REQUEST"
+                f"\n   • When prospect asks about integrations, API, security → PRODUCT_INQUIRY"
+                f"\n   • When existing customer asks about support, billing, account issues → COMPLAINT or GENERAL_CHAT"
+                f"\n   • NEVER classify a demo request as AVAILABILITY_CHECK — it is BOOKING_REQUEST."
+            )
+        elif _btype in SERVICE_BUSINESS_TYPES or any(k in _btype for k in ("service", "rental", "airbnb")):
+            booking_bias = (
+                f"\n📅 BUSINESS TYPE: '{business_type}' — This business offers SERVICES/APPOINTMENTS/RENTALS."
+                f"\n   • When customer asks 'what do you offer', 'show me services', 'what do you have' → CATALOG_REQUEST or BOOKING_REQUEST"
                 f"\n   • When customer asks about availability, times, dates → AVAILABILITY_CHECK"
                 f"\n   • When customer says 'I want to book', 'make appointment' → BOOKING_REQUEST"
                 f"\n   • Routing to correct agent happens automatically based on business type, so classify intent naturally."
@@ -386,7 +648,10 @@ GREETING: "sasa", "niaje", "mambo", "hi", "habari", "bonjour", "hola", "नम�
 COMPLAINT: "bidhaa mbaya", "siko happy", "not what I ordered", "je ne suis pas satisfait", "I'm not happy", "poor quality", "this is wrong", "مشكلة"
 BOOKING_REQUEST: "I want to book", "naweza kuja lini", "je veux réserver", "quiero una cita", "book me in", "can I make an appointment", "احجز لي"
 AVAILABILITY_CHECK: "when are you available", "are you open Saturday", "do you have slots", "quand êtes-vous disponible", "متى تكونون متاحين"
+BOOKING_STATUS: "status ya booking", "my appointment", "is my booking confirmed", "ma réservation est-elle confirmée", "mis citas", "show my bookings", "booking yangu", "طلبي للموعد", "where is my booking"
 NEGOTIATION: "can you do better", "too expensive", "bei ni kubwa sana", "c'est trop cher", "any discount", "best price", "kuna offer"
+RESET_CONVERSATION: "start over", "restart", "clear everything", "wrong booking", "actually let's do something else", "begin again", "tuanze upya", "anza tena"
+GO_BACK: "ignore that last message", "wait go back", "previous step", "actually not that", "go back", "rudisha nyuma"
 
 ══ GLOBAL LANGUAGE RULES ══
 - Classify in ANY language — no language is default or assumed
@@ -545,9 +810,9 @@ def route_intent_to_agent(intent: str, business_type: str = "", contact_type: st
     
     # Service/Rental/Restaurant businesses → ALWAYS use BookingAgent (except complaints/orders/payments)
     SERVICE_BUSINESS_TYPES = {
-        "salon", "saloon", "barbershop", "spa", "clinic", "healthcare", 
-        "fitness", "gym", "services", "restaurant", "hotel", "beauty", 
-        "rental", "airbnb", "creator"
+        "salon", "saloon", "barbershop", "spa", "clinic", "healthcare",
+        "fitness", "gym", "services", "restaurant", "hotel", "beauty",
+        "rental", "airbnb", "creator", "tech"
     }
     
     is_service_business = (
@@ -567,16 +832,15 @@ def route_intent_to_agent(intent: str, business_type: str = "", contact_type: st
     if is_service_business:
         if intent in (SALES_INTENTS | BOOKING_INTENTS):
             return "booking"
-        # Contact-Aware Routing: Known customers skip the ChatAgent for small talk
-        if contact_type == "KNOWN_CUSTOMER" and intent in CHAT_INTENTS:
-            return "booking"
-    
+
     # Retail/Shop businesses → SalesAgent for ALL catalog/sales/booking intents
     else:
         if intent in (SALES_INTENTS | BOOKING_INTENTS):
             return "sales"
-        # Contact-Aware Routing: Known customers skip the ChatAgent for small talk
-        if contact_type == "KNOWN_CUSTOMER" and intent in CHAT_INTENTS:
-            return "sales"
-    
+
+    # Chat intents (GREETING, GENERAL_CHAT, SMALL_TALK, PERSONAL_CHAT, OFF_TOPIC)
+    # always go to ChatAgent — for ALL contact types.
+    # ChatAgent replies naturally and has guardrails that return handled=False
+    # when a real booking/order request is detected, which then falls through
+    # to the correct agent. Never push products at someone who just said hi.
     return "chat"

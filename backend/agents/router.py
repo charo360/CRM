@@ -12,6 +12,7 @@ from .payment_agent import PaymentAgent
 from .complaint_agent import ComplaintAgent
 from .chat_agent import ChatAgent
 from .booking_agent import BookingAgent
+from .personal_agent import PersonalAgent
 from .session_summarizer import maybe_summarize, format_summary_for_prompt
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,8 @@ def _get_model_for_intent(intent: str, sentiment: str) -> str:
 
 # 17: Multilingual word-to-number map for menu selection normalization
 _SELECTION_MAP = {
-    # Digits
+    # Digits — 0 triggers "view all images/gallery" in catalog/service menus
+    "0": 0,
     "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
     # English words
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -75,9 +77,49 @@ _SELECTION_MAP = {
 
 
 def _normalize_selection(message: str):
-    """17: Normalize a customer reply to a menu item number. Returns int or None."""
+    """17: Normalize a customer reply to a menu item number. Returns int or None.
+    First tries exact match from the map, then falls back to extracting a digit
+    from short natural phrases like 'I'll take 2', 'give me the third one'.
+    """
     cleaned = message.strip().lower()
-    return _SELECTION_MAP.get(cleaned)
+    exact = _SELECTION_MAP.get(cleaned)
+    if exact is not None:
+        return exact
+    # Fallback: extract a single digit from short conversational messages (≤5 words)
+    # Avoids false positives on longer sentences like "I want 2 kg of rice"
+    if len(cleaned.split()) <= 5:
+        import re as _re
+        _dm = _re.search(r'\b([1-9])\b', cleaned)
+        if _dm:
+            return int(_dm.group(1))
+    return None
+
+
+# Escalation acknowledgment — customer always gets this when we hand off to a human.
+# Never let the customer sit in silence wondering if their message was received.
+_ESCALATION_ACK_MSGS = {
+    "English":    "Thanks for your message! Someone from our team will be with you shortly. 😊",
+    "Swahili":    "Asante kwa ujumbe wako! Mtu kutoka timu yetu atakujibu hivi karibuni. 😊",
+    "Sheng":      "Sawa! Mtu wetu atakujibu hivi sasa. 😊",
+    "French":     "Merci pour votre message ! Un membre de notre équipe vous répondra bientôt. 😊",
+    "Spanish":    "¡Gracias por tu mensaje! Alguien de nuestro equipo te responderá pronto. 😊",
+    "Portuguese": "Obrigado pela sua mensagem! Alguém da nossa equipe responderá em breve. 😊",
+    "Arabic":     "شكراً لرسالتك! سيتواصل معك أحد أعضاء فريقنا قريباً. 😊",
+    "Hausa":      "Na gode da saƙonka! Ɗan ƙungiyarmu zai amsa da sauri. 😊",
+    "Yoruba":     "E dupe fun ifiranṣẹ rẹ! Ẹnikan lati ẹgbẹ wa yoo dahun laipẹ. 😊",
+    "Igbo":       "Daalụ maka ozi gị! Onye n'otu anyị ga-azaghachi ngwa ngwa. 😊",
+    "Somali":     "Mahadsanid fariintaada! Xubin ka tirsan kooxdeena ayaa kugu jawaabi doona dhawaan. 😊",
+    "Luganda":    "Webale obubaka bwo! Omuntu ku ffe agenda kukuddamu amangu. 😊",
+    "Pidgin":     "Thank you for your message! Our person go reply you soon. 😊",
+    "Hinglish":   "Aapka message mila! Hamari team jald hi jawab degi. 😊",
+    "Amharic":    "ለመልእክትዎ እናመሰግናለን! የቡድናችን አባል በቅርቡ ያገኝዎታል። 😊",
+    "Hindi":      "आपका संदेश मिल गया! हमारी टीम का कोई सदस्य जल्द ही जवाब देगा। 😊",
+}
+
+
+def _escalation_ack(language: str = "English") -> str:
+    """Return a human-handoff acknowledgment in the customer's language."""
+    return _ESCALATION_ACK_MSGS.get(language, _ESCALATION_ACK_MSGS["English"])
 
 
 # 16.3: Business-critical intents that warrant owner notification
@@ -95,6 +137,95 @@ def should_notify_owner(contact_signal: dict, intent: str) -> bool:
     if intent in _BUSINESS_CRITICAL_INTENTS:
         return True
     return False
+
+
+def _infer_correct_agent(intent: str, message: str, business_type: str) -> Optional[str]:
+    """
+    When ChatAgent hallucinates a booking/order confirmation, figure out which agent
+    should actually handle this message.
+
+    Strategy:
+      1. If intent already maps to a non-chat agent, use that.
+      2. Otherwise scan the raw message for domain-specific keywords to infer.
+      3. Return agent name string, or None if we genuinely can't tell.
+    """
+    from .intent_analyzer import (
+        BOOKING_INTENTS, ORDER_INTENTS, PAYMENT_INTENTS,
+        COMPLAINT_INTENTS, SALES_INTENTS, route_intent_to_agent,
+    )
+
+    # Step 1: intent-based routing (already computed, fast)
+    routed = route_intent_to_agent(intent, business_type)
+    if routed != "chat":
+        logger.info(f"[InferAgent] intent={intent} → {routed}")
+        return routed
+
+    # Step 2: message-level keyword scan — intent was GENERAL_CHAT but content was business
+    msg = message.lower()
+    _btype = (business_type or "").lower()
+    _is_service = any(k in _btype for k in (
+        "salon", "spa", "clinic", "barber", "beauty", "fitness", "gym",
+        "service", "rental", "airbnb", "restaurant", "hotel", "saloon",
+    ))
+
+    # Booking signals (services/rentals)
+    _BOOKING_SIGNALS = [
+        "book", "booking", "appointment", "schedule", "reserve", "slot",
+        "checkin", "check-in", "checkout", "check-out", "available",
+        "when can i", "can i come", "what time", "next week", "tomorrow",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        # Swahili
+        "hifadhi", "nafasi", "miadi", "weka", "booking yangu",
+        # French
+        "réserver", "rendez-vous", "disponible",
+    ]
+    # Order/product signals
+    _ORDER_SIGNALS = [
+        "order", "delivery", "my order", "where is", "track", "shipped",
+        "order yangu", "amri yangu", "commande",
+    ]
+    # Payment signals
+    _PAYMENT_SIGNALS = [
+        "pay", "paid", "payment", "mpesa", "transfer", "invoice",
+        "receipt", "lipa", "pesa", "paiement",
+    ]
+    # Complaint signals
+    _COMPLAINT_SIGNALS = [
+        "wrong", "broken", "damaged", "unhappy", "complaint", "refund",
+        "not what", "poor quality", "mbaya", "tatizo", "problème",
+    ]
+    # Sales/product signals
+    _SALES_SIGNALS = [
+        "price", "how much", "catalog", "buy", "purchase", "stock",
+        "bei", "nunua", "order something", "i want to buy",
+        "prix", "acheter",
+    ]
+
+    booking_hits = sum(1 for s in _BOOKING_SIGNALS if s in msg)
+    order_hits = sum(1 for s in _ORDER_SIGNALS if s in msg)
+    payment_hits = sum(1 for s in _PAYMENT_SIGNALS if s in msg)
+    complaint_hits = sum(1 for s in _COMPLAINT_SIGNALS if s in msg)
+    sales_hits = sum(1 for s in _SALES_SIGNALS if s in msg)
+
+    scores = {
+        "booking" if _is_service else "sales": booking_hits,
+        "order": order_hits,
+        "payment": payment_hits,
+        "complaint": complaint_hits,
+        "sales": sales_hits,
+    }
+
+    best_agent, best_score = max(scores.items(), key=lambda x: x[1])
+    if best_score >= 1:
+        logger.info(
+            f"[InferAgent] Message-level inference: best={best_agent} (score={best_score}) "
+            f"from scores={scores} for message='{message[:60]}'"
+        )
+        return best_agent
+
+    # Can't determine — caller should escalate
+    logger.info(f"[InferAgent] Could not infer agent for intent={intent} message='{message[:60]}'")
+    return None
 
 
 class Router:
@@ -168,12 +299,75 @@ class Router:
         if conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
             _sel = _normalize_selection(message)
             _menu_items = conv_state.get("menu_items", {})
+
+            # "0" = view all images / gallery — special signal to server.py
+            if _sel == 0:
+                if customer_id:
+                    await save_state(self.db, user_id, str(customer_id), {
+                        "active_menu": False, "waiting_for_selection": False,
+                        "menu_items": {}, "menu_type": None,
+                    })
+                return {
+                    "handled": True, "escalated": False,
+                    "messages": [],
+                    "show_gallery": True,
+                }
+
             if _sel is not None and str(_sel) in _menu_items:
                 _selected = _menu_items[str(_sel)]
                 _menu_type = conv_state.get("menu_type", "product_selection")
                 _lang = conv_state.get("preferred_language", "English") or "English"
-                logger.info(f"[Router] Menu selection intercepted: '{message}' → {_sel} = {_selected.get('name')} (type={_menu_type})")
-                # Clear menu state immediately
+                logger.info(f"[Router] Menu selection intercepted: '{message}' → {_sel} = {_selected.get('name', 'see_more')} (type={_menu_type})")
+
+                # ── "See more" — catalog pagination ────────────────────────
+                if _selected.get("type") == "see_more":
+                    _offset = int(_selected.get("offset", 8))
+                    _all_ids = conv_state.get("catalog_all_ids", [])
+                    _currency2 = context.get("currency", "")
+                    try:
+                        from bson import ObjectId as _ObjId
+                        from .ui_strings import t as _t
+                        _next_ids = _all_ids[_offset:_offset + 8]
+                        _next_products = []
+                        if _next_ids:
+                            _raw = await self.db.products.find(
+                                {"_id": {"$in": [_ObjId(pid) for pid in _next_ids]}}
+                            ).to_list(8)
+                            _id_map = {str(p["_id"]): p for p in _raw}
+                            _next_products = [_id_map[pid] for pid in _next_ids if pid in _id_map]
+                        _has_more_next = len(_all_ids) > _offset + 8
+                        _lines2 = [_t("products_header", _lang) + "\n"]
+                        for _j, _p2 in enumerate(_next_products, 1):
+                            _price2 = _p2.get("price", 0)
+                            _stock2 = "✅" if _p2.get("in_stock", True) else "❌"
+                            _pstr2 = f"{_currency2} {_price2:,.0f}" if _price2 else "POA"
+                            _lines2.append(f"{_j}️⃣  *{_p2['name']}* — {_pstr2} {_stock2}")
+                        if _has_more_next:
+                            _lines2.append(_t("see_more", _lang))
+                        _lines2.append(_t("view_gallery", _lang))
+                        _lines2.append("\n" + _t("select_number_instruction", _lang))
+                        _new_menu2 = {
+                            str(_j): {"name": _p2["name"], "price": _p2.get("price", 0), "id": str(_p2["_id"]), "type": "product"}
+                            for _j, _p2 in enumerate(_next_products, 1)
+                        }
+                        if _has_more_next:
+                            _new_menu2["9"] = {"type": "see_more", "offset": _offset + 8}
+                        if customer_id:
+                            await save_state(self.db, user_id, str(customer_id), {
+                                "active_menu": bool(_next_products),
+                                "waiting_for_selection": bool(_next_products),
+                                "menu_type": "catalog_selection",
+                                "menu_items": _new_menu2,
+                                "catalog_page_offset": _offset + 8,
+                                "preferred_language": _lang,
+                            })
+                        _page_msg = "\n".join(_lines2) if _next_products else "That's everything we have! Let me know if you'd like more details on any item. 😊"
+                        return {"handled": True, "escalated": False, "messages": [{"text": _page_msg}]}
+                    except Exception as _pe:
+                        logger.error(f"[Router] See more pagination error: {_pe}")
+                        return {"handled": True, "escalated": False, "messages": [{"text": "Couldn't load the next page right now — please try again! 😊"}]}
+
+                # ── Normal selection: clear menu state ──────────────────────
                 if customer_id:
                     await save_state(self.db, user_id, str(customer_id), {
                         "active_menu": False, "waiting_for_selection": False,
@@ -188,24 +382,186 @@ class Router:
                 if _menu_type == "service_selection":
                     _dur = _selected.get("duration")
                     _dur_str = f" ({_dur} min)" if _dur else ""
-                    _reply = (
-                        f"Great choice! *{_name}*{_dur_str} — {_currency} {_price:,.0f}\n\n"
-                        f"When would you like to book? Reply with your preferred date and time."
-                    )
+                    _svc_cat = _selected.get("service_category", "appointment")
+
+                    # Rental with known dates from availability check — create booking directly
+                    _ci = conv_state.get("checkin_date")
+                    _co = conv_state.get("checkout_date")
+                    _is_rental_dates = _svc_cat == "rental" and _ci and _co
+                    if _is_rental_dates:
+                        _nights = conv_state.get("nights", 1)
+                        _total = _price * _nights if _price else 0
+                        _total_str = f" · Total: {_currency} {_total:,.0f}" if _total else ""
+                        _reply = (
+                            f"🏠 *{_name}*\n"
+                            f"Check-in: *{_ci}* → Check-out: *{_co}* ({_nights} night{'s' if _nights != 1 else ''}){_total_str}\n\n"
+                            f"Your reservation request has been received! We'll confirm shortly. 🙏"
+                        )
+                        _flag_reason = f"Rental reservation: {_name} — {_ci} to {_co} ({_nights} nights)"
+                        if customer_id:
+                            try:
+                                import random as _rnd, string as _str2
+                                _bk_num = "BK-" + "".join(_rnd.choices(_str2.digits, k=6))
+                                await self.db.bookings.insert_one({
+                                    "user_id": user_id,
+                                    "customer_id": str(customer_id),
+                                    "service_name": _name,
+                                    "service_id": _product_id,
+                                    "price": _price,
+                                    "checkin_date": _ci,
+                                    "checkout_date": _co,
+                                    "nights": _nights,
+                                    "status": "pending",
+                                    "booking_number": _bk_num,
+                                    "created_at": datetime.now(timezone.utc),
+                                    "created_by": "customer",
+                                })
+                                await self.db.customers.update_one(
+                                    {"_id": customer_id},
+                                    {"$set": {
+                                        "needs_human": True,
+                                        "needs_human_reason": _flag_reason,
+                                        "needs_human_at": datetime.now(timezone.utc),
+                                    }}
+                                )
+                                await save_state(self.db, user_id, str(customer_id), {
+                                    "checkin_date": None, "checkout_date": None, "nights": None,
+                                })
+                            except Exception as _bke:
+                                logger.error(f"[Router] Rental booking create error: {_bke}")
+                        return {"handled": True, "escalated": False, "messages": [{"text": _reply}]}
+
+                    # Rental listing selected from calendar — need to collect check-in AND check-out dates
+                    if _svc_cat == "rental":
+                        _rental_ask = (
+                            f"🏠 *{_name}*\n\n"
+                            f"What are your *check-in* and *check-out* dates?\n"
+                            f"_Reply with both, e.g. *15 April to 20 April* or *15/04 - 20/04*_ 📅"
+                        )
+                        if customer_id:
+                            try:
+                                await self.db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user_id},
+                                    {"$set": {
+                                        "action_context": "rental_dates_input",
+                                        "booking_service_id": _product_id,
+                                        "booking_service_name": _name,
+                                        "booking_service_price": _price,
+                                        "price_unit": _selected.get("price_unit", "night"),
+                                        "updated_at": datetime.now(timezone.utc),
+                                    }},
+                                    upsert=True
+                                )
+                                await save_state(self.db, user_id, str(customer_id), {
+                                    "pending_rental_dates_input": True,
+                                })
+                            except Exception as _rde:
+                                logger.error(f"[Router] Rental dates context save error: {_rde}")
+                        return {
+                            "handled": True, "escalated": False,
+                            "messages": [{"text": _rental_ask}],
+                        }
+
+                    # Regular service — ask for date in customer's language
+                    try:
+                        from ai_service import get_drafter as _gd
+                        _ai = _gd()
+                        _date_prompt = (
+                            f"You are a business owner on WhatsApp. A customer just selected a service to book.\n"
+                            f"Service: {_name}{_dur_str}\nPrice: {_currency} {_price:,.0f}\nLanguage: {_lang}\n\n"
+                            f"Write a warm 2-sentence reply in {_lang}:\n"
+                            f"1. Confirm their service choice warmly\n"
+                            f"2. Ask what date AND time they'd like\n"
+                            f"WhatsApp tone. Output only the customer-facing message."
+                        )
+                        _reply = await _ai._call_llm(_date_prompt, model_pref="standard")
+                    except Exception as _de:
+                        logger.error(f"[Router] Service selection date prompt error: {_de}")
+                        _reply = (
+                            f"Great choice! *{_name}*{_dur_str} — {_currency} {_price:,.0f}\n\n"
+                            f"When would you like to book? Please reply with your preferred *date and time*. 📅"
+                        )
+
+                    # Save service details so the next message routes to BookingAgent for date handling
+                    if customer_id:
+                        try:
+                            await self.db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user_id},
+                                {"$set": {
+                                    "action_context": "booking_date_input",
+                                    "booking_service_id": _product_id,
+                                    "booking_service_name": _name,
+                                    "booking_service_price": _price,
+                                    "booking_service_duration": _dur,
+                                    "updated_at": datetime.now(timezone.utc),
+                                }},
+                                upsert=True
+                            )
+                            await save_state(self.db, user_id, str(customer_id), {
+                                "pending_booking_date_input": True,
+                            })
+                        except Exception as _bpe:
+                            logger.error(f"[Router] Booking date context save error: {_bpe}")
                     return {
                         "handled": True, "escalated": False,
                         "messages": [{"text": _reply}],
                     }
+                elif _menu_type == "single_product_actions":
+                    # Customer picked Order Now / Add to Cart / See Similar
+                    _action = _selected.get("action", "order")
+                    if _action == "similar":
+                        # Re-dispatch to sales to find similar items
+                        _sim_ctx = {**context, "intent": "CATALOG_REQUEST", "_similar_to": _name}
+                        _sim_result = await self._dispatch("sales", user_id, f"show me products similar to {_name}", _sim_ctx)
+                        return {
+                            "handled": True, "escalated": False,
+                            "messages": _sim_result.get("messages") if _sim_result and _sim_result.get("messages") else [{"text": f"Let me find you something similar to *{_name}*! 🛍️"}],
+                        }
+                    else:
+                        # Order Now or Add to Cart — collect delivery details
+                        _order_reply = (
+                            f"*{_name}* — {_currency} {_price:,.0f} 🛒\n\n"
+                            f"How many would you like, and what's your *delivery address*? "
+                            f"(Or let me know if you prefer *pickup*.) 📦"
+                        )
+                        if customer_id:
+                            await save_state(self.db, user_id, str(customer_id), {
+                                "pending_order_creation": True,
+                                "pending_order_product_id": _product_id,
+                                "pending_order_product_name": _name,
+                                "pending_order_price": _price,
+                            })
+                            try:
+                                await self.db.customers.update_one(
+                                    {"_id": customer_id},
+                                    {"$set": {
+                                        "needs_human": True,
+                                        "needs_human_reason": f"Customer wants to order: {_name} ({_currency} {_price:,.0f})",
+                                        "needs_human_at": datetime.now(timezone.utc),
+                                    }}
+                                )
+                            except Exception as _fe:
+                                logger.error(f"[Router] Order flag error: {_fe}")
+                        return {
+                            "handled": True, "escalated": False,
+                            "messages": [{"text": _order_reply}],
+                        }
                 else:
-                    # Return showcase signal so server.py can call send_product_showcase
-                    # with full images + action buttons instead of plain text
+                    # catalog_selection or product_selection → showcase with full images + action buttons
                     return {
                         "handled": True, "escalated": False,
-                        "messages": [],  # server will send showcase instead
+                        "messages": [],  # server.py sends product showcase
                         "showcase_product_id": _product_id,
                     }
             elif _sel is None:
-                # Unrelated reply — clear menu state, continue to intent analyzer
+                # Unrelated text reply — clear menu state, continue to intent analyzer
+                if customer_id:
+                    await save_state(self.db, user_id, str(customer_id), {
+                        "active_menu": False, "waiting_for_selection": False,
+                        "menu_items": {}, "menu_type": None,
+                    })
+            else:
+                # _sel is a number but not in menu_items (e.g. out-of-range) — clear and continue
                 if customer_id:
                     await save_state(self.db, user_id, str(customer_id), {
                         "active_menu": False, "waiting_for_selection": False,
@@ -215,10 +571,23 @@ class Router:
         # ── 2.6: Rate limiting ─────────────────────────────────────────────
         if customer_id and _is_rate_limited(user_id, str(customer_id)):
             logger.warning(f"[Router] Rate limited: user={user_id} customer={customer_id}")
+            _rl_lang = conv_state.get("preferred_language", "English") or "English"
+            _rl_msgs = {
+                "English": "You're sending messages too fast — please wait a moment before trying again. 🙏",
+                "Swahili": "Unatuma ujumbe haraka sana — tafadhali subiri kidogo. 🙏",
+                "Sheng":   "Unatuma fast sana buda — ngoja kidogo. 🙏",
+                "French":  "Vous envoyez des messages trop vite — veuillez patienter un moment. 🙏",
+                "Spanish": "Estás enviando mensajes muy rápido — espera un momento por favor. 🙏",
+                "Arabic":  "ترسل رسائل بسرعة كبيرة — يرجى الانتظار لحظة. 🙏",
+                "Pidgin":  "You dey send message too fast — wait small abeg. 🙏",
+                "Hindi":   "Aap bahut tezi se message bhej rahe hain — thoda ruko please. 🙏",
+                "Hinglish": "Bahut fast message kar rahe ho — thoda wait karo. 🙏",
+                "Hausa":   "Kana aika saƙo da sauri sosai — don Allah jira ɗan lokaci. 🙏",
+            }
             return {
                 "handled": True,
                 "escalated": False,
-                "messages": [{"text": "You're sending messages very quickly. Please wait a moment before trying again."}],
+                "messages": [{"text": _rl_msgs.get(_rl_lang, _rl_msgs["English"])}],
             }
 
         # ── 3. Analyze intent ─────────────────────────────────────────────
@@ -249,11 +618,112 @@ class Router:
         current_contact_type = contact_state.get("contact_type", "UNKNOWN")
         ai_enabled = contact_state.get("ai_enabled", True)
 
+        # ── 3.6: History-based pre-classification (16.6) ─────────────────────
+        # If contact is still UNKNOWN but we have previous message history,
+        # scan it for business signals to classify immediately — no waiting for msg 3+.
+        if current_contact_type == "UNKNOWN" and history:
+            _BIZ_KEYWORDS = {
+                # Products / catalog
+                "price", "bei", "cost", "how much", "ngapi", "catalog", "menu", "stock",
+                "available", "unapatikana", "do you have", "mnayo", "nataka", "i want",
+                "buy", "order", "nunua", "purchase", "delivery", "shipping",
+                # Payments
+                "mpesa", "payment", "pay", "paid", "transfer", "invoice", "receipt",
+                # Bookings
+                "book", "appointment", "schedule", "reserve", "booking",
+                "available", "slot", "checkin", "check-in", "checkout",
+                # Negotiation
+                "discount", "offer", "deal", "wholesale", "bulk",
+                # Support
+                "complaint", "wrong", "damaged", "refund", "exchange",
+            }
+            _biz_hits = 0
+            _personal_hits = 0
+            _PERSONAL_SIGNALS = {"call me", "it's me", "ni mimi", "tuongee", "talk later", "miss you", "love you"}
+            for _hmsg in history[-20:]:  # scan up to last 20 messages
+                _htext = (_hmsg.get("content") or _hmsg.get("text") or "").lower()
+                _hdir = _hmsg.get("direction", "")
+                if _hdir != "incoming":
+                    continue  # only customer-sent messages count
+                if any(_kw in _htext for _kw in _BIZ_KEYWORDS):
+                    _biz_hits += 1
+                if any(_ps in _htext for _ps in _PERSONAL_SIGNALS):
+                    _personal_hits += 1
+            if _biz_hits >= 2 and _biz_hits > _personal_hits:
+                # Clear customer pattern from history — classify immediately
+                logger.info(
+                    f"[Router] History pre-classification: customer={customer_id} → KNOWN_CUSTOMER "
+                    f"({_biz_hits} business signals in history)"
+                )
+                await self._update_contact_state(
+                    str(customer_id) if customer_id else "", user_id,
+                    {"contact_type": "KNOWN_CUSTOMER", "contact_type_source": "history_detected",
+                     "auto_detected_at_message": msg_count, "message_count": msg_count,
+                     "ai_enabled": True, "is_personal": False}
+                )
+                current_contact_type = "KNOWN_CUSTOMER"
+                is_personal = False
+                context["is_personal"] = False
+                # Also upgrade the current contact_signal so downstream logic stays consistent
+                contact_signal = {"type": "customer", "confidence": 0.9, "reason": "business history detected"}
+            elif _personal_hits >= 2 and _personal_hits > _biz_hits and _biz_hits == 0:
+                # Clearly personal pattern from history
+                logger.info(
+                    f"[Router] History pre-classification: customer={customer_id} → NEEDS_REVIEW "
+                    f"({_personal_hits} personal signals in history)"
+                )
+                await self._update_contact_state(
+                    str(customer_id) if customer_id else "", user_id,
+                    {"contact_type": "NEEDS_REVIEW", "contact_type_source": "history_detected",
+                     "auto_detected_at_message": msg_count, "message_count": msg_count,
+                     "ai_enabled": True, "is_personal": False, "needs_owner_classification": True}
+                )
+                if customer_id:
+                    try:
+                        await self.db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$set": {
+                                "needs_human": True,
+                                "needs_human_reason": "Unclassified contact — tap to mark as Customer or Personal",
+                                "needs_human_at": datetime.now(timezone.utc),
+                            }}
+                        )
+                    except Exception as _hpe:
+                        logger.error(f"[Router] History personal flag error: {_hpe}")
+                current_contact_type = "NEEDS_REVIEW"
+                is_personal = False
+                context["is_personal"] = False
+
         # 16.5: If ai_enabled is False (personal contact, owner toggled off) → complete silence
+        # RECOVERY: if a contact that was auto-classified as personal now sends a clear
+        # business intent (product/booking/order/payment), re-enable AI and re-classify.
+        # This prevents legitimate customers from being permanently ghosted after misclassification.
         if not ai_enabled:
-            logger.info(f"[Router] AI disabled for customer={customer_id} (personal contact)")
-            await self._update_contact_state(str(customer_id) if customer_id else "", user_id, {"message_count": msg_count})
-            return None
+            _recovery_intents = {
+                "PRODUCT_INQUIRY", "CATALOG_REQUEST", "PRICE_INQUIRY", "STOCK_CHECK",
+                "BOOKING_REQUEST", "AVAILABILITY_CHECK", "ORDER_STATUS", "PAYMENT_CONFIRM",
+                "PAYMENT_METHOD", "NEGOTIATION", "BULK_ORDER",
+            }
+            _source = contact_state.get("contact_type_source", "")
+            _can_recover = _source in ("auto_detected", "auto_detected_timeout")  # never override owner-manual
+            _sig_conf_early = float(contact_signal.get("confidence", 0.0))
+            if _can_recover and intent in _recovery_intents and _sig_conf_early >= 0.75:
+                logger.info(
+                    f"[Router] RECOVERY: re-classifying customer={customer_id} "
+                    f"from KNOWN_PERSONAL → KNOWN_CUSTOMER (intent={intent} conf={_sig_conf_early:.2f})"
+                )
+                await self._update_contact_state(
+                    str(customer_id) if customer_id else "", user_id,
+                    {"contact_type": "KNOWN_CUSTOMER", "contact_type_source": "auto_recovered",
+                     "ai_enabled": True, "is_personal": False, "message_count": msg_count}
+                )
+                ai_enabled = True
+                is_personal = False
+                context["is_personal"] = False
+            else:
+                logger.info(f"[Router] AI disabled for customer={customer_id} (personal contact)")
+                await self._update_contact_state(str(customer_id) if customer_id else "", user_id, {"message_count": msg_count})
+                return None
 
         sig_type = contact_signal.get("type", "unclear")
         sig_conf = float(contact_signal.get("confidence", 0.0))
@@ -270,40 +740,98 @@ class Router:
                 is_personal = False
                 context["is_personal"] = False
             elif sig_type == "personal" and sig_conf >= 0.65:
-                # Auto-tag as personal, go silent
-                logger.info(f"[Router] Auto-tagged customer={customer_id} as KNOWN_PERSONAL — going silent")
+                # Looks personal — but don't ghost them. Flag for owner review, keep replying naturally.
+                logger.info(f"[Router] Contact={customer_id} looks personal (conf={sig_conf:.2f}) — flagging for owner review")
                 await self._update_contact_state(
                     str(customer_id) if customer_id else "", user_id,
-                    {"contact_type": "KNOWN_PERSONAL", "contact_type_source": "auto_detected",
+                    {"contact_type": "NEEDS_REVIEW", "contact_type_source": "auto_detected",
                      "auto_detected_at_message": msg_count, "message_count": msg_count,
-                     "ai_enabled": False, "is_personal": True}
+                     "ai_enabled": True, "is_personal": False,
+                     "needs_owner_classification": True}
                 )
-                return None
+                if customer_id:
+                    try:
+                        await self.db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$set": {
+                                "needs_human": True,
+                                "needs_human_reason": "Unclassified contact — tap to mark as Customer or Personal",
+                                "needs_human_at": datetime.now(timezone.utc),
+                            }}
+                        )
+                    except Exception as _nre:
+                        logger.error(f"[Router] NEEDS_REVIEW flag error: {_nre}")
+                # Continue pipeline — ChatAgent will reply naturally
+                is_personal = False
+                context["is_personal"] = False
             else:
                 # Still unclear or low confidence
-                if msg_count > 3:
-                    # After 3 messages, if they STILL haven't proven to be a business contact, go silent
-                    logger.info(f"[Router] Unknown contact reached message 4 — defaulting to KNOWN_PERSONAL and going silent")
+                if msg_count > 5:
+                    # After 5 messages still unclear — flag for owner, keep AI on, never ghost
+                    logger.info(f"[Router] Unknown contact reached message {msg_count} — flagging for owner review")
                     await self._update_contact_state(
                         str(customer_id) if customer_id else "", user_id,
-                        {"contact_type": "KNOWN_PERSONAL", "contact_type_source": "auto_detected_timeout",
+                        {"contact_type": "NEEDS_REVIEW", "contact_type_source": "auto_detected_timeout",
                          "auto_detected_at_message": msg_count, "message_count": msg_count,
-                         "ai_enabled": False, "is_personal": True}
+                         "ai_enabled": True, "is_personal": False,
+                         "needs_owner_classification": True}
                     )
-                    return None
-
-                await self._update_contact_state(
-                    str(customer_id) if customer_id else "", user_id,
-                    {"message_count": msg_count}
-                )
+                    if customer_id:
+                        try:
+                            await self.db.customers.update_one(
+                                {"_id": customer_id},
+                                {"$set": {
+                                    "needs_human": True,
+                                    "needs_human_reason": "Unclassified contact — tap to mark as Customer or Personal",
+                                    "needs_human_at": datetime.now(timezone.utc),
+                                }}
+                            )
+                        except Exception as _nre2:
+                            logger.error(f"[Router] NEEDS_REVIEW timeout flag error: {_nre2}")
+                else:
+                    await self._update_contact_state(
+                        str(customer_id) if customer_id else "", user_id,
+                        {"message_count": msg_count}
+                    )
                 
-                # At exactly 3 messages, send one natural clarifying question if unclear
+                # At exactly 3 messages, still unclear — just reply naturally to what they said.
+                # Never use a bot-sounding clarifying question. Sound like a real person texting back.
                 if msg_count == 3 and sig_type == "unclear":
-                    logger.info(f"[Router] Unknown contact at 3 msgs — sending clarifying question")
+                    logger.info(f"[Router] Unknown contact at 3 msgs — replying naturally")
+                    _unk_reply = None
+                    try:
+                        from ai_service import get_drafter as _gd3
+                        _ai3 = _gd3()
+                        _bk3 = (business_knowledge or "")[:200]
+                        _prompt3 = (
+                            f"Someone just texted you on WhatsApp: \"{message}\"\n"
+                            f"Their name: {customer_name}\n"
+                            f"Language they used: {language}\n"
+                            f"Business context: {_bk3}\n\n"
+                            f"Reply EXACTLY like a real person would reply to this specific message — "
+                            f"not a bot, not a customer service agent. "
+                            f"Match their language and energy completely. "
+                            f"If they greeted, greet back naturally. "
+                            f"If they said something casual, respond casually. "
+                            f"Do NOT ask 'what are you looking for' or any structured question. "
+                            f"Do NOT mention products, services, or business unless they did. "
+                            f"1-2 sentences max. Sound human. Output only the reply."
+                        )
+                        _unk_reply = await _ai3._call_llm(_prompt3, model_pref="standard")
+                    except Exception as _e3:
+                        logger.error(f"[Router] Unknown contact natural reply error: {_e3}")
+                    if not _unk_reply:
+                        # Fallback: just echo their energy naturally — no bot phrasing
+                        _fallbacks = {
+                            "Swahili": "Sawa! 😊", "Sheng": "Sawa fam! 😄",
+                            "French": "Bonjour ! 😊", "Arabic": "أهلاً! 😊",
+                            "Hausa": "Sannu! 😊", "Yoruba": "Ẹ káàbọ̀! 😊",
+                        }
+                        _unk_reply = _fallbacks.get(language, "Hey! 😊")
                     return {
                         "handled": True,
                         "escalated": False,
-                        "messages": [{"text": "What are you looking for today? 😊"}],
+                        "messages": [{"text": _unk_reply}],
                     }
                 # Within first 2 messages or if sig_type is personal with low confidence — respond naturally, continue pipeline
         else:
@@ -391,7 +919,7 @@ class Router:
             return {
                 "handled": True,
                 "escalated": True,
-                "messages": [],
+                "messages": self._ack(language),
                 "escalation_reason": escalation_reason,
             }
 
@@ -402,12 +930,22 @@ class Router:
         if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
             logger.info("[Router] Overriding agent to 'order' due to pending order state")
             agent_name = "order"
+        elif conv_state.get("pending_order_creation"):
+            # Customer is providing delivery details after selecting "Order Now"
+            logger.info("[Router] Overriding agent to 'sales' due to pending order creation")
+            agent_name = "sales"
         elif conv_state.get("pending_booking_action") or conv_state.get("pending_booking_list"):
             logger.info("[Router] Overriding agent to 'booking' due to pending booking state")
             agent_name = "booking"
-            
+        elif conv_state.get("pending_booking_date_input"):
+            logger.info("[Router] Overriding agent to 'booking' due to pending_booking_date_input")
+            agent_name = "booking"
+        elif conv_state.get("pending_rental_dates_input"):
+            logger.info("[Router] Overriding agent to 'booking' due to pending_rental_dates_input")
+            agent_name = "booking"
+
         if is_personal:
-            agent_name = "chat"
+            agent_name = "personal"
 
         # 12.3: BookingAgent handling a complaint → ComplaintAgent
         if agent_name == "booking" and sentiment in ("angry", "frustrated") and conv_state.get("complaint_count", 0) > 0:
@@ -427,8 +965,10 @@ class Router:
         if agent_result.get("escalate"):
             reason = agent_result.get("escalate_reason", f"Agent {agent_name} escalated")
             await self._do_escalate(user_id, customer_id, reason)
-            # Preserve any messages the agent already prepared (e.g. cancel/update confirmations)
+            # Preserve any messages the agent already prepared — add ack if agent sent nothing
             escalate_messages = agent_result.get("messages", [])
+            if not escalate_messages:
+                escalate_messages = self._ack(language)
             return {
                 "handled": True,
                 "escalated": True,
@@ -464,7 +1004,7 @@ class Router:
             if not agent_result or not agent_result.get("handled"):
                 logger.warning(f"[Router] ALL fallbacks failed. Escalating intent={intent}")
                 await self._do_escalate(user_id, customer_id, f"No agent handled intent={intent}")
-                return {"handled": True, "escalated": True, "messages": [], "escalation_reason": f"Unhandled intent: {intent}"}
+                return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": f"Unhandled intent: {intent}"}
 
         # ── 6. Reply validation (fast rules, no LLM) ─────────────────────
         messages_out = agent_result.get("messages", [])
@@ -485,12 +1025,43 @@ class Router:
                 reason = validation.get("reason", "Validator escalated reply")
                 logger.warning(f"[Router] Validator ESCALATE: {reason}")
                 await self._do_escalate(user_id, customer_id, reason)
-                return {"handled": True, "escalated": True, "messages": [], "escalation_reason": reason}
+                return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": reason}
 
             if validation["result"] == RESULT_REJECT:
-                # One retry with the suggestion fed back
+                reason = validation.get("reason", "")
                 suggestion = validation.get("suggestion", "")
-                logger.info(f"[Router] Validator REJECT — retrying. Reason: {validation.get('reason')} | Suggestion: {suggestion}")
+                # If ChatAgent produced something that looks like a booking/order confirmation,
+                # do NOT retry ChatAgent — it cannot fix this.
+                # Instead, infer the correct agent and dispatch to it.
+                # Only escalate if we truly can't determine the right agent.
+                _is_confirmation_hallucination = (
+                    agent_name == "chat" and (
+                        "fake booking" in reason.lower() or "confirmation" in reason.lower()
+                    )
+                ) or "fake booking" in reason.lower()
+                if _is_confirmation_hallucination:
+                    _correct_agent = _infer_correct_agent(intent, message, context.get("business_type", ""))
+                    if _correct_agent and _correct_agent != "chat":
+                        logger.info(f"[Router] ChatAgent hallucination caught — re-routing to {_correct_agent} (intent={intent})")
+                        reroute_result = await self._dispatch(_correct_agent, user_id, message, context)
+                        if reroute_result and reroute_result.get("handled") and not reroute_result.get("escalate"):
+                            logger.info(f"[Router] Re-route to {_correct_agent} succeeded after ChatAgent hallucination")
+                            messages_out = reroute_result.get("messages", [])
+                            agent_result = reroute_result
+                            agent_name = _correct_agent  # update so state saves correctly
+                            # Skip further validation retry — the correct agent handled it properly
+                            # (it has its own internal guardrails)
+                        else:
+                            logger.warning(f"[Router] Re-route to {_correct_agent} failed — escalating")
+                            await self._do_escalate(user_id, customer_id, f"ChatAgent hallucinated, re-route to {_correct_agent} also failed")
+                            return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": reason}
+                    else:
+                        logger.warning(f"[Router] ChatAgent fake-confirmation — could not infer agent, escalating: {reason}")
+                        await self._do_escalate(user_id, customer_id, f"AI attempted to fake-confirm booking/order — {reason}")
+                        return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": reason}
+
+                # For all other REJECT reasons — one retry with the suggestion fed back
+                logger.info(f"[Router] Validator REJECT — retrying. Reason: {reason} | Suggestion: {suggestion}")
                 context["validator_suggestion"] = suggestion
                 context["custom_instructions"] = suggestion
 
@@ -500,7 +1071,7 @@ class Router:
                     agent_result = retry_result
                 else:
                     await self._do_escalate(user_id, customer_id, "Retry agent failed")
-                    return {"handled": True, "escalated": True, "messages": [], "escalation_reason": "Retry agent failed"}
+                    return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": "Retry agent failed"}
 
         # ── 6.5. Post-action DB state validation ──────────────────────────
         # Checks that claims in the reply ("booked", "ordered", "cancelled")
@@ -517,8 +1088,28 @@ class Router:
                 db=self.db,
             )
             if db_validation["result"] == RESULT_REJECT:
+                db_reason = db_validation.get("reason", "")
                 db_suggestion = db_validation.get("suggestion", "")
-                logger.warning(f"[Router] DB Validator REJECT: {db_validation.get('reason')} | Retrying with hint")
+                # ChatAgent claiming a booking/order exists in DB when nothing is there
+                # is a hallucination — infer the correct agent and re-route.
+                if agent_name == "chat":
+                    _correct_agent_db = _infer_correct_agent(intent, message, context.get("business_type", ""))
+                    if _correct_agent_db and _correct_agent_db != "chat":
+                        logger.info(f"[Router] ChatAgent DB hallucination — re-routing to {_correct_agent_db}")
+                        reroute_db = await self._dispatch(_correct_agent_db, user_id, message, context)
+                        if reroute_db and reroute_db.get("handled") and not reroute_db.get("escalate"):
+                            messages_out = reroute_db.get("messages", [])
+                            agent_result = reroute_db
+                            agent_name = _correct_agent_db
+                        else:
+                            await self._do_escalate(user_id, customer_id, f"ChatAgent DB hallucination, re-route to {_correct_agent_db} failed")
+                            return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": db_reason}
+                    else:
+                        logger.warning(f"[Router] ChatAgent DB hallucination — could not infer agent, escalating: {db_reason}")
+                        await self._do_escalate(user_id, customer_id, f"ChatAgent hallucinated DB state — {db_reason}")
+                        return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": db_reason}
+
+                logger.warning(f"[Router] DB Validator REJECT: {db_reason} | Retrying with hint")
                 context["validator_suggestion"] = db_suggestion
                 context["custom_instructions"] = db_suggestion
 
@@ -528,11 +1119,15 @@ class Router:
                     agent_result = retry_result
                 else:
                     await self._do_escalate(user_id, customer_id, "DB validation retry failed")
-                    return {"handled": True, "escalated": True, "messages": [], "escalation_reason": "DB validation retry failed"}
+                    return {"handled": True, "escalated": True, "messages": self._ack(language), "escalation_reason": "DB validation retry failed"}
 
         # ── 7. Save conversation state ────────────────────────────────────
         state_updates = agent_result.get("context_update", {})
         state_updates["last_intent"] = intent
+        # Clear waiting_for_service_request once the customer has responded with a real intent
+        # (keeps the flag from persisting across unrelated messages)
+        if intent not in ("GREETING", "GENERAL_CHAT", "SMALL_TALK", "PERSONAL_CHAT") and conv_state.get("waiting_for_service_request"):
+            state_updates.setdefault("waiting_for_service_request", False)
         if customer_id:
             await save_state(self.db, user_id, str(customer_id), state_updates)
 
@@ -572,6 +1167,8 @@ class Router:
                 return await ComplaintAgent(self.db).process(user_id, message, context)
             elif agent_name == "booking":
                 return await BookingAgent("booking", self.db).process(user_id, message, context)
+            elif agent_name == "personal":
+                return await PersonalAgent("personal", self.db).process(user_id, message, context)
             else:
                 return await ChatAgent("chat", self.db).process(user_id, message, context)
         except Exception as e:
@@ -583,3 +1180,7 @@ class Router:
         if customer_id:
             await mark_escalated(self.db, user_id, str(customer_id), reason)
         logger.info(f"[Router] ESCALATED customer={customer_id} reason={reason}")
+
+    def _ack(self, language: str = "English") -> list:
+        """Return a single-item message list with the escalation ack in the customer's language."""
+        return [{"text": _escalation_ack(language)}]

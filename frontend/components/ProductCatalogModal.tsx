@@ -351,8 +351,8 @@ export default function ProductCatalogModal({
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
-        setEditOfferingType(businessType === 'rental' ? 'rental' : isServiceBusiness ? 'service' : businessType === 'restaurant' ? 'menu_item' : businessType === 'creator' ? 'digital' : 'product');
-        setEditDuration(isServiceBusiness ? '60' : '');
+        setEditOfferingType(businessType === 'rental' ? 'rental' : businessType === 'tech' ? 'digital' : isServiceBusiness ? 'service' : businessType === 'restaurant' ? 'menu_item' : businessType === 'creator' ? 'digital' : 'product');
+        setEditDuration(businessType === 'tech' ? '' : isServiceBusiness ? '60' : '');
         setEditServiceCategory('appointment');
         setEditAddons([]);
         setEditDepositPercent('0');

@@ -184,9 +184,30 @@ class WhatsAppService:
         self._broadcast_queues: Dict[str, asyncio.Queue] = {}
         self._broadcast_tasks: Dict[str, asyncio.Task] = {}
 
-    def _headers(self) -> Dict:
+    async def _resolve_server(self, user_id: str = None) -> tuple:
+        """
+        Return (base_url, api_key) for the given user.
+        Uses the user's assigned Evolution server if set, otherwise falls back to global env vars.
+        This enables multi-server scaling — each user is pinned to one server.
+        """
+        if user_id:
+            try:
+                user = await self.db.users.find_one(
+                    {"_id": user_id},
+                    {"evolution_url": 1, "evolution_api_key": 1}
+                )
+                if user:
+                    url = (user.get("evolution_url") or "").rstrip("/")
+                    key = user.get("evolution_api_key") or ""
+                    if url:
+                        return url, key
+            except Exception:
+                pass
+        return self.base_url, self.api_key
+
+    def _headers(self, api_key: str = None) -> Dict:
         return {
-            "apikey": self.api_key,
+            "apikey": api_key or self.api_key,
             "Content-Type": "application/json",
         }
 
@@ -227,7 +248,10 @@ class WhatsAppService:
         # Strip + and any non-digit chars for Evolution API
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
 
-        # Wake up Evolution API first (handles Render free-tier cold start)
+        # Resolve which Evolution server this user is on
+        base_url, api_key = await self._resolve_server(user_id)
+
+        # Wake up Evolution API first (handles Render cold start)
         await self._wake_up_evolution()
 
         try:
@@ -244,9 +268,9 @@ class WhatsAppService:
                 }
 
                 create_resp = await client.post(
-                    f"{self.base_url}/instance/create",
+                    f"{base_url}/instance/create",
                     json=create_payload,
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
 
                 if create_resp.status_code not in (200, 201):
@@ -257,9 +281,9 @@ class WhatsAppService:
                         # Try to get a pairing code from the existing instance (no delete/recreate needed)
                         await asyncio.sleep(3)
                         pairing_attempt = await client.get(
-                            f"{self.base_url}/instance/connect/{instance_name}",
+                            f"{base_url}/instance/connect/{instance_name}",
                             params={"number": clean_number},
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
                         if pairing_attempt.status_code == 200:
                             code_data = pairing_attempt.json()
@@ -269,7 +293,7 @@ class WhatsAppService:
                             webhook_base = os.environ.get('WEBHOOK_BASE_URL', 'http://host.docker.internal:8000')
                             try:
                                 await client.post(
-                                    f"{self.base_url}/webhook/set/{instance_name}",
+                                    f"{base_url}/webhook/set/{instance_name}",
                                     json={"webhook": {
                                         "enabled": True,
                                         "url": f"{webhook_base}/api/webhooks/evolution",
@@ -277,7 +301,7 @@ class WhatsAppService:
                                         "webhookBase64": False,
                                         "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CHATS_UPDATE", "CONNECTION_UPDATE"],
                                     }},
-                                    headers=self._headers(),
+                                    headers=self._headers(api_key),
                                 )
                             except Exception:
                                 pass
@@ -301,15 +325,15 @@ class WhatsAppService:
                         # Pairing code request failed — fall back to delete + recreate
                         logger.warning(f"Fresh pairing failed ({pairing_attempt.status_code}), trying delete+recreate for {instance_name}")
                         try:
-                            await client.delete(f"{self.base_url}/instance/logout/{instance_name}", headers=self._headers())
+                            await client.delete(f"{base_url}/instance/logout/{instance_name}", headers=self._headers(api_key))
                         except Exception:
                             pass
                         await asyncio.sleep(2)
                         for _attempt in range(3):
                             try:
                                 del_resp = await client.delete(
-                                    f"{self.base_url}/instance/delete/{instance_name}",
-                                    headers=self._headers(),
+                                    f"{base_url}/instance/delete/{instance_name}",
+                                    headers=self._headers(api_key),
                                 )
                                 logger.info(f"Deleted instance {instance_name}: {del_resp.status_code}")
                                 if del_resp.status_code in (200, 204):
@@ -321,9 +345,9 @@ class WhatsAppService:
                         # Recreate
                         create_payload["token"] = str(uuid.uuid4())
                         create_resp = await client.post(
-                            f"{self.base_url}/instance/create",
+                            f"{base_url}/instance/create",
                             json=create_payload,
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
                         if create_resp.status_code not in (200, 201):
                             logger.error(f"Failed to recreate instance: {create_resp.text}")
@@ -354,9 +378,9 @@ class WhatsAppService:
                 }
                 try:
                     wh_resp = await client.post(
-                        f"{self.base_url}/webhook/set/{instance_name}",
+                        f"{base_url}/webhook/set/{instance_name}",
                         json=webhook_payload,
-                        headers=self._headers(),
+                        headers=self._headers(api_key),
                     )
                     if wh_resp.status_code in (200, 201):
                         logger.info(f"Webhook configured for {instance_name}")
@@ -369,9 +393,9 @@ class WhatsAppService:
                 await asyncio.sleep(10)
 
                 code_resp = await client.get(
-                    f"{self.base_url}/instance/connect/{instance_name}",
+                    f"{base_url}/instance/connect/{instance_name}",
                     params={"number": clean_number},
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
 
                 if code_resp.status_code != 200:
@@ -413,21 +437,22 @@ class WhatsAppService:
 
     async def get_instance_status(self, user_id: str) -> Dict:
         """Check the connection status of a user's WhatsApp instance"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "evolution_url": 1, "evolution_api_key": 1})
         wa = user.get("whatsapp") if user else None
 
         if not wa or not wa.get("instance_name"):
             return {"connected": False, "status": "not_connected"}
 
         instance_name = wa["instance_name"]
+        base_url, api_key = await self._resolve_server(user_id)
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 # First check fetchInstances for 401 logout — connectionState alone is unreliable
                 try:
                     fi_resp = await client.get(
-                        f"{self.base_url}/instance/fetchInstances",
-                        headers=self._headers(),
+                        f"{base_url}/instance/fetchInstances",
+                        headers=self._headers(api_key),
                     )
                     if fi_resp.status_code == 200:
                         instances = fi_resp.json()
@@ -444,8 +469,8 @@ class WhatsAppService:
                     logger.debug(f"fetchInstances check failed: {fi_err}")
 
                 resp = await client.get(
-                    f"{self.base_url}/instance/connectionState/{instance_name}",
-                    headers=self._headers(),
+                    f"{base_url}/instance/connectionState/{instance_name}",
+                    headers=self._headers(api_key),
                 )
 
                 if resp.status_code == 200:
@@ -458,8 +483,8 @@ class WhatsAppService:
                         logger.info(f"Instance {instance_name} was connected but is now closed — attempting auto-reconnect")
                         try:
                             reconnect_resp = await client.get(
-                                f"{self.base_url}/instance/connect/{instance_name}",
-                                headers=self._headers(),
+                                f"{base_url}/instance/connect/{instance_name}",
+                                headers=self._headers(api_key),
                             )
                             if reconnect_resp.status_code == 200:
                                 logger.info(f"Auto-reconnect triggered for {instance_name}")
@@ -467,8 +492,8 @@ class WhatsAppService:
                                 await asyncio.sleep(3)
                                 # Re-check state
                                 recheck = await client.get(
-                                    f"{self.base_url}/instance/connectionState/{instance_name}",
-                                    headers=self._headers(),
+                                    f"{base_url}/instance/connectionState/{instance_name}",
+                                    headers=self._headers(api_key),
                                 )
                                 if recheck.status_code == 200:
                                     new_state = recheck.json().get("instance", {}).get("state", "close")
@@ -484,14 +509,21 @@ class WhatsAppService:
                             {"$set": {"whatsapp.status": new_status}}
                         )
 
+                    disconnect_reason = wa.get("disconnect_reason") if not is_open else None
+                    disconnected_at = wa.get("disconnected_at").isoformat() if (not is_open and wa.get("disconnected_at")) else None
+                    reconnecting_since = wa.get("reconnecting_since")
                     return {
                         "connected": is_open,
                         "status": new_status,
                         "number": wa.get("number"),
                         "instance_name": instance_name,
+                        "disconnect_reason": disconnect_reason,
+                        "disconnected_at": disconnected_at,
+                        "reconnecting": bool(reconnecting_since and is_open),
                     }
                 else:
-                    return {"connected": False, "status": "unknown", "number": wa.get("number")}
+                    return {"connected": False, "status": "unknown", "number": wa.get("number"),
+                            "disconnect_reason": wa.get("disconnect_reason")}
 
         except httpx.ConnectError:
             return {"connected": False, "status": "service_unavailable"}
@@ -513,12 +545,12 @@ class WhatsAppService:
             async with httpx.AsyncClient(timeout=15) as client:
                 # Logout first (unlinks WhatsApp)
                 await client.delete(
-                    f"{self.base_url}/instance/logout/{instance_name}",
+                    f"{base_url}/instance/logout/{instance_name}",
                     headers=self._headers(),
                 )
                 # Delete the instance
                 await client.delete(
-                    f"{self.base_url}/instance/delete/{instance_name}",
+                    f"{base_url}/instance/delete/{instance_name}",
                     headers=self._headers(),
                 )
         except Exception as e:
@@ -809,23 +841,27 @@ class WhatsAppService:
         media_filename: Optional[str] = None,
         send_context: str = "manual",
         ai_model: Optional[str] = None,
+        bypass_limits: bool = False,
     ) -> Dict:
         """
         Send a WhatsApp message via Evolution API.
         Auto-creates customer contact if needed.
         Enforces rate limits.
         Simulates human behavior (typing + delays) to prevent bans.
-        
-        send_context: 'manual' | 'auto_reply' | 'order_confirm' | 'broadcast'
+
+        send_context: 'manual' | 'auto_reply' | 'order_confirm' | 'broadcast' | 'system'
+        bypass_limits: skip monthly/daily credit checks (for system messages like daily pulse)
         """
         try:
-            # Check rate limits
-            limit_check = await self.check_message_limit(user_id)
-            if not limit_check["allowed"]:
-                return {"status": "limit_reached", "message": limit_check["reason"]}
+            # Check rate limits (skip for system/service messages sent to the owner)
+            if not bypass_limits:
+                limit_check = await self.check_message_limit(user_id)
+                if not limit_check["allowed"]:
+                    return {"status": "limit_reached", "message": limit_check["reason"]}
 
             # Get user's WhatsApp config and AI model
-            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
+            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "evolution_url": 1, "evolution_api_key": 1})
+            base_url, api_key = await self._resolve_server(user_id)
             wa = user.get("whatsapp") if user else None
             # Manual sends always cost 1 credit flat (no AI used)
             # AI-assisted sends (auto_reply, broadcast, order_confirm) use the model multiplier
@@ -966,23 +1002,25 @@ class WhatsAppService:
                             payload["mimetype"] = _resolved_mimetype
                         logger.info(f"Sending media payload: {payload}")  # DEBUG LOG
                         resp = await client.post(
-                            f"{self.base_url}/message/sendMedia/{instance_name}",
+                            f"{base_url}/message/sendMedia/{instance_name}",
                             json=payload,
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
                     else:
                         # Send text message
-                        # Append invisible zero-width space to auto-replies so the
-                        # receiving end can identify AI-generated messages and skip replying
-                        _msg_text = message + "\u200B" if send_context == "auto_reply" else message
+                        # Append invisible zero-width space to ALL AI/automated messages so the
+                        # receiving end can identify them and skip replying (AI↔AI loop guard).
+                        # Only exclude contexts where a human owner is manually sending (broadcast, product_send).
+                        _HUMAN_SEND_CONTEXTS = {"broadcast", "product_send"}
+                        _msg_text = message + "\u200B" if send_context not in _HUMAN_SEND_CONTEXTS else message
                         payload = {
                             "number": clean_to,
                             "text": _msg_text,
                         }
                         resp = await client.post(
-                            f"{self.base_url}/message/sendText/{instance_name}",
+                            f"{base_url}/message/sendText/{instance_name}",
                             json=payload,
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
 
                     logger.info(f"Evolution API response status: {resp.status_code}")
@@ -1137,7 +1175,8 @@ class WhatsAppService:
         user_id: str,
         to_number: str,
         product: Dict[str, Any],
-        send_buttons: bool = True
+        send_buttons: bool = True,
+        cart_context: Optional[Dict] = None,
     ) -> Dict:
         """Send product image with caption then interactive buttons using authenticated client"""
         user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
@@ -1203,14 +1242,40 @@ class WhatsAppService:
         # Step 2: numbered action text using business's custom actions
         if send_buttons and in_stock:
             await asyncio.sleep(1)
-            # Load user's custom product actions (or fall back to defaults)
+            # Load user's custom product actions (or fall back to business-type defaults)
             _user_doc = user
-            _default_actions = [
-                {"label": "Order Now",      "action_type": "order",       "index": 1},
-                {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2},
-                {"label": "See Similar Products", "action_type": "similar",     "index": 3},
-            ]
-            _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _default_actions
+            _biz_type_wa = ((_user_doc or {}).get("settings") or {}).get("business_type", "retail").lower()
+            _type_defaults = {
+                "retail":     [{"label": "Order Now",          "action_type": "order",       "index": 1},
+                               {"label": "Add to Cart",        "action_type": "add_to_cart", "index": 2},
+                               {"label": "See Similar",        "action_type": "similar",     "index": 3}],
+                "restaurant": [{"label": "Order Now",          "action_type": "order",       "index": 1},
+                               {"label": "Make Reservation",   "action_type": "book",        "index": 2},
+                               {"label": "View Menu",          "action_type": "info",        "index": 3}],
+                "salon":      [{"label": "Book Appointment",   "action_type": "book",        "index": 1},
+                               {"label": "View Price List",    "action_type": "info",        "index": 2},
+                               {"label": "See Similar",        "action_type": "similar",     "index": 3}],
+                "fitness":    [{"label": "Join / Enroll",      "action_type": "order",       "index": 1},
+                               {"label": "Book a Class",       "action_type": "book",        "index": 2},
+                               {"label": "View Schedule",      "action_type": "info",        "index": 3}],
+                "healthcare": [{"label": "Book Appointment",   "action_type": "book",        "index": 1},
+                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
+                               {"label": "Learn More",         "action_type": "info",        "index": 3}],
+                "rental":     [{"label": "Check Availability", "action_type": "book",        "index": 1},
+                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
+                               {"label": "View Details",       "action_type": "info",        "index": 3}],
+                "tech":       [{"label": "Start Free Trial",   "action_type": "subscribe",   "index": 1},
+                               {"label": "Book a Demo",        "action_type": "book",        "index": 2},
+                               {"label": "View Pricing",       "action_type": "info",        "index": 3}],
+                "creator":    [{"label": "Subscribe / Buy",    "action_type": "subscribe",   "index": 1},
+                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
+                               {"label": "Learn More",         "action_type": "info",        "index": 3}],
+                "services":   [{"label": "Book Now",           "action_type": "book",        "index": 1},
+                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
+                               {"label": "Learn More",         "action_type": "info",        "index": 3}],
+            }
+            _fallback_actions = _type_defaults.get(_biz_type_wa, _type_defaults["retail"])
+            _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _fallback_actions
             # Always add "Back to Catalog" as the last option
             _back_index = len(_actions) + 1
             _actions_with_back = _actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
@@ -1222,7 +1287,16 @@ class WhatsAppService:
             # Add hint that 0 = view all images (mirrors catalog_select UX)
             _has_images = bool(all_imgs)
             _img_hint = "\n0\ufe0f\u20e3  View all images" if _has_images else ""
-            actions_text = f"*What would you like to do?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
+            if cart_context and cart_context.get("item_count", 0) > 0:
+                _cc = cart_context
+                _cart_currency = _cc.get("currency", "")
+                _cart_count = _cc.get("item_count", 0)
+                _cart_total = _cc.get("total", 0)
+                _item_word = "item" if _cart_count == 1 else "items"
+                _cart_line = f"🛒 *Your cart: {_cart_count} {_item_word}* — {_cart_currency} {_cart_total:,.0f}\n\n"
+                actions_text = f"{_cart_line}*What would you like to add to your cart?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
+            else:
+                actions_text = f"*What would you like to do?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
             
             await self.send_message(
                 user_id=user_id,
@@ -1466,10 +1540,13 @@ class WhatsAppService:
         """Handle connection.update webhook from Evolution API"""
         state = data.get("state") or data.get("instance", {}).get("state", "")
 
-        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        user = await self.find_user_by_instance(instance_name)
         if not user:
-            logger.warning(f"No user found for instance {instance_name}")
+            logger.debug(f"No user found for instance {instance_name} — ignoring")
             return
+
+        # Always log the state so we can see what Evolution is actually reporting
+        logger.info(f"connection.update: instance={instance_name}, state={state!r}, user={user['_id']}")
 
         if state == "open":
             await self.db.users.update_one(
@@ -1477,24 +1554,80 @@ class WhatsAppService:
                 {"$set": {
                     "whatsapp.status": "connected",
                     "whatsapp.connected_at": datetime.utcnow(),
+                    "whatsapp.disconnect_reason": None,
+                    "whatsapp.disconnected_at": None,
+                    "whatsapp.reconnecting_since": None,
                 }}
             )
-            logger.info(f"Instance {instance_name} connected for user {user['_id']}")
+            logger.info(f"Instance {instance_name} → CONNECTED for user {user['_id']}")
+
         elif state in ("close", "refused"):
+            # Detect specific disconnect reasons from Evolution API payload
+            # "conflict" means WhatsApp was opened on another device and kicked us out
+            status_reason = data.get("statusReason", "")
+            last_disconnect = data.get("lastDisconnect", {})
+            reason_tag = (
+                last_disconnect.get("error", {}).get("output", {}).get("statusCode")
+                or data.get("reasonNode", {}).get("tag")
+                or ""
+            )
+            if "conflict" in str(data).lower() or reason_tag == "conflict":
+                disconnect_reason = "conflict"
+            elif status_reason == 401 or "logged_out" in str(data).lower():
+                disconnect_reason = "logged_out"
+            else:
+                disconnect_reason = "unknown"
+
             await self.db.users.update_one(
                 {"_id": user["_id"]},
-                {"$set": {"whatsapp.status": "disconnected"}}
+                {"$set": {
+                    "whatsapp.status": "disconnected",
+                    "whatsapp.disconnect_reason": disconnect_reason,
+                    "whatsapp.disconnected_at": datetime.utcnow(),
+                    "whatsapp.reconnecting_since": None,
+                }}
             )
-            logger.info(f"Instance {instance_name} disconnected for user {user['_id']}")
+            logger.warning(f"Instance {instance_name} → DISCONNECTED ({disconnect_reason}) for user {user['_id']}")
+
+        elif state == "connecting":
+            # Evolution is in a reconnect loop.
+            # Set reconnecting_since only if not already set, so we can measure how long it takes.
+            wa_doc = (await self.db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1}) or {}).get("whatsapp", {})
+            reconnecting_since = wa_doc.get("reconnecting_since")
+            now = datetime.utcnow()
+
+            if not reconnecting_since:
+                # First "connecting" event — record when the loop started
+                await self.db.users.update_one(
+                    {"_id": user["_id"]},
+                    {"$set": {"whatsapp.reconnecting_since": now}}
+                )
+                logger.info(f"Instance {instance_name} → RECONNECTING (loop started) for user {user['_id']}")
+            else:
+                # Already in a loop — check how long it's been
+                elapsed = (now - reconnecting_since).total_seconds()
+                logger.info(f"Instance {instance_name} → still reconnecting ({elapsed:.0f}s) for user {user['_id']}")
+                if elapsed > 60:
+                    # Stuck for >60s — mark as disconnected so the UI shows the banner
+                    await self.db.users.update_one(
+                        {"_id": user["_id"]},
+                        {"$set": {
+                            "whatsapp.status": "disconnected",
+                            "whatsapp.disconnect_reason": "reconnect_timeout",
+                            "whatsapp.disconnected_at": now,
+                            "whatsapp.reconnecting_since": None,
+                        }}
+                    )
+                    logger.warning(f"Instance {instance_name} → DISCONNECTED (reconnect timeout >60s) for user {user['_id']}")
 
     async def handle_incoming_message(self, instance_name: str, data: Dict):
         """Handle messages.upsert webhook from Evolution API.
         Captures BOTH incoming and outgoing messages so AI has full conversation context.
         """
         # Find the business user who owns this instance
-        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        user = await self.find_user_by_instance(instance_name)
         if not user:
-            logger.warning(f"No user found for instance {instance_name}")
+            logger.debug(f"No user found for instance {instance_name} — ignoring")
             return
 
         # Extract message data from Evolution API webhook payload
@@ -1643,10 +1776,10 @@ class WhatsAppService:
           1 = sent (server), 2 = delivered, 3 = read, 4 = played (audio)
         """
         logger.info(f"handle_message_update called, data type={type(data).__name__}")
-        
-        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+
+        user = await self.find_user_by_instance(instance_name)
         if not user:
-            logger.warning(f"No user for instance {instance_name}")
+            logger.debug(f"No user for instance {instance_name} — ignoring")
             return
 
         # data can be a list of updates or a single update
@@ -1947,8 +2080,41 @@ class WhatsAppService:
         return {"updated": updated, "errors": errors}
 
     async def find_user_by_instance(self, instance_name: str) -> Optional[Dict]:
-        """Find user by their Evolution API instance name"""
-        return await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        """Find user by their Evolution API instance name.
+        Falls back to stripping a timestamp suffix (e.g. user_xxx_1774922784 → user_xxx)
+        and auto-deletes the orphaned instance from Evolution so it stops sending webhooks.
+        """
+        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
+        if user:
+            return user
+
+        # Check if this is a stale force_new instance (base_name_<10-digit-ts>)
+        import re as _re
+        base_name = _re.sub(r'_\d{9,13}$', '', instance_name)
+        if base_name == instance_name:
+            return None  # no suffix to strip
+
+        user = await self.db.users.find_one({"whatsapp.instance_name": base_name})
+        if not user:
+            return None
+
+        # Found via base name — this is an orphaned ghost instance. Delete it silently.
+        logger.info(f"Orphaned instance {instance_name} (base={base_name}) — auto-deleting from Evolution")
+        try:
+            async with httpx.AsyncClient(timeout=10) as _client:
+                await _client.delete(
+                    f"{base_url}/instance/logout/{instance_name}",
+                    headers=self._headers(),
+                )
+                await _client.delete(
+                    f"{base_url}/instance/delete/{instance_name}",
+                    headers=self._headers(),
+                )
+            logger.info(f"Orphaned instance {instance_name} deleted successfully")
+        except Exception as _e:
+            logger.warning(f"Could not delete orphaned instance {instance_name}: {_e}")
+
+        return None  # Don't process this webhook — it's from the old dead instance
 
     # ============ CONTACT & HISTORY SYNC ============
 

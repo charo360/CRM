@@ -32,6 +32,52 @@ UPDATE_KEYWORDS_RE = re.compile(
 # Cancellable order statuses
 CANCELLABLE_STATUSES = {"pending", "unpaid", "confirmed"}
 
+# ── Minimal UI translations for order flow error prompts ──────────────────────
+_ORDER_T = {
+    "invalid_menu": {
+        "English": "Please reply with *1* (Add Item), *2* (Remove Item), or *3* (Change Quantity).",
+        "Swahili": "Tafadhali jibu na *1* (Ongeza Bidhaa), *2* (Ondoa Bidhaa), au *3* (Badilisha Idadi).",
+        "Sheng":   "Jibu *1* (Ongeza), *2* (Toa), ama *3* (Badilisha idadi) tu fam.",
+    },
+    "invalid_product_pick": {
+        "English": "Please reply with the product number from the list above.",
+        "Swahili": "Tafadhali jibu na nambari ya bidhaa kutoka kwenye orodha hapo juu.",
+        "Sheng":   "Jibu na namba ya bidhaa uliyoona hapo juu.",
+    },
+    "invalid_remove_pick": {
+        "English": "Please choose an item number from the list:\n{item_list}\nReply with the number (e.g. *1*).",
+        "Swahili": "Tafadhali chagua nambari ya bidhaa:\n{item_list}\nJibu na nambari (mfano *1*).",
+        "Sheng":   "Chagua namba ya kitu:\n{item_list}\nJibu na namba (e.g. *1*).",
+    },
+    "invalid_change_pick": {
+        "English": "Please choose an item number to change its quantity:\n{item_list}\nReply with the number (e.g. *1*).",
+        "Swahili": "Tafadhali chagua nambari ya bidhaa kubadilisha idadi yake:\n{item_list}\nJibu na nambari (mfano *1*).",
+        "Sheng":   "Chagua namba ya kitu ubadilishe idadi:\n{item_list}\nJibu na namba (e.g. *1*).",
+    },
+    "invalid_qty": {
+        "English": "Please reply with the new quantity (number only, e.g. *3*).",
+        "Swahili": "Tafadhali jibu na idadi mpya (nambari tu, mfano *3*).",
+        "Sheng":   "Jibu na namba tu, e.g. *3*.",
+    },
+    "qty_too_low": {
+        "English": "Quantity must be at least 1. Please try again.",
+        "Swahili": "Idadi lazima iwe angalau 1. Jaribu tena.",
+        "Sheng":   "Lazima uandike angalau 1. Jaribu tena.",
+    },
+    "cannot_remove_all": {
+        "English": "You can't remove all items from an order. Reply *1* to cancel the whole order instead.",
+        "Swahili": "Huwezi kuondoa vitu vyote kwenye agizo. Jibu *1* kukufuta agizo lote badala yake.",
+        "Sheng":   "Huwezi kuondoa vitu vyote. Jibu *1* ukifuta agizo lote.",
+    },
+}
+
+def _t_order(language: str, key: str, **fmt) -> str:
+    """Get a translated UI string for the order flow. Falls back to English."""
+    lang = language.strip().capitalize() if language else "English"
+    strings = _ORDER_T.get(key, {})
+    text = strings.get(lang) or strings.get("English", key)
+    return text.format(**fmt) if fmt else text
+
 
 def _format_order_block(o: dict, currency: str = "") -> str:
     """Format a single order into a readable WhatsApp block."""
@@ -598,9 +644,7 @@ class OrderAgent:
                         "pending_order_action": str(order["_id"]),
                     })
                     return {"handled": True, "escalate": False, "messages": [{"text": "\n".join(lines)}]}
-            return {"handled": True, "escalate": False, "messages": [{"text": (
-                "Please reply with *1* (Add Item), *2* (Remove Item), or *3* (Change Quantity)."
-            )}]}
+            return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "invalid_menu")}]}
 
         elif step == "add_item_select_product":
             # Customer picked a product number from the catalog
@@ -637,9 +681,7 @@ class OrderAgent:
             if _is_escape or _is_question:
                 await _clear()
                 return {"handled": False, "escalate": False, "messages": []}
-            return {"handled": True, "escalate": False, "messages": [{"text": (
-                "Please reply with the product number."
-            )}]}
+            return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "invalid_product_pick")}]}
 
         elif step == "add_item_await_qty":
             # Customer entered quantity
@@ -647,9 +689,7 @@ class OrderAgent:
             if qty_match:
                 qty = int(qty_match.group(1))
                 if qty <= 0:
-                    return {"handled": True, "escalate": False, "messages": [{"text": (
-                        "Quantity must be at least 1. Please try again."
-                    )}]}
+                    return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "qty_too_low")}]}
                 selected = conv_state.get("pending_update_selected_product", {})
                 item_name = selected.get("name", "Item")
                 unit_price = selected.get("price", 0)
@@ -672,9 +712,7 @@ class OrderAgent:
                         "body": f"{customer_name} added {item_name} × {qty}",
                     },
                 }
-            return {"handled": True, "escalate": False, "messages": [{"text": (
-                "Please reply with the quantity (number only, e.g. *2*)."
-            )}]}
+            return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "invalid_qty")}]}
 
         elif step == "remove_item_await":
             pick = PICK_NUMBER_RE.match(message.strip())
@@ -684,10 +722,7 @@ class OrderAgent:
                     removed = items[idx]
                     new_items = [it for i, it in enumerate(items) if i != idx]
                     if not new_items:
-                        return {"handled": True, "escalate": False, "messages": [{"text": (
-                            "You can't remove all items from an order. "
-                            "Reply *1* to cancel the whole order instead."
-                        )}]}
+                        return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "cannot_remove_all")}]}
                     new_total = sum(it.get("price", 0) for it in new_items)
                     await self.db.orders.update_one(
                         {"_id": order["_id"]},
@@ -706,9 +741,8 @@ class OrderAgent:
                             "body": f"{customer_name} removed {removed_name}",
                         },
                     }
-            return {"handled": True, "escalate": False, "messages": [{"text": (
-                "Please reply with the item number to remove."
-            )}]}
+            item_list = "\n".join(f"*{i+1}.* {it.get('product_name','Item')} × {it.get('quantity',1)}" for i, it in enumerate(items))
+            return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "invalid_remove_pick", item_list=item_list)}]}
 
         elif step == "change_qty_item":
             pick = PICK_NUMBER_RE.match(message.strip())
@@ -727,9 +761,8 @@ class OrderAgent:
                         f"(Current: {cur_qty})\n"
                         f"Reply with a number, e.g. *3*"
                     )}]}
-            return {"handled": True, "escalate": False, "messages": [{"text": (
-                "Please reply with the item number."
-            )}]}
+            item_list = "\n".join(f"*{i+1}.* {it.get('product_name','Item')} × {it.get('quantity',1)}" for i, it in enumerate(items))
+            return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "invalid_change_pick", item_list=item_list)}]}
 
         elif step == "change_qty_value":
             item_idx = conv_state.get("pending_update_item_idx", 0)
@@ -765,9 +798,7 @@ class OrderAgent:
                         "body": f"{customer_name} changed {item_name} qty to {new_qty}",
                     },
                 }
-            return {"handled": True, "escalate": False, "messages": [{"text": (
-                "Please reply with the new quantity (number only, e.g. *3*)."
-            )}]}
+            return {"handled": True, "escalate": False, "messages": [{"text": _t_order(language, "invalid_qty")}]}
 
         # Unknown step — clear state
         await _clear()

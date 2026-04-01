@@ -119,28 +119,53 @@ class PaymentAgent:
         """
         Customer says they've paid.
         - Always ask for screenshot/proof (never confirm what cannot be verified)
-        - Tell them confirmation will be done after verification
+        - Reply is AI-generated so it matches the customer's language naturally
         """
         amounts = entities.get("amounts", [])
         amount_text = f" of {amounts[0]}" if amounts else ""
-
         looks_like_txn = self._looks_like_transaction(message)
 
-        if looks_like_txn:
-            # Message already contains transaction details — ask for screenshot to confirm
-            reply = (
-                f"Thank you for the payment notification{amount_text}! 🙏\n\n"
-                f"Please send a *screenshot* or forward the *transaction confirmation message* "
-                f"so we can verify and confirm your booking. ✅\n\n"
-                f"_Confirmation will be done once payment is verified._"
+        try:
+            from ai_service import get_drafter
+            ai = get_drafter()
+            txn_note = (
+                "The customer has already shared transaction details in their message."
+                if looks_like_txn else
+                "The customer says they paid but hasn't shared transaction details yet."
             )
-        else:
-            # Message doesn't clearly look like a payment — ask them to share proof
-            reply = (
-                f"Got it! To confirm your payment, please send us a *screenshot* or "
-                f"forward the *transaction confirmation message* from your payment app. 📸\n\n"
-                f"_We'll verify and confirm your booking shortly._"
-            )
+            prompt = f"""You are a business owner on WhatsApp. A customer just said they've made a payment.
+
+Customer: {customer_name}
+Language: {language}
+Customer message: "{message}"
+{txn_note}
+Amount mentioned: {amounts[0] if amounts else "not specified"}
+
+Write a warm, natural reply in {language} that:
+1. Acknowledges their payment warmly (1 short line)
+2. Asks them to send a screenshot or forward the transaction confirmation from their payment app so you can verify
+3. Reassures them you'll confirm quickly once you see it
+4. WhatsApp tone — casual, human, NOT corporate
+5. Max 3 sentences. No markdown except *bold* for key action words.
+6. NEVER confirm the payment — you cannot verify it without proof.
+
+Output only the customer-facing message."""
+
+            reply = await ai._call_llm(prompt, model_pref="standard")
+        except Exception as e:
+            logger.error(f"[PaymentAgent] AI payment confirm error: {e}")
+            # Graceful English fallback
+            if looks_like_txn:
+                reply = (
+                    f"Thank you {customer_name}! 🙏 Please send a *screenshot* or forward "
+                    f"the *transaction confirmation* so we can verify and confirm. "
+                    f"_We'll sort it out as soon as we see it!_"
+                )
+            else:
+                reply = (
+                    f"Got it {customer_name}! Please send a *screenshot* or forward the "
+                    f"*transaction message* from your payment app 📸 and we'll confirm right away."
+                )
 
         return {
             "handled": True,

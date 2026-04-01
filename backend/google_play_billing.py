@@ -168,22 +168,22 @@ class GooglePlayBilling:
 # Subscription tier limits
 SUBSCRIPTION_LIMITS = {
     'free': {
-        'max_customers': 0,
-        'max_products': 0,
+        'max_customers': 100,
+        'max_products': 20,
         'max_team_members': 1,
-        'ai_messages_per_month': 0,
-        'features': []
+        'ai_messages_per_month': 50,
+        'features': ['basic_crm']
     },
     'starter': {
         'max_customers': 500,
-        'max_products': 100,
+        'max_products': 50,
         'max_team_members': 3,
         'ai_messages_per_month': 1500,
         'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings']
     },
     'standard': {
         'max_customers': 2000,
-        'max_products': 500,
+        'max_products': 100,
         'max_team_members': 7,
         'ai_messages_per_month': 5000,
         'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings',
@@ -191,7 +191,7 @@ SUBSCRIPTION_LIMITS = {
     },
     'pro': {
         'max_customers': -1,  # unlimited
-        'max_products': -1,   # unlimited
+        'max_products': 500,
         'max_team_members': -1,  # unlimited
         'ai_messages_per_month': 10000,
         'features': ['basic_crm', 'whatsapp_integration', 'analytics', 'bookings',

@@ -27,6 +27,7 @@ const BUSINESS_TYPES = [
   { id: 'healthcare', icon: '🏥',  label: 'Healthcare',   desc: 'Clinic, dental & medical' },
   { id: 'creator',    icon: '🎨',  label: 'Creator',      desc: 'Digital products & content' },
   { id: 'rental',     icon: '🏠',  label: 'Rental / Airbnb', desc: 'Properties, cars & equipment' },
+  { id: 'tech',       icon: '💻',  label: 'Tech / SaaS',   desc: 'Software, fintech & agencies' },
 ];
 
 export default function RegisterScreen() {

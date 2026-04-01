@@ -102,6 +102,7 @@ from fastapi.staticfiles import StaticFiles
 from daily_scheduler import start_daily_scheduler
 from mongo_http_client import AsyncMongoHTTPClient
 from google_play_billing import check_feature_access, check_limit, SUBSCRIPTION_LIMITS
+from reminders_service import process_reminders
 
 
 
@@ -371,6 +372,29 @@ app = FastAPI(title="WhatsApp CRM")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
+# ── Webhook deduplication ─────────────────────────────────────────────────────
+# Evolution API runs in a cluster; every webhook is delivered by N pods in
+# parallel (typically 3). We deduplicate by a fingerprint so only the first
+# delivery is processed and the rest are silently dropped.
+import threading as _threading
+_webhook_seen: dict = {}          # fingerprint → expiry float (epoch seconds)
+_webhook_seen_lock = _threading.Lock()
+
+def _webhook_is_duplicate(fingerprint: str, ttl: float = 10.0) -> bool:
+    """Return True if this fingerprint was seen within the last `ttl` seconds."""
+    import time as _time
+    now = _time.monotonic()
+    with _webhook_seen_lock:
+        # Purge expired entries (keep dict small)
+        expired = [k for k, v in _webhook_seen.items() if v < now]
+        for k in expired:
+            del _webhook_seen[k]
+        if fingerprint in _webhook_seen:
+            return True
+        _webhook_seen[fingerprint] = now + ttl
+        return False
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Configure CORS — use ALLOWED_ORIGINS env var in production (comma-separated)
 _allowed_origins = os.environ.get('ALLOWED_ORIGINS', '*')
 _origins_list = [o.strip() for o in _allowed_origins.split(',')] if _allowed_origins != '*' else ["*"]
@@ -381,6 +405,83 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+async def _pick_evolution_server() -> Dict:
+    """
+    Pick the least-loaded active Evolution API server from the evo_servers pool.
+    Falls back to the global EVOLUTION_API_URL env var if no servers in DB.
+    """
+    servers = await db.evo_servers.find({"status": "active"}).to_list(50)
+    if not servers:
+        # No servers registered — return the global env var server
+        return {
+            "url": os.environ.get("EVOLUTION_API_URL", "").rstrip("/"),
+            "api_key": os.environ.get("EVOLUTION_API_KEY", ""),
+        }
+    # Pick server with the most remaining capacity
+    best = min(servers, key=lambda s: s.get("current_users", 0) / max(s.get("max_users", 25), 1))
+    return {
+        "url": best["url"].rstrip("/"),
+        "api_key": best["api_key"],
+        "server_id": best["_id"],
+    }
+
+
+async def _seed_evo_servers():
+    """
+    On startup, register the current env-var Evolution API server into evo_servers
+    if it isn't already there. This makes the existing single server part of the pool.
+    """
+    url = os.environ.get("EVOLUTION_API_URL", "").rstrip("/")
+    key = os.environ.get("EVOLUTION_API_KEY", "")
+    if not url:
+        return
+    existing = await db.evo_servers.find_one({"url": url})
+    if not existing:
+        await db.evo_servers.insert_one({
+            "_id": str(uuid.uuid4()),
+            "url": url,
+            "api_key": key,
+            "label": "evo-1",
+            "max_users": 25,
+            "current_users": 0,
+            "status": "active",
+            "added_at": datetime.utcnow(),
+        })
+        logging.info(f"[EvoPool] Registered primary server: {url}")
+    else:
+        # Keep api_key in sync with env var
+        if existing.get("api_key") != key:
+            await db.evo_servers.update_one({"_id": existing["_id"]}, {"$set": {"api_key": key}})
+
+
+async def _auto_promote_to_customer(customer_id: str, user_id: str):
+    """
+    Automatically promote a contact to is_customer=True when they place an order.
+    No manual confirmation needed — ordering is proof of being a customer.
+    Also clears any pending classification suggestion for this contact.
+    """
+    if not customer_id or customer_id == "walk-in":
+        return
+    try:
+        await db.customers.update_one(
+            {"_id": customer_id, "user_id": user_id},
+            {"$set": {
+                "is_customer": True,
+                "classification_confirmed": True,
+                "classification_type": "customer",
+                "promoted_via": "order",
+                "promoted_at": datetime.utcnow(),
+            }}
+        )
+        # Remove any pending classification so it doesn't show up in the queue
+        await db.pending_classifications.delete_many({
+            "customer_id": customer_id,
+            "user_id": user_id,
+        })
+    except Exception as e:
+        logging.warning(f"[AutoPromote] Failed to promote {customer_id}: {e}")
+
 
 @app.on_event("startup")
 async def fix_team_members_index():
@@ -475,6 +576,9 @@ async def fix_team_members_index():
     # Start automation scheduler in background
     asyncio.create_task(run_automation_scheduler())
 
+    # Start subscription discount reminder scheduler (day 45, 83, 90 notifications)
+    asyncio.create_task(run_subscription_reminder_scheduler())
+
 async def _purge_invalid_contacts_for_user(user_id: str) -> int:
     """
     Remove auto-created contacts whose phone numbers are invalid:
@@ -545,6 +649,22 @@ async def run_keep_alive_scheduler():
             logging.warning(f"[KeepAlive] Scheduler error: {e}")
         await asyncio.sleep(840)  # 14 minutes
 
+@app.get("/api/cron/reminders")
+async def trigger_reminders(request: Request):
+    """External cron trigger for booking reminders"""
+    # Simple secret check if provided in env
+    cron_secret = os.environ.get("CRON_SECRET")
+    auth_header = request.headers.get("Authorization")
+    if cron_secret and auth_header != f"Bearer {cron_secret}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    try:
+        await process_reminders(db)
+        return {"status": "ok", "message": "Reminders processed"}
+    except Exception as e:
+        logging.error(f"Cron reminder error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def run_automation_scheduler():
     """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
     import asyncio
@@ -557,93 +677,105 @@ async def run_automation_scheduler():
         await asyncio.sleep(3600)  # check every hour
 
 async def run_booking_reminder_scheduler():
-    """Runs every 30 minutes — sends WhatsApp reminders for upcoming bookings (24h and 1h before)"""
+    """Runs every 30 minutes — sends WhatsApp reminders for upcoming bookings (24h and 2h before)"""
     import asyncio
     await asyncio.sleep(60)  # brief delay on startup
     while True:
         try:
-            await send_booking_reminders()
+            await process_reminders(db)
         except Exception as e:
             logging.error(f"Booking reminder scheduler error: {e}")
         await asyncio.sleep(1800)  # every 30 minutes
 
-async def send_booking_reminders():
-    """Find upcoming bookings and send WhatsApp reminders at 24h and 1h windows."""
-    from whatsapp_service import get_whatsapp_service
-    now = datetime.utcnow()
 
-    upcoming = await db.bookings.find({
-        "status": {"$in": ["pending", "confirmed"]},
-        "$or": [
-            {"reminder_sent_24h": {"$ne": True}},
-            {"reminder_sent_1h": {"$ne": True}},
-        ]
-    }).to_list(None)
-
-    ws = get_whatsapp_service(db)
-
-    for booking in upcoming:
+async def run_subscription_reminder_scheduler():
+    """
+    Runs once daily — sends push notifications to users on introductory pricing:
+    - Day 45: "Your 50% discount ends in 30 days"  (mid-way warning)
+    - Day 83: "Your discount ends in 7 days"        (final nudge)
+    - Day 90: "You're now on full access"           (soft transition notice)
+    Only fires for users with subscription_date set and subscription_active=True.
+    """
+    await asyncio.sleep(120)  # delay on startup
+    while True:
         try:
-            date_str = booking.get("date", "")
-            time_str = booking.get("time", "")
-            if not date_str or not time_str:
-                continue
-            
-            # Skip rental bookings - they use "check-in" instead of time format
-            service_category = booking.get("service_category", "")
-            if service_category == "rental" or time_str in ("check-in", "check-out"):
-                continue
+            now = datetime.utcnow()
+            # Find all active subscribers with a subscription_date
+            subscribers = await db.users.find({
+                "subscription_active": True,
+                "subscription_started_at": {"$exists": True, "$ne": None},
+                "push_tokens": {"$exists": True, "$not": {"$size": 0}},
+            }, {"_id": 1, "subscription_started_at": 1, "subscription_plan": 1, "business_name": 1}).to_list(5000)
 
-            booking_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            diff_hours = (booking_dt - now).total_seconds() / 3600
+            for user in subscribers:
+                try:
+                    sub_date = user.get("subscription_started_at")
+                    if not sub_date:
+                        continue
+                    if isinstance(sub_date, str):
+                        sub_date = datetime.fromisoformat(sub_date)
 
-            user_id         = booking.get("user_id")
-            customer_phone  = booking.get("customer_phone")
-            customer_name   = booking.get("customer_name", "there")
-            service_name    = booking.get("service_name", "appointment")
-            booking_number  = booking.get("booking_number", "")
+                    days_since = (now - sub_date).days
+                    user_id = user["_id"]
 
-            if not user_id or not customer_phone:
-                continue
+                    # Day 45 — 30-day warning
+                    if days_since == 45:
+                        already = await db.subscription_reminders.find_one({"user_id": user_id, "type": "day_45"})
+                        if not already:
+                            await send_push_notification(
+                                user_id,
+                                title="Your early access discount ends in 30 days",
+                                body="You've been on 50% off — full price kicks in at day 90. Check what you've built so far 🚀",
+                                data={"screen": "subscription"}
+                            )
+                            await db.subscription_reminders.insert_one({
+                                "_id": str(uuid.uuid4()), "user_id": user_id,
+                                "type": "day_45", "sent_at": now
+                            })
+                            logging.info(f"[SubReminder] Day-45 reminder sent to {user_id}")
 
-            # 24h reminder window: 23–25 hours before
-            if not booking.get("reminder_sent_24h") and 23 <= diff_hours <= 25:
-                msg = (
-                    f"Hi {customer_name}! \U0001f44b Just a reminder that your *{service_name}* "
-                    f"is scheduled for *tomorrow at {time_str}* \U0001f4c5\n\n"
-                    f"Ref: *{booking_number}*\n"
-                    f"_Reply to reschedule or cancel_"
-                )
-                await ws.send_message(
-                    user_id=user_id, to_number=customer_phone,
-                    message=msg, customer_name=customer_name, send_context="booking_reminder"
-                )
-                await db.bookings.update_one(
-                    {"_id": booking["_id"]},
-                    {"$set": {"reminder_sent_24h": True, "reminder_sent_24h_at": now}}
-                )
-                logging.info(f"[BookingReminder] 24h reminder sent for booking {booking['_id']}")
+                    # Day 83 — 7-day final nudge
+                    elif days_since == 83:
+                        already = await db.subscription_reminders.find_one({"user_id": user_id, "type": "day_83"})
+                        if not already:
+                            await send_push_notification(
+                                user_id,
+                                title="7 days left on your discount",
+                                body="Your 50% early access rate ends in 7 days. After that you move to the full plan — nothing changes, keep going 💪",
+                                data={"screen": "subscription"}
+                            )
+                            await db.subscription_reminders.insert_one({
+                                "_id": str(uuid.uuid4()), "user_id": user_id,
+                                "type": "day_83", "sent_at": now
+                            })
+                            logging.info(f"[SubReminder] Day-83 reminder sent to {user_id}")
 
-            # 1h reminder window: 45–90 minutes before
-            if not booking.get("reminder_sent_1h") and 0.75 <= diff_hours <= 1.5:
-                msg = (
-                    f"Hi {customer_name}! \u23f0 Your *{service_name}* starts in *1 hour* "
-                    f"at *{time_str}* today \U0001f4c5\n\n"
-                    f"Ref: *{booking_number}*\n"
-                    f"See you soon! \U0001f60a"
-                )
-                await ws.send_message(
-                    user_id=user_id, to_number=customer_phone,
-                    message=msg, customer_name=customer_name, send_context="booking_reminder"
-                )
-                await db.bookings.update_one(
-                    {"_id": booking["_id"]},
-                    {"$set": {"reminder_sent_1h": True, "reminder_sent_1h_at": now}}
-                )
-                logging.info(f"[BookingReminder] 1h reminder sent for booking {booking['_id']}")
+                    # Day 90 — transition notice
+                    elif days_since == 90:
+                        already = await db.subscription_reminders.find_one({"user_id": user_id, "type": "day_90"})
+                        if not already:
+                            plan = user.get("subscription_plan", "starter").capitalize()
+                            await send_push_notification(
+                                user_id,
+                                title="You're now on full access 🎉",
+                                body=f"Your early access period is complete. You're on the {plan} plan — same features, full speed ahead.",
+                                data={"screen": "subscription"}
+                            )
+                            await db.subscription_reminders.insert_one({
+                                "_id": str(uuid.uuid4()), "user_id": user_id,
+                                "type": "day_90", "sent_at": now
+                            })
+                            logging.info(f"[SubReminder] Day-90 transition notice sent to {user_id}")
+
+                except Exception as ue:
+                    logging.warning(f"[SubReminder] Failed for user {user.get('_id')}: {ue}")
 
         except Exception as e:
-            logging.error(f"[BookingReminder] Error on booking {booking.get('_id')}: {e}")
+            logging.error(f"Subscription reminder scheduler error: {e}")
+
+        await asyncio.sleep(86400)  # run once every 24 hours
+
+# Logic moved to reminders_service.py
 
 async def execute_broadcast_automations():
     """Find and execute all due broadcast automations"""
@@ -825,11 +957,21 @@ def verify_token(token: str) -> dict:
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     payload = verify_token(credentials.credentials)
     user = await db.users.find_one({"_id": payload["user_id"]})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+
+    # Reject suspended team members on every request (JWT may still be valid)
+    if user.get("business_id") and user.get("role") in ("employee", "manager"):
+        tm = await db.team_members.find_one(
+            {"user_id": user["_id"], "business_id": user["business_id"]},
+            {"status": 1}
+        )
+        if tm and tm.get("status") == "suspended":
+            raise HTTPException(status_code=403, detail="Your account has been suspended. Contact your business owner.")
+
     return user
 
 def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
@@ -1711,6 +1853,71 @@ class BusinessKnowledge(BaseModel):
     creator_blacklisted_niches: Optional[str] = None
     creator_fan_dm_response: Optional[str] = None
     creator_media_kit_link: Optional[str] = None
+    # Tech / SaaS / Fintech-specific fields
+    tech_product_description: Optional[str] = None   # e.g. "Cloud accounting software for SMEs in East Africa"
+    tech_target_customers: Optional[str] = None      # e.g. "SMEs, accountants, NGOs, retail chains"
+    tech_pricing_plans: Optional[str] = None         # e.g. "Starter $29/mo · Pro $79/mo · Enterprise custom"
+    tech_free_trial: Optional[str] = None            # e.g. "14-day free trial, no credit card required"
+    tech_key_features: Optional[str] = None          # e.g. "Invoicing, M-Pesa integration, payroll, VAT filing"
+    tech_integrations: Optional[str] = None          # e.g. "M-Pesa, Stripe, QuickBooks, Xero, Shopify"
+    tech_demo_process: Optional[str] = None          # e.g. "Book a 30-min demo via Calendly, we'll walk you through live"
+    tech_onboarding: Optional[str] = None            # e.g. "Self-serve setup in 15 mins · Dedicated setup call for Pro+"
+    tech_support_channels: Optional[str] = None      # e.g. "Email, in-app chat (9am-6pm EAT), WhatsApp for Enterprise"
+    tech_compliance: Optional[str] = None            # e.g. "PCI-DSS compliant, GDPR ready, KRA-approved for VAT"
+    tech_contract_terms: Optional[str] = None        # e.g. "Monthly rolling, no lock-in · 20% off annual plans"
+    tech_case_studies: Optional[str] = None          # e.g. "Used by 500+ businesses incl. Naivas, Java House, KPLC"
+    # Generic service fields (used by services, salon, fitness, healthcare when no type-specific field fits)
+    booking_process: Optional[str] = None            # e.g. "Book via WhatsApp 24hrs ahead, confirmed within 1hr"
+    cancellation_policy: Optional[str] = None        # e.g. "Cancel 24hrs before or charged 50%"
+    staff_info: Optional[str] = None                 # e.g. "Maria - hair colour. John - massage"
+    # Fitness-specific fields
+    fitness_class_types: Optional[str] = None        # e.g. "Yoga, HIIT, Pilates, Spin"
+    fitness_class_schedule: Optional[str] = None     # e.g. "Mon/Wed/Fri 6am HIIT, Tue/Thu 7pm Yoga"
+    fitness_trainers: Optional[str] = None           # e.g. "Jane (Yoga), Mike (HIIT)"
+    fitness_membership_tiers: Optional[str] = None   # e.g. "Monthly KES 3500, 10-class pack KES 3000"
+    fitness_trial_offer: Optional[str] = None        # e.g. "First class free"
+    fitness_class_capacity: Optional[str] = None     # e.g. "Max 15 per class"
+    fitness_cancellation_policy: Optional[str] = None # e.g. "Cancel 2hrs before or forfeit class"
+    fitness_equipment: Optional[str] = None          # e.g. "Mats provided, bring water"
+    # Healthcare-specific fields
+    healthcare_providers: Optional[str] = None       # e.g. "Dr. Kamau (GP), Dr. Njoki (Dermatology)"
+    healthcare_specialties: Optional[str] = None     # e.g. "General Practice, Dermatology, Dentistry"
+    healthcare_appointment_types: Optional[str] = None  # e.g. "New patient consult, Follow-up, Procedure"
+    healthcare_insurance: Optional[str] = None       # e.g. "NHIF, AAR, Jubilee, Britam"
+    healthcare_consultation_fee: Optional[str] = None   # e.g. "GP KES 1500, Specialist KES 3000"
+    healthcare_patient_prep: Optional[str] = None    # e.g. "Bring previous prescriptions, fast 8hrs for blood tests"
+    healthcare_languages: Optional[str] = None       # e.g. "English, Swahili, Kikuyu"
+    # Restaurant-specific fields
+    restaurant_cuisine: Optional[str] = None         # e.g. "Kenyan, Indian fusion"
+    restaurant_menu_highlights: Optional[str] = None # e.g. "Nyama choma, biryani, fresh juices"
+    restaurant_dietary_options: Optional[str] = None # e.g. "Vegan, gluten-free, halal"
+    restaurant_price_range: Optional[str] = None     # e.g. "KES 500–2000 per person"
+    restaurant_seating: Optional[str] = None         # e.g. "Indoor, outdoor terrace, private room (10 pax)"
+    restaurant_reservation_policy: Optional[str] = None # e.g. "Deposit KES 500 for groups 6+"
+    restaurant_parking: Optional[str] = None         # e.g. "Free parking on premises"
+    restaurant_dress_code: Optional[str] = None      # e.g. "Smart casual evenings"
+    # Salon-specific fields
+    salon_stylists: Optional[str] = None             # e.g. "Amina (braids, locs), Lisa (color, cuts)"
+    salon_services_menu: Optional[str] = None        # e.g. "Box braids KES 2500, Silk press KES 1800"
+    salon_deposit_policy: Optional[str] = None       # e.g. "50% deposit required to confirm booking"
+    salon_cancellation_policy: Optional[str] = None  # e.g. "Cancel 24hrs before or lose deposit"
+    salon_walk_ins: Optional[str] = None             # e.g. "Walk-ins welcome Mon-Thu if space available"
+    salon_products_used: Optional[str] = None        # e.g. "OGX, Cantu, natural products on request"
+    # Retail-specific fields
+    retail_return_policy: Optional[str] = None       # e.g. "7-day returns, receipt required"
+    retail_discount_tiers: Optional[str] = None      # e.g. "5% off 3+ items, 10% off orders over KES 5000"
+    retail_delivery_areas: Optional[str] = None      # e.g. "Same-day Nairobi CBD, next-day countrywide"
+    retail_warranty: Optional[str] = None            # e.g. "6-month warranty on electronics"
+    retail_exchange_policy: Optional[str] = None     # e.g. "Exchanges within 14 days, item must be unworn"
+    retail_min_order: Optional[str] = None           # e.g. "Minimum order KES 500 for delivery"
+    # Rental-specific fields
+    rental_check_in_time: Optional[str] = None       # e.g. "Check-in from 2pm, check-out by 11am"
+    rental_house_rules: Optional[str] = None         # e.g. "No smoking, no pets, max 4 guests"
+    rental_amenities: Optional[str] = None           # e.g. "WiFi, pool, full kitchen, parking"
+    rental_min_stay: Optional[str] = None            # e.g. "Minimum 2 nights"
+    rental_security_deposit: Optional[str] = None    # e.g. "KES 5000 refundable deposit on arrival"
+    rental_cancellation_policy: Optional[str] = None # e.g. "Free cancellation 7 days before, 50% after"
+    rental_pet_policy: Optional[str] = None          # e.g. "Pets allowed with prior approval, KES 500 fee"
     payment_methods: Optional[List[Any]] = None
 
 # Product Catalog Models
@@ -1766,6 +1973,8 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
         "phone_number": phone,
         "status": {"$in": ["invited", "active"]}
     })
+    if team_member and team_member.get("status") == "suspended":
+        raise HTTPException(status_code=403, detail="Your account has been suspended. Contact your business owner.")
     if team_member:
         business_id = team_member["business_id"]
         # Find or create a user account for this employee
@@ -1835,6 +2044,9 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
         country_code = request.country_code or detect_country_from_phone(phone)
         country_config = get_payment_methods_for_country(country_code)
 
+        # Assign least-loaded Evolution API server
+        _evo_server = await _pick_evolution_server()
+
         user_id = str(uuid.uuid4())
         user_doc = {
             "_id": user_id,
@@ -1848,9 +2060,19 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
             "payment_methods": [{"name": m, "details": ""} for m in country_config["methods"][:3]],
             "created_at": datetime.utcnow(),
             "setup_complete": False,
+            # Evolution API server assignment — enables multi-server scaling
+            "evolution_url": _evo_server.get("url", ""),
+            "evolution_api_key": _evo_server.get("api_key", ""),
         }
         await db.users.insert_one(user_doc)
         user = user_doc
+
+        # Increment user count on the assigned server
+        if _evo_server.get("server_id"):
+            await db.evo_servers.update_one(
+                {"_id": _evo_server["server_id"]},
+                {"$inc": {"current_users": 1}}
+            )
     else:
         user_id = user["_id"]
 
@@ -1959,7 +2181,11 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
             ws = get_whatsapp_service(db)
             await ws.fetch_contacts(uid)
             await ws.fetch_chat_history(uid)
-            await ws.fetch_profile_pictures_bulk(uid)
+            pic_result = await ws.fetch_profile_pictures_bulk(uid)
+            if pic_result.get("updated", 0) == 0:
+                logging.info(f"No profile pics on first try for {uid} — retrying in 60s")
+                await asyncio.sleep(60)
+                await ws.fetch_profile_pictures_bulk(uid)
             logging.info(f"Auto-sync complete for user {uid}")
         except Exception as e:
             logging.error(f"Auto-sync error for user {uid}: {e}")
@@ -2171,9 +2397,66 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
 # ============ PRODUCT ACTIONS ============
 
 DEFAULT_PRODUCT_ACTIONS = [
-    {"label": "Order Now",       "action_type": "order",       "index": 1, "ai_prompt": ""},
-    {"label": "Add to Cart",     "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
+    {"label": "Order Now",      "action_type": "order",       "index": 1, "ai_prompt": ""},
+    {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
+    {"label": "See Similar",    "action_type": "similar",     "index": 3, "ai_prompt": ""},
 ]
+
+# Business-type-aware defaults — used when no customization has been saved
+# "Ask a Question" is intentionally excluded — the customer is already in a WhatsApp chat
+# and can type freely. The system auto-appends "Back to Catalog" so no need to add navigation here.
+BUSINESS_TYPE_DEFAULT_ACTIONS: dict = {
+    "retail": [
+        {"label": "Order Now",      "action_type": "order",       "index": 1, "ai_prompt": ""},
+        {"label": "Add to Cart",    "action_type": "add_to_cart", "index": 2, "ai_prompt": ""},
+        {"label": "See Similar",    "action_type": "similar",     "index": 3, "ai_prompt": ""},
+    ],
+    "restaurant": [
+        {"label": "Order Now",        "action_type": "order", "index": 1, "ai_prompt": ""},
+        {"label": "Make Reservation", "action_type": "book",  "index": 2, "ai_prompt": ""},
+        {"label": "View Menu",        "action_type": "info",  "index": 3, "ai_prompt": ""},
+    ],
+    "salon": [
+        {"label": "Book Appointment", "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "View Price List",  "action_type": "info",  "index": 2, "ai_prompt": ""},
+        {"label": "See Similar",      "action_type": "similar","index": 3, "ai_prompt": ""},
+    ],
+    "fitness": [
+        {"label": "Join / Enroll",    "action_type": "order", "index": 1, "ai_prompt": ""},
+        {"label": "Book a Class",     "action_type": "book",  "index": 2, "ai_prompt": ""},
+        {"label": "View Schedule",    "action_type": "info",  "index": 3, "ai_prompt": ""},
+    ],
+    "healthcare": [
+        {"label": "Book Appointment", "action_type": "book",    "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",      "action_type": "quote",   "index": 2, "ai_prompt": ""},
+        {"label": "Learn More",       "action_type": "info",    "index": 3, "ai_prompt": ""},
+    ],
+    "rental": [
+        {"label": "Check Availability", "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",        "action_type": "quote", "index": 2, "ai_prompt": ""},
+        {"label": "View Details",       "action_type": "info",  "index": 3, "ai_prompt": ""},
+    ],
+    "tech": [
+        {"label": "Start Free Trial", "action_type": "subscribe", "index": 1, "ai_prompt": ""},
+        {"label": "Book a Demo",      "action_type": "book",      "index": 2, "ai_prompt": ""},
+        {"label": "View Pricing",     "action_type": "info",      "index": 3, "ai_prompt": ""},
+    ],
+    "creator": [
+        {"label": "Subscribe / Buy",  "action_type": "subscribe", "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",      "action_type": "quote",     "index": 2, "ai_prompt": ""},
+        {"label": "Learn More",       "action_type": "info",      "index": 3, "ai_prompt": ""},
+    ],
+    "services": [
+        {"label": "Book Now",         "action_type": "book",  "index": 1, "ai_prompt": ""},
+        {"label": "Get a Quote",      "action_type": "quote", "index": 2, "ai_prompt": ""},
+        {"label": "Learn More",       "action_type": "info",  "index": 3, "ai_prompt": ""},
+    ],
+}
+
+def get_default_actions_for_user(user: dict) -> list:
+    """Return the right default product actions based on the user's business type."""
+    biz_type = (user.get("settings") or {}).get("business_type", "retail").lower()
+    return BUSINESS_TYPE_DEFAULT_ACTIONS.get(biz_type, DEFAULT_PRODUCT_ACTIONS)
 
 # All action types supported + what they do
 PRODUCT_ACTION_TYPES = {
@@ -2191,7 +2474,7 @@ PRODUCT_ACTION_TYPES = {
 @api_router.get("/settings/product-actions")
 async def get_product_actions(user = Depends(get_current_user)):
     """Get business's customized WhatsApp product action buttons"""
-    actions = user.get("settings", {}).get("product_actions") or DEFAULT_PRODUCT_ACTIONS
+    actions = user.get("settings", {}).get("product_actions") or get_default_actions_for_user(user)
     return {"actions": actions, "available_types": PRODUCT_ACTION_TYPES}
 
 @api_router.put("/settings/product-actions")
@@ -2220,6 +2503,53 @@ async def update_product_actions(request: Request, user = Depends(get_current_us
         {"$set": {"settings.product_actions": validated}}
     )
     return {"status": "ok", "actions": validated}
+
+
+# ============ EVOLUTION SERVER POOL (admin) ============
+
+@api_router.get("/admin/evo-servers")
+async def list_evo_servers(user = Depends(get_current_user)):
+    """List all Evolution API servers in the pool (owner only)"""
+    servers = await db.evo_servers.find({}).to_list(50)
+    return serialize_doc(servers)
+
+@api_router.post("/admin/evo-servers")
+async def add_evo_server(request: Request, user = Depends(get_current_user)):
+    """
+    Add a new Evolution API server to the pool.
+    Body: { "url": "https://...", "api_key": "...", "label": "evo-2", "max_users": 25 }
+    """
+    data = await request.json()
+    url = (data.get("url") or "").rstrip("/")
+    api_key = data.get("api_key") or ""
+    label = data.get("label") or f"evo-{url[-6:]}"
+    max_users = int(data.get("max_users") or 25)
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    existing = await db.evo_servers.find_one({"url": url})
+    if existing:
+        raise HTTPException(status_code=409, detail="Server already registered")
+    current = await db.users.count_documents({"evolution_url": url})
+    server_id = str(uuid.uuid4())
+    await db.evo_servers.insert_one({
+        "_id": server_id,
+        "url": url,
+        "api_key": api_key,
+        "label": label,
+        "max_users": max_users,
+        "current_users": current,
+        "status": "active",
+        "added_at": datetime.utcnow(),
+    })
+    logging.info(f"[EvoPool] Added new server: {label} ({url}) — capacity {max_users}")
+    return {"status": "ok", "server_id": server_id, "label": label}
+
+@api_router.delete("/admin/evo-servers/{server_id}")
+async def remove_evo_server(server_id: str, user = Depends(get_current_user)):
+    """Mark server inactive — existing users keep their assignment"""
+    await db.evo_servers.update_one({"_id": server_id}, {"$set": {"status": "inactive"}})
+    return {"status": "ok"}
+
 
 # ============ CONTACT CLASSIFICATION ============
 
@@ -2420,6 +2750,20 @@ async def invite_team_member(invite: TeamMemberInvite, user = Depends(get_curren
     if existing:
         raise HTTPException(status_code=400, detail="This phone number is already on your team")
 
+    # Enforce team member limit based on subscription plan
+    business_owner = await db.users.find_one({"_id": business_id})
+    plan = (business_owner or user).get("subscription_plan", "free")
+    plan_limits = SUBSCRIPTION_LIMITS.get(plan, SUBSCRIPTION_LIMITS["free"])
+    max_members = plan_limits.get("max_team_members", 1)
+    if max_members != -1:  # -1 = unlimited
+        current_count = await db.team_members.count_documents({"business_id": business_id})
+        # +1 for the owner who is not in team_members collection
+        if current_count + 1 >= max_members:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Team member limit reached ({max_members} on your {plan} plan). Upgrade to add more."
+            )
+
     # Validate role
     if invite.role not in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
         raise HTTPException(status_code=400, detail="Can only invite employees or managers")
@@ -2510,7 +2854,13 @@ async def update_team_member(member_id: str, updates: TeamMemberUpdate, user = D
     
     if update_data:
         await db.team_members.update_one({"_id": member_id}, {"$set": update_data})
-    
+        # Sync role change to the user's own doc so JWT-based permission checks stay accurate
+        if "role" in update_data and member.get("user_id"):
+            await db.users.update_one(
+                {"_id": member["user_id"]},
+                {"$set": {"role": update_data["role"]}}
+            )
+
     return {"status": "success", "message": "Team member updated"}
 
 @api_router.delete("/team/members/{member_id}")
@@ -4161,6 +4511,8 @@ async def get_revenue(user = Depends(get_current_user)):
 @api_router.get("/sales/by-employee")
 async def get_sales_by_employee(user = Depends(get_current_user)):
     """Get sales totals grouped by employee (owner/manager only)"""
+    if not check_permission(user, TeamMemberRole.MANAGER):
+        raise HTTPException(status_code=403, detail="Only owners and managers can view team analytics")
     business_id = user.get("business_id", user["_id"])
 
     pipeline = [
@@ -4263,14 +4615,15 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
     )
 
     await db.orders.insert_one(order_doc)
-    
+    await _auto_promote_to_customer(order.customer_id, business_id)
+
     # Handle created_at safely
     created_at_val = order_doc["created_at"]
     if isinstance(created_at_val, datetime):
         created_at_str = created_at_val.isoformat()
     else:
         created_at_str = created_at_val
-    
+
     return OrderResponse(
         id=order_id,
         customer_id=order.customer_id,
@@ -4809,6 +5162,10 @@ class BookingResponse(BaseModel):
     reminder_sent: bool = False
     last_reminder_at: Optional[datetime] = None
     created_at: datetime
+    # Creator-specific fields
+    deadline: Optional[str] = None
+    budget: Optional[str] = None
+    project_details: Optional[str] = None
 
 def _generate_booking_number() -> str:
     """Generate short booking reference like BK-X7K2M9"""
@@ -4963,6 +5320,9 @@ async def get_bookings(
             reminder_sent=d.get("reminder_sent", False),
             last_reminder_at=d.get("last_reminder_at"),
             created_at=d.get("created_at", datetime.utcnow()),
+            deadline=d.get("deadline"),
+            budget=d.get("budget"),
+            project_details=d.get("project_details"),
         )
         for d in docs
     ]
@@ -4996,6 +5356,9 @@ async def get_booking(booking_id: str, user = Depends(get_current_user)):
         reminder_sent=d.get("reminder_sent", False),
         last_reminder_at=d.get("last_reminder_at"),
         created_at=d.get("created_at", datetime.utcnow()),
+        deadline=d.get("deadline"),
+        budget=d.get("budget"),
+        project_details=d.get("project_details"),
     )
 
 @api_router.put("/bookings/{booking_id}", response_model=BookingResponse)
@@ -5339,10 +5702,10 @@ class ProductUpdate(BaseModel):
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
-    "free":     {"products": 5,   "images": 25},
-    "starter":  {"products": 20,  "images": 100},
-    "standard": {"products": 50,  "images": 250},
-    "pro":      {"products": None, "images": None},  # None = unlimited
+    "free":     {"products": 20,  "images": 100},
+    "starter":  {"products": 50,  "images": 250},
+    "standard": {"products": 100, "images": 500},
+    "pro":      {"products": 500, "images": None},  # None = unlimited images
 }
 
 def get_plan_limits(user: dict) -> dict:
@@ -5587,17 +5950,205 @@ async def delete_product_image(
 
 @api_router.post("/ai/generate-broadcast-message")
 async def generate_broadcast_message(request: AIMessageRequest, user = Depends(get_current_user)):
-    """Generate a broadcast message using AI"""
+    """Generate a broadcast message using AI — fully business-aware."""
     try:
+        business_id = user.get("business_id", user["_id"])
+        business_name = user.get("business_name", "My Business")
+        user_settings = user.get("settings", {})
+        currency = user_settings.get("currency", "USD")
+        model_pref = user_settings.get("ai_model", "standard")
+
+        # Build business knowledge — creator-aware
+        bk_data = user.get("business_knowledge", {})
+        business_type = request.business_type or bk_data.get("business_type", "general")
+        is_creator = business_type == "creator"
+        bk_parts = []
+        if bk_data.get("business_description"):
+            bk_parts.append(bk_data["business_description"])
+
+        if is_creator:
+            # Creator-specific context — no products, no delivery
+            if bk_data.get("creator_niche"):
+                bk_parts.append(f"Content niche: {bk_data['creator_niche']}")
+            if bk_data.get("creator_platforms"):
+                bk_parts.append(f"Platforms: {bk_data['creator_platforms']}")
+            if bk_data.get("creator_audience_size"):
+                bk_parts.append(f"Audience: {bk_data['creator_audience_size']}")
+            if bk_data.get("creator_collab_types"):
+                bk_parts.append(f"Collab types: {bk_data['creator_collab_types']}")
+            if bk_data.get("creator_rate_card"):
+                bk_parts.append(f"Rates: {bk_data['creator_rate_card']}")
+            if bk_data.get("creator_min_budget"):
+                bk_parts.append(f"Minimum budget: {bk_data['creator_min_budget']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "fitness":
+            if bk_data.get("fitness_class_types"):
+                bk_parts.append(f"Classes offered: {bk_data['fitness_class_types']}")
+            if bk_data.get("fitness_class_schedule"):
+                bk_parts.append(f"Schedule: {bk_data['fitness_class_schedule']}")
+            if bk_data.get("fitness_trainers"):
+                bk_parts.append(f"Trainers: {bk_data['fitness_trainers']}")
+            if bk_data.get("fitness_membership_tiers"):
+                bk_parts.append(f"Membership/pricing: {bk_data['fitness_membership_tiers']}")
+            if bk_data.get("fitness_trial_offer"):
+                bk_parts.append(f"Trial offer: {bk_data['fitness_trial_offer']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "restaurant":
+            if bk_data.get("restaurant_cuisine"):
+                bk_parts.append(f"Cuisine: {bk_data['restaurant_cuisine']}")
+            if bk_data.get("restaurant_menu_highlights"):
+                bk_parts.append(f"Menu highlights: {bk_data['restaurant_menu_highlights']}")
+            if bk_data.get("restaurant_dietary_options"):
+                bk_parts.append(f"Dietary options: {bk_data['restaurant_dietary_options']}")
+            if bk_data.get("restaurant_price_range"):
+                bk_parts.append(f"Price range: {bk_data['restaurant_price_range']}")
+            if bk_data.get("restaurant_seating"):
+                bk_parts.append(f"Seating: {bk_data['restaurant_seating']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "healthcare":
+            if bk_data.get("healthcare_providers"):
+                bk_parts.append(f"Providers: {bk_data['healthcare_providers']}")
+            if bk_data.get("healthcare_specialties"):
+                bk_parts.append(f"Specialties: {bk_data['healthcare_specialties']}")
+            if bk_data.get("healthcare_insurance"):
+                bk_parts.append(f"Insurance accepted: {bk_data['healthcare_insurance']}")
+            if bk_data.get("healthcare_consultation_fee"):
+                bk_parts.append(f"Consultation fees: {bk_data['healthcare_consultation_fee']}")
+            if bk_data.get("healthcare_appointment_types"):
+                bk_parts.append(f"Appointment types: {bk_data['healthcare_appointment_types']}")
+        elif business_type == "salon":
+            if bk_data.get("salon_stylists"):
+                bk_parts.append(f"Stylists: {bk_data['salon_stylists']}")
+            if bk_data.get("salon_services_menu"):
+                bk_parts.append(f"Services & prices: {bk_data['salon_services_menu']}")
+            if bk_data.get("salon_deposit_policy"):
+                bk_parts.append(f"Deposit policy: {bk_data['salon_deposit_policy']}")
+            if bk_data.get("salon_walk_ins"):
+                bk_parts.append(f"Walk-ins: {bk_data['salon_walk_ins']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        elif business_type == "retail":
+            if bk_data.get("products_services"):
+                bk_parts.append(f"Products: {bk_data['products_services']}")
+            if bk_data.get("retail_return_policy"):
+                bk_parts.append(f"Return policy: {bk_data['retail_return_policy']}")
+            if bk_data.get("retail_discount_tiers"):
+                bk_parts.append(f"Discounts: {bk_data['retail_discount_tiers']}")
+            if bk_data.get("retail_delivery_areas"):
+                bk_parts.append(f"Delivery areas: {bk_data['retail_delivery_areas']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+            # Inject live product catalog for retail
+            user_products = await db.products.find({"user_id": business_id, "in_stock": True}).to_list(20)
+            if user_products:
+                prod_lines = []
+                for p in user_products:
+                    price_str = f"{currency} {p['price']:,.0f}" if p.get("price") is not None else "price on request"
+                    desc = f" — {p['description'][:60]}" if p.get("description") else ""
+                    prod_lines.append(f"• {p['name']}: {price_str}{desc}")
+                bk_parts.append("Current stock:\n" + "\n".join(prod_lines))
+        elif business_type == "tech":
+            if bk_data.get("tech_product_description"):
+                bk_parts.append(f"Product: {bk_data['tech_product_description']}")
+            if bk_data.get("tech_target_customers"):
+                bk_parts.append(f"Target customers: {bk_data['tech_target_customers']}")
+            if bk_data.get("tech_key_features"):
+                bk_parts.append(f"Key features: {bk_data['tech_key_features']}")
+            if bk_data.get("tech_pricing_plans"):
+                bk_parts.append(f"Pricing plans: {bk_data['tech_pricing_plans']}")
+            if bk_data.get("tech_free_trial"):
+                bk_parts.append(f"Free trial: {bk_data['tech_free_trial']}")
+            if bk_data.get("tech_integrations"):
+                bk_parts.append(f"Integrations: {bk_data['tech_integrations']}")
+            if bk_data.get("tech_demo_process"):
+                bk_parts.append(f"Demo booking: {bk_data['tech_demo_process']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+        else:
+            if bk_data.get("products_services"):
+                bk_parts.append(f"Products/services: {bk_data['products_services']}")
+            if bk_data.get("special_offers"):
+                bk_parts.append(f"Current offers: {bk_data['special_offers']}")
+            if bk_data.get("delivery_info"):
+                bk_parts.append(f"Delivery: {bk_data['delivery_info']}")
+            if bk_data.get("business_hours"):
+                bk_parts.append(f"Hours: {bk_data['business_hours']}")
+
+            # Inject live product catalog (retail/service only)
+            user_products = await db.products.find({"user_id": business_id, "in_stock": True}).to_list(20)
+            if user_products:
+                prod_lines = []
+                for p in user_products:
+                    price_str = f"{currency} {p['price']:,.0f}" if p.get("price") is not None else "price on request"
+                    desc = f" — {p['description'][:60]}" if p.get("description") else ""
+                    prod_lines.append(f"• {p['name']}: {price_str}{desc}")
+                bk_parts.append("Products:\n" + "\n".join(prod_lines))
+
+            # Payment methods (not relevant for creator broadcasts)
+            raw_pm = user.get("payment_methods", [])
+            if raw_pm:
+                pm_names = [pm.get("name", str(pm)) if isinstance(pm, dict) else str(pm) for pm in raw_pm]
+                bk_parts.append(f"Payment: {', '.join(pm_names)}")
+
+        business_knowledge = "\n".join(bk_parts)
+
+        # Learn owner's writing style from recent outgoing messages
+        style_note = ""
+        try:
+            recent_out = await db.messages.find(
+                {"user_id": business_id, "direction": "outgoing"}
+            ).sort("created_at", -1).limit(15).to_list(15)
+            out_texts = [m.get("content", "") for m in recent_out if m.get("content")]
+            if out_texts:
+                sample = "\n".join(out_texts[:6])
+                uses_emojis = bool(re.search(r'[\U0001F300-\U0001FAFF]', sample))
+                avg_len = sum(len(t.split()) for t in out_texts) / len(out_texts)
+                if uses_emojis:
+                    style_note += "- Owner uses emojis naturally — include 1-2 if they genuinely fit.\n"
+                else:
+                    style_note += "- Owner rarely uses emojis — keep it minimal.\n"
+                if avg_len < 12:
+                    style_note += "- Owner writes very short messages — keep it punchy, under 2 sentences.\n"
+                elif avg_len > 25:
+                    style_note += "- Owner writes in detail — slightly longer is acceptable.\n"
+        except Exception:
+            pass
+
         drafter = get_drafter()
-        generated_message = await drafter.draft_broadcast_message(
-            prompt=request.prompt,
-            business_type=request.business_type
+        bk_section = f"\nYOUR BUSINESS INFO:\n{business_knowledge}\n" if business_knowledge else ""
+        style_section = f"\nOWNER STYLE (match this):\n{style_note}" if style_note else ""
+
+        _broadcast_audience = "brands and collaborators" if is_creator else "customers"
+        _broadcast_specifics = (
+            "actual collab types, rates, and what's included — never say 'exciting opportunities' without naming them"
+            if is_creator else
+            "actual product names, actual prices, actual offers — never say 'amazing products' or 'great deals' without naming them"
         )
-        
-        return {"message": generated_message}
+
+        broadcast_prompt = f"""You are {business_name} writing a WhatsApp broadcast message to send to {_broadcast_audience}.
+
+OWNER'S REQUEST: "{request.prompt}"
+{bk_section}{style_section}
+RULES — read every one:
+1. Sound like a real person, not a marketing bot. Write the way this owner actually texts.
+2. Use {{{{name}}}} as the ONLY personalisation placeholder — it gets replaced with each recipient's first name.
+3. WhatsApp length: 1-4 sentences. Long messages get ignored. Short messages get read.
+4. Use REAL specifics from the business info above — {_broadcast_specifics}.
+5. Include ONE clear action: "Reply YES", "DM me", "Send me a message" — one thing only.
+6. BANNED phrases: "Hope this finds you well", "I'm excited to share", "Don't miss out", "Limited time offer", "Act now", "Exclusive deal", "I wanted to reach out", "Touch base" — these get ignored.
+7. Language: Write in the language the owner used in their request. If mixed, match that mix.
+8. Emojis: Only if the owner's style above shows they use them. Max 2. Never: 😊😇✨💯🙏
+9. NEVER invent prices, rates, or offers not listed in the business info above.
+
+Think: what would make this specific person actually reply? Write that. Output ONLY the message text."""
+
+        generated = await drafter._call_llm(broadcast_prompt, model_pref=model_pref)
+        return {"message": generated.strip().strip('"').strip("'")}
     except Exception as e:
-        logging.error(f"AI generation error: {e}")
+        logging.error(f"AI broadcast generation error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate message")
 
 # ============ IMAGE UPLOAD ENDPOINTS ============
@@ -5654,80 +6205,92 @@ PLAN_FEATURES = {
 }
 
 # Regional pricing: currency -> (starter, standard, pro)
-# Anchor: KES 700 / 1500 / 2500  ≈  USD 5.40 / 11.60 / 19.30
+# Full prices (post-intro). Intro price = 50% off for first 3 months.
+# Anchor: KES 1400 / 3000 / 5000 full  →  KES 700 / 1500 / 2500 intro (50% off)
+# USD equivalent: ~$10.80 / $23 / $38 full  →  ~$5.40 / $11.60 / $19.30 intro
 REGIONAL_PRICING = {
     # East Africa
-    "KES": (700, 1500, 2500),       # Kenya
-    "TZS": (14000, 30000, 50000),   # Tanzania
-    "UGX": (20000, 43000, 72000),   # Uganda
-    "RWF": (6000, 13000, 22000),    # Rwanda
-    "ETB": (300, 650, 1100),        # Ethiopia
-    "BIF": (16000, 34000, 57000),   # Burundi
-    "SOS": (3000, 6500, 11000),     # Somalia
+    "KES": (1400, 3000, 5000),        # Kenya
+    "TZS": (28000, 60000, 100000),    # Tanzania
+    "UGX": (40000, 86000, 144000),    # Uganda
+    "RWF": (12000, 26000, 44000),     # Rwanda
+    "ETB": (600, 1300, 2200),         # Ethiopia
+    "BIF": (32000, 68000, 114000),    # Burundi
+    "SOS": (6000, 13000, 22000),      # Somalia
     # West Africa
-    "NGN": (4500, 9500, 16000),     # Nigeria
-    "GHS": (45, 95, 160),           # Ghana
-    "XOF": (3500, 7500, 12500),     # CFA (Senegal, Ivory Coast, etc.)
-    "XAF": (3500, 7500, 12500),     # CFA (Cameroon, etc.)
+    "NGN": (9000, 19000, 32000),      # Nigeria
+    "GHS": (90, 190, 320),            # Ghana
+    "XOF": (7000, 15000, 25000),      # CFA (Senegal, Ivory Coast, etc.)
+    "XAF": (7000, 15000, 25000),      # CFA (Cameroon, etc.)
     # Southern Africa
-    "ZAR": (100, 210, 350),         # South Africa
-    "CDF": (15000, 32000, 53000),   # DR Congo
+    "ZAR": (200, 420, 700),           # South Africa
+    "CDF": (30000, 64000, 106000),    # DR Congo
     # North Africa / Middle East
-    "EGP": (170, 360, 600),         # Egypt
-    "MAD": (55, 115, 195),          # Morocco
-    "TND": (17, 36, 60),            # Tunisia
-    "AED": (20, 43, 71),            # UAE
-    "SAR": (20, 43, 71),            # Saudi Arabia
+    "EGP": (340, 720, 1200),          # Egypt
+    "MAD": (110, 230, 390),           # Morocco
+    "TND": (34, 72, 120),             # Tunisia
+    "AED": (40, 86, 142),             # UAE
+    "SAR": (40, 86, 142),             # Saudi Arabia
     # South Asia
-    "INR": (450, 960, 1600),        # India
-    "PKR": (1500, 3200, 5400),      # Pakistan
-    "BDT": (600, 1300, 2100),       # Bangladesh
+    "INR": (900, 1920, 3200),         # India
+    "PKR": (3000, 6400, 10800),       # Pakistan
+    "BDT": (1200, 2600, 4200),        # Bangladesh
     # Southeast Asia
-    "PHP": (300, 650, 1100),        # Philippines
-    "IDR": (85000, 180000, 300000), # Indonesia
-    "MYR": (25, 54, 90),            # Malaysia
-    "THB": (190, 410, 680),         # Thailand
-    "VND": (135000, 290000, 480000),# Vietnam
+    "PHP": (600, 1300, 2200),         # Philippines
+    "IDR": (170000, 360000, 600000),  # Indonesia
+    "MYR": (50, 108, 180),            # Malaysia
+    "THB": (380, 820, 1360),          # Thailand
+    "VND": (270000, 580000, 960000),  # Vietnam
     # East Asia
-    "CNY": (39, 84, 140),           # China
-    "JPY": (800, 1700, 2900),       # Japan
-    "KRW": (7200, 15500, 26000),    # South Korea
+    "CNY": (78, 168, 280),            # China
+    "JPY": (1600, 3400, 5800),        # Japan
+    "KRW": (14400, 31000, 52000),     # South Korea
     # Americas
-    "USD": (10, 18, 28),            # USA/Canada (Tier 1)
-    "BRL": (30, 65, 108),           # Brazil
-    "MXN": (100, 215, 360),         # Mexico
-    "COP": (22000, 47000, 78000),   # Colombia
-    "CLP": (4800, 10200, 17000),    # Chile
-    "ARS": (4500, 9600, 16000),     # Argentina
+    "USD": (20, 36, 56),              # USA/Canada (Tier 1)
+    "BRL": (60, 130, 216),            # Brazil
+    "MXN": (200, 430, 720),           # Mexico
+    "COP": (44000, 94000, 156000),    # Colombia
+    "CLP": (9600, 20400, 34000),      # Chile
+    "ARS": (9000, 19200, 32000),      # Argentina
     # Europe
-    "GBP": (8, 14, 22),             # UK (Tier 1)
-    "EUR": (9, 16, 25),             # Eurozone (Tier 1)
-    "AUD": (15, 27, 42),            # Australia (Tier 1)
-    "NZD": (16, 28, 44),            # New Zealand (Tier 1)
-    "CAD": (13, 23, 36),            # Canada (Tier 1)
-    "CHF": (9, 16, 25),             # Switzerland (Tier 1)
-    "SGD": (13, 23, 36),            # Singapore (Tier 1)
+    "GBP": (16, 28, 44),              # UK (Tier 1)
+    "EUR": (18, 32, 50),              # Eurozone (Tier 1)
+    "AUD": (30, 54, 84),              # Australia (Tier 1)
+    "NZD": (32, 56, 88),              # New Zealand (Tier 1)
+    "CAD": (26, 46, 72),              # Canada (Tier 1)
+    "CHF": (18, 32, 50),              # Switzerland (Tier 1)
+    "SGD": (26, 46, 72),              # Singapore (Tier 1)
 }
 
 def get_regional_plans(currency: str) -> list:
-    """Get subscription plans with regional pricing"""
+    """
+    Get subscription plans with regional pricing.
+    Returns full price + intro price (50% off for first 3 months).
+    The app should display: "KES 700/mo for 3 months, then KES 1,400/mo"
+    """
     prices = REGIONAL_PRICING.get(currency, REGIONAL_PRICING["USD"])
     plan_ids = ["starter", "standard", "pro"]
     plans = []
     for i, plan_id in enumerate(plan_ids):
         plan = PLAN_FEATURES[plan_id].copy()
-        amount = prices[i]
-        # Format display amount with commas
-        if amount >= 1000:
-            display = f"{amount:,.0f}/month"
-        else:
-            display = f"{amount}/month"
+        full_amount = prices[i]
+        intro_amount = round(full_amount * 0.5)
+
+        def _fmt(amt):
+            return f"{amt:,.0f}" if amt >= 1000 else str(amt)
+
         plans.append({
             "id": plan_id,
             "name": plan["name"],
-            "amount": amount,
+            # Full price (what they pay after 3 months)
+            "amount": full_amount,
+            "amount_display": f"{_fmt(full_amount)}/month",
+            # Intro price (what they pay for first 3 months — 50% off)
+            "intro_amount": intro_amount,
+            "intro_amount_display": f"{_fmt(intro_amount)}/month",
+            "intro_months": 3,
+            "intro_label": f"First 3 months at 50% off — then {currency} {_fmt(full_amount)}/mo",
             "currency": currency,
-            "amount_display": display,
             "interval": plan["interval"],
             "features": plan["features"]
         })
@@ -5843,18 +6406,23 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
         logging.warning(f"IAP verification failed for user {user['_id']}: {verification.get('reason')}")
         raise HTTPException(status_code=403, detail=f"Purchase verification failed: {verification.get('reason', 'unknown')}")
 
-    # Update user subscription
+    # Update user subscription — also store purchase_token so RTDN webhook can find this user
+    _now_sub = datetime.utcnow()
+    _sub_update: dict = {
+        "subscription_plan": request.plan_id,
+        "subscription_active": True,
+        "subscription_date": _now_sub,
+        "purchase_token": request.purchase_token,   # needed for RTDN lookup
+    }
+    # Only set subscription_started_at on FIRST activation — renewals don't reset the intro clock
+    existing_start = user.get("subscription_started_at")
+    if not existing_start:
+        _sub_update["subscription_started_at"] = _now_sub
     await db.users.update_one(
         {"_id": user["_id"]},
-        {
-            "$set": {
-                "subscription_plan": request.plan_id,
-                "subscription_active": True,
-                "subscription_date": datetime.utcnow()
-            }
-        }
+        {"$set": _sub_update}
     )
-    
+
     # Store transaction
     await db.transactions.insert_one({
         "_id": str(uuid.uuid4()),
@@ -5880,6 +6448,10 @@ async def get_subscription_status(user = Depends(get_current_user)):
     active = user.get("subscription_active", False)
     # Build limits from SUBSCRIPTION_LIMITS for the current plan
     limits = SUBSCRIPTION_LIMITS.get(plan, SUBSCRIPTION_LIMITS['free']) if plan else SUBSCRIPTION_LIMITS['free']
+    # Current-month AI usage
+    _usage = user.get("ai_usage", {})
+    _cur_month = datetime.utcnow().strftime("%Y-%m")
+    ai_messages_used = _usage.get("count", 0) if _usage.get("month") == _cur_month else 0
     return {
         "subscription_plan": plan,
         "subscription_active": active,
@@ -5888,6 +6460,75 @@ async def get_subscription_status(user = Depends(get_current_user)):
         "auto_renewing": user.get("auto_renewing", False),
         "extra_credits": user.get("extra_credits", 0),
         "limits": limits,
+        "ai_messages_used": ai_messages_used,
+    }
+
+
+@api_router.get("/subscription/discount-status")
+async def get_discount_status(user = Depends(get_current_user)):
+    """
+    Returns the user's introductory discount status for display in the app.
+    Used to show the early access banner on the subscription screen.
+
+    Response when on intro pricing:
+      { on_intro_pricing: true, days_remaining: 65, days_elapsed: 25,
+        saving_per_month: 750, full_price: 1500, currency: "KES",
+        percent_off: 50, phase: "active" | "warning" | "final" }
+
+    Response when not on intro pricing:
+      { on_intro_pricing: false }
+    """
+    sub_started = user.get("subscription_started_at")
+    plan = user.get("subscription_plan")
+    active = user.get("subscription_active", False)
+
+    # Not subscribed or no start date recorded
+    if not sub_started or not active or not plan or plan == "free":
+        return {"on_intro_pricing": False}
+
+    if isinstance(sub_started, str):
+        try:
+            sub_started = datetime.fromisoformat(sub_started)
+        except Exception:
+            return {"on_intro_pricing": False}
+
+    days_elapsed = (datetime.utcnow() - sub_started).days
+    intro_days = 90  # 3-month introductory period
+
+    if days_elapsed >= intro_days:
+        return {"on_intro_pricing": False}
+
+    days_remaining = intro_days - days_elapsed
+
+    # Get regional full price for their plan
+    currency = user.get("currency") or user.get("settings", {}).get("currency", "USD") or "USD"
+    prices = REGIONAL_PRICING.get(currency, REGIONAL_PRICING["USD"])
+    plan_index = {"starter": 0, "standard": 1, "pro": 2}.get(plan, 0)
+    full_price = prices[plan_index]
+    discounted_price = round(full_price * 0.5)
+    saving_per_month = full_price - discounted_price
+
+    # Phase tells the frontend which visual to show
+    if days_remaining > 30:
+        phase = "active"    # green — plenty of time
+    elif days_remaining > 7:
+        phase = "warning"   # amber — getting close
+    else:
+        phase = "final"     # red — last week
+
+    return {
+        "on_intro_pricing": True,
+        "days_remaining": days_remaining,
+        "days_elapsed": days_elapsed,
+        "intro_days": intro_days,
+        "percent_off": 50,
+        "full_price": full_price,
+        "discounted_price": discounted_price,
+        "saving_per_month": saving_per_month,
+        "currency": currency,
+        "phase": phase,
+        "started_at": sub_started.isoformat(),
+        "ends_at": (sub_started + timedelta(days=intro_days)).isoformat(),
     }
 
 
@@ -5974,8 +6615,8 @@ async def google_play_rtdn_webhook(request: Request):
 
         # notificationType: 1=RECOVERED, 2=RENEWED, 3=CANCELED, 4=PURCHASED,
         #                    5=ON_HOLD, 6=IN_GRACE_PERIOD, 7=RESTARTED, 13=EXPIRED
-        ACTIVE_TYPES = {1, 2, 4, 7}    # subscription is active
-        INACTIVE_TYPES = {3, 5, 13}     # subscription ended or on hold
+        ACTIVE_TYPES = {1, 2, 4, 6, 7}  # 6=IN_GRACE_PERIOD: still active, payment retrying
+        INACTIVE_TYPES = {3, 5, 13}      # subscription ended or on hold
 
         if notification_type in ACTIVE_TYPES:
             plan_id = subscription_id.replace("crm_", "").replace("_monthly", "").replace("_yearly", "")
@@ -6181,6 +6822,8 @@ async def whatsapp_status(user = Depends(get_current_user)):
         "daily_sent": limits.get("daily_sent", 0),
         "daily_limit": limits.get("daily_limit", 500),
         "plan": limits.get("plan", "free"),
+        "disconnect_reason": status.get("disconnect_reason"),
+        "disconnected_at": status.get("disconnected_at"),
     }
 
 @api_router.post("/whatsapp/sync")
@@ -6771,15 +7414,37 @@ async def evolution_webhook(request: Request):
         raw_event = payload.get("event", "")
         instance_name = payload.get("instance", "")
         data = payload.get("data", payload)
-        
+
         # Normalize event name: Evolution API may send "messages.update" or "MESSAGES_UPDATE"
         event = raw_event.lower().replace("_", ".")
-        
+
+        # ── Cluster deduplication ────────────────────────────────────────────
+        # Evolution API runs as multiple pods; each webhook is delivered N times
+        # in parallel.  Build a fingerprint and drop duplicates within 10 s.
+        import time as _time, hashlib as _hashlib, json as _json
+        if event == "messages.upsert":
+            # Deduplicate by message ID (most stable key)
+            _msg_data = data.get("data", data) if isinstance(data, dict) else {}
+            if isinstance(_msg_data, list):
+                _msg_data = _msg_data[0] if _msg_data else {}
+            _msg_id = (_msg_data.get("key") or {}).get("id") or ""
+            _fp = f"msg:{instance_name}:{_msg_id}" if _msg_id else ""
+        elif event == "connection.update":
+            # Deduplicate by state + 2-second time bucket (state rarely changes twice in 2s)
+            _state = data.get("state") or data.get("instance", {}).get("state", "")
+            _bucket = int(_time.time() / 2)
+            _fp = f"conn:{instance_name}:{_state}:{_bucket}"
+        else:
+            _fp = ""
+
+        if _fp and _webhook_is_duplicate(_fp):
+            return {"status": "ok"}  # silent drop — another pod is handling this
+        # ────────────────────────────────────────────────────────────────────
+
         logging.info(f"Evolution webhook: raw_event={raw_event!r}, normalized={event!r}, instance={instance_name}")
-        
-        
+
         whatsapp_service = get_whatsapp_service(db)
-        
+
         # Handle connection status changes
         if event == "connection.update":
             await whatsapp_service.handle_connection_update(instance_name, data)
@@ -6827,11 +7492,17 @@ async def evolution_webhook(request: Request):
                                 except Exception as cls_err:
                                     logging.error(f"Post-sync classification error: {cls_err}")
                                 
-                                # Fetch profile pictures
+                                # Fetch profile pictures (with retry — Evolution API cache may not be
+                                # populated immediately after a new instance connects)
                                 try:
                                     logging.info("Starting profile picture sync...")
                                     pic_result = await whatsapp_service.fetch_profile_pictures_bulk(uid)
                                     logging.info(f"Profile pic sync: {pic_result}")
+                                    if pic_result.get("updated", 0) == 0:
+                                        logging.info("No profile pics on first try — retrying in 60s")
+                                        await asyncio.sleep(60)
+                                        pic_retry = await whatsapp_service.fetch_profile_pictures_bulk(uid)
+                                        logging.info(f"Profile pic retry: {pic_retry}")
                                 except Exception as pic_err:
                                     logging.error(f"Profile pic sync error: {pic_err}")
 
@@ -7010,50 +7681,79 @@ async def evolution_webhook(request: Request):
                         logging.debug(f"Could not fetch profile pic for new contact {phone}: {e}")
                 asyncio.create_task(_fetch_pic(user["_id"], customer_id, from_number))
 
-                # Notify owner of new contact messaging for the first time
-                async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
+                # Notify owner of new contact messaging for the first time (only for incoming messages)
+                if not from_me:
+                    async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
+                        try:
+                            owner_phone = owner_user.get("phone_number") or owner_user.get("whatsapp", {}).get("phone_number")
+                            if not owner_phone:
+                                return
+                            # Don't notify if owner IS the new contact (self-message edge case)
+                            if owner_phone == cust_phone:
+                                return
+                            ws = get_whatsapp_service(db)
+                            preview = msg_body[:100] + ("..." if len(msg_body) > 100 else "")
+                            notification = (
+                                f"🆕 *New contact just messaged you!*\n\n"
+                                f"👤 *{cust_name}*\n"
+                                f"📱 {cust_phone}\n\n"
+                                f"💬 _{preview}_\n\n"
+                                f"Open your CRM app to view and reply."
+                            )
+                            await ws.send_message(
+                                user_id=owner_user["_id"],
+                                to_number=owner_phone,
+                                message=notification,
+                                send_context="auto_reply"
+                            )
+                            logging.info(f"Owner notified of new contact: {cust_name} ({cust_phone})")
+                        except Exception as e:
+                            logging.error(f"Failed to notify owner of new contact: {e}")
+
+                    asyncio.create_task(_notify_owner_new_contact(user, customer_name, from_number, body))
+
+                    # Also send Expo push notification to owner's device(s)
+                    async def _push_new_contact(owner_id, cust_name, msg_body):
+                        try:
+                            preview = msg_body[:80] + ("..." if len(msg_body) > 80 else "")
+                            await send_push_notification(
+                                user_id=owner_id,
+                                title=f"🆕 New contact: {cust_name}",
+                                body=preview,
+                                data={"type": "new_contact", "contact_name": cust_name}
+                            )
+                        except Exception as e:
+                            logging.error(f"Push for new contact failed: {e}")
+
+                    asyncio.create_task(_push_new_contact(user["_id"], customer_name, body))
+                
+                async def _notify_owner_new_booking(owner_user, cust_name, svc_name, bk_id, bk_date, bk_time):
                     try:
-                        owner_phone = owner_user.get("phone_number") or owner_user.get("whatsapp", {}).get("phone_number")
+                        owner_phone = (owner_user or {}).get("phone_number") or (owner_user or {}).get("whatsapp", {}).get("phone_number")
                         if not owner_phone:
                             return
-                        # Don't notify if owner IS the new contact (self-message edge case)
-                        if owner_phone == cust_phone:
-                            return
                         ws = get_whatsapp_service(db)
-                        preview = msg_body[:100] + ("..." if len(msg_body) > 100 else "")
+                        # Use environment variable for frontend URL, fallback to charo360.com
+                        frontend_url = os.environ.get("FRONTEND_URL", "https://charo360.com")
+                        deep_link = f"{frontend_url}/bookings/{bk_id}"
+                        
                         notification = (
-                            f"🆕 *New contact just messaged you!*\n\n"
-                            f"👤 *{cust_name}*\n"
-                            f"📱 {cust_phone}\n\n"
-                            f"💬 _{preview}_\n\n"
-                            f"Open your CRM app to view and reply."
+                            f"📅 *New Booking Received!*\n\n"
+                            f"👤 *Customer:* {cust_name}\n"
+                            f"🛠️ *Service:* {svc_name}\n"
+                            f"📅 *Date:* {bk_date}\n"
+                            f"🕐 *Time:* {bk_time}\n\n"
+                            f"🔗 *Manage Booking:* {deep_link}"
                         )
                         await ws.send_message(
-                            user_id=owner_user["_id"],
+                            user_id=(owner_user or {}).get("_id"),
                             to_number=owner_phone,
                             message=notification,
                             send_context="auto_reply"
                         )
-                        logging.info(f"Owner notified of new contact: {cust_name} ({cust_phone})")
+                        logging.info(f"Owner notified of new booking: {bk_id} for {cust_name}")
                     except Exception as e:
-                        logging.error(f"Failed to notify owner of new contact: {e}")
-
-                asyncio.create_task(_notify_owner_new_contact(user, customer_name, from_number, body))
-
-                # Also send Expo push notification to owner's device(s)
-                async def _push_new_contact(owner_id, cust_name, msg_body):
-                    try:
-                        preview = msg_body[:80] + ("..." if len(msg_body) > 80 else "")
-                        await send_push_notification(
-                            user_id=owner_id,
-                            title=f"🆕 New contact: {cust_name}",
-                            body=preview,
-                            data={"type": "new_contact", "contact_name": cust_name}
-                        )
-                    except Exception as e:
-                        logging.error(f"Push for new contact failed: {e}")
-
-                asyncio.create_task(_push_new_contact(user["_id"], customer_name, body))
+                        logging.error(f"Failed to notify owner of new booking: {e}")
 
             # Store message (both incoming and outgoing)
             if customer_id and body:
@@ -7306,10 +8006,65 @@ async def evolution_webhook(request: Request):
                             })
                             if _pending_cat:
                                 _ctx = _pending_cat.get("action_context", "product")
+                                _cat_products_top = _pending_cat.get("products", [])
+                                _biz_id_top = user.get("business_id", user["_id"])
+
+                                # ── "0" = View Gallery — works for ALL menu contexts ──────────
+                                # Move this check to the top so it fires regardless of whether
+                                # the menu was sent by catalog_select, service_select, or the AI.
+                                if _reply_num == 0 and _ctx not in ("cart", "remove_item_select", "duplicate_order_choice"):
+                                    _currency_pg = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                    ws = get_whatsapp_service(db)
+                                    _sent_count = 0
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="🖼️ Here's a look at what we have...",
+                                    )
+                                    for _sp in _cat_products_top:
+                                        _full_p = await db.products.find_one({"_id": _sp["id"], "user_id": _biz_id_top})
+                                        if _full_p:
+                                            _price = _full_p.get('price') or 0
+                                            _all_img_urls = []
+                                            if _full_p.get("image_url"):
+                                                _all_img_urls.append(_full_p["image_url"])
+                                            for _img in _full_p.get("images", []):
+                                                if _img and _img not in _all_img_urls:
+                                                    _all_img_urls.append(_img)
+                                            if len(_all_img_urls) > 1:
+                                                for _img_u in _all_img_urls[:-1]:
+                                                    await ws.send_message(
+                                                        user_id=user["_id"], to_number=from_number,
+                                                        message="", media_url=_img_u, send_context="catalog_visual_all"
+                                                    )
+                                            if _all_img_urls:
+                                                _idx = _sp.get("index", "")
+                                                _idx_emoji = f"{_idx}️⃣" if _idx else ""
+                                                _msg_txt = f"{_idx_emoji} *{_full_p['name']}*\n💰 {_currency_pg} {_price:,.0f}"
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message=_msg_txt, media_url=_all_img_urls[-1], send_context="catalog_visual_all"
+                                                )
+                                                _sent_count += 1
+                                    if _sent_count > 0:
+                                        _prompt = "Ready to choose? Just reply with the number of your choice above! 👆"
+                                        if _pending_cat.get("has_more"):
+                                            _prompt += "\n\n(Or reply *9* to see even more products ➡️)"
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message=_prompt,
+                                            send_context="catalog_prompt"
+                                        )
+                                        logging.info(f"Catalog visual blast: sent {_sent_count} items (ctx={_ctx}).")
+                                    else:
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message="Sorry, no images are available right now. Reply with a number to select! 😊"
+                                        )
+                                    return {"status": "ok", "handled_by": "catalog_visual_all"}
 
                                 if _ctx == "catalog_select":
-                                    _cat_products = _pending_cat.get("products", [])
-                                    _biz_id_cs = user.get("business_id", user["_id"])
+                                    _cat_products = _cat_products_top
+                                    _biz_id_cs = _biz_id_top
                                     # Check if customer wants next page (reply=9 and has_more=True)
                                     if _reply_num == 9 and _pending_cat.get("has_more"):
                                         _all_ids = _pending_cat.get("all_product_ids", [])
@@ -7349,59 +8104,6 @@ async def evolution_webhook(request: Request):
                                             )
                                             logging.info(f"Catalog page {_page_num}: sent {len(_next_products)} products (offset={_new_offset})")
                                             return {"status": "ok", "handled_by": "catalog_next_page"}
-                                    elif _reply_num == 0:
-                                        # Send all images for the current page
-                                        _currency_pg = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-                                        ws = get_whatsapp_service(db)
-                                        _sent_count = 0
-                                        await ws.send_message(
-                                            user_id=user["_id"], to_number=from_number,
-                                            message="🖼️ Sending product images...",
-                                        )
-                                        for _sp in _cat_products:
-                                            _full_p = await db.products.find_one({"_id": _sp["id"], "user_id": _biz_id_cs})
-                                            if _full_p:
-                                                _price = _full_p.get('price') or 0
-                                                _all_img_urls = []
-                                                if _full_p.get("image_url"):
-                                                    _all_img_urls.append(_full_p["image_url"])
-                                                for _img in _full_p.get("images", []):
-                                                    if _img and _img not in _all_img_urls:
-                                                        _all_img_urls.append(_img)
-                                                        
-                                                if len(_all_img_urls) > 1:
-                                                    for _img_u in _all_img_urls[:-1]:
-                                                        await ws.send_message(
-                                                            user_id=user["_id"], to_number=from_number,
-                                                            message="", media_url=_img_u, send_context="catalog_visual_all"
-                                                        )
-                                                if _all_img_urls:
-                                                    _idx = _sp.get("index", "")
-                                                    _idx_emoji = f"{_idx}️⃣" if _idx else ""
-                                                    _msg_txt = f"{_idx_emoji} *{_full_p['name']}*\n💰 {_currency_pg} {_price:,.0f}"
-                                                    await ws.send_message(
-                                                        user_id=user["_id"], to_number=from_number,
-                                                        message=_msg_txt, media_url=_all_img_urls[-1], send_context="catalog_visual_all"
-                                                    )
-                                                    _sent_count += 1
-                                        if _sent_count > 0:
-                                            _prompt = "Ready to choose? Just reply with the number of your choice above! 👆"
-                                            if _pending_cat.get("has_more"):
-                                                _prompt += "\n\n(Or reply *9* to see even more products ➡️)"
-                                            
-                                            await ws.send_message(
-                                                user_id=user["_id"], to_number=from_number,
-                                                message=_prompt,
-                                                send_context="catalog_prompt"
-                                            )
-                                            logging.info(f"Catalog visual blast: sent {_sent_count} product image sets.")
-                                            return {"status": "ok", "handled_by": "catalog_visual_all"}
-                                        else:
-                                            await ws.send_message(
-                                                user_id=user["_id"], to_number=from_number,
-                                                message="Sorry, there are no images available for these products."
-                                            )
-                                            return {"status": "ok", "handled_by": "catalog_visual_all"}
                                     else:
                                         # Customer picked a product from the numbered list — show full details
                                         _selected_p = next((p for p in _cat_products if p.get("index") == _reply_num), None)
@@ -7409,11 +8111,23 @@ async def evolution_webhook(request: Request):
                                             _full_p = await db.products.find_one({"_id": _selected_p["id"], "user_id": _biz_id_cs})
                                             if _full_p:
                                                 ws = get_whatsapp_service(db)
+                                                # Check for active cart so showcase can show context-aware prompt
+                                                _active_cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
+                                                _cart_items = _active_cart.get("items", []) if _active_cart else []
+                                                _cart_ctx = None
+                                                if _cart_items:
+                                                    _cart_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                                    _cart_ctx = {
+                                                        "item_count": len(_cart_items),
+                                                        "total": sum(i.get("price", 0) * i.get("quantity", 1) for i in _cart_items),
+                                                        "currency": _cart_currency,
+                                                    }
                                                 await ws.send_product_showcase(
                                                     user_id=user["_id"],
                                                     to_number=from_number,
                                                     product=_full_p,
                                                     send_buttons=True,
+                                                    cart_context=_cart_ctx,
                                                 )
                                                 # Switch context to product actions so next 1/2/3 = order/cart/ask
                                                 await db.pending_catalogs.update_one(
@@ -7431,13 +8145,78 @@ async def evolution_webhook(request: Request):
                                     logging.warning(f"Catalog select #{_reply_num}: no product at that index")
 
                                 elif _ctx == "cart":
-                                    # 1 = checkout, 2 = continue shopping, 3 = cancel order
-                                    _num_to_action = {1: "checkout", 2: "continue", 3: "cancel_cart"}
+                                    # 1 = checkout, 2 = continue shopping, 3 = remove item, 4 = cancel order
+                                    _num_to_action = {1: "checkout", 2: "continue", 3: "remove_item", 4: "cancel_cart"}
                                     _matched = _num_to_action.get(_reply_num)
                                     if _matched:
                                         button_action = _matched
                                         button_product_id = None
                                         logging.info(f"Numbered cart reply: {_reply_num} → {_matched}")
+
+                                elif _ctx == "remove_item_select":
+                                    # Customer replied with the index of the item they want to remove
+                                    _biz_id_ris = user.get("business_id", user["_id"])
+                                    _ris_cart = await db.carts.find_one(
+                                        {"customer_id": customer_id, "user_id": _biz_id_ris, "status": "active"}
+                                    )
+                                    ws = get_whatsapp_service(db)
+                                    _currency_ris = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                    if _ris_cart and _ris_cart.get("items"):
+                                        _ris_items = _ris_cart["items"]
+                                        _ris_idx = _reply_num - 1  # convert 1-based reply to 0-based index
+                                        if 0 <= _ris_idx < len(_ris_items):
+                                            _removed = _ris_items[_ris_idx]
+                                            _new_items = [it for i, it in enumerate(_ris_items) if i != _ris_idx]
+                                            await db.carts.update_one(
+                                                {"_id": _ris_cart["_id"]},
+                                                {"$set": {"items": _new_items, "updated_at": datetime.utcnow()}}
+                                            )
+                                            if _new_items:
+                                                _new_total = sum(it.get("price", 0) * it.get("quantity", 1) for it in _new_items)
+                                                _new_count = len(_new_items)
+                                                _item_word = "item" if _new_count == 1 else "items"
+                                                _ris_lines = [f"✅ *{_removed['product_name']}* removed from your cart.\n"]
+                                                _ris_lines.append(f"🛒 *Cart: {_new_count} {_item_word}* — {_currency_ris} {_new_total:,.0f}")
+                                                for _ri2, _it2 in enumerate(_new_items, 1):
+                                                    _ris_lines.append(f"  {_ri2}. {_it2['product_name']} — {_currency_ris} {_it2.get('price', 0):,.0f}")
+                                                _ris_lines.append(f"\n1️⃣  ✅ Checkout Now")
+                                                _ris_lines.append(f"2️⃣  🛍️ Continue Shopping")
+                                                _ris_lines.append(f"3️⃣  ❌ Remove Another Item")
+                                                _ris_lines.append(f"4️⃣  🗑️ Cancel Order")
+                                                _ris_lines.append(f"\n_Reply with a number_")
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message="\n".join(_ris_lines),
+                                                    customer_name=customer_name, send_context="auto_reply"
+                                                )
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {"action_context": "cart", "updated_at": datetime.utcnow()}}
+                                                )
+                                            else:
+                                                # Cart now empty
+                                                await ws.send_message(
+                                                    user_id=user["_id"], to_number=from_number,
+                                                    message=f"✅ *{_removed['product_name']}* removed. Your cart is now empty.\n\nType *catalog* to browse products 🛍️",
+                                                    customer_name=customer_name, send_context="auto_reply"
+                                                )
+                                                await db.carts.update_one(
+                                                    {"_id": _ris_cart["_id"]},
+                                                    {"$set": {"status": "cancelled"}}
+                                                )
+                                                await db.pending_catalogs.update_one(
+                                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                                    {"$set": {"action_context": None, "updated_at": datetime.utcnow()}}
+                                                )
+                                            logging.info(f"Item removed from cart: {_removed['product_name']}, customer={customer_id}")
+                                            return {"status": "ok", "handled_by": "remove_item_done"}
+                                        else:
+                                            await ws.send_message(
+                                                user_id=user["_id"], to_number=from_number,
+                                                message=f"Please reply with a number between 1 and {len(_ris_items)}.",
+                                                customer_name=customer_name, send_context="auto_reply"
+                                            )
+                                            return {"status": "ok", "handled_by": "remove_item_invalid"}
 
                                 elif _ctx == "duplicate_order_choice":
                                     # 1 = create new (double), 2 = keep existing, 3 = cancel existing & create new
@@ -7472,6 +8251,7 @@ async def evolution_webhook(request: Request):
                                             "created_at": datetime.utcnow(),
                                             "source": "cart_checkout_duplicate"
                                         })
+                                        await _auto_promote_to_customer(customer_id, _biz_id_dup)
                                         # Clear cart
                                         _cart_dup = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
                                         if _cart_dup:
@@ -7579,6 +8359,7 @@ async def evolution_webhook(request: Request):
                                             "created_at": datetime.utcnow(),
                                             "source": "cart_checkout_replaced"
                                         })
+                                        await _auto_promote_to_customer(customer_id, _biz_id_dup)
                                         # Clear cart
                                         _cart_dup3 = await db.carts.find_one({"customer_id": customer_id, "user_id": _biz_id_dup, "status": "active"})
                                         if _cart_dup3:
@@ -7944,17 +8725,12 @@ async def evolution_webhook(request: Request):
                                                 )
                                             return {"status": "ok", "handled_by": "product_visual_all"}
 
-                                    _default_actions = [
-                                        {"label": "Order Now",             "action_type": "order",       "index": 1},
-                                        {"label": "Add to Cart",           "action_type": "add_to_cart", "index": 2},
-                                        {"label": "See Similar Products",  "action_type": "similar",     "index": 3},
-                                    ]
                                     _user_actions_doc = await db.users.find_one(
-                                        {"_id": user["_id"]}, {"settings.product_actions": 1}
+                                        {"_id": user["_id"]}, {"settings": 1}
                                     )
                                     _user_actions = (
                                         (_user_actions_doc or {}).get("settings", {}).get("product_actions")
-                                        or _default_actions
+                                        or get_default_actions_for_user(_user_actions_doc or user)
                                     )
                                     # Add "Back to Catalog" as last option (matches whatsapp_service.py)
                                     _back_index = len(_user_actions) + 1
@@ -7980,10 +8756,10 @@ async def evolution_webhook(request: Request):
                         "➕ add to cart": "add_to_cart",
                         "🛒 add to cart": "add_to_cart",
                         "add to cart": "add_to_cart",
-                        "💬 ask a question": "similar",
-                        "💬 ask question": "similar",
-                        "ask a question": "similar",
-                        "ask question": "similar",
+                        "💬 ask a question": "ask",
+                        "💬 ask question": "ask",
+                        "ask a question": "ask",
+                        "ask question": "ask",
                         "see similar": "similar",
                         "similar products": "similar",
                         "📋 more info": "details",
@@ -8068,15 +8844,10 @@ async def evolution_webhook(request: Request):
                                     )
                                     return {"status": "ok", "handled_by": "order_confirm_cancelled"}
                                 elif _fj_oc_action == "tangent":
-                                    _oc_summary_hint = f" for *{_oc_prod_name}*" + (f" ({_oc_price_str})" if _oc_price_str else "")
-                                    _oc_tangent_msg = _fj_oc_result.get("reply") or (
-                                        f"Hey! 😊 We were just confirming your order{_oc_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
-                                    )
-                                    await _oc_ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_oc_tangent_msg, customer_name=customer_name, send_context="order_flow"
-                                    )
-                                    return {"status": "ok", "handled_by": "order_confirm_tangent"}
+                                    # Fall through to AI agent for a natural response
+                                    pass
+                                elif False:  # placeholder for elif chain
+                                    pass
                                 else:  # unclear
                                     _oc_re_summary = (
                                         f"Just to confirm your order:\n"
@@ -8137,6 +8908,7 @@ async def evolution_webhook(request: Request):
                                         "created_at": _now_conf,
                                         "source": "whatsapp_confirmed"
                                     })
+                                    await _auto_promote_to_customer(customer_id, _biz_id_conf)
                                     # Create sales record so order appears in CRM sales tab
                                     await db.sales.insert_one({
                                         "_id": str(uuid.uuid4()),
@@ -8361,20 +9133,9 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "checkin_cancelled"}
-                            elif _fj_ci_action == "tangent":
-                                await _fj_ci_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_ci_result.get("reply") or f"Hey! 😊 We were picking your check-in date for *{_ci_svc}* — what date works for you? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkin_tangent"}
-                            elif _fj_ci_action == "unclear":
-                                await _fj_ci_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_ci_result.get("reply") or "What date would you like to check in? 📅\n_e.g. tomorrow, Monday, 15 March_",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkin_unclear"}
+                            elif _fj_ci_action in ("tangent", "unclear"):
+                                # Fall through to AI agent for a natural response
+                                pass
                             if _fj_ci_result.get("extracted_value"):
                                 body = _fj_ci_result["extracted_value"]
                         except Exception as _fj_ci_err:
@@ -8623,20 +9384,9 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "checkout_cancelled"}
-                            elif _fj_co_action == "tangent":
-                                await _fj_co_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_co_result.get("reply") or f"Hey! 😊 Check-in: *{_co_ci}* is set. What date would you like to check out? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkout_tangent"}
-                            elif _fj_co_action == "unclear":
-                                await _fj_co_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_co_result.get("reply") or f"What date would you like to check out? 📅\n_Check-in is {_co_ci}_",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "checkout_unclear"}
+                            elif _fj_co_action in ("tangent", "unclear"):
+                                # Fall through to AI agent for a natural response
+                                pass
                             if _fj_co_result.get("extracted_value"):
                                 body = _fj_co_result["extracted_value"]
                         except Exception as _fj_co_err:
@@ -8676,83 +9426,80 @@ async def evolution_webhook(request: Request):
                                             _m4 = _re_co.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", _co_body)
                                             if _m4: _parsed_co = datetime(int(_m4.group(3)), int(_m4.group(2)), int(_m4.group(1))).date()
                             except Exception: _parsed_co = None
-                            ws = get_whatsapp_service(db)
                             if not _parsed_co or _parsed_co <= _ci_date:
-                                await ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=f"Check-out must be after check-in (*{_ci_date_str}*). Please reply with a valid check-out date 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_checkout_invalid"}
-                            _co_user_doc = await db.users.find_one({"_id": user["_id"]})
-                            _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability") or []
-                            _co_svc_id = _co_state.get("booking_service_id", "")
-                            _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
-                            _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates") or []
-                            _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
-                            _nights_check = (_parsed_co - _ci_date).days
-                            _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
-                            if _blocked_in_range:
-                                await ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=(
-                                        f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
-                                        f"📅 Please reply with a different check-out date."
-                                    ),
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_checkout_blocked"}
-                            _nights = _nights_check
-                            _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-                            _co_base_price = _co_state.get("booking_service_price", 0)
-                            _co_addons = _co_state.get("booking_selected_addons", [])
-                            _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
-                            _co_price_unit = _co_state.get("booking_price_unit", "night")
-                            _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
-                            _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
-                            if _co_price_unit == "week":
-                                _co_periods = max(1, round(_nights / 7))
-                            elif _co_price_unit == "month":
-                                _co_periods = max(1, round(_nights / 30))
-                            elif _co_price_unit == "year":
-                                _co_periods = max(1, round(_nights / 365))
-                            elif _co_price_unit == "person":
-                                _co_periods = 1
+                                # No valid date — fall through to AI agent for a natural response
+                                pass
                             else:
-                                _co_periods = _nights
-                            _co_total = (_co_base_price * _co_periods) + _co_addon_total
-                            _co_svc_name = _co_state.get("booking_service_name", "Service")
-                            _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
-                            _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
-                            _co_summary = (
-                                f"📋 *Booking Summary*\n\n"
-                                f"🏠 *{_co_svc_name}*\n"
-                                f"📅 Check-in: *{_ci_date_str}*\n"
-                                f"📅 Check-out: *{str(_parsed_co)}*\n"
-                                f"⏱ Duration: *{_co_dur_label}*\n"
-                            )
-                            if _co_addons:
-                                _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
-                            if _co_price_str:
-                                _co_summary += f"💰 Total: *{_co_price_str}*\n"
-                            _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
-                            await db.pending_catalogs.update_one(
-                                {"customer_id": customer_id, "user_id": user["_id"]},
-                                {"$set": {
-                                    "action_context": "booking_confirm",
-                                    "booking_checkout_date": str(_parsed_co),
-                                    "booking_nights": _nights,
-                                    "booking_total_price": _co_total,
-                                    "booking_time": "check-in",
-                                    "booking_date": _ci_date_str,
-                                    "updated_at": datetime.utcnow(),
-                                }}
-                            )
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=_co_summary, customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_checkout_input"}
+                                ws = get_whatsapp_service(db)
+                                _co_user_doc = await db.users.find_one({"_id": user["_id"]})
+                                _co_blocked_global = (_co_user_doc or {}).get("settings", {}).get("rental_availability") or []
+                                _co_svc_id = _co_state.get("booking_service_id", "")
+                                _co_listing_doc = await db.products.find_one({"_id": _co_svc_id}) if _co_svc_id else None
+                                _co_blocked_listing = (_co_listing_doc or {}).get("listing_blocked_dates") or []
+                                _co_all_blocked = set(_co_blocked_global) | set(_co_blocked_listing)
+                                _nights_check = (_parsed_co - _ci_date).days
+                                _blocked_in_range = [str(_ci_date + timedelta(days=i)) for i in range(_nights_check) if str(_ci_date + timedelta(days=i)) in _co_all_blocked]
+                                if _blocked_in_range:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=(
+                                            f"Sorry, some dates in that range are not available (❌ {', '.join(_blocked_in_range[:3])}{'...' if len(_blocked_in_range) > 3 else ''}). \n"
+                                            f"📅 Please reply with a different check-out date."
+                                        ),
+                                        customer_name=customer_name, send_context="booking_flow"
+                                    )
+                                    return {"status": "ok", "handled_by": "booking_checkout_blocked"}
+                                _nights = _nights_check
+                                _co_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                _co_base_price = _co_state.get("booking_service_price", 0)
+                                _co_addons = _co_state.get("booking_selected_addons", [])
+                                _co_addon_total = sum(a.get("price", 0) for a in _co_addons)
+                                _co_price_unit = _co_state.get("booking_price_unit", "night")
+                                _co_unit_labels = {"night": "night", "day": "day", "week": "week", "month": "month", "year": "year", "person": "person"}
+                                _co_unit_label = _co_unit_labels.get(_co_price_unit, "night")
+                                if _co_price_unit == "week":
+                                    _co_periods = max(1, round(_nights / 7))
+                                elif _co_price_unit == "month":
+                                    _co_periods = max(1, round(_nights / 30))
+                                elif _co_price_unit == "year":
+                                    _co_periods = max(1, round(_nights / 365))
+                                elif _co_price_unit == "person":
+                                    _co_periods = 1
+                                else:
+                                    _co_periods = _nights
+                                _co_total = (_co_base_price * _co_periods) + _co_addon_total
+                                _co_svc_name = _co_state.get("booking_service_name", "Service")
+                                _co_price_str = f"{_co_currency} {_co_total:,.0f}" if _co_total else ""
+                                _co_dur_label = f"{_co_periods} {_co_unit_label}{'s' if _co_periods != 1 else ''}"
+                                _co_summary = (
+                                    f"📋 *Booking Summary*\n\n"
+                                    f"🏠 *{_co_svc_name}*\n"
+                                    f"📅 Check-in: *{_ci_date_str}*\n"
+                                    f"📅 Check-out: *{str(_parsed_co)}*\n"
+                                    f"⏱ Duration: *{_co_dur_label}*\n"
+                                )
+                                if _co_addons:
+                                    _co_summary += "🔧 Add-ons: " + ", ".join(f"{a['name']} (+{_co_currency} {a.get('price',0):,.0f})" for a in _co_addons) + "\n"
+                                if _co_price_str:
+                                    _co_summary += f"💰 Total: *{_co_price_str}*\n"
+                                _co_summary += "\nReply *YES* to confirm or *NO* to cancel"
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {
+                                        "action_context": "booking_confirm",
+                                        "booking_checkout_date": str(_parsed_co),
+                                        "booking_nights": _nights,
+                                        "booking_total_price": _co_total,
+                                        "booking_time": "check-in",
+                                        "booking_date": _ci_date_str,
+                                        "updated_at": datetime.utcnow(),
+                                    }}
+                                )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_co_summary, customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_checkout_input"}
 
                 # BOOKING DATE INPUT HANDLER — customer types a date for a pending booking
                 if not button_action and not from_me and body:
@@ -8803,19 +9550,12 @@ async def evolution_webhook(request: Request):
                                 )
                                 return {"status": "ok", "handled_by": "booking_date_cancelled"}
                             elif _fj_bkd_action == "tangent":
-                                await _fj_bkd_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_bkd_result.get("reply") or f"Hey! 😊 We were just picking a date for *{_bkd_svc}* — what day works for you? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_date_tangent"}
+                                # User is asking something unrelated or switching context.
+                                # Let it fall through to the AI agent pipeline for a natural response.
+                                pass
                             elif _fj_bkd_action == "unclear":
-                                await _fj_bkd_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_bkd_result.get("reply") or f"What date would you like for *{_bkd_svc}*? 📅\n_e.g. tomorrow, Monday, 15 March_",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "booking_date_unclear"}
+                                # Message is unclear or vague. Let the AI agent generate a helpful, conversational follow-up.
+                                pass
                             # continue — use extracted_value as cleaner date input for parser
                             if _fj_bkd_result.get("extracted_value"):
                                 body = _fj_bkd_result["extracted_value"]
@@ -8874,157 +9614,152 @@ async def evolution_webhook(request: Request):
                             _parsed_bk_date = None
 
                         if not _parsed_bk_date or _parsed_bk_date < _today_bk:
-                            ws = get_whatsapp_service(db)
-                            if _parsed_bk_date and _parsed_bk_date < _today_bk:
-                                _bk_err_msg = f"That date has already passed. Please reply with a future date 📅"
-                            else:
-                                _bk_err_msg = "I didn't catch that date. Please reply with a date like *tomorrow*, *Monday*, *15 March*, or *2026-03-15* 📅"
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=_bk_err_msg, customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_date_invalid"}
+                            # Date couldn't be parsed or is in the past — fall through to the AI agent
+                            logging.info(f"[Booking] Date parse failed or past date (raw='{_body_bk}') — skipping time-slot block")
+                            _parsed_bk_date = None  # ensure guard below fires
 
                         # Fetch business hours to validate day + build slots
-                        _bk_biz_id = user.get("business_id", user["_id"])
-                        _bk_user_doc = await db.users.find_one({"_id": _bk_biz_id})
-                        _bk_settings = (_bk_user_doc or {}).get("settings", {})
-                        _bk_biz_hours = _bk_settings.get("business_hours", {})
-                        _bk_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
-                        _bk_day_key = _bk_wd_keys[_parsed_bk_date.weekday()]
-                        _bk_day_hours = _bk_biz_hours.get(_bk_day_key, {})
-                        
-                        # Debug logging for business hours validation
-                        logging.info(f"[Booking] Date={_parsed_bk_date.strftime('%A %Y-%m-%d')}, day_key={_bk_day_key}, day_hours={_bk_day_hours}, closed={_bk_day_hours.get('closed')}")
+                        # Only run if we have a valid future date — otherwise fall through to AI agent
+                        if _parsed_bk_date:
+                            _bk_biz_id = user.get("business_id", user["_id"])
+                            _bk_user_doc = await db.users.find_one({"_id": _bk_biz_id})
+                            _bk_settings = (_bk_user_doc or {}).get("settings", {})
+                            _bk_biz_hours = _bk_settings.get("business_hours", {})
+                            _bk_wd_keys = ["mon","tue","wed","thu","fri","sat","sun"]
+                            _bk_day_key = _bk_wd_keys[_parsed_bk_date.weekday()]
+                            _bk_day_hours = _bk_biz_hours.get(_bk_day_key, {})
 
-                        if _bk_day_hours.get("closed"):
-                            ws = get_whatsapp_service(db)
-                            _closed_msg = f"Sorry, we're closed on {_parsed_bk_date.strftime('%A %d %B')}. Please choose another date 📅"
+                            # Debug logging for business hours validation
+                            logging.info(f"[Booking] Date={_parsed_bk_date.strftime('%A %Y-%m-%d')}, day_key={_bk_day_key}, day_hours={_bk_day_hours}, closed={_bk_day_hours.get('closed')}")
+
+                            if _bk_day_hours.get("closed"):
+                                ws = get_whatsapp_service(db)
+                                _closed_msg = f"Sorry, we're closed on {_parsed_bk_date.strftime('%A %d %B')}. Please choose another date 📅"
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"last_bot_message": _closed_msg, "updated_at": datetime.utcnow()}}
+                                )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_closed_msg, customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_closed"}
+
+                            _bk_open = _bk_day_hours.get("open", "08:00")
+                            _bk_close = _bk_day_hours.get("close", "17:00")
+
+                            # Get existing bookings for that date and count per time slot
+                            _bk_existing = await db.bookings.find({
+                                "user_id": user["_id"],
+                                "date": str(_parsed_bk_date),
+                                "status": {"$nin": ["cancelled"]}
+                            }).to_list(100)
+                            _bk_slot_counts = {}
+                            for _b in _bk_existing:
+                                _bt = _b.get("time")
+                                if _bt:
+                                    _bk_slot_counts[_bt] = _bk_slot_counts.get(_bt, 0) + 1
+
+                            # Get service capacity (default 1 for backward compatibility)
+                            _bk_capacity = 1
+                            _bk_service_id = _bk_date_state.get("booking_service_id")
+                            if _bk_service_id:
+                                _bk_svc_doc = await db.products.find_one({"_id": _bk_service_id})
+                                if _bk_svc_doc:
+                                    _bk_capacity = _bk_svc_doc.get("capacity", 1)
+
+                            # Build slots using service duration (or default 60 min)
+                            _bk_slot_mins = 60
+                            try:
+                                _raw_dur = _bk_date_state.get("booking_service_duration")
+                                if _raw_dur and int(_raw_dur) >= 15:
+                                    _bk_slot_mins = int(_raw_dur)
+                            except Exception:
+                                pass
+                            try:
+                                _bk_oh, _bk_om = map(int, _bk_open.split(":"))
+                                _bk_ch, _bk_cm = map(int, _bk_close.split(":"))
+                                _bk_cur = _bk_oh * 60 + _bk_om
+                                _bk_end = _bk_ch * 60 + _bk_cm
+                                _bk_avail = []
+                                while _bk_cur + _bk_slot_mins <= _bk_end:
+                                    _t = f"{_bk_cur // 60:02d}:{_bk_cur % 60:02d}"
+                                    _booked_count = _bk_slot_counts.get(_t, 0)
+                                    if _booked_count < _bk_capacity:
+                                        _remaining = _bk_capacity - _booked_count
+                                        _bk_avail.append({"time": _t, "remaining": _remaining})
+                                    _bk_cur += _bk_slot_mins
+                            except Exception:
+                                _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
+
+                            if not _bk_avail:
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=f"No available slots on {_parsed_bk_date.strftime('%A %d %B')}. Please try another date 📅",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "booking_date_no_slots"}
+
+                            # ── Paginated time slots: show 5 per page ──
+                            _BK_PAGE_SIZE = 5
+                            _bk_all_slots = [{"time": s["time"], "remaining": s["remaining"]} for s in _bk_avail]
+                            _bk_page_slots = _bk_all_slots[:_BK_PAGE_SIZE]
+                            _bk_has_more = len(_bk_all_slots) > _BK_PAGE_SIZE
+
+                            # Detect time-of-day period of first slot for header
+                            def _bk_slot_period(t):
+                                h = int(t.split(":")[0])
+                                if h < 12: return "Morning"
+                                if h < 17: return "Afternoon"
+                                return "Evening"
+
+                            _bk_date_label = _parsed_bk_date.strftime("%A %d %B")
+                            _bk_period_label = _bk_slot_period(_bk_page_slots[0]["time"])
+                            _bk_slot_lines = [f"🕐 *{_bk_period_label} — {_bk_date_label}:*\n"]
+                            _bk_page_objs = []
+                            for _bk_i, _bk_slot in enumerate(_bk_page_slots, 1):
+                                _bk_time = _bk_slot["time"]
+                                _bk_rem = _bk_slot["remaining"]
+                                if _bk_capacity > 1 and _bk_rem > 1:
+                                    _bk_slot_lines.append(f"{_bk_i}. {_bk_time} ({_bk_rem} spots left)")
+                                elif _bk_capacity > 1 and _bk_rem == 1:
+                                    _bk_slot_lines.append(f"{_bk_i}. {_bk_time} (1 spot left)")
+                                else:
+                                    _bk_slot_lines.append(f"{_bk_i}. {_bk_time}")
+                                _bk_page_objs.append({"index": _bk_i, "time": _bk_time, "remaining": _bk_rem})
+
+                            _bk_nav_hints = ["_Reply with a number to select_"]
+                            if _bk_has_more:
+                                _bk_nav_hints.append('_"next" for more slots_')
+                            # Check if afternoon/evening slots exist
+                            _bk_has_afternoon = any(int(s["time"].split(":")[0]) >= 12 for s in _bk_all_slots)
+                            _bk_has_evening = any(int(s["time"].split(":")[0]) >= 17 for s in _bk_all_slots)
+                            if _bk_has_afternoon and _bk_period_label == "Morning":
+                                _bk_nav_hints.append('_"afternoon" for afternoon slots_')
+                            if _bk_has_evening and _bk_period_label != "Evening":
+                                _bk_nav_hints.append('_"evening" for evening slots_')
+                            _bk_slot_lines.append("\n" + " · ".join(_bk_nav_hints))
+
                             await db.pending_catalogs.update_one(
                                 {"customer_id": customer_id, "user_id": user["_id"]},
-                                {"$set": {"last_bot_message": _closed_msg, "updated_at": datetime.utcnow()}}
+                                {"$set": {
+                                    "action_context": "booking_time_select",
+                                    "booking_date": str(_parsed_bk_date),
+                                    "all_slots": _bk_all_slots,
+                                    "time_slots": _bk_page_objs,
+                                    "time_slots_page": 0,
+                                    "time_slots_period": None,
+                                    "updated_at": datetime.utcnow()
+                                }}
                             )
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message=_closed_msg, customer_name=customer_name, send_context="booking_flow"
-                            )
-                            return {"status": "ok", "handled_by": "booking_date_closed"}
-
-                        _bk_open = _bk_day_hours.get("open", "08:00")
-                        _bk_close = _bk_day_hours.get("close", "17:00")
-
-                        # Get existing bookings for that date and count per time slot
-                        _bk_existing = await db.bookings.find({
-                            "user_id": user["_id"],
-                            "date": str(_parsed_bk_date),
-                            "status": {"$nin": ["cancelled"]}
-                        }).to_list(100)
-                        _bk_slot_counts = {}
-                        for _b in _bk_existing:
-                            _bt = _b.get("time")
-                            if _bt:
-                                _bk_slot_counts[_bt] = _bk_slot_counts.get(_bt, 0) + 1
-
-                        # Get service capacity (default 1 for backward compatibility)
-                        _bk_capacity = 1
-                        _bk_service_id = _bk_date_state.get("booking_service_id")
-                        if _bk_service_id:
-                            _bk_svc_doc = await db.products.find_one({"_id": _bk_service_id})
-                            if _bk_svc_doc:
-                                _bk_capacity = _bk_svc_doc.get("capacity", 1)
-
-                        # Build slots using service duration (or default 60 min)
-                        _bk_slot_mins = 60
-                        try:
-                            _raw_dur = _bk_date_state.get("booking_service_duration")
-                            if _raw_dur and int(_raw_dur) >= 15:
-                                _bk_slot_mins = int(_raw_dur)
-                        except Exception:
-                            pass
-                        try:
-                            _bk_oh, _bk_om = map(int, _bk_open.split(":"))
-                            _bk_ch, _bk_cm = map(int, _bk_close.split(":"))
-                            _bk_cur = _bk_oh * 60 + _bk_om
-                            _bk_end = _bk_ch * 60 + _bk_cm
-                            _bk_avail = []
-                            while _bk_cur + _bk_slot_mins <= _bk_end:
-                                _t = f"{_bk_cur // 60:02d}:{_bk_cur % 60:02d}"
-                                _booked_count = _bk_slot_counts.get(_t, 0)
-                                if _booked_count < _bk_capacity:
-                                    _remaining = _bk_capacity - _booked_count
-                                    _bk_avail.append({"time": _t, "remaining": _remaining})
-                                _bk_cur += _bk_slot_mins
-                        except Exception:
-                            _bk_avail = [{"time": t, "remaining": 1} for t in ["09:00","10:00","11:00","14:00","15:00","16:00"]]
-                        
-                        if not _bk_avail:
                             ws = get_whatsapp_service(db)
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message=f"No available slots on {_parsed_bk_date.strftime('%A %d %B')}. Please try another date 📅",
-                                customer_name=customer_name, send_context="booking_flow"
+                                message="\n".join(_bk_slot_lines), customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "booking_date_no_slots"}
-
-                        # ── Paginated time slots: show 5 per page ──
-                        _BK_PAGE_SIZE = 5
-                        _bk_all_slots = [{"time": s["time"], "remaining": s["remaining"]} for s in _bk_avail]
-                        _bk_page_slots = _bk_all_slots[:_BK_PAGE_SIZE]
-                        _bk_has_more = len(_bk_all_slots) > _BK_PAGE_SIZE
-
-                        # Detect time-of-day period of first slot for header
-                        def _bk_slot_period(t):
-                            h = int(t.split(":")[0])
-                            if h < 12: return "Morning"
-                            if h < 17: return "Afternoon"
-                            return "Evening"
-
-                        _bk_date_label = _parsed_bk_date.strftime("%A %d %B")
-                        _bk_period_label = _bk_slot_period(_bk_page_slots[0]["time"])
-                        _bk_slot_lines = [f"🕐 *{_bk_period_label} — {_bk_date_label}:*\n"]
-                        _bk_page_objs = []
-                        for _bk_i, _bk_slot in enumerate(_bk_page_slots, 1):
-                            _bk_time = _bk_slot["time"]
-                            _bk_rem = _bk_slot["remaining"]
-                            if _bk_capacity > 1 and _bk_rem > 1:
-                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} ({_bk_rem} spots left)")
-                            elif _bk_capacity > 1 and _bk_rem == 1:
-                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time} (1 spot left)")
-                            else:
-                                _bk_slot_lines.append(f"{_bk_i}. {_bk_time}")
-                            _bk_page_objs.append({"index": _bk_i, "time": _bk_time, "remaining": _bk_rem})
-
-                        _bk_nav_hints = ["_Reply with a number to select_"]
-                        if _bk_has_more:
-                            _bk_nav_hints.append('_"next" for more slots_')
-                        # Check if afternoon/evening slots exist
-                        _bk_has_afternoon = any(int(s["time"].split(":")[0]) >= 12 for s in _bk_all_slots)
-                        _bk_has_evening = any(int(s["time"].split(":")[0]) >= 17 for s in _bk_all_slots)
-                        if _bk_has_afternoon and _bk_period_label == "Morning":
-                            _bk_nav_hints.append('_"afternoon" for afternoon slots_')
-                        if _bk_has_evening and _bk_period_label != "Evening":
-                            _bk_nav_hints.append('_"evening" for evening slots_')
-                        _bk_slot_lines.append("\n" + " · ".join(_bk_nav_hints))
-
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "action_context": "booking_time_select",
-                                "booking_date": str(_parsed_bk_date),
-                                "all_slots": _bk_all_slots,
-                                "time_slots": _bk_page_objs,
-                                "time_slots_page": 0,
-                                "time_slots_period": None,
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        ws = get_whatsapp_service(db)
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message="\n".join(_bk_slot_lines), customer_name=customer_name, send_context="booking_flow"
-                        )
-                        logging.info(f"[Booking] Date={_parsed_bk_date}, total_slots={len(_bk_all_slots)}, page=0, shown={len(_bk_page_slots)} for customer={customer_id}")
-                        return {"status": "ok", "handled_by": "booking_date_input"}
+                            logging.info(f"[Booking] Date={_parsed_bk_date}, total_slots={len(_bk_all_slots)}, page=0, shown={len(_bk_page_slots)} for customer={customer_id}")
+                            return {"status": "ok", "handled_by": "booking_date_input"}
 
                 # TIME SLOT NAVIGATION HANDLER — handles "next", "morning", "afternoon", "evening"
                 # when customer is in booking_time_select state (navigating paginated slots)
@@ -9084,7 +9819,8 @@ async def evolution_webhook(request: Request):
                             lines.append("\n" + " · ".join(nav_hints))
                             return "\n".join(lines), objs, has_more
 
-                        # Navigation word detection
+                        # Navigation word detection — fuzzy (contains), not exact match
+                        # so "Afternoon at 3pm" or "show me morning" all work
                         _bk_ts_nav_action = None
                         _bk_ts_jump_period = None
                         _next_words = {"next", "more", "zaidi", "show more", "more slots", "siguiente", "suivant"}
@@ -9092,17 +9828,35 @@ async def evolution_webhook(request: Request):
                         _afternoon_words = {"afternoon", "mchana", "après-midi", "tarde", "dopogiorno", "بعد الظهر"}
                         _evening_words = {"evening", "jioni", "soir", "noche", "sera", "مساء"}
 
-                        if _bk_ts_body in _next_words:
+                        if any(w in _bk_ts_body for w in _next_words):
                             _bk_ts_nav_action = "next"
-                        elif _bk_ts_body in _morning_words:
-                            _bk_ts_nav_action = "jump"
-                            _bk_ts_jump_period = "morning"
-                        elif _bk_ts_body in _afternoon_words:
+                        elif any(w in _bk_ts_body for w in _afternoon_words):
                             _bk_ts_nav_action = "jump"
                             _bk_ts_jump_period = "afternoon"
-                        elif _bk_ts_body in _evening_words:
+                        elif any(w in _bk_ts_body for w in _evening_words):
                             _bk_ts_nav_action = "jump"
                             _bk_ts_jump_period = "evening"
+                        elif any(w in _bk_ts_body for w in _morning_words):
+                            _bk_ts_nav_action = "jump"
+                            _bk_ts_jump_period = "morning"
+
+                        # Extract specific requested time from message (e.g. "3pm", "15:00", "3:30 pm")
+                        import re as _re_bk_ts
+                        _bk_ts_requested_time = None
+                        _bk_ts_tm = _re_bk_ts.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', _bk_ts_body)
+                        if not _bk_ts_tm:
+                            _bk_ts_tm = _re_bk_ts.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', _bk_ts_body)
+                            if _bk_ts_tm:
+                                _bk_ts_requested_time = f"{int(_bk_ts_tm.group(1)):02d}:{_bk_ts_tm.group(2)}"
+                        if _bk_ts_tm and not _bk_ts_requested_time:
+                            _bk_ts_h = int(_bk_ts_tm.group(1))
+                            _bk_ts_m = int(_bk_ts_tm.group(2) or 0)
+                            _bk_ts_mer = (_bk_ts_tm.group(3) or "").lower()
+                            if _bk_ts_mer == "pm" and _bk_ts_h < 12:
+                                _bk_ts_h += 12
+                            elif _bk_ts_mer == "am" and _bk_ts_h == 12:
+                                _bk_ts_h = 0
+                            _bk_ts_requested_time = f"{_bk_ts_h:02d}:{_bk_ts_m:02d}"
 
                         if _bk_ts_nav_action == "next" and _bk_ts_all:
                             # If a period is active, paginate within that period's slots only
@@ -9143,6 +9897,37 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "booking_time_period_empty"}
+                            # If customer also named a specific time (e.g. "Afternoon at 3pm"), auto-select it
+                            if _bk_ts_requested_time:
+                                _bk_ts_auto = next((s for s in _bk_ts_period_slots if s["time"] == _bk_ts_requested_time), None)
+                                if _bk_ts_auto:
+                                    _bk_ts_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                                    _bk_ts_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                    _bk_ts_price = _bk_ts_nav_state.get("booking_service_price", 0)
+                                    _bk_ts_price_str = f"{_bk_ts_currency} {_bk_ts_price:,.0f}" if _bk_ts_price else ""
+                                    if _bk_ts_biz_type == "restaurant":
+                                        await db.pending_catalogs.update_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]},
+                                            {"$set": {"action_context": "restaurant_party_size_input", "booking_time": _bk_ts_auto["time"], "updated_at": datetime.utcnow()}}
+                                        )
+                                        ws = get_whatsapp_service(db)
+                                        await ws.send_message(user_id=user["_id"], to_number=from_number, message=f"✅ Time: *{_bk_ts_auto['time']}*\n\n👥 *How many people?*\n_Reply with the party size (1-50)_", customer_name=customer_name, send_context="booking_flow")
+                                        return {"status": "ok", "handled_by": "booking_time_auto_select_restaurant"}
+                                    _bk_ts_summary = (
+                                        f"✅ *Booking Summary*\n\n"
+                                        f"📋 Service: *{_bk_ts_nav_state.get('booking_service_name', '')}*\n"
+                                        f"📅 Date: *{_bk_ts_nav_state.get('booking_date', '')}*\n"
+                                        f"🕐 Time: *{_bk_ts_auto['time']}*\n"
+                                        + (f"💰 Price: *{_bk_ts_price_str}*\n" if _bk_ts_price_str else "")
+                                        + f"\nReply *YES* to confirm or *NO* to cancel"
+                                    )
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "booking_confirm", "booking_time": _bk_ts_auto["time"], "updated_at": datetime.utcnow()}}
+                                    )
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_summary, customer_name=customer_name, send_context="booking_flow")
+                                    return {"status": "ok", "handled_by": "booking_time_auto_select"}
                             _bk_ts_plabel = _bk_ts_jump_period.capitalize()
                             _bk_ts_msg, _bk_ts_objs, _ = _bk_ts_build_and_send(_bk_ts_period_slots, _bk_ts_plabel, 0, _bk_ts_all)
                             await db.pending_catalogs.update_one(
@@ -9152,6 +9937,38 @@ async def evolution_webhook(request: Request):
                             ws = get_whatsapp_service(db)
                             await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_msg, customer_name=customer_name, send_context="booking_flow")
                             return {"status": "ok", "handled_by": "booking_time_jump_period"}
+
+                        # Direct time selection: customer typed e.g. "3pm" or "15:00" without a period word
+                        elif not _bk_ts_nav_action and _bk_ts_requested_time and _bk_ts_all:
+                            _bk_ts_direct = next((s for s in _bk_ts_all if s["time"] == _bk_ts_requested_time), None)
+                            if _bk_ts_direct:
+                                _bk_ts_biz_type = (user.get("settings", {}).get("business_type") or "").lower().strip()
+                                _bk_ts_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                _bk_ts_price = _bk_ts_nav_state.get("booking_service_price", 0)
+                                _bk_ts_price_str = f"{_bk_ts_currency} {_bk_ts_price:,.0f}" if _bk_ts_price else ""
+                                if _bk_ts_biz_type == "restaurant":
+                                    await db.pending_catalogs.update_one(
+                                        {"customer_id": customer_id, "user_id": user["_id"]},
+                                        {"$set": {"action_context": "restaurant_party_size_input", "booking_time": _bk_ts_direct["time"], "updated_at": datetime.utcnow()}}
+                                    )
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(user_id=user["_id"], to_number=from_number, message=f"✅ Time: *{_bk_ts_direct['time']}*\n\n👥 *How many people?*\n_Reply with the party size (1-50)_", customer_name=customer_name, send_context="booking_flow")
+                                    return {"status": "ok", "handled_by": "booking_time_direct_select_restaurant"}
+                                _bk_ts_summary = (
+                                    f"✅ *Booking Summary*\n\n"
+                                    f"📋 Service: *{_bk_ts_nav_state.get('booking_service_name', '')}*\n"
+                                    f"📅 Date: *{_bk_ts_nav_state.get('booking_date', '')}*\n"
+                                    f"🕐 Time: *{_bk_ts_direct['time']}*\n"
+                                    + (f"💰 Price: *{_bk_ts_price_str}*\n" if _bk_ts_price_str else "")
+                                    + f"\nReply *YES* to confirm or *NO* to cancel"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "booking_confirm", "booking_time": _bk_ts_direct["time"], "updated_at": datetime.utcnow()}}
+                                )
+                                ws = get_whatsapp_service(db)
+                                await ws.send_message(user_id=user["_id"], to_number=from_number, message=_bk_ts_summary, customer_name=customer_name, send_context="booking_flow")
+                                return {"status": "ok", "handled_by": "booking_time_direct_select"}
 
                 # RESTAURANT PARTY SIZE HANDLER — after time slot selection
                 if not button_action and not from_me and body:
@@ -9193,20 +10010,9 @@ async def evolution_webhook(request: Request):
                                     customer_name=customer_name, send_context="booking_flow"
                                 )
                                 return {"status": "ok", "handled_by": "party_size_go_back"}
-                            elif _fj_rp_action == "tangent":
-                                await _fj_rp_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_rp_result.get("reply") or "Hey! 😊 How many people will be dining? 👥",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "party_size_tangent"}
-                            elif _fj_rp_action == "unclear":
-                                await _fj_rp_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_rp_result.get("reply") or "How many people will be joining? (e.g. reply *2* for 2 people) 👥",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "party_size_unclear"}
+                            elif _fj_rp_action in ("tangent", "unclear"):
+                                # Fall through to the AI agent pipeline for a natural response
+                                pass
                             if _fj_rp_result.get("extracted_value"):
                                 body = _fj_rp_result["extracted_value"]
                         except Exception as _fj_rp_err:
@@ -9221,35 +10027,31 @@ async def evolution_webhook(request: Request):
                         except Exception:
                             pass
                         
-                        ws = get_whatsapp_service(db)
                         if not _party_size:
+                            # Not a number — fall through to AI agent for a natural response
+                            pass
+                        else:
+                            ws = get_whatsapp_service(db)
+                            # Ask for special requests
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "restaurant_party_size": _party_size,
+                                    "action_context": "restaurant_requests_input",
+                                    "updated_at": datetime.utcnow()
+                                }}
+                            )
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message="Please reply with a valid party size (1-50 people) 👥",
+                                message=(
+                                    f"✅ Party size: *{_party_size} {'person' if _party_size == 1 else 'people'}*\n\n"
+                                    f"📝 *Any special requests?*\n"
+                                    f"_e.g. window seat, high chair, dietary restrictions_\n\n"
+                                    f"Reply *NONE* if no special requests"
+                                ),
                                 customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "restaurant_party_invalid"}
-                        
-                        # Ask for special requests
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "restaurant_party_size": _party_size,
-                                "action_context": "restaurant_requests_input",
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=(
-                                f"✅ Party size: *{_party_size} {'person' if _party_size == 1 else 'people'}*\n\n"
-                                f"📝 *Any special requests?*\n"
-                                f"_e.g. window seat, high chair, dietary restrictions_\n\n"
-                                f"Reply *NONE* if no special requests"
-                            ),
-                            customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "restaurant_party_size_input"}
+                            return {"status": "ok", "handled_by": "restaurant_party_size_input"}
 
                 # RESTAURANT SPECIAL REQUESTS HANDLER
                 if not button_action and not from_me and body:
@@ -9259,8 +10061,38 @@ async def evolution_webhook(request: Request):
                     })
                     if _rest_req_state:
                         _req_body = body.strip()
+                        # ── FlowJudge: detect cancel / tangent before saving as special request ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_rreq
+                            _fj_rreq = _get_fj_rreq()
+                            _fj_rreq_result = await _fj_rreq.understand(
+                                message=body,
+                                current_step="waiting for special requests or NONE",
+                                waiting_for="any special requests for the reservation, or NONE if none",
+                                pending_state=_rest_req_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_rreq_action = _fj_rreq_result.get("action", "continue")
+                            _fj_rreq_ws = get_whatsapp_service(db)
+                            if _fj_rreq_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _rest_req_state["_id"]})
+                                await _fj_rreq_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_rreq_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "restaurant_requests_cancelled"}
+                            elif _fj_rreq_action in ("tangent", "unclear"):
+                                # Fall through to AI agent for a natural response
+                                pass
+                            elif _fj_rreq_result.get("extracted_value"):
+                                _req_body = _fj_rreq_result["extracted_value"]
+                        except Exception as _fj_rreq_err:
+                            logging.warning(f"[FlowJudge/restaurant_requests] {_fj_rreq_err}")
+
                         _special_requests = "" if _req_body.lower() in ("none", "no", "nope", "nothing") else _req_body
-                        
+
                         # Show booking summary
                         _rest_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         _rest_svc_name = _rest_req_state.get("booking_service_name", "")
@@ -9340,12 +10172,9 @@ async def evolution_webhook(request: Request):
                                 )
                                 return {"status": "ok", "handled_by": "creator_timeline_cancelled"}
                             elif _fj_cr_action == "tangent":
-                                await _fj_cr_ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message=_fj_cr_result.get("reply") or f"Hey! 😊 We were setting a timeline for *{_cr_svc}* — when would you need it by? 📅",
-                                    customer_name=customer_name, send_context="booking_flow"
-                                )
-                                return {"status": "ok", "handled_by": "creator_timeline_tangent"}
+                                # User is asking something unrelated or switching context.
+                                # Let it fall through to the AI agent pipeline.
+                                pass
                             elif _fj_cr_action == "unclear":
                                 await _fj_cr_ws.send_message(
                                     user_id=user["_id"], to_number=from_number,
@@ -9402,34 +10231,30 @@ async def evolution_webhook(request: Request):
                         except Exception:
                             _parsed_deadline = None
                         
-                        ws = get_whatsapp_service(db)
                         if not _parsed_deadline or _parsed_deadline < _today_cr:
+                            # Couldn't parse a deadline — fall through to AI agent for a natural response
+                            pass
+                        else:
+                            ws = get_whatsapp_service(db)
+                            # Ask for budget
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "creator_deadline": str(_parsed_deadline),
+                                    "action_context": "creator_budget_input",
+                                    "updated_at": datetime.utcnow()
+                                }}
+                            )
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
-                                message="I didn't catch that deadline. Please reply with a date like *in 3 days*, *next Friday*, or *March 20* 📅",
+                                message=(
+                                    f"✅ Deadline: *{_parsed_deadline.strftime('%A %d %B %Y')}*\n\n"
+                                    f"💰 *What's your budget?*\n"
+                                    f"_Reply with an amount or *FLEXIBLE* if negotiable_"
+                                ),
                                 customer_name=customer_name, send_context="booking_flow"
                             )
-                            return {"status": "ok", "handled_by": "creator_timeline_invalid"}
-                        
-                        # Ask for budget
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "creator_deadline": str(_parsed_deadline),
-                                "action_context": "creator_budget_input",
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=(
-                                f"✅ Deadline: *{_parsed_deadline.strftime('%A %d %B %Y')}*\n\n"
-                                f"💰 *What's your budget?*\n"
-                                f"_Reply with an amount or *FLEXIBLE* if negotiable_"
-                            ),
-                            customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "creator_timeline_input"}
+                            return {"status": "ok", "handled_by": "creator_timeline_input"}
 
                 # CREATOR BUDGET HANDLER
                 if not button_action and not from_me and body:
@@ -9439,10 +10264,39 @@ async def evolution_webhook(request: Request):
                     })
                     if _cr_budget_state:
                         _budget_body = body.strip()
+                        # ── FlowJudge: detect cancel / tangent before saving budget ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_cbdg
+                            _fj_cbdg = _get_fj_cbdg()
+                            _fj_cbdg_result = await _fj_cbdg.understand(
+                                message=body,
+                                current_step="waiting for project budget",
+                                waiting_for="a budget amount or FLEXIBLE",
+                                pending_state=_cr_budget_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_cbdg_action = _fj_cbdg_result.get("action", "continue")
+                            _fj_cbdg_ws = get_whatsapp_service(db)
+                            if _fj_cbdg_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _cr_budget_state["_id"]})
+                                await _fj_cbdg_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cbdg_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_budget_cancelled"}
+                            elif _fj_cbdg_action in ("tangent", "unclear"):
+                                pass  # fall through to AI agent
+                            elif _fj_cbdg_result.get("extracted_value"):
+                                _budget_body = _fj_cbdg_result["extracted_value"]
+                        except Exception as _fj_cbdg_err:
+                            logging.warning(f"[FlowJudge/creator_budget] {_fj_cbdg_err}")
+
                         _budget_lower = _budget_body.lower()
                         _budget_amount = None
                         _budget_text = _budget_body
-                        
+
                         if _budget_lower in ("flexible", "negotiable", "open", "tbd"):
                             _budget_text = "Flexible/Negotiable"
                         else:
@@ -9453,29 +10307,32 @@ async def evolution_webhook(request: Request):
                                     _budget_amount = int(_num_match.group().replace(",", ""))
                             except Exception:
                                 pass
-                        
-                        # Ask for project details
-                        await db.pending_catalogs.update_one(
-                            {"customer_id": customer_id, "user_id": user["_id"]},
-                            {"$set": {
-                                "creator_budget": _budget_text,
-                                "creator_budget_amount": _budget_amount,
-                                "action_context": "creator_details_input",
-                                "updated_at": datetime.utcnow()
-                            }}
-                        )
-                        
-                        ws = get_whatsapp_service(db)
-                        await ws.send_message(
-                            user_id=user["_id"], to_number=from_number,
-                            message=(
-                                f"✅ Budget: *{_budget_text}*\n\n"
-                                f"📝 *Tell me about your project*\n"
-                                f"_What do you need? Include any specific requirements, deliverables, or details_"
-                            ),
-                            customer_name=customer_name, send_context="booking_flow"
-                        )
-                        return {"status": "ok", "handled_by": "creator_budget_input"}
+
+                        if not _budget_amount and _budget_text == _budget_body and _budget_lower not in ("flexible", "negotiable", "open", "tbd"):
+                            # No number and not a recognized keyword — fall through to AI agent
+                            pass
+                        else:
+                            ws = get_whatsapp_service(db)
+                            # Ask for project details
+                            await db.pending_catalogs.update_one(
+                                {"customer_id": customer_id, "user_id": user["_id"]},
+                                {"$set": {
+                                    "creator_budget": _budget_text,
+                                    "creator_budget_amount": _budget_amount,
+                                    "action_context": "creator_details_input",
+                                    "updated_at": datetime.utcnow()
+                                }}
+                            )
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=(
+                                    f"✅ Budget: *{_budget_text}*\n\n"
+                                    f"📝 *Tell me about your project*\n"
+                                    f"_What do you need? Include any specific requirements, deliverables, or details_"
+                                ),
+                                customer_name=customer_name, send_context="booking_flow"
+                            )
+                            return {"status": "ok", "handled_by": "creator_budget_input"}
 
                 # CREATOR PROJECT DETAILS HANDLER
                 if not button_action and not from_me and body:
@@ -9485,7 +10342,35 @@ async def evolution_webhook(request: Request):
                     })
                     if _cr_details_state:
                         _details_body = body.strip()
-                        
+                        # ── FlowJudge: detect cancel / tangent before saving project details ──
+                        try:
+                            from agents.flow_judge import get_flow_judge as _get_fj_cdet
+                            _fj_cdet = _get_fj_cdet()
+                            _fj_cdet_result = await _fj_cdet.understand(
+                                message=body,
+                                current_step="waiting for project details/description",
+                                waiting_for="a description of the project, requirements, or deliverables",
+                                pending_state=_cr_details_state,
+                                language="English",
+                                currency=user.get("currency", ""),
+                            )
+                            _fj_cdet_action = _fj_cdet_result.get("action", "continue")
+                            _fj_cdet_ws = get_whatsapp_service(db)
+                            if _fj_cdet_action == "cancel":
+                                await db.pending_catalogs.delete_one({"_id": _cr_details_state["_id"]})
+                                await _fj_cdet_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_fj_cdet_result.get("reply") or "No worries! Feel free to come back anytime 😊",
+                                    customer_name=customer_name, send_context="booking_flow"
+                                )
+                                return {"status": "ok", "handled_by": "creator_details_cancelled"}
+                            elif _fj_cdet_action in ("tangent", "unclear"):
+                                pass  # fall through to AI agent
+                            elif _fj_cdet_result.get("extracted_value"):
+                                _details_body = _fj_cdet_result["extracted_value"]
+                        except Exception as _fj_cdet_err:
+                            logging.warning(f"[FlowJudge/creator_details] {_fj_cdet_err}")
+
                         # Show booking summary
                         _cr_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
                         _cr_svc_name = _cr_details_state.get("booking_service_name", "")
@@ -9582,15 +10467,8 @@ async def evolution_webhook(request: Request):
                                     )
                                     return {"status": "ok", "handled_by": "booking_confirm_cancelled"}
                                 elif _fj_bc_action == "tangent":
-                                    _summary_hint = (f" for *{_bc_svc}*" + (f" on {_bc_date} at {_bc_time}" if _bc_date and _bc_time else ""))
-                                    _tangent_msg = _fj_bc_result.get("reply") or (
-                                        f"Hey! 😊 We were just confirming your booking{_summary_hint}. Reply *YES* to confirm or *NO* to cancel."
-                                    )
-                                    await _bc_ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_tangent_msg, customer_name=customer_name, send_context="booking_flow"
-                                    )
-                                    return {"status": "ok", "handled_by": "booking_confirm_tangent"}
+                                    # User is asking something unrelated. Fall through to the AI agent pipeline.
+                                    pass
                                 else:  # unclear
                                     _bkc_re_summary = (
                                         f"Just to confirm your booking:\n"
@@ -9894,6 +10772,17 @@ async def evolution_webhook(request: Request):
                                         )
                                     except Exception as _bkc_ne:
                                         logging.warning(f"Booking push failed: {_bkc_ne}")
+
+                                # WhatsApp notification to owner
+                                owner_user_for_notif = _bkc_owner if _bkc_owner else user
+                                asyncio.create_task(_notify_owner_new_booking(
+                                    owner_user=owner_user_for_notif,
+                                    cust_name=customer_name,
+                                    svc_name=_bkc_svc_name,
+                                    bk_id=_bkc_id,
+                                    bk_date=_bkc_date_str,
+                                    bk_time=_bkc_time_str
+                                ))
                                 return {"status": "ok", "handled_by": "booking_confirm_yes"}
                             else:
                                 ws = get_whatsapp_service(db)
@@ -9935,7 +10824,7 @@ async def evolution_webhook(request: Request):
                                 return {"status": "ok", "handled_by": "booking_confirm_no"}
 
                 # Handle button actions
-                if button_action and (button_product_id or button_action in ("checkout", "continue", "cancel_cart")):
+                if button_action and (button_product_id or button_action in ("checkout", "continue", "cancel_cart", "remove_item")):
                     try:
                         if button_action == "order":
                             # Customer clicked "Order Now" — ask for confirmation first, don't create order yet
@@ -10053,14 +10942,19 @@ async def evolution_webhook(request: Request):
                                 cart_total = sum(i.get("price", 0) * i.get("quantity", 1) for i in cart_items)
                                 
                                 # Unified, CRM-logged confirmation + "What's next?" message
+                                _item_lines = "\n".join(
+                                    f"  • {it['product_name']}" for it in cart_items
+                                )
                                 added_msg = (
                                     f"✅ *{product['name']}* added to cart!\n\n"
-                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}\n\n"
+                                    f"🛒 *Cart: {len(cart_items)} item(s)* — {currency} {cart_total:,.0f}\n"
+                                    f"{_item_lines}\n\n"
                                     f"*What would you like to do?*\n"
                                     f"1️⃣  Checkout Now\n"
                                     f"2️⃣  Continue Shopping\n"
-                                    f"3️⃣  Cancel Order\n\n"
-                                    f"_Reply with 1, 2 or 3, or type *cart* to view details_"
+                                    f"3️⃣  ❌ Remove an Item\n"
+                                    f"4️⃣  🗑️ Cancel Order\n\n"
+                                    f"_Reply with a number, or type *cart* to view details_"
                                 )
                                 ws = get_whatsapp_service(db)
                                 await ws.send_message(
@@ -10184,6 +11078,7 @@ async def evolution_webhook(request: Request):
                                     "created_at": _now,
                                     "source": "cart_checkout"
                                 })
+                                await _auto_promote_to_customer(customer_id, _biz_id)
                                 await db.customers.update_one(
                                     {"_id": customer_id},
                                     {"$set": {"last_contacted": _now}}
@@ -10302,6 +11197,40 @@ async def evolution_webhook(request: Request):
                                 logging.info(f"Empty cart checkout attempted by {customer_id}")
                                 return {"status": "ok", "handled_by": "empty_checkout_fallback"}
 
+                        elif button_action == "remove_item":
+                            # Customer wants to remove an item — show numbered cart items to pick from
+                            _biz_id_ri = user.get("business_id", user["_id"])
+                            _ri_cart = await db.carts.find_one(
+                                {"customer_id": customer_id, "user_id": _biz_id_ri, "status": "active"}
+                            )
+                            ws = get_whatsapp_service(db)
+                            _currency_ri = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                            if _ri_cart and _ri_cart.get("items"):
+                                _ri_items = _ri_cart["items"]
+                                _ri_lines = ["Which item would you like to remove?\n"]
+                                for _idx, _it in enumerate(_ri_items, 1):
+                                    _ri_price = f"{_currency_ri} {_it.get('price', 0):,.0f}"
+                                    _ri_lines.append(f"{_idx}️⃣  {_it['product_name']} — {_ri_price}")
+                                _ri_lines.append("\n_Reply with the number of the item_")
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="\n".join(_ri_lines),
+                                    customer_name=customer_name, send_context="auto_reply"
+                                )
+                                await db.pending_catalogs.update_one(
+                                    {"customer_id": customer_id, "user_id": user["_id"]},
+                                    {"$set": {"action_context": "remove_item_select", "updated_at": datetime.utcnow()}},
+                                    upsert=True
+                                )
+                            else:
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="🛒 Your cart is already empty!",
+                                    customer_name=customer_name, send_context="auto_reply"
+                                )
+                            logging.info(f"Remove item menu shown for customer={customer_id}")
+                            return {"status": "ok", "handled_by": "remove_item_menu"}
+
                         elif button_action == "cancel_cart":
                             # Customer chose "Cancel Order" from cart menu — clear cart then resend catalog
                             _biz_id_cancel = user.get("business_id", user["_id"])
@@ -10363,7 +11292,25 @@ async def evolution_webhook(request: Request):
                             ).sort("name", 1).to_list(100)
                             ws = get_whatsapp_service(db)
                             if _all_products:
-                                _header = "Sure! Let's get back to the catalog. 😊" if button_action == "back" else "Great! Continuing your shopping... 🛍️"
+                                if button_action == "back":
+                                    _header = "Sure! Let's get back to the catalog. 😊"
+                                else:
+                                    # Build a cart-aware header so the customer knows what's in their cart
+                                    _cont_cart = await db.carts.find_one({"customer_id": customer_id, "user_id": user["_id"], "status": "active"})
+                                    _cont_items = _cont_cart.get("items", []) if _cont_cart else []
+                                    if _cont_items:
+                                        _cont_currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
+                                        _cont_total = sum(i.get("price", 0) * i.get("quantity", 1) for i in _cont_items)
+                                        _cont_count = len(_cont_items)
+                                        _item_word = "item" if _cont_count == 1 else "items"
+                                        _cart_summary = "\n".join(f"  • {i['product_name']}" for i in _cont_items)
+                                        _header = (
+                                            f"🛒 *Your cart ({_cont_count} {_item_word}) — {_cont_currency} {_cont_total:,.0f}*\n"
+                                            f"{_cart_summary}\n\n"
+                                            f"What else would you like to add? 👇"
+                                        )
+                                    else:
+                                        _header = "Great! What would you like to add? 🛍️"
                                 _currency_cont = user.get("settings", {}).get("currency", "KES")
                                 PAGE_SIZE = 8
                                 _first_page = _all_products[:PAGE_SIZE]
@@ -10484,12 +11431,13 @@ async def evolution_webhook(request: Request):
                                 logging.info(f"Similar products failed (no product ID), returning main catalog")
                                 return {"status": "ok", "handled_by": "similar_missing_fallback"}
 
-                        elif button_action in ("book", "subscribe", "quote", "test_drive", "info", "custom"):
+                        elif button_action in ("ask", "book", "subscribe", "quote", "test_drive", "info", "custom"):
                             # Custom action types — craft intent message and let AI handle naturally
                             _biz_id_ca = user.get("business_id", user["_id"])
                             _ca_product = await db.products.find_one({"_id": button_product_id, "user_id": _biz_id_ca})
                             _pname = _ca_product["name"] if _ca_product else "this product"
                             _intent_map = {
+                                "ask":        f"I have a question about {_pname}",
                                 "book":       f"I want to book an appointment for {_pname}",
                                 "subscribe":  f"I want to subscribe to {_pname}",
                                 "quote":      f"I want to get a quote for {_pname}",
@@ -10552,6 +11500,8 @@ async def evolution_webhook(request: Request):
                             _lines.append(f"\n💰 *Total: {_currency} {_total:,.0f}*\n")
                             _lines.append("1️⃣  ✅ *Checkout Now*")
                             _lines.append("2️⃣  🛍️ *Continue Shopping*")
+                            _lines.append("3️⃣  ❌ *Remove an Item*")
+                            _lines.append("4️⃣  🗑️ *Cancel Order*")
                             _lines.append("\n_Reply with a number_")
                             await ws.send_message(
                                 user_id=user["_id"],
@@ -10597,6 +11547,7 @@ async def evolution_webhook(request: Request):
                                 "created_at": _now_ck,
                                 "source": "whatsapp_cart",
                             })
+                            await _auto_promote_to_customer(customer_id, _biz_id_ck)
                             await db.sales.insert_one({
                                 "_id": str(uuid.uuid4()),
                                 "user_id": _biz_id_ck,
@@ -10678,6 +11629,25 @@ async def evolution_webhook(request: Request):
                     logging.info(f"Auto-reply BLOCKED for {from_number} (customer_override={_customer_auto_reply}, global={_global_auto_reply})")
                     return {"status": "ok", "message": "auto-reply disabled for this contact"}
 
+                # AI message quota gate — check monthly usage against plan limit
+                _plan = user.get("subscription_plan", "free")
+                _plan_limits = SUBSCRIPTION_LIMITS.get(_plan, SUBSCRIPTION_LIMITS["free"])
+                _monthly_quota = _plan_limits.get("ai_messages_per_month", 0)
+                if _monthly_quota != -1:  # -1 = unlimited (future tier)
+                    _cur_month = datetime.utcnow().strftime("%Y-%m")
+                    _usage_doc = user.get("ai_usage", {})
+                    _used_month = _usage_doc.get("month", "")
+                    _used_count = _usage_doc.get("count", 0) if _used_month == _cur_month else 0
+                    if _used_count >= _monthly_quota:
+                        logging.info(f"AI quota reached for user {user['_id']}: {_used_count}/{_monthly_quota} ({_plan})")
+                        return {"status": "ok", "message": "ai_quota_reached"}
+                    # Increment counter atomically (optimistic — before send to prevent race conditions)
+                    _new_count = _used_count + 1
+                    await db.users.update_one(
+                        {"_id": user["_id"]},
+                        {"$set": {"ai_usage.month": _cur_month, "ai_usage.count": _new_count}}
+                    )
+
                 # needs_human gate: if the customer was escalated to a human, apply smart logic:
                 # 1. Auto-expire after 15 minutes (in case owner never manually responds)
                 # 2. If message is on a clearly different topic, clear escalation and reply normally
@@ -10752,22 +11722,240 @@ async def evolution_webhook(request: Request):
 
                 # Build business knowledge string for agents
                 _bk_data = user.get("business_knowledge", {})
+                _bk_biz_type_ctx = (_user_settings.get("business_type") or _bk_data.get("business_type", "")).lower()
+                _bk_is_creator_ctx = _bk_biz_type_ctx == "creator"
                 _bk_parts = []
                 if _bk_data:
                     if _bk_data.get("business_description"):
                         _bk_parts.append(f"About: {_bk_data['business_description']}")
-                    if _bk_data.get("products_services"):
-                        _bk_parts.append(f"Products/Services: {_bk_data['products_services']}")
-                    if _bk_data.get("pricing_info"):
-                        _bk_parts.append(f"Pricing/Payment notes: {_bk_data['pricing_info']}")
-                    if _bk_data.get("business_hours"):
-                        _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
-                    if _bk_data.get("delivery_info"):
-                        _bk_parts.append(f"Delivery: {_bk_data['delivery_info']}")
-                    if _bk_data.get("special_offers"):
-                        _bk_parts.append(f"Offers: {_bk_data['special_offers']}")
-                    if _bk_data.get("faqs"):
-                        _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+
+                    if _bk_is_creator_ctx:
+                        # Creator-specific knowledge — replaces generic products/services fields
+                        if _bk_data.get("creator_niche"):
+                            _bk_parts.append(f"Content niche: {_bk_data['creator_niche']}")
+                        if _bk_data.get("creator_platforms"):
+                            _bk_parts.append(f"Active platforms: {_bk_data['creator_platforms']}")
+                        if _bk_data.get("creator_audience_size"):
+                            _bk_parts.append(f"Audience size: {_bk_data['creator_audience_size']}")
+                        if _bk_data.get("creator_collab_types"):
+                            _bk_parts.append(f"Collaboration types offered: {_bk_data['creator_collab_types']}")
+                        if _bk_data.get("creator_rate_card"):
+                            _bk_parts.append(f"Rate card: {_bk_data['creator_rate_card']}")
+                        if _bk_data.get("creator_whats_included"):
+                            _bk_parts.append(f"What's included: {_bk_data['creator_whats_included']}")
+                        if _bk_data.get("creator_turnaround"):
+                            _bk_parts.append(f"Turnaround time: {_bk_data['creator_turnaround']}")
+                        if _bk_data.get("creator_booking_process"):
+                            _bk_parts.append(f"Booking/payment process: {_bk_data['creator_booking_process']}")
+                        if _bk_data.get("creator_min_budget"):
+                            _bk_parts.append(f"Minimum collab budget: {_bk_data['creator_min_budget']}")
+                        if _bk_data.get("creator_blacklisted_niches"):
+                            _bk_parts.append(f"Brands/niches I don't work with: {_bk_data['creator_blacklisted_niches']}")
+                        if _bk_data.get("creator_media_kit_link"):
+                            _bk_parts.append(f"Media kit: {_bk_data['creator_media_kit_link']}")
+                        if _bk_data.get("creator_fan_dm_response"):
+                            _bk_parts.append(f"Fan DM template (style guide): {_bk_data['creator_fan_dm_response']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                    elif _bk_biz_type_ctx == "fitness":
+                        if _bk_data.get("fitness_class_types"):
+                            _bk_parts.append(f"Classes offered: {_bk_data['fitness_class_types']}")
+
+                        if _bk_data.get("fitness_class_schedule"):
+                            _bk_parts.append(f"Class schedule: {_bk_data['fitness_class_schedule']}")
+                        if _bk_data.get("fitness_trainers"):
+                            _bk_parts.append(f"Trainers: {_bk_data['fitness_trainers']}")
+                        if _bk_data.get("fitness_membership_tiers"):
+                            _bk_parts.append(f"Membership/pricing: {_bk_data['fitness_membership_tiers']}")
+                        if _bk_data.get("fitness_trial_offer"):
+                            _bk_parts.append(f"Trial offer: {_bk_data['fitness_trial_offer']}")
+                        if _bk_data.get("fitness_class_capacity"):
+                            _bk_parts.append(f"Class capacity: {_bk_data['fitness_class_capacity']}")
+                        if _bk_data.get("fitness_cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['fitness_cancellation_policy']}")
+                        if _bk_data.get("fitness_equipment"):
+                            _bk_parts.append(f"Equipment/what to bring: {_bk_data['fitness_equipment']}")
+                        if not _bk_data.get("fitness_cancellation_policy") and _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if not _bk_data.get("fitness_trainers") and _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Trainers/Staff: {_bk_data['staff_info']}")
+                        if _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "healthcare":
+                        if _bk_data.get("healthcare_providers"):
+                            _bk_parts.append(f"Providers/doctors: {_bk_data['healthcare_providers']}")
+                        if _bk_data.get("healthcare_specialties"):
+                            _bk_parts.append(f"Specialties: {_bk_data['healthcare_specialties']}")
+                        if _bk_data.get("healthcare_appointment_types"):
+                            _bk_parts.append(f"Appointment types: {_bk_data['healthcare_appointment_types']}")
+                        if _bk_data.get("healthcare_insurance"):
+                            _bk_parts.append(f"Insurance accepted: {_bk_data['healthcare_insurance']}")
+                        if _bk_data.get("healthcare_consultation_fee"):
+                            _bk_parts.append(f"Consultation fees: {_bk_data['healthcare_consultation_fee']}")
+                        if _bk_data.get("healthcare_patient_prep"):
+                            _bk_parts.append(f"Patient preparation notes: {_bk_data['healthcare_patient_prep']}")
+                        if _bk_data.get("healthcare_languages"):
+                            _bk_parts.append(f"Languages spoken: {_bk_data['healthcare_languages']}")
+                        if not _bk_data.get("healthcare_providers") and _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Providers/Staff: {_bk_data['staff_info']}")
+                        if _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "restaurant":
+                        if _bk_data.get("restaurant_cuisine"):
+                            _bk_parts.append(f"Cuisine: {_bk_data['restaurant_cuisine']}")
+                        if _bk_data.get("restaurant_menu_highlights"):
+                            _bk_parts.append(f"Menu highlights: {_bk_data['restaurant_menu_highlights']}")
+                        if _bk_data.get("restaurant_dietary_options"):
+                            _bk_parts.append(f"Dietary options: {_bk_data['restaurant_dietary_options']}")
+                        if _bk_data.get("restaurant_price_range"):
+                            _bk_parts.append(f"Price range: {_bk_data['restaurant_price_range']}")
+                        if _bk_data.get("restaurant_seating"):
+                            _bk_parts.append(f"Seating options: {_bk_data['restaurant_seating']}")
+                        if _bk_data.get("restaurant_reservation_policy"):
+                            _bk_parts.append(f"Reservation policy: {_bk_data['restaurant_reservation_policy']}")
+                        if _bk_data.get("restaurant_parking"):
+                            _bk_parts.append(f"Parking: {_bk_data['restaurant_parking']}")
+                        if _bk_data.get("restaurant_dress_code"):
+                            _bk_parts.append(f"Dress code: {_bk_data['restaurant_dress_code']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "salon":
+                        if _bk_data.get("salon_stylists"):
+                            _bk_parts.append(f"Stylists: {_bk_data['salon_stylists']}")
+                        if _bk_data.get("salon_services_menu"):
+                            _bk_parts.append(f"Services & prices: {_bk_data['salon_services_menu']}")
+                        if _bk_data.get("salon_deposit_policy"):
+                            _bk_parts.append(f"Deposit policy: {_bk_data['salon_deposit_policy']}")
+                        if _bk_data.get("salon_cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['salon_cancellation_policy']}")
+                        if _bk_data.get("salon_walk_ins"):
+                            _bk_parts.append(f"Walk-ins: {_bk_data['salon_walk_ins']}")
+                        if _bk_data.get("salon_products_used"):
+                            _bk_parts.append(f"Products used: {_bk_data['salon_products_used']}")
+                        # Fallback to generic fields if type-specific ones not filled
+                        if not _bk_data.get("salon_stylists") and _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Team/Staff: {_bk_data['staff_info']}")
+                        if not _bk_data.get("salon_cancellation_policy") and _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if not _bk_data.get("salon_deposit_policy") and _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "retail":
+                        if _bk_data.get("products_services"):
+                            _bk_parts.append(f"Products: {_bk_data['products_services']}")
+                        if _bk_data.get("retail_return_policy"):
+                            _bk_parts.append(f"Return policy: {_bk_data['retail_return_policy']}")
+                        if _bk_data.get("retail_discount_tiers"):
+                            _bk_parts.append(f"Discounts: {_bk_data['retail_discount_tiers']}")
+                        if _bk_data.get("retail_delivery_areas"):
+                            _bk_parts.append(f"Delivery areas: {_bk_data['retail_delivery_areas']}")
+                        if _bk_data.get("retail_warranty"):
+                            _bk_parts.append(f"Warranty: {_bk_data['retail_warranty']}")
+                        if _bk_data.get("retail_exchange_policy"):
+                            _bk_parts.append(f"Exchange policy: {_bk_data['retail_exchange_policy']}")
+                        if _bk_data.get("retail_min_order"):
+                            _bk_parts.append(f"Minimum order: {_bk_data['retail_min_order']}")
+                        if _bk_data.get("pricing_info"):
+                            _bk_parts.append(f"Pricing notes: {_bk_data['pricing_info']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "tech":
+                        if _bk_data.get("tech_product_description"):
+                            _bk_parts.append(f"Product: {_bk_data['tech_product_description']}")
+                        if _bk_data.get("tech_target_customers"):
+                            _bk_parts.append(f"Target customers: {_bk_data['tech_target_customers']}")
+                        if _bk_data.get("tech_key_features"):
+                            _bk_parts.append(f"Key features: {_bk_data['tech_key_features']}")
+                        if _bk_data.get("tech_pricing_plans"):
+                            _bk_parts.append(f"Pricing plans: {_bk_data['tech_pricing_plans']}")
+                        if _bk_data.get("tech_free_trial"):
+                            _bk_parts.append(f"Free trial: {_bk_data['tech_free_trial']}")
+                        if _bk_data.get("tech_integrations"):
+                            _bk_parts.append(f"Integrations: {_bk_data['tech_integrations']}")
+                        if _bk_data.get("tech_demo_process"):
+                            _bk_parts.append(f"Demo booking: {_bk_data['tech_demo_process']}")
+                        if _bk_data.get("tech_onboarding"):
+                            _bk_parts.append(f"Onboarding: {_bk_data['tech_onboarding']}")
+                        if _bk_data.get("tech_support_channels"):
+                            _bk_parts.append(f"Support: {_bk_data['tech_support_channels']}")
+                        if _bk_data.get("tech_compliance"):
+                            _bk_parts.append(f"Compliance/security: {_bk_data['tech_compliance']}")
+                        if _bk_data.get("tech_contract_terms"):
+                            _bk_parts.append(f"Contract terms: {_bk_data['tech_contract_terms']}")
+                        if _bk_data.get("tech_case_studies"):
+                            _bk_parts.append(f"Customers/case studies: {_bk_data['tech_case_studies']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    elif _bk_biz_type_ctx == "rental":
+                        if _bk_data.get("products_services"):
+                            _bk_parts.append(f"Listings: {_bk_data['products_services']}")
+                        if _bk_data.get("rental_check_in_time"):
+                            _bk_parts.append(f"Check-in/out: {_bk_data['rental_check_in_time']}")
+                        if _bk_data.get("rental_amenities"):
+                            _bk_parts.append(f"Amenities: {_bk_data['rental_amenities']}")
+                        if _bk_data.get("rental_house_rules"):
+                            _bk_parts.append(f"House rules: {_bk_data['rental_house_rules']}")
+                        if _bk_data.get("rental_min_stay"):
+                            _bk_parts.append(f"Minimum stay: {_bk_data['rental_min_stay']}")
+                        if _bk_data.get("rental_security_deposit"):
+                            _bk_parts.append(f"Security deposit: {_bk_data['rental_security_deposit']}")
+                        if _bk_data.get("rental_cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['rental_cancellation_policy']}")
+                        if _bk_data.get("rental_pet_policy"):
+                            _bk_parts.append(f"Pet policy: {_bk_data['rental_pet_policy']}")
+                        if _bk_data.get("pricing_info"):
+                            _bk_parts.append(f"Pricing notes: {_bk_data['pricing_info']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Current offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
+                    else:
+                        # Generic services / general fallback
+                        if _bk_data.get("products_services"):
+                            _bk_parts.append(f"Products/Services: {_bk_data['products_services']}")
+                        if _bk_data.get("pricing_info"):
+                            _bk_parts.append(f"Pricing/Payment notes: {_bk_data['pricing_info']}")
+                        if _bk_data.get("business_hours"):
+                            _bk_parts.append(f"Hours: {_bk_data['business_hours']}")
+                        if _bk_data.get("delivery_info"):
+                            _bk_parts.append(f"Delivery: {_bk_data['delivery_info']}")
+                        if _bk_data.get("booking_process"):
+                            _bk_parts.append(f"Booking process: {_bk_data['booking_process']}")
+                        if _bk_data.get("cancellation_policy"):
+                            _bk_parts.append(f"Cancellation policy: {_bk_data['cancellation_policy']}")
+                        if _bk_data.get("staff_info"):
+                            _bk_parts.append(f"Team/Staff: {_bk_data['staff_info']}")
+                        if _bk_data.get("special_offers"):
+                            _bk_parts.append(f"Offers: {_bk_data['special_offers']}")
+                        if _bk_data.get("faqs"):
+                            _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
                 # Inject structured payment methods from user doc
                 _raw_pm = user.get("payment_methods", [])
                 if _raw_pm:
@@ -11009,19 +12197,10 @@ async def evolution_webhook(request: Request):
                                 logging.info(f"[BookingGuard] Name match: '{_bkg_body}' → '{_bkg_svc_name}' for customer {customer_id}")
                                 return {"status": "ok", "handled_by": "booking_service_name_match"}
                             else:
-                                # No match — resend numbered service list
-                                _bkg_sl = ["📋 *Our Services*\n"]
-                                for _sv in _bkg_svcs:
-                                    _sv_p = _sv.get("price", 0)
-                                    _sv_d = _sv.get("duration")
-                                    _sv_ps = f"{_bkg_currency} {_sv_p:,.0f}" if _sv_p else "Contact for price"
-                                    _sv_ds = f" · {_sv_d} min" if _sv_d else ""
-                                    _bkg_sl.append(f"{_sv.get('index','?')}️⃣  *{_sv.get('name','Service')}* — {_sv_ps}{_sv_ds}")
-                                _bkg_sl.append("\n_Reply with the number to select (e.g. *1*, *2*)_")
-                                ws = get_whatsapp_service(db)
-                                await ws.send_message(user_id=user["_id"], to_number=from_number, message="\n".join(_bkg_sl), customer_name=customer_name, send_context="booking_flow")
-                                logging.info(f"[BookingGuard] No service match for '{_bkg_body}', resent list for customer {customer_id}")
-                                return {"status": "ok", "handled_by": "booking_service_no_match_guard"}
+                                # No clear service match found in the natural language message.
+                                # Instead of blocking with a "no match" guard, we let it fall through to the AI agent pipeline.
+                                # This allows the AI to handle questions, context switches, or "start over" requests.
+                                pass
 
                 # Skip agent pipeline if button_action already set by numbered response handler
                 if not button_action:
@@ -11158,6 +12337,67 @@ async def evolution_webhook(request: Request):
 
                     ws = get_whatsapp_service(db)
 
+                    # ── GALLERY SIGNAL — customer pressed "0" (view all images) ─────────
+                    # Router returns show_gallery: True when the customer presses 0 from any
+                    # AI-generated menu (catalog_selection, service_selection, etc.).
+                    # Fetch all products on the current page and send their images.
+                    if agent_result.get("show_gallery"):
+                        _gal_cat = await db.pending_catalogs.find_one({
+                            "customer_id": customer_id, "user_id": user["_id"]
+                        })
+                        _gal_products = (_gal_cat or {}).get("products", [])
+                        _biz_id_gal = user.get("business_id", user["_id"])
+                        _currency_gal = user.get("currency") or user.get("settings", {}).get("currency", "KES")
+                        _gal_sent = 0
+                        if _gal_products:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="🖼️ Here are the images...",
+                                customer_name=customer_name, send_context="auto_reply"
+                            )
+                            for _gsp in _gal_products:
+                                _gal_pid = _gsp.get("id") or _gsp.get("_id")
+                                _gfull = await db.products.find_one({"_id": _gal_pid, "user_id": _biz_id_gal})
+                                if not _gfull:
+                                    continue
+                                _gimgs = []
+                                if _gfull.get("image_url"):
+                                    _gimgs.append(_gfull["image_url"])
+                                for _gi in _gfull.get("images", []):
+                                    if _gi and _gi not in _gimgs:
+                                        _gimgs.append(_gi)
+                                if not _gimgs:
+                                    continue
+                                _gidx = _gsp.get("index", "")
+                                _gidx_e = f"{_gidx}️⃣ " if _gidx else ""
+                                _gprice = _gfull.get("price", 0)
+                                _gcaption = f"{_gidx_e}*{_gfull['name']}*\n💰 {_currency_gal} {_gprice:,.0f}" if _gprice else f"{_gidx_e}*{_gfull['name']}*"
+                                for _gimg_u in _gimgs[:-1]:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message="", media_url=_gimg_u, send_context="catalog_visual_all"
+                                    )
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message=_gcaption, media_url=_gimgs[-1], send_context="catalog_visual_all"
+                                )
+                                _gal_sent += 1
+                        if _gal_sent > 0:
+                            _gal_prompt = "Ready to choose? Reply with the number of your pick above! 👆"
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message=_gal_prompt, send_context="auto_reply",
+                                customer_name=customer_name
+                            )
+                            logging.info(f"[Agent] Gallery sent: {_gal_sent} items for customer {customer_id}")
+                        else:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="Sorry, no images are available for these items right now. Reply with a number to select! 😊",
+                                customer_name=customer_name, send_context="auto_reply"
+                            )
+                        return {"status": "ok", "handled_by": "gallery_signal"}
+
                     # ── PRODUCT SHOWCASE SIGNAL ──────────────────────────────────────
                     # Router's menu selection gate returns showcase_product_id when the customer
                     # picks a product from the AI's list. Use send_product_showcase so they get
@@ -11269,6 +12509,47 @@ async def evolution_webhook(request: Request):
                     if is_single and body_lower in ("yes", "yeah", "yep", "ok", "sure", "order", "buy", "i want", "1"):
                         matched_product = pending["products"][0]
                     
+                    # Visual Portfolio / Gallery support (Reply 0 during service selection)
+                    if body_lower == "0" and pending.get("action_context") == "booking_service_select":
+                        try:
+                            _vp_ws = get_whatsapp_service(db)
+                            _vp_biz_id = user.get("business_id", user["_id"])
+                            _vp_products = pending.get("products", [])
+                            
+                            # Fetch full products to get all images
+                            _vp_images_sent = 0
+                            for _vp_p in _vp_products[:10]: # Limit to top 10 to avoid spam
+                                _p_full = await db.products.find_one({"_id": _vp_p["id"]})
+                                if _p_full:
+                                    _p_imgs = _p_full.get("images", [])
+                                    if _p_full.get("image_url") and _p_full["image_url"] not in _p_imgs:
+                                        _p_imgs.insert(0, _p_full["image_url"])
+                                    
+                                    # Show first image for each service if available
+                                    if _p_imgs:
+                                        await _vp_ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message=f"📸 *{_p_full['name']}*",
+                                            media_url=_p_imgs[0], customer_name=customer_name
+                                        )
+                                        _vp_images_sent += 1
+                            
+                            if _vp_images_sent == 0:
+                                await _vp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="I don't have any portfolio photos to show yet. Please select a service to continue booking! 📋",
+                                    customer_name=customer_name
+                                )
+                            else:
+                                await _vp_ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="Above are some examples of our work! 😊\n\n_Reply with a number to book your service._",
+                                    customer_name=customer_name
+                                )
+                            return {"status": "ok", "handled_by": "booking_gallery"}
+                        except Exception as _vp_err:
+                            logging.error(f"[Gallery] Failed to send portfolio: {_vp_err}")
+
                     if not matched_product:
                         try:
                             idx = int(body_lower)
@@ -11322,6 +12603,7 @@ async def evolution_webhook(request: Request):
                             "created_at": _now_cat,
                             "source": "catalog_reply",
                         })
+                        await _auto_promote_to_customer(customer_id, _biz_id_cat)
                         await db.sales.insert_one({
                             "_id": str(uuid.uuid4()),
                             "user_id": _biz_id_cat,
@@ -11398,15 +12680,44 @@ async def evolution_webhook(request: Request):
                         
                         bk = user.get("business_knowledge", {})
                         business_knowledge = "\n".join([f"{k}: {v}" for k, v in bk.items() if v]) if bk else ""
+                        # Always inject currency so AI never uses the wrong one
+                        _ai_currency = (
+                            user.get("currency") or
+                            user_settings.get("currency") or
+                            user.get("settings", {}).get("currency") or
+                            "USD"
+                        )
+                        business_knowledge = f"Currency: {_ai_currency}\n" + business_knowledge
                         
                         log_trace(f"Starting AI generation for {from_number}")
                         
                         _ai_biz_id = user.get("business_id", user["_id"])
-                        user_products = await db.products.find({"user_id": _ai_biz_id}).to_list(50)
+                        # Currency: prefer user doc > settings > fallback
+                        currency = (
+                            user.get("currency") or
+                            user_settings.get("currency") or
+                            user.get("settings", {}).get("currency") or
+                            "USD"
+                        )
+
+                        # Only inject the product catalog when the customer is actually asking
+                        # about products, prices, availability, or ordering — not for simple replies
+                        _body_lower_ai = body.strip().lower()
+                        _catalog_keywords = (
+                            "price", "cost", "how much", "buy", "order", "stock", "available",
+                            "service", "product", "offer", "menu", "catalog", "catalogue",
+                            "what do you", "what can", "what have", "do you have", "do you sell",
+                            "show me", "send me", "list", "booking", "book", "appointment",
+                            "package", "deal", "discount", "rate", "fee", "charge",
+                            # Swahili
+                            "bei", "nini", "niambie", "tuma", "nunua", "oda",
+                        )
+                        _needs_catalog = any(kw in _body_lower_ai for kw in _catalog_keywords)
+
+                        user_products = await db.products.find({"user_id": _ai_biz_id}).to_list(50) if _needs_catalog else []
                         product_catalog_map = {}  # product_id -> image_url
                         product_name_map = {}     # lowercase product name -> {id, image_url, name}
                         if user_products:
-                            currency = user_settings.get("currency", "USD")
                             catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
                             for p in user_products:
                                 stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
@@ -11457,8 +12768,8 @@ async def evolution_webhook(request: Request):
                                 "Example reply: 'Here are the dresses: [SEND_IMAGE:123] [SEND_IMAGE:456]'"
                             )
                             business_knowledge = (business_knowledge or "") + "\n".join(catalog_lines)
-                        else:
-                            # No products in catalog - tell AI to avoid hallucinating
+                        elif _needs_catalog:
+                            # Customer asked about products but catalog is empty — tell AI not to hallucinate
                             no_products_msg = "\nIMPORTANT: You do not have access to any product information. DO NOT make up product names, prices, descriptions, or inventory. DO NOT pretend specific products exist. If customers ask about specific products or prices, respond naturally based on the conversation context without inventing details. You can discuss general topics, answer questions, and help customers, but never fabricate product information."
                             business_knowledge = (business_knowledge or "") + no_products_msg
                         
@@ -11487,14 +12798,36 @@ async def evolution_webhook(request: Request):
                         print(f"DEBUG: AI drafter obtained, clients={list(ai_service.clients.keys())}", flush=True)
                         user_country_code = user_settings.get("country_code", "")
                         customer_phone = customer_data.get("phone", from_number) if customer_data else from_number
+
+                        # Detect personal contact — different instructions apply
+                        _is_personal_contact = (customer_data or {}).get("is_personal", False) or \
+                                               (customer_data or {}).get("contact_type") == "KNOWN_PERSONAL"
+
+                        if _is_personal_contact:
+                            _custom_instr = (
+                                "This is a personal contact, not a business customer. "
+                                "Reply like a real person texting a friend or family member — warm, natural, no business tone. "
+                                "IMPORTANT: If the topic involves money (loans, sending money, investments, financial promises, payments, debts), "
+                                "do NOT make any promises or commitments. Instead acknowledge what they said and naturally let them know "
+                                "this is something that needs a real conversation — e.g. 'Let me get back to you on that' or 'We should talk about this properly'. "
+                                "Never promise amounts, timelines, or financial outcomes. "
+                                "For everything else, just chat like a normal person would."
+                            )
+                        else:
+                            _custom_instr = (
+                                "Reply naturally to what they actually said. "
+                                "If it's a simple message, keep it short. "
+                                "Don't repeat anything already said in the chat above."
+                            )
+
                         result = await ai_service.draft_followup_message(
                             customer_name=c_name,
                             customer_data=customer_data or {},
                             messages=[{"direction": m.get("direction", "incoming"), "content": m.get("content", "")} for m in recent_messages],
                             business_name=user.get("business_name", "Our Business"),
                             tone=user_settings.get("message_tone", "friendly"),
-                            business_knowledge=business_knowledge,
-                            custom_instructions=f"Their latest message: '{body}'. Reply naturally to what they actually said right now. Don't repeat yourself.",
+                            business_knowledge=business_knowledge if not _is_personal_contact else None,
+                            custom_instructions=_custom_instr,
                             user_id=user["_id"],
                             db=db,
                             customer_id=customer_id,
@@ -12173,6 +13506,7 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         for m in raw_pm
     ]
     return {
+        # Global fields
         "products_services": knowledge.get('products_services', ''),
         "pricing_info": knowledge.get('pricing_info', ''),
         "business_hours": knowledge.get('business_hours', ''),
@@ -12181,6 +13515,10 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         "special_offers": knowledge.get('special_offers', ''),
         "business_description": knowledge.get('business_description', ''),
         "business_type": knowledge.get('business_type', 'general'),
+        "booking_process": knowledge.get('booking_process', ''),
+        "cancellation_policy": knowledge.get('cancellation_policy', ''),
+        "staff_info": knowledge.get('staff_info', ''),
+        # Creator fields
         "creator_niche": knowledge.get('creator_niche', ''),
         "creator_platforms": knowledge.get('creator_platforms', ''),
         "creator_audience_size": knowledge.get('creator_audience_size', ''),
@@ -12193,6 +13531,67 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         "creator_blacklisted_niches": knowledge.get('creator_blacklisted_niches', ''),
         "creator_fan_dm_response": knowledge.get('creator_fan_dm_response', ''),
         "creator_media_kit_link": knowledge.get('creator_media_kit_link', ''),
+        # Fitness fields
+        "fitness_class_types": knowledge.get('fitness_class_types', ''),
+        "fitness_class_schedule": knowledge.get('fitness_class_schedule', ''),
+        "fitness_trainers": knowledge.get('fitness_trainers', ''),
+        "fitness_membership_tiers": knowledge.get('fitness_membership_tiers', ''),
+        "fitness_trial_offer": knowledge.get('fitness_trial_offer', ''),
+        "fitness_class_capacity": knowledge.get('fitness_class_capacity', ''),
+        "fitness_cancellation_policy": knowledge.get('fitness_cancellation_policy', ''),
+        "fitness_equipment": knowledge.get('fitness_equipment', ''),
+        # Healthcare fields
+        "healthcare_providers": knowledge.get('healthcare_providers', ''),
+        "healthcare_specialties": knowledge.get('healthcare_specialties', ''),
+        "healthcare_appointment_types": knowledge.get('healthcare_appointment_types', ''),
+        "healthcare_insurance": knowledge.get('healthcare_insurance', ''),
+        "healthcare_consultation_fee": knowledge.get('healthcare_consultation_fee', ''),
+        "healthcare_patient_prep": knowledge.get('healthcare_patient_prep', ''),
+        "healthcare_languages": knowledge.get('healthcare_languages', ''),
+        # Restaurant fields
+        "restaurant_cuisine": knowledge.get('restaurant_cuisine', ''),
+        "restaurant_menu_highlights": knowledge.get('restaurant_menu_highlights', ''),
+        "restaurant_dietary_options": knowledge.get('restaurant_dietary_options', ''),
+        "restaurant_price_range": knowledge.get('restaurant_price_range', ''),
+        "restaurant_seating": knowledge.get('restaurant_seating', ''),
+        "restaurant_reservation_policy": knowledge.get('restaurant_reservation_policy', ''),
+        "restaurant_parking": knowledge.get('restaurant_parking', ''),
+        "restaurant_dress_code": knowledge.get('restaurant_dress_code', ''),
+        # Salon fields
+        "salon_stylists": knowledge.get('salon_stylists', ''),
+        "salon_services_menu": knowledge.get('salon_services_menu', ''),
+        "salon_deposit_policy": knowledge.get('salon_deposit_policy', ''),
+        "salon_cancellation_policy": knowledge.get('salon_cancellation_policy', ''),
+        "salon_walk_ins": knowledge.get('salon_walk_ins', ''),
+        "salon_products_used": knowledge.get('salon_products_used', ''),
+        # Retail fields
+        "retail_return_policy": knowledge.get('retail_return_policy', ''),
+        "retail_discount_tiers": knowledge.get('retail_discount_tiers', ''),
+        "retail_delivery_areas": knowledge.get('retail_delivery_areas', ''),
+        "retail_warranty": knowledge.get('retail_warranty', ''),
+        "retail_exchange_policy": knowledge.get('retail_exchange_policy', ''),
+        "retail_min_order": knowledge.get('retail_min_order', ''),
+        # Rental fields
+        "rental_check_in_time": knowledge.get('rental_check_in_time', ''),
+        "rental_house_rules": knowledge.get('rental_house_rules', ''),
+        "rental_amenities": knowledge.get('rental_amenities', ''),
+        "rental_min_stay": knowledge.get('rental_min_stay', ''),
+        "rental_security_deposit": knowledge.get('rental_security_deposit', ''),
+        "rental_cancellation_policy": knowledge.get('rental_cancellation_policy', ''),
+        "rental_pet_policy": knowledge.get('rental_pet_policy', ''),
+        # Tech / SaaS / Fintech fields
+        "tech_product_description": knowledge.get('tech_product_description', ''),
+        "tech_target_customers": knowledge.get('tech_target_customers', ''),
+        "tech_pricing_plans": knowledge.get('tech_pricing_plans', ''),
+        "tech_free_trial": knowledge.get('tech_free_trial', ''),
+        "tech_key_features": knowledge.get('tech_key_features', ''),
+        "tech_integrations": knowledge.get('tech_integrations', ''),
+        "tech_demo_process": knowledge.get('tech_demo_process', ''),
+        "tech_onboarding": knowledge.get('tech_onboarding', ''),
+        "tech_support_channels": knowledge.get('tech_support_channels', ''),
+        "tech_compliance": knowledge.get('tech_compliance', ''),
+        "tech_contract_terms": knowledge.get('tech_contract_terms', ''),
+        "tech_case_studies": knowledge.get('tech_case_studies', ''),
         "payment_methods": payment_methods,
     }
 
@@ -12203,10 +13602,31 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     fields = [
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
         'faqs', 'special_offers', 'business_description', 'business_type',
+        'booking_process', 'cancellation_policy', 'staff_info',
         'creator_niche', 'creator_platforms', 'creator_audience_size',
         'creator_collab_types', 'creator_rate_card', 'creator_whats_included',
         'creator_turnaround', 'creator_booking_process', 'creator_min_budget',
         'creator_blacklisted_niches', 'creator_fan_dm_response', 'creator_media_kit_link',
+        'fitness_class_types', 'fitness_class_schedule', 'fitness_trainers',
+        'fitness_membership_tiers', 'fitness_trial_offer', 'fitness_class_capacity',
+        'fitness_cancellation_policy', 'fitness_equipment',
+        'healthcare_providers', 'healthcare_specialties', 'healthcare_appointment_types',
+        'healthcare_insurance', 'healthcare_consultation_fee', 'healthcare_patient_prep',
+        'healthcare_languages',
+        'restaurant_cuisine', 'restaurant_menu_highlights', 'restaurant_dietary_options',
+        'restaurant_price_range', 'restaurant_seating', 'restaurant_reservation_policy',
+        'restaurant_parking', 'restaurant_dress_code',
+        'salon_stylists', 'salon_services_menu', 'salon_deposit_policy',
+        'salon_cancellation_policy', 'salon_walk_ins', 'salon_products_used',
+        'retail_return_policy', 'retail_discount_tiers', 'retail_delivery_areas',
+        'retail_warranty', 'retail_exchange_policy', 'retail_min_order',
+        'rental_check_in_time', 'rental_house_rules', 'rental_amenities',
+        'rental_min_stay', 'rental_security_deposit', 'rental_cancellation_policy',
+        'rental_pet_policy',
+        'tech_product_description', 'tech_target_customers', 'tech_pricing_plans',
+        'tech_free_trial', 'tech_key_features', 'tech_integrations',
+        'tech_demo_process', 'tech_onboarding', 'tech_support_channels',
+        'tech_compliance', 'tech_contract_terms', 'tech_case_studies',
     ]
     for field in fields:
         val = getattr(knowledge, field, None)
@@ -12245,6 +13665,12 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         requested_mode = (request.mode or "auto").strip().lower()
         if requested_mode not in ("auto", "business", "personal"):
             requested_mode = "auto"
+        # Upgrade model for customers with complaints, VIP status, or explicit regenerate
+        # — these conversations need more nuanced replies
+        _is_vip = customer.get("is_vip", False) or customer.get("tags", []) and "vip" in [t.lower() for t in customer.get("tags", [])]
+        _has_complaint = customer.get("had_complaint", False) or customer.get("sentiment") in ("angry", "frustrated")
+        if _is_vip or _has_complaint or regenerate_count >= 2:
+            model_pref = "advanced"
 
         # Build business knowledge string
         bk_data = user.get('business_knowledge', {})
@@ -12279,6 +13705,106 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
                 bk_parts.append(f"Media kit: {bk_data['creator_media_kit_link']}")
             if bk_data.get('creator_fan_dm_response'):
                 bk_parts.append(f"Fan DM response template: {bk_data['creator_fan_dm_response']}")
+        elif business_type == 'fitness':
+            if bk_data.get('fitness_class_types'):
+                bk_parts.append(f"Classes offered: {bk_data['fitness_class_types']}")
+            if bk_data.get('fitness_class_schedule'):
+                bk_parts.append(f"Class schedule: {bk_data['fitness_class_schedule']}")
+            if bk_data.get('fitness_trainers'):
+                bk_parts.append(f"Trainers: {bk_data['fitness_trainers']}")
+            if bk_data.get('fitness_membership_tiers'):
+                bk_parts.append(f"Membership/pricing: {bk_data['fitness_membership_tiers']}")
+            if bk_data.get('fitness_trial_offer'):
+                bk_parts.append(f"Trial offer: {bk_data['fitness_trial_offer']}")
+            if bk_data.get('fitness_class_capacity'):
+                bk_parts.append(f"Class capacity: {bk_data['fitness_class_capacity']}")
+            if bk_data.get('fitness_cancellation_policy'):
+                bk_parts.append(f"Cancellation policy: {bk_data['fitness_cancellation_policy']}")
+            if bk_data.get('fitness_equipment'):
+                bk_parts.append(f"Equipment/what to bring: {bk_data['fitness_equipment']}")
+        elif business_type == 'healthcare':
+            if bk_data.get('healthcare_providers'):
+                bk_parts.append(f"Providers/doctors: {bk_data['healthcare_providers']}")
+            if bk_data.get('healthcare_specialties'):
+                bk_parts.append(f"Specialties: {bk_data['healthcare_specialties']}")
+            if bk_data.get('healthcare_appointment_types'):
+                bk_parts.append(f"Appointment types: {bk_data['healthcare_appointment_types']}")
+            if bk_data.get('healthcare_insurance'):
+                bk_parts.append(f"Insurance accepted: {bk_data['healthcare_insurance']}")
+            if bk_data.get('healthcare_consultation_fee'):
+                bk_parts.append(f"Consultation fees: {bk_data['healthcare_consultation_fee']}")
+            if bk_data.get('healthcare_patient_prep'):
+                bk_parts.append(f"Patient preparation: {bk_data['healthcare_patient_prep']}")
+            if bk_data.get('healthcare_languages'):
+                bk_parts.append(f"Languages: {bk_data['healthcare_languages']}")
+        elif business_type == 'restaurant':
+            if bk_data.get('restaurant_cuisine'):
+                bk_parts.append(f"Cuisine: {bk_data['restaurant_cuisine']}")
+            if bk_data.get('restaurant_menu_highlights'):
+                bk_parts.append(f"Menu highlights: {bk_data['restaurant_menu_highlights']}")
+            if bk_data.get('restaurant_dietary_options'):
+                bk_parts.append(f"Dietary options: {bk_data['restaurant_dietary_options']}")
+            if bk_data.get('restaurant_price_range'):
+                bk_parts.append(f"Price range: {bk_data['restaurant_price_range']}")
+            if bk_data.get('restaurant_seating'):
+                bk_parts.append(f"Seating: {bk_data['restaurant_seating']}")
+            if bk_data.get('restaurant_reservation_policy'):
+                bk_parts.append(f"Reservation policy: {bk_data['restaurant_reservation_policy']}")
+            if bk_data.get('restaurant_parking'):
+                bk_parts.append(f"Parking: {bk_data['restaurant_parking']}")
+            if bk_data.get('restaurant_dress_code'):
+                bk_parts.append(f"Dress code: {bk_data['restaurant_dress_code']}")
+        elif business_type == 'salon':
+            if bk_data.get('salon_stylists'):
+                bk_parts.append(f"Stylists: {bk_data['salon_stylists']}")
+            if bk_data.get('salon_services_menu'):
+                bk_parts.append(f"Services & prices: {bk_data['salon_services_menu']}")
+            if bk_data.get('salon_deposit_policy'):
+                bk_parts.append(f"Deposit policy: {bk_data['salon_deposit_policy']}")
+            if bk_data.get('salon_cancellation_policy'):
+                bk_parts.append(f"Cancellation policy: {bk_data['salon_cancellation_policy']}")
+            if bk_data.get('salon_walk_ins'):
+                bk_parts.append(f"Walk-ins: {bk_data['salon_walk_ins']}")
+            if bk_data.get('salon_products_used'):
+                bk_parts.append(f"Products used: {bk_data['salon_products_used']}")
+        elif business_type == 'retail':
+            if bk_data.get('products_services'):
+                bk_parts.append(f"Products: {bk_data['products_services']}")
+            if bk_data.get('retail_return_policy'):
+                bk_parts.append(f"Return policy: {bk_data['retail_return_policy']}")
+            if bk_data.get('retail_discount_tiers'):
+                bk_parts.append(f"Discounts: {bk_data['retail_discount_tiers']}")
+            if bk_data.get('retail_delivery_areas'):
+                bk_parts.append(f"Delivery areas: {bk_data['retail_delivery_areas']}")
+            if bk_data.get('retail_warranty'):
+                bk_parts.append(f"Warranty: {bk_data['retail_warranty']}")
+            if bk_data.get('delivery_info'):
+                bk_parts.append(f"Delivery: {bk_data['delivery_info']}")
+        elif business_type == 'tech':
+            if bk_data.get('tech_product_description'):
+                bk_parts.append(f"Product: {bk_data['tech_product_description']}")
+            if bk_data.get('tech_target_customers'):
+                bk_parts.append(f"Target customers: {bk_data['tech_target_customers']}")
+            if bk_data.get('tech_key_features'):
+                bk_parts.append(f"Key features: {bk_data['tech_key_features']}")
+            if bk_data.get('tech_pricing_plans'):
+                bk_parts.append(f"Pricing plans: {bk_data['tech_pricing_plans']}")
+            if bk_data.get('tech_free_trial'):
+                bk_parts.append(f"Free trial: {bk_data['tech_free_trial']}")
+            if bk_data.get('tech_integrations'):
+                bk_parts.append(f"Integrations: {bk_data['tech_integrations']}")
+            if bk_data.get('tech_demo_process'):
+                bk_parts.append(f"Demo booking: {bk_data['tech_demo_process']}")
+            if bk_data.get('tech_onboarding'):
+                bk_parts.append(f"Onboarding: {bk_data['tech_onboarding']}")
+            if bk_data.get('tech_support_channels'):
+                bk_parts.append(f"Support: {bk_data['tech_support_channels']}")
+            if bk_data.get('tech_compliance'):
+                bk_parts.append(f"Compliance/security: {bk_data['tech_compliance']}")
+            if bk_data.get('tech_contract_terms'):
+                bk_parts.append(f"Contract terms: {bk_data['tech_contract_terms']}")
+            if bk_data.get('tech_case_studies'):
+                bk_parts.append(f"Customers/case studies: {bk_data['tech_case_studies']}")
         else:
             if bk_data.get('products_services'):
                 bk_parts.append(f"Products/Services: {bk_data['products_services']}")
@@ -12293,14 +13819,22 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
             bk_parts.append(f"Current offers: {bk_data['special_offers']}")
         if bk_data.get('faqs'):
             bk_parts.append(f"FAQs: {bk_data['faqs']}")
-        # Inject structured payment methods
+        # Inject structured payment methods (including multi-field formats like Paybill, Bank)
         raw_pm = user.get('payment_methods', [])
         if raw_pm:
             pm_lines = []
             for pm in raw_pm:
                 if isinstance(pm, dict):
                     line = pm.get('name', '')
-                    if pm.get('details'):
+                    if pm.get('fields'):
+                        field_parts = [
+                            f"{f['label']}: {f['value']}"
+                            for f in pm['fields']
+                            if f.get('value') and str(f['value']).strip()
+                        ]
+                        if field_parts:
+                            line += " — " + ", ".join(field_parts)
+                    elif pm.get('details'):
                         line += f": {pm['details']}"
                 else:
                     line = str(pm)
@@ -12392,15 +13926,27 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         has_bk = bool(business_knowledge.strip()) if business_knowledge else False
 
         if effective_personal_mode and last_incoming_text:
-            scenario_block = f"""SCENARIO: This is a PERSONAL chat with {customer_name}, not a business customer.
+            # Build a short recent thread so the AI has real context
+            _personal_thread = []
+            for m in history[-10:]:
+                role = "Them" if m["direction"] == "incoming" else "You"
+                _personal_thread.append(f"{role}: {m['content']}")
+            _thread_text = "\n".join(_personal_thread) if _personal_thread else "(No prior messages)"
 
-LATEST MESSAGE: "{last_incoming_text}"
+            scenario_block = f"""SCENARIO: Personal WhatsApp chat with {customer_name} — a friend or family member, NOT a business customer.
 
-GOAL: Reply like a real person texting normally.
-- Keep it casual, warm, and natural
-- No sales language, no product mentions, no business pitch
-- If it's just a greeting or playful message, reply to that energy only
-- Short WhatsApp style — not polished, not formal"""
+Their latest message: "{last_incoming_text}"
+
+Recent thread (read this to understand the conversation flow):
+{_thread_text}
+
+GOAL: Reply exactly the way a real person texts a close friend or family member.
+- Match their exact language, tone, and energy — Sheng stays Sheng, Swahili stays Swahili, casual stays casual
+- If they said something funny, be funny back. If they're venting, be warm. If they asked a question, answer it directly.
+- Do NOT mention the business, products, prices, or anything sales-related — this is a personal conversation
+- Do NOT give generic "just checking in" energy — reply to what they ACTUALLY said
+- Short and natural — the way you'd actually text someone you know well
+- If they asked for help with something (drafting a message, advice, a question), do it well and briefly"""
 
         elif is_casual_social and last_incoming_text:
             scenario_block = f"""SCENARIO: {customer_name} sent a casual message: "{last_incoming_text}"
@@ -12566,8 +14112,26 @@ GOAL: Re-engage them with one short, genuine message.
         if custom_direction and any(word in custom_direction.lower() for word in ["list", "catalog", "menu", "products", "options"]):
             length_rule = "2. You MAY use a numbered list if it fits the user's direction, keeping items brief."
 
-        # Full prompt — anchor and latest message are at the TOP so the AI sees them first
-        prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
+        # Personal mode uses a stripped-down prompt — no business rules, no product mentions
+        if effective_personal_mode:
+            prompt = f"""You are writing a WhatsApp message to {customer_name}, a personal contact (friend or family).
+
+{latest_msg_block}
+{scenario_block}{repetition_block}{direction_block}
+
+RULES:
+1. Output ONLY the message text. No labels, no explanation.
+2. Sound like a real person texting someone they know — casual, warm, direct.
+3. LANGUAGE: Match exactly what they wrote — Sheng, Swahili, English, mixed — whatever they used.
+4. LENGTH: 1-2 sentences unless they asked something that needs more.
+5. BANNED: "Sure thing", "Absolutely", "I hope this finds you well", "I understand your concern", "I'd be happy to" — these are robotic.
+6. Do NOT mention the business, products, prices, or anything work-related.
+7. NEVER invent facts about them or make up details about their life.
+
+Output only the message text."""
+        else:
+            # Full prompt — anchor and latest message are at the TOP so the AI sees them first
+            prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
 You are a real person — not a bot, not a marketing tool. Direct, warm, brief.
 
 {latest_msg_block}
@@ -12585,7 +14149,7 @@ WRITING RULES (non-negotiable):
 7. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
 8. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
 
-Think one sentence about what this customer actually needs, then reply. Output only the customer-facing message."""
+Think one sentence about what this person actually needs right now, then reply. Output only the message text."""
 
         # Call LLM directly
         from ai_service import get_drafter
@@ -12768,14 +14332,16 @@ async def send_digest_now(digest_type: str = "morning", user = Depends(get_curre
     # Send via WhatsApp
     if user.get("phone_number"):
         try:
-            wa_service = WhatsAppService()
+            from whatsapp_service import get_whatsapp_service
+            wa_service = get_whatsapp_service(db)
             message = digest_service.format_whatsapp_message(digest)
             result = await wa_service.send_message(
                 user_id=user["_id"],
                 to_number=user["phone_number"],
-                message=message
+                message=message,
+                send_context="manual"
             )
-            results["whatsapp"] = result.get("success", False)
+            results["whatsapp"] = result.get("status") in ("sent", "ok")
         except Exception as e:
             logging.error(f"WhatsApp delivery failed: {e}")
     
@@ -12852,13 +14418,15 @@ async def send_motivation_now(is_monday: bool = False, user = Depends(get_curren
     # Send via WhatsApp
     if user.get("phone_number"):
         try:
-            wa_service = WhatsAppService()
+            from whatsapp_service import get_whatsapp_service
+            wa_service = get_whatsapp_service(db)
             response = await wa_service.send_message(
                 user_id=user["_id"],
                 to_number=user["phone_number"],
-                message=motivation["message"]
+                message=motivation["message"],
+                send_context="manual"
             )
-            result["sent"] = response.get("success", False)
+            result["sent"] = response.get("status") in ("sent", "ok")
         except Exception as e:
             logging.error(f"WhatsApp delivery failed: {e}")
     
@@ -12872,15 +14440,26 @@ async def send_motivation_now(is_monday: bool = False, user = Depends(get_curren
 
 async def generate_daily_pulse_message(user_id: str) -> str:
     """Generate the daily business pulse summary message"""
+    import pytz
     from datetime import timedelta
-    
-    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow = today + timedelta(days=1)
-    
-    # Get user info
+
+    # Get user info first so we can use their timezone for date boundaries
     user = await db.users.find_one({"_id": user_id})
     business_name = user.get("business_name", "Your Business") if user else "Your Business"
     currency = user.get("currency") or user.get("settings", {}).get("currency", "USD") if user else "USD"
+
+    # Use user's local timezone so "today" matches their calendar day
+    user_tz_str = (user or {}).get("settings", {}).get("timezone", "UTC")
+    try:
+        user_tz = pytz.timezone(user_tz_str)
+    except Exception:
+        user_tz = pytz.UTC
+    user_now = datetime.utcnow().replace(tzinfo=pytz.UTC).astimezone(user_tz)
+    today_local = user_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_local = today_local + timedelta(days=1)
+    # Convert back to UTC naive for MongoDB queries (DB stores UTC)
+    today = today_local.astimezone(pytz.UTC).replace(tzinfo=None)
+    tomorrow = tomorrow_local.astimezone(pytz.UTC).replace(tzinfo=None)
     
     # Today's sales
     today_sales = await db.sales.find({
@@ -12941,8 +14520,8 @@ async def generate_daily_pulse_message(user_id: str) -> str:
     }).to_list(1000)
     overdue_followups = [f for f in pending_followups if f.get("reminder_date", tomorrow) < today]
     
-    # Build message
-    date_str = today.strftime("%a, %b %d")
+    # Build message (use local date for display)
+    date_str = today_local.strftime("%a, %b %d")
     
     lines = [f"📊 *Daily Pulse — {date_str}*"]
     lines.append(f"_{business_name}_\n")
@@ -13018,9 +14597,14 @@ async def send_daily_pulse(user = Depends(get_current_user)):
             to_number=phone,
             message=message,
             customer_name=user.get("owner_name", "Business Owner"),
-            send_context="auto_reply",
+            send_context="system",
+            bypass_limits=True,
         )
+        if result.get("status") not in ("success", "sent"):
+            raise HTTPException(status_code=500, detail=result.get("message", "Failed to send"))
         return {"status": "success", "message": "Daily pulse sent!", "preview": message}
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Failed to send daily pulse: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send: {str(e)}")
@@ -13029,57 +14613,70 @@ async def send_daily_pulse(user = Depends(get_current_user)):
 async def run_daily_pulse_scheduler():
     """Background task that checks every minute and sends daily pulse to users at their scheduled time"""
     import asyncio
-    
+    import pytz
+
     while True:
         try:
-            now = datetime.utcnow()
-            current_time = now.strftime("%H:%M")
-            
-            # Find users who have daily pulse enabled and it's their scheduled time
-            users_cursor = db.users.find({
-                "settings.daily_pulse_enabled": True,
-                "settings.daily_pulse_time": current_time
-            })
-            
+            utc_now = datetime.utcnow()
+
+            # Fetch all pulse-enabled users; time matching happens per-user using their timezone
+            users_cursor = db.users.find({"settings.daily_pulse_enabled": True})
+
             async for user in users_cursor:
                 try:
                     phone = user.get("phone_number")
                     if not phone:
                         continue
-                    
-                    # Check if we already sent today (prevent duplicates)
-                    today_key = now.strftime("%Y-%m-%d")
+
+                    # Resolve user's local time
+                    user_tz_str = user.get("settings", {}).get("timezone", "UTC")
+                    try:
+                        user_tz = pytz.timezone(user_tz_str)
+                    except Exception:
+                        user_tz = pytz.UTC
+                    user_now = utc_now.replace(tzinfo=pytz.UTC).astimezone(user_tz)
+                    user_time = user_now.strftime("%H:%M")
+
+                    scheduled_time = user.get("settings", {}).get("daily_pulse_time", "20:00")
+                    if user_time != scheduled_time:
+                        continue
+
+                    # Check if we already sent today using the user's local date
+                    today_key = user_now.strftime("%Y-%m-%d")
                     last_sent = user.get("settings", {}).get("daily_pulse_last_sent")
                     if last_sent == today_key:
                         continue
-                    
+
                     message = await generate_daily_pulse_message(user["_id"])
-                    
+
                     from whatsapp_service import get_whatsapp_service
                     whatsapp_service = get_whatsapp_service(db)
-                    
-                    await whatsapp_service.send_message(
+
+                    result = await whatsapp_service.send_message(
                         user_id=user["_id"],
                         to_number=phone,
                         message=message,
                         customer_name=user.get("owner_name", "Business Owner"),
-                        send_context="auto_reply",
+                        send_context="system",
+                        bypass_limits=True,
                     )
-                    
-                    # Mark as sent today
-                    await db.users.update_one(
-                        {"_id": user["_id"]},
-                        {"$set": {"settings.daily_pulse_last_sent": today_key}}
-                    )
-                    
-                    logging.info(f"Daily pulse sent to {user.get('business_name', user['_id'])}")
-                    
+
+                    # Only mark as sent if the message was actually delivered
+                    if result.get("status") in ("success", "sent"):
+                        await db.users.update_one(
+                            {"_id": user["_id"]},
+                            {"$set": {"settings.daily_pulse_last_sent": today_key}}
+                        )
+                        logging.info(f"Daily pulse sent to {user.get('business_name', user['_id'])}")
+                    else:
+                        logging.warning(f"Daily pulse failed for {user.get('_id')}: {result.get('message', result.get('status'))}")
+
                 except Exception as e:
                     logging.error(f"Failed to send daily pulse to user {user.get('_id')}: {e}")
-            
+
         except Exception as e:
             logging.error(f"Daily pulse scheduler error: {e}")
-        
+
         # Check every 60 seconds
         await asyncio.sleep(60)
 
@@ -14397,6 +15994,12 @@ async def startup_tasks():
         logging.info(f"Uploads folder ensured at: {uploads_dir}")
     except Exception as e:
         logging.error(f"Failed to create folders: {e}")
+
+    # ---- P0.5: Seed Evolution API server pool ----
+    try:
+        await _seed_evo_servers()
+    except Exception as e:
+        logging.warning(f"[EvoPool] Failed to seed evo_servers: {e}")
 
     # ---- P1: Ensure database indexes ----
     try:

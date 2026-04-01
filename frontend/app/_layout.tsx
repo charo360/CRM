@@ -10,7 +10,7 @@ import Constants from 'expo-constants';
 export default function RootLayout() {
   useEffect(() => {
     // Skip RevenueCat entirely in Expo Go — it cannot use native billing
-    const isExpoGo = Constants.appOwnership === 'expo';
+    const isExpoGo = Constants.executionEnvironment === 'storeClient';
     if (isExpoGo) {
       console.log('RevenueCat init skipped (Expo Go mode)');
       return;
@@ -18,10 +18,14 @@ export default function RootLayout() {
     // Only configure in real native builds (APK / IPA)
     try {
       const Purchases = require('react-native-purchases').default;
+      // TODO: Replace these with your real RevenueCat API keys from https://app.revenuecat.com
+      // Android key starts with "goog_", iOS key starts with "appl_"
+      const REVENUECAT_ANDROID_KEY = process.env.EXPO_PUBLIC_RC_ANDROID_KEY || 'goog_YOUR_GOOGLE_API_KEY';
+      const REVENUECAT_IOS_KEY = process.env.EXPO_PUBLIC_RC_IOS_KEY || 'appl_YOUR_APPLE_API_KEY';
       if (Platform.OS === 'android') {
-        Purchases.configure({ apiKey: 'goog_YOUR_GOOGLE_API_KEY' });
+        Purchases.configure({ apiKey: REVENUECAT_ANDROID_KEY });
       } else if (Platform.OS === 'ios') {
-        Purchases.configure({ apiKey: 'appl_YOUR_APPLE_API_KEY' });
+        Purchases.configure({ apiKey: REVENUECAT_IOS_KEY });
       }
     } catch (error) {
       console.log('RevenueCat init failed:', error);

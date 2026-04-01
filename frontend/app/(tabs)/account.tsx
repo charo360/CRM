@@ -106,6 +106,8 @@ export default function AccountScreen() {
   const [waMsgLimit, setWaMsgLimit] = useState(50);
   const [waCountdown, setWaCountdown] = useState(0);
   const [waCopied, setWaCopied] = useState(false);
+  const [waDisconnectReason, setWaDisconnectReason] = useState<string | null>(null);
+  const waHealthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -205,6 +207,7 @@ export default function AccountScreen() {
         setWaNumber(waRes.number || '');
         setWaMsgSent(waRes.messages_sent || 0);
         setWaMsgLimit(waRes.messages_limit || 50);
+        setWaDisconnectReason(waRes.disconnect_reason || null);
       } catch (e) {
         console.log('WhatsApp status not available');
       }
@@ -269,11 +272,32 @@ export default function AccountScreen() {
     if (waCountdownRef.current) { clearInterval(waCountdownRef.current); waCountdownRef.current = null; }
     if (waPollingRef.current) { clearInterval(waPollingRef.current); waPollingRef.current = null; }
     if (waRefreshRef.current) { clearTimeout(waRefreshRef.current); waRefreshRef.current = null; }
+    if (waHealthPollRef.current) { clearInterval(waHealthPollRef.current); waHealthPollRef.current = null; }
   }, []);
 
   useEffect(() => {
     return () => clearWaTimers();
   }, [clearWaTimers]);
+
+  // Poll WhatsApp health every 30s — detect silent disconnects without user needing to refresh
+  useEffect(() => {
+    if (waHealthPollRef.current) clearInterval(waHealthPollRef.current);
+    waHealthPollRef.current = setInterval(async () => {
+      try {
+        const waRes = await whatsappAPI.getStatus();
+        setWaConnected(waRes.connected);
+        setWaStatus(waRes.status);
+        setWaDisconnectReason(waRes.disconnect_reason || null);
+        if (waRes.connected) {
+          setWaMsgSent(waRes.messages_sent || 0);
+          setWaMsgLimit(waRes.messages_limit || 50);
+        }
+      } catch (_e) { /* ignore network errors — don't flash false disconnects */ }
+    }, 30000);
+    return () => {
+      if (waHealthPollRef.current) clearInterval(waHealthPollRef.current);
+    };
+  }, []);
 
   const startPairingTimers = useCallback((code: string) => {
     clearWaTimers();
@@ -407,7 +431,6 @@ export default function AccountScreen() {
 
   const handleSubscriptionSuccess = async () => {
     try {
-      await refreshUser();
       await fetchData();
     } catch (error) {
       console.error('Error refreshing after subscription:', error);
@@ -417,7 +440,8 @@ export default function AccountScreen() {
   const handleTogglePulse = async (value: boolean) => {
     setPulseEnabled(value);
     try {
-      await apiClient.put('/settings', { daily_pulse_enabled: value });
+      const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      await apiClient.put('/settings', { daily_pulse_enabled: value, timezone: deviceTimezone });
       if (value) {
         Alert.alert('Daily Pulse Enabled', `You'll receive your business summary every day at ${formatTime(pulseTime)} via WhatsApp.`);
       }
@@ -435,7 +459,8 @@ export default function AccountScreen() {
       const newTime = `${hours}:${minutes}`;
       setPulseTime(newTime);
       try {
-        await apiClient.put('/settings', { daily_pulse_time: newTime });
+        const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        await apiClient.put('/settings', { daily_pulse_time: newTime, timezone: deviceTimezone });
       } catch (error) {
         Alert.alert('Error', 'Failed to update time');
       }
@@ -561,6 +586,54 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>WhatsApp Business</Text>
           <View style={styles.settingsCard}>
+            {/* Disconnection warning banner */}
+            {!waConnected && waStatus === 'disconnected' && (
+              <View style={{ backgroundColor: 'rgba(255,68,68,0.12)', borderRadius: 10, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(255,68,68,0.3)' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                  <Ionicons name="warning" size={18} color="#FF4444" />
+                  <Text style={{ color: '#FF4444', fontSize: 14, fontWeight: '700', marginLeft: 8 }}>WhatsApp Disconnected</Text>
+                </View>
+                <Text style={{ color: '#FFB3B3', fontSize: 13, lineHeight: 19, marginBottom: 10 }}>
+                  {waDisconnectReason === 'conflict'
+                    ? 'WhatsApp was opened on another device and replaced this connection. Your bot is not responding to messages.'
+                    : waDisconnectReason === 'logged_out'
+                    ? 'Your WhatsApp session was logged out. You need to reconnect to resume your bot.'
+                    : waDisconnectReason === 'reconnect_timeout'
+                    ? 'WhatsApp failed to reconnect after 60 seconds. Tap below to re-link your number.'
+                    : 'Your WhatsApp connection dropped. Your bot is not responding to messages.'}
+                </Text>
+                <TouchableOpacity
+                  style={{ backgroundColor: '#FF4444', borderRadius: 8, paddingVertical: 10, alignItems: 'center' }}
+                  onPress={async () => {
+                    const phoneToUse = waNumber || waPhoneInput;
+                    if (!phoneToUse) {
+                      Alert.alert('Reconnect', 'Please enter your phone number below to reconnect.');
+                      return;
+                    }
+                    setWaConnecting(true);
+                    setWaPairingCode('');
+                    try {
+                      const res = await whatsappAPI.connect(phoneToUse);
+                      if (res.pairing_code) {
+                        setWaDisconnectReason(null);
+                        startPairingTimers(res.pairing_code);
+                      } else {
+                        Alert.alert('Error', res.message || 'Failed to get pairing code');
+                      }
+                    } catch (e: any) {
+                      Alert.alert('Error', e.response?.data?.detail || 'Could not start reconnection. Try again.');
+                    } finally {
+                      setWaConnecting(false);
+                    }
+                  }}
+                  disabled={waConnecting}
+                >
+                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>
+                    {waConnecting ? 'Connecting...' : '🔄 Reconnect WhatsApp'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
             {waConnected ? (
               <View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
@@ -636,7 +709,15 @@ export default function AccountScreen() {
                 <Text style={{ color: '#8B9DC3', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection...</Text>
                 <TouchableOpacity
                   style={{ marginTop: 14, alignItems: 'center' }}
-                  onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaPhoneInput(''); }}
+                  onPress={async () => {
+                    clearWaTimers();
+                    setWaPairingCode('');
+                    // Delete the stale instance on Evolution API so the next connect starts fresh
+                    try { await whatsappAPI.disconnect(); } catch (_e) { /* ignore — instance may already be gone */ }
+                    setWaConnected(false);
+                    setWaStatus('not_connected');
+                    setWaDisconnectReason(null);
+                  }}
                 >
                   <Text style={{ color: '#8B9DC3', fontSize: 14 }}>Cancel</Text>
                 </TouchableOpacity>
@@ -810,14 +891,15 @@ export default function AccountScreen() {
         {/* Business Type */}
         {(() => {
           const BT_OPTIONS = [
-            { id: 'retail',     label: '🛍️ Retail',      desc: 'Physical / online shop' },
-            { id: 'salon',      label: '✂️ Salon',        desc: 'Beauty & hair' },
-            { id: 'services',   label: '🔧 Services',     desc: 'Freelance & trades' },
-            { id: 'fitness',    label: '🏋️ Fitness',      desc: 'Gym & classes' },
-            { id: 'restaurant', label: '🍽️ Restaurant',   desc: 'Food & dining' },
-            { id: 'healthcare', label: '🏥 Healthcare',   desc: 'Clinic & medical' },
-            { id: 'creator',    label: '🎨 Creator',      desc: 'Digital products' },
-            { id: 'rental',     label: '🏠 Rental / Airbnb', desc: 'Properties, cars & equipment' },
+            { id: 'retail',     label: '🛍️ Retail',          desc: 'Physical / online shop' },
+            { id: 'salon',      label: '✂️ Salon',            desc: 'Beauty & hair' },
+            { id: 'services',   label: '🔧 Services',         desc: 'Freelance & trades' },
+            { id: 'fitness',    label: '🏋️ Fitness',          desc: 'Gym & classes' },
+            { id: 'restaurant', label: '🍽️ Restaurant',       desc: 'Food & dining' },
+            { id: 'healthcare', label: '🏥 Healthcare',       desc: 'Clinic & medical' },
+            { id: 'creator',    label: '🎨 Creator',          desc: 'Digital products' },
+            { id: 'rental',     label: '🏠 Rental / Airbnb',  desc: 'Properties, cars & equipment' },
+            { id: 'tech',       label: '💻 Tech / SaaS',      desc: 'Software, fintech & agencies' },
           ];
           const selected = BT_OPTIONS.find(b => b.id === businessType) || BT_OPTIONS[0];
           return (

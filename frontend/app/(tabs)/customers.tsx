@@ -23,6 +23,7 @@ import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, d
 import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
+import ConversationAssignmentPicker from '../../components/ConversationAssignmentPicker';
 
 interface Customer {
   id: string;
@@ -196,6 +197,8 @@ export default function CustomersScreen() {
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [selectedStage, setSelectedStage] = useState<string>('all');
   const [assignmentFilter, setAssignmentFilter] = useState<string>('all'); // 'all', 'assigned_to_me', 'unassigned'
+  const [assignPickerVisible, setAssignPickerVisible] = useState(false);
+  const [assignPickerCustomer, setAssignPickerCustomer] = useState<Customer | null>(null);
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
   const { user, token } = useAuth();
@@ -1112,16 +1115,22 @@ export default function CustomersScreen() {
             {(user?.team_members_count ?? 0) >= 1 ? (
               <>
                 {item.assigned_to_name && (
-                  <View style={styles.assignedBadge}>
+                  <TouchableOpacity
+                    style={styles.assignedBadge}
+                    onPress={(e) => { e.stopPropagation?.(); setAssignPickerCustomer(item); setAssignPickerVisible(true); }}
+                  >
                     <Ionicons name="person" size={10} color="#4A90D9" />
                     <Text style={styles.assignedBadgeText}>{item.assigned_to_name}</Text>
-                  </View>
+                  </TouchableOpacity>
                 )}
                 {!item.assigned_to && (
-                  <View style={styles.unassignedBadge}>
+                  <TouchableOpacity
+                    style={styles.unassignedBadge}
+                    onPress={(e) => { e.stopPropagation?.(); setAssignPickerCustomer(item); setAssignPickerVisible(true); }}
+                  >
                     <Ionicons name="help-circle-outline" size={10} color="#25D366" />
                     <Text style={styles.unassignedBadgeText}>Available</Text>
-                  </View>
+                  </TouchableOpacity>
                 )}
               </>
             ) : null}
@@ -2470,6 +2479,23 @@ export default function CustomersScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Conversation Assignment Picker */}
+      {assignPickerCustomer && (
+        <ConversationAssignmentPicker
+          visible={assignPickerVisible}
+          onClose={() => { setAssignPickerVisible(false); setAssignPickerCustomer(null); }}
+          customerId={assignPickerCustomer.id}
+          customerName={assignPickerCustomer.name}
+          currentAssignee={assignPickerCustomer.assigned_to}
+          userId={user?.id || ''}
+          onAssigned={() => {
+            setAssignPickerVisible(false);
+            setAssignPickerCustomer(null);
+            fetchCustomers();
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

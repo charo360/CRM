@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, View, Platform, Modal } from 'react-native';
+import { StyleSheet, View, Platform, Modal, TouchableOpacity, Text, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
@@ -16,8 +17,10 @@ import { useBusiness } from '../../context/BusinessContext';
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
-    shouldSetBadge: true,
+    shouldSetBadge: false,
   }),
 });
 
@@ -34,8 +37,25 @@ export default function TabsLayout() {
 
   const { user } = useAuth();
   const { config, isRetailBusiness } = useBusiness();
-  const notificationListener = useRef<any>();
-  const responseListener = useRef<any>();
+  const notificationListener = useRef<any>(null);
+  const responseListener = useRef<any>(null);
+
+  const [showSetupBanner, setShowSetupBanner] = useState(false);
+  const BANNER_DISMISSED_KEY = 'setup_banner_dismissed';
+
+  useEffect(() => {
+    if (!user) return;
+    const needsSetup = !user.business_name;
+    if (!needsSetup) { setShowSetupBanner(false); return; }
+    AsyncStorage.getItem(BANNER_DISMISSED_KEY).then((dismissed) => {
+      if (!dismissed) setShowSetupBanner(true);
+    });
+  }, [user?.business_name]);
+
+  const dismissBanner = async () => {
+    await AsyncStorage.setItem(BANNER_DISMISSED_KEY, 'true');
+    setShowSetupBanner(false);
+  };
 
   // Fetch initial settings only after auth is ready
   React.useEffect(() => {
@@ -289,6 +309,24 @@ export default function TabsLayout() {
         />
       </Tabs>
 
+      {showSetupBanner && (
+        <View style={styles.setupBanner}>
+          <TouchableOpacity
+            style={styles.setupBannerContent}
+            onPress={() => { setShowBusinessKnowledge(true); dismissBanner(); }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="bulb-outline" size={18} color="#0A1628" />
+            <Text style={styles.setupBannerText}>
+              Set up your business to activate your AI assistant → tap <Text style={styles.setupBannerBold}>⋮</Text>
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={dismissBanner} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="close" size={16} color="#0A1628" />
+          </TouchableOpacity>
+        </View>
+      )}
+
       <ProductCatalogModal
         visible={showProductCatalog}
         onClose={() => setShowProductCatalog(false)}
@@ -311,5 +349,37 @@ const styles = StyleSheet.create({
   tabBarLabel: {
     fontSize: 11,
     fontWeight: '500',
+  },
+  setupBanner: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 100 : 80,
+    left: 12,
+    right: 12,
+    backgroundColor: '#25D366',
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    zIndex: 999,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  setupBannerContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  setupBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#0A1628',
+  },
+  setupBannerBold: {
+    fontWeight: '700',
   },
 });

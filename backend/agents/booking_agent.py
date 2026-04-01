@@ -1,4 +1,5 @@
 from .base_agent import BaseAgent
+from .ui_strings import t
 from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime, date, timedelta
@@ -33,41 +34,95 @@ class BookingAgent(BaseAgent):
         confidence = context.get("confidence", 1.0)
         careful_instruction = context.get("careful_instruction", "")
 
-        # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
-        # Prevents ChatAgent fallback from generating fake booking confirmations
-        if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
-            return await self._handle_customer_chat(
-                message, intent, customer_name, language,
-                business_knowledge, history, currency, context
+        # --- RESET/START OVER HANDLER ---
+        # 17: Clears both pendings and context if user wants to start afresh
+        if intent == "RESET_CONVERSATION":
+            logger.info(f"[BookingAgent] User requested reset. Clearing states for customer_id={customer_id}")
+            if customer_id:
+                try:
+                    await self.db.pending_catalogs.delete_one({"customer_id": customer_id, "user_id": user_id})
+                    await self.db.conversation_states.delete_one({"customer_id": str(customer_id), "user_id": user_id})
+                except Exception as e:
+                    logger.error(f"[BookingAgent] Error during reset: {e}")
+            
+            # Start a brand new flow
+            return await self._handle_booking_request(
+                services=[], business_hours={}, booking_settings={}, customer_name=customer_name, 
+                language=language, currency=currency, message=message, business_knowledge=business_knowledge, 
+                history=history, customer_id=customer_id, user_id=user_id, is_rental=is_rental,
+                intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="User requested to start afresh. Welcome them back!"
             )
+
+        # --- CONTEXT-AWARE SMALL TALK ---
 
         # ── Handle pending_booking_action: 1=Cancel / 2=Reschedule pick ──────
         pending_booking_action_id = conv_state.get("pending_booking_action")
         if pending_booking_action_id:
-            pick = PICK_NUMBER_RE.match(message.strip())
-            if pick:
-                choice = int(pick.group(1))
+            _msg_ba = message.strip().lower()
+            # Map both digit and natural language to choice
+            _choice_ba = None
+            if PICK_NUMBER_RE.match(message.strip()):
+                _choice_ba = int(message.strip())
+            elif _msg_ba in ("one", "1️⃣", "cancel", "cancel it", "yes cancel", "cancel booking", "cancel reservation"):
+                _choice_ba = 1
+            elif _msg_ba in ("two", "2️⃣", "reschedule", "change date", "new date", "move it"):
+                _choice_ba = 2
+            if _choice_ba in (1, 2):
                 bk = await self.db.bookings.find_one({"_id": pending_booking_action_id})
                 if bk:
-                    if choice == 1:
+                    if _choice_ba == 1:
                         return await self._execute_cancel(
                             bk, customer_name, currency, language, user_id, customer_id
                         )
-                    elif choice == 2:
+                    elif _choice_ba == 2:
                         return await self._start_reschedule(
                             bk, customer_name, currency, language, user_id, customer_id
                         )
+            elif _choice_ba is None and pending_booking_action_id:
+                # Customer sent something unrecognised — re-prompt gently
+                return {
+                    "handled": True,
+                    "messages": [{"text": "Just reply *1* to cancel or *2* to reschedule. 😊"}],
+                    "escalate": False,
+                }
 
         # ── Handle pending_booking_list: customer picking a booking by number ─
         pending_booking_ids = conv_state.get("pending_booking_list")
         if pending_booking_ids:
-            pick = PICK_NUMBER_RE.match(message.strip())
-            if pick:
-                pick_idx = int(pick.group(1)) - 1
+            _msg_bl = message.strip().lower()
+            _pick_num = None
+            if PICK_NUMBER_RE.match(message.strip()):
+                _pick_num = int(message.strip())
+            elif _msg_bl in ("one", "first", "1️⃣"):
+                _pick_num = 1
+            elif _msg_bl in ("two", "second", "2️⃣"):
+                _pick_num = 2
+            elif _msg_bl in ("three", "third", "3️⃣"):
+                _pick_num = 3
+            if _pick_num is not None:
+                pick_idx = _pick_num - 1
                 if 0 <= pick_idx < len(pending_booking_ids):
                     bk = await self.db.bookings.find_one({"_id": pending_booking_ids[pick_idx]})
                     if bk:
                         return await self._show_booking_actions(bk, customer_name, language, user_id, customer_id)
+                else:
+                    # Out of range — tell customer valid options
+                    return {
+                        "handled": True,
+                        "messages": [{"text": f"Please reply with a number between *1* and *{len(pending_booking_ids)}* to select a booking. 😊"}],
+                        "escalate": False,
+                    }
+
+        # ── Waitlist handler ──────────────────────────────────────────────────
+        _msg_wl = message.strip().lower()
+        if any(k in _msg_wl for k in ("waitlist", "wait list", "notify me", "let me know when")):
+            return {
+                "handled": True,
+                "messages": [{"text": f"You're on the waitlist, {customer_name}! 🙌 We'll let you know as soon as a slot becomes available. 📩"}],
+                "escalate": False,
+                "flag_for_human": True,
+                "flag_reason": f"Customer wants to join waitlist — add {customer_name} to waitlist",
+            }
 
         # Use business_id from context (authoritative for product queries)
         # Falls back to user_id for backward compatibility
@@ -115,7 +170,131 @@ class BookingAgent(BaseAgent):
         if not is_rental and any(s.get("service_category") == "rental" for s in services):
             is_rental = True
 
+        # ── Greeting / small talk from a known customer ──────────────────────────
+        # Respond warmly and ask what they need — don't dump the services list immediately.
+        # The waiting_for_service_request state ensures their follow-up "yes/ok" routes back here.
+        if intent in ("GREETING", "GENERAL_CHAT", "SMALL_TALK", "PERSONAL_CHAT"):
+            return await self._handle_customer_chat(
+                message, intent, customer_name, language, business_knowledge, history, currency, context
+            )
+
         if intent == "AVAILABILITY_CHECK":
+            # Creators don't have appointment calendars — they accept collabs based on budget/fit, not time slots
+            if business_type == "creator":
+                collab_packages = "\n".join(
+                    f"• *{s['name']}* — {currency} {s.get('price', 0):,.0f}" if s.get("price") else f"• *{s['name']}*"
+                    for s in services
+                ) if services else ""
+                pkg_block = f"\n\n*Collab packages:*\n{collab_packages}" if collab_packages else ""
+                return {
+                    "handled": True,
+                    "messages": [{"text": (
+                        f"I take on new collabs based on fit and current workload rather than fixed calendar slots.{pkg_block}\n\n"
+                        f"Send over what you have in mind — brand, type of content, budget, and timeline — and I'll let you know if it works! 🙌"
+                    )}],
+                    "escalate": False,
+                    "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+                }
+
+            # Tech / SaaS — demo booking, not appointment calendar
+            if business_type == "tech":
+                _bk = business_knowledge or ""
+                _demo_line = ""
+                _trial_line = ""
+                _plans_line = ""
+                for _line in _bk.split("\n"):
+                    _ll = _line.lower()
+                    if _ll.startswith("demo booking:"):
+                        _demo_line = _line.split(":", 1)[-1].strip()
+                    elif _ll.startswith("free trial:"):
+                        _trial_line = _line.split(":", 1)[-1].strip()
+                    elif _ll.startswith("pricing plans:"):
+                        _plans_line = _line.split(":", 1)[-1].strip()
+                lines = ["🖥️ *Book a Demo*\n"]
+                if _demo_line:
+                    lines.append(f"{_demo_line}\n")
+                else:
+                    lines.append("We'd love to walk you through the platform — it takes about 30 minutes.\n")
+                if _trial_line:
+                    lines.append(f"🎁 *Free trial:* {_trial_line}")
+                if _plans_line:
+                    lines.append(f"💳 *Plans:* {_plans_line}")
+                lines.append("\nWhat's a good time for you? Share your preferred day and time and we'll confirm shortly. 🙌")
+                return {
+                    "handled": True,
+                    "messages": [{"text": "\n".join(lines)}],
+                    "escalate": False,
+                    "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+                }
+
+            # Fitness — show class schedule instead of appointment calendar
+            if business_type == "fitness":
+                _bk = business_knowledge or ""
+                _schedule_line = ""
+                _pricing_line = ""
+                for _line in _bk.split("\n"):
+                    if _line.lower().startswith("class schedule:"):
+                        _schedule_line = _line.split(":", 1)[-1].strip()
+                    elif _line.lower().startswith("membership/pricing:"):
+                        _pricing_line = _line.split(":", 1)[-1].strip()
+                lines = ["📅 *Our Class Schedule*\n"]
+                if _schedule_line:
+                    lines.append(_schedule_line)
+                elif services:
+                    for s in services:
+                        price_str = f" — {currency} {s.get('price', 0):,.0f}" if s.get("price") else ""
+                        dur_str = f" ({s.get('duration')} min)" if s.get("duration") else ""
+                        lines.append(f"• *{s['name']}*{price_str}{dur_str}")
+                else:
+                    lines.append("Contact us for our latest class schedule.")
+                if _pricing_line:
+                    lines.append(f"\n💳 *Membership/Pricing:* {_pricing_line}")
+                if services:
+                    lines.append("\n*Book a class — reply with the name or number:*")
+                    for i, s in enumerate(services[:PAGE_SIZE], 1):
+                        price_str = f" — {currency} {s.get('price', 0):,.0f}" if s.get("price") else ""
+                        lines.append(f"{i}\ufe0f\u20e3  *{s['name']}*{price_str}")
+                return {
+                    "handled": True,
+                    "messages": [{"text": "\n".join(lines)}],
+                    "escalate": False,
+                    "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+                }
+
+            # Healthcare — show providers and appointment types instead of raw calendar
+            if business_type == "healthcare":
+                _bk = business_knowledge or ""
+                _providers_line = ""
+                _appt_types_line = ""
+                _insurance_line = ""
+                for _line in _bk.split("\n"):
+                    _ll = _line.lower()
+                    if _ll.startswith("providers/doctors:"):
+                        _providers_line = _line.split(":", 1)[-1].strip()
+                    elif _ll.startswith("appointment types:"):
+                        _appt_types_line = _line.split(":", 1)[-1].strip()
+                    elif _ll.startswith("insurance accepted:"):
+                        _insurance_line = _line.split(":", 1)[-1].strip()
+                lines = ["🏥 *Booking an Appointment*\n"]
+                if _providers_line:
+                    lines.append(f"*Our providers:* {_providers_line}\n")
+                if _appt_types_line:
+                    lines.append(f"*Appointment types:* {_appt_types_line}\n")
+                elif services:
+                    lines.append("*Services available:*")
+                    for s in services[:PAGE_SIZE]:
+                        price_str = f" — {currency} {s.get('price', 0):,.0f}" if s.get("price") else ""
+                        lines.append(f"• *{s['name']}*{price_str}")
+                if _insurance_line:
+                    lines.append(f"\n*Insurance accepted:* {_insurance_line}")
+                lines.append("\nWhich doctor/service would you like to book, and what date works for you?")
+                return {
+                    "handled": True,
+                    "messages": [{"text": "\n".join(lines)}],
+                    "escalate": False,
+                    "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+                }
+
             return await self._handle_availability(
                 services, business_hours, booking_settings, customer_name, language, currency, message, customer_id, user_id, is_rental
             )
@@ -130,11 +309,191 @@ class BookingAgent(BaseAgent):
                 customer_id, user_id, customer_name, language, message, is_rental
             )
 
+        # ── Handle active booking step from pending_catalogs ─────────────────
+        pending_doc = None
+        try:
+            pending_doc = await self.db.pending_catalogs.find_one({"customer_id": customer_id, "user_id": user_id})
+            if pending_doc and pending_doc.get("action_context"):
+                _ctx = pending_doc["action_context"]
+                logger.info(f"[BookingAgent] Active action_context detected: {_ctx}")
+
+                if _ctx == "booking_date_input":
+                    _dates_ent = context.get("entities", {}).get("dates", [])
+                    _date_keywords = ("tomorrow", "today", "monday", "tuesday", "wednesday",
+                                      "thursday", "friday", "saturday", "sunday", "next",
+                                      "morning", "afternoon", "evening", " am", " pm",
+                                      "january", "february", "march", "april", "may", "june",
+                                      "july", "august", "september", "october", "november", "december",
+                                      "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+                    _msg_lower = message.lower()
+                    _has_date = bool(_dates_ent) or any(k in _msg_lower for k in _date_keywords)
+                    import re as _re_bk
+                    if not _has_date and _re_bk.search(r'\b\d{1,2}[\/\-\.]\d{1,2}', _msg_lower):
+                        _has_date = True
+
+                    if _has_date:
+                        return await self._handle_booking_date_received(
+                            pending_doc, message, customer_name, language, currency,
+                            customer_id, user_id, context
+                        )
+                    else:
+                        # Customer asked something else mid-booking (price, availability, hours, anything).
+                        # Answer naturally and guide back to the date step — no rigid gate.
+                        _svc_name = pending_doc.get("booking_service_name", "your service")
+                        return await self._handle_off_script(
+                            message=message, customer_name=customer_name, language=language,
+                            business_knowledge=business_knowledge, business_hours=business_hours,
+                            history=history, services=services, currency=currency,
+                            step="booking_date_input", step_hint=f"You already asked them which date they want to book *{_svc_name}*. After answering their question, naturally bring them back to that.",
+                        )
+
+                elif _ctx == "rental_dates_input":
+                    _rdates = self._parse_dates_from_message(message)
+                    if len(_rdates) >= 2:
+                        return await self._handle_rental_dates_received(
+                            pending_doc, _rdates[0], _rdates[1], message, customer_name,
+                            language, currency, customer_id, user_id
+                        )
+                    else:
+                        return await self._handle_off_script(
+                            message=message, customer_name=customer_name, language=language,
+                            business_knowledge=business_knowledge, business_hours=business_hours,
+                            history=history, services=services, currency=currency,
+                            step="rental_dates_input", step_hint="You need both a check-in AND check-out date from them. After answering their question, naturally ask for both dates.",
+                        )
+
+                elif _ctx == "booking_service_select" and not PICK_NUMBER_RE.match(message.strip()):
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_service_select", step_hint="They were picking a service from the list. After answering their question, naturally guide them back to choose.",
+                    )
+
+                elif _ctx == "booking_time_select":
+                    # Server.py already handled numbers, "next", period words, and "3pm"-style time.
+                    # Anything reaching here is a general question or context change — handle naturally.
+                    _svc_name = pending_doc.get("booking_service_name", "your service")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_time_select",
+                        step_hint=f"They were choosing a time slot to book *{_svc_name}* on *{_bk_date}*. After answering their question, naturally bring them back to pick a time (they can reply with a number or say e.g. '3pm').",
+                    )
+
+                elif _ctx == "booking_confirm":
+                    # They're at the YES/NO confirmation step — handle questions naturally
+                    _svc_name = pending_doc.get("booking_service_name", "your service")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    _bk_time = pending_doc.get("booking_time", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_confirm",
+                        step_hint=f"They have a pending booking for *{_svc_name}* on *{_bk_date}* at *{_bk_time}* awaiting confirmation. After answering their question, remind them to reply YES to confirm or NO to cancel.",
+                    )
+
+                elif _ctx == "restaurant_party_size_input":
+                    _svc_name = pending_doc.get("booking_service_name", "your reservation")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    _bk_time = pending_doc.get("booking_time", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="restaurant_party_size_input",
+                        step_hint=f"They're booking *{_svc_name}* on *{_bk_date}* at *{_bk_time}* and you need to know how many people. After answering their question, naturally ask for the party size.",
+                    )
+
+                elif _ctx == "restaurant_requests_input":
+                    _svc_name = pending_doc.get("booking_service_name", "your reservation")
+                    _bk_date = pending_doc.get("booking_date", "")
+                    _bk_time = pending_doc.get("booking_time", "")
+                    _party = pending_doc.get("restaurant_party_size", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="restaurant_requests_input",
+                        step_hint=f"They're booking *{_svc_name}* for {_party} people on *{_bk_date}* at *{_bk_time}*. After answering their question, ask if they have any special requests (or reply NONE if not).",
+                    )
+
+                elif _ctx == "creator_timeline_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the project")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="creator_timeline_input",
+                        step_hint=f"You need a deadline/timeline for *{_svc_name}*. After answering their question, naturally ask when they need it completed.",
+                    )
+
+                elif _ctx == "creator_budget_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the project")
+                    _deadline = pending_doc.get("creator_deadline", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="creator_budget_input",
+                        step_hint=f"You need their budget for *{_svc_name}* (deadline: {_deadline}). After answering their question, naturally ask what their budget is or if it's flexible.",
+                    )
+
+                elif _ctx == "creator_details_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the project")
+                    _deadline = pending_doc.get("creator_deadline", "")
+                    _budget = pending_doc.get("creator_budget", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="creator_details_input",
+                        step_hint=f"You need project details for *{_svc_name}* (deadline: {_deadline}, budget: {_budget}). After answering their question, ask them to describe what they need.",
+                    )
+
+                elif _ctx == "booking_checkin_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the rental")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_checkin_input",
+                        step_hint=f"They're booking *{_svc_name}* and you need their check-in date. After answering their question, naturally ask what date they'd like to check in.",
+                    )
+
+                elif _ctx == "booking_checkout_input":
+                    _svc_name = pending_doc.get("booking_service_name", "the rental")
+                    _ci_date = pending_doc.get("booking_checkin_date", "")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="booking_checkout_input",
+                        step_hint=f"They're booking *{_svc_name}*, check-in is *{_ci_date}*. You need their check-out date. After answering their question, ask what date they'd like to check out.",
+                    )
+
+                elif _ctx == "order_confirm":
+                    _prod_name = pending_doc.get("product_name") or pending_doc.get("booking_service_name", "this item")
+                    return await self._handle_off_script(
+                        message=message, customer_name=customer_name, language=language,
+                        business_knowledge=business_knowledge, business_hours=business_hours,
+                        history=history, services=services, currency=currency,
+                        step="order_confirm",
+                        step_hint=f"They have a pending order for *{_prod_name}* awaiting confirmation. Answer their question naturally, then remind them to reply YES to confirm or NO to cancel.",
+                    )
+
+        except Exception as e:
+            logger.warning(f"[BookingAgent] Error fetching pending_doc: {e}")
+
         # Default: BOOKING_REQUEST
         return await self._handle_booking_request(
             services, business_hours, booking_settings, customer_name, language, currency,
             message, business_knowledge, history, customer_id, user_id, is_rental,
             intent=intent, confidence=confidence, careful_instruction=careful_instruction,
+            active_context=pending_doc.get("action_context") if pending_doc else None
         )
 
     # ── Booking Request ────────────────────────────────────────────────────────
@@ -144,6 +503,7 @@ class BookingAgent(BaseAgent):
         customer_name, language, currency, message,
         business_knowledge, history, customer_id, user_id, is_rental=False,
         intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
+        active_context: Optional[str] = None
     ) -> Dict[str, Any]:
         if not services:
             no_listing_msg = (
@@ -160,9 +520,24 @@ class BookingAgent(BaseAgent):
         first_page = services[:PAGE_SIZE]
         has_more = len(services) > PAGE_SIZE
 
-        # Build numbered listing/services list
+        # AI intro — single call returns intro text + localised list header + footer instruction
+        intro_data = await self._ai_intro(
+            message, customer_name, language, business_knowledge, history, is_rental,
+            intent=intent, confidence=confidence, careful_instruction=careful_instruction,
+            active_context=active_context
+        )
+        intro_text  = intro_data.get("intro")
+        list_header = intro_data.get("header", "")
+        list_footer = intro_data.get("footer", "")
+
+        # Build numbered listing/services list — header and footer come from the AI call above
+        from .ui_strings import t as _t
+        lang = language or "English"
+        see_more_label = _t("see_more", lang)
+        gallery_label  = _t("view_gallery", lang)
+
         if is_rental:
-            lines = ["🏠 *Our Listings*\n"]
+            lines = [list_header + "\n"]
             for i, s in enumerate(first_page, 1):
                 price = s.get("price", 0)
                 unit = s.get("price_unit", "night")
@@ -172,10 +547,10 @@ class BookingAgent(BaseAgent):
                 desc_str = f" · {desc[:50]}" if desc else ""
                 lines.append(f"{i}️⃣  *{s['name']}* — {price_str}{desc_str}")
             if has_more:
-                lines.append(f"9️⃣  ➡️ *See more listings*")
-            lines.append("\n_Reply with the number of the listing you'd like to book_")
+                lines.append(see_more_label)
+            lines.append("\n" + list_footer)
         else:
-            lines = ["📋 *Our Services*\n"]
+            lines = [list_header + "\n"]
             for i, s in enumerate(first_page, 1):
                 price = s.get("price", 0)
                 duration = s.get("duration")
@@ -183,19 +558,31 @@ class BookingAgent(BaseAgent):
                 dur_str = f" · {duration} min" if duration else ""
                 lines.append(f"{i}️⃣  *{s['name']}* — {price_str}{dur_str}")
             if has_more:
-                lines.append(f"9️⃣  ➡️ *See more services*")
-            lines.append("\n_Reply with the number of the service you'd like to book_")
+                lines.append(see_more_label)
+            lines.append(gallery_label)
+            lines.append("\n" + list_footer)
         services_text = "\n".join(lines)
 
-        # AI intro
-        intro = await self._ai_intro(
-            message, customer_name, language, business_knowledge, history, is_rental,
-            intent=intent, confidence=confidence, careful_instruction=careful_instruction,
-        )
         messages_out = []
-        if intro:
-            messages_out.append({"text": intro})
-        messages_out.append({"text": services_text})
+        if intro_text:
+            messages_out.append({"text": intro_text})
+
+        # Only send the services list if:
+        # 1. No active booking context
+        # 2. Or context is 'booking_service_select'
+        # 3. Or user specifically asked for 'what do you offer' / 'catalog'
+        _show_list = not active_context or active_context == "booking_service_select" or intent == "CATALOG_REQUEST"
+        if _show_list:
+            messages_out.append({"text": services_text})
+
+        # Safety net: if we're in the middle of a booking step and somehow ended up here
+        # with no message (AI failed + list suppressed), send a fallback so the bot never
+        # goes completely silent.
+        if not messages_out:
+            if active_context == "booking_date_input":
+                messages_out.append({"text": "What date works best for you? You can say something like *tomorrow*, *Monday*, or *15 April*. 😊"})
+            else:
+                messages_out.append({"text": services_text})
 
         # Store in pending_catalogs for numbered reply
         if customer_id and first_page:
@@ -240,6 +627,229 @@ class BookingAgent(BaseAgent):
                 "menu_items": _menu_items_bk,
                 "waiting_for_selection": True,
                 "menu_sent_at": datetime.utcnow().isoformat(),
+            },
+        }
+
+    # ── Booking Date Received ─────────────────────────────────────────────────────
+
+    async def _handle_booking_date_received(
+        self, pending_doc: dict, message: str, customer_name: str,
+        language: str, currency: str, customer_id, user_id: str, context: dict
+    ) -> Dict[str, Any]:
+        """
+        Customer has provided a date after selecting a service.
+        Creates a PENDING booking record and acknowledges warmly — never confirms.
+        Flags for human to finalize.
+        """
+        import random, string as _str
+        svc_name = pending_doc.get("booking_service_name", "the service")
+        svc_id = pending_doc.get("booking_service_id", "")
+        svc_price = pending_doc.get("booking_service_price", 0)
+        dates_ent = context.get("entities", {}).get("dates", [])
+        date_str = str(dates_ent[0]) if dates_ent else message.strip()[:80]
+        reschedule_id = pending_doc.get("reschedule_booking_id")
+        reschedule_bk_num = pending_doc.get("reschedule_booking_number")
+
+        bk_number = "BK-" + "".join(random.choices(_str.digits, k=6))
+        try:
+            if reschedule_id:
+                from bson import ObjectId
+                await self.db.bookings.update_one(
+                    {"_id": ObjectId(reschedule_id)},
+                    {"$set": {
+                        "status": "reschedule_requested",
+                        "new_date": date_str,
+                        "reschedule_requested_at": datetime.utcnow(),
+                    }}
+                )
+                bk_number = reschedule_bk_num or bk_number
+            else:
+                await self.db.bookings.insert_one({
+                    "user_id": user_id,
+                    "customer_id": str(customer_id),
+                    "service_name": svc_name,
+                    "service_id": svc_id,
+                    "price": svc_price,
+                    "date": date_str,
+                    "status": "pending",
+                    "booking_number": bk_number,
+                    "created_at": datetime.utcnow(),
+                    "created_by": "customer",
+                })
+        except Exception as e:
+            logger.error(f"[BookingAgent] booking create error: {e}")
+
+        # Clear the date-input context so it doesn't fire again
+        try:
+            await self.db.pending_catalogs.update_one(
+                {"customer_id": customer_id, "user_id": user_id},
+                {"$set": {"action_context": None}}
+            )
+        except Exception:
+            pass
+
+        try:
+            from ai_service import get_drafter
+            ai = get_drafter()
+            action_word = "reschedule request" if reschedule_id else "booking request"
+            prompt = (
+                f"You are a business owner on WhatsApp. A customer just sent their preferred date for a booking.\n\n"
+                f"Customer: {customer_name}\nService: {svc_name}\nDate/time they gave: {date_str}\n"
+                f"Booking ref: {bk_number}\nLanguage: {language}\n"
+                f"Action: {'Reschedule for ref ' + str(reschedule_bk_num) if reschedule_id else 'New booking'}\n\n"
+                f"Write a warm reply in {language} (2-3 sentences max):\n"
+                f"1. Acknowledge their {action_word} for *{svc_name}* on *{date_str}*\n"
+                f"2. Tell them a team member will confirm shortly and share the ref: *{bk_number}*\n"
+                f"3. CRITICAL: NEVER say the booking is 'confirmed' — it is PENDING human review\n"
+                f"4. WhatsApp tone — casual, warm\n"
+                f"Output only the customer-facing message."
+            )
+            reply = await ai._call_llm(prompt, model_pref="standard")
+        except Exception as e:
+            logger.error(f"[BookingAgent] booking ack AI error: {e}")
+            action_word = "reschedule" if reschedule_id else "booking"
+            reply = (
+                f"Got it {customer_name}! 🙏 Your {action_word} request for *{svc_name}* "
+                f"on *{date_str}* has been received (Ref: *{bk_number}*).\n\n"
+                f"We'll confirm your appointment shortly! 📅"
+            )
+
+        flag_reason = (
+            f"Reschedule request: {svc_name} → new date {date_str} (Ref: {bk_number})"
+            if reschedule_id else
+            f"New booking request: {svc_name} on {date_str} (Ref: {bk_number})"
+        )
+        return {
+            "handled": True,
+            "messages": [{"text": reply}],
+            "escalate": False,
+            "flag_for_human": True,
+            "flag_reason": flag_reason,
+            "context_update": {
+                "state": "ongoing",
+                "last_intent": "BOOKING_REQUEST",
+                "pending_booking_date_input": False,
+            },
+        }
+
+    async def _handle_rental_dates_received(
+        self, pending_doc: dict, ci_date, co_date, message: str,
+        customer_name: str, language: str, currency: str,
+        customer_id, user_id: str
+    ) -> Dict[str, Any]:
+        """
+        Customer has provided check-in and check-out dates for a rental.
+        Creates/updates a PENDING rental booking — never auto-confirms.
+        """
+        import random, string as _str
+        svc_name = pending_doc.get("booking_service_name", "the listing")
+        svc_id = pending_doc.get("booking_service_id", "")
+        svc_price = pending_doc.get("booking_service_price", 0)
+        price_unit = pending_doc.get("price_unit", "night")
+        reschedule_id = pending_doc.get("reschedule_booking_id")
+        reschedule_bk_num = pending_doc.get("reschedule_booking_number")
+
+        nights = (co_date - ci_date).days
+        if price_unit == "week":
+            total = svc_price * max(1, round(nights / 7))
+        elif price_unit == "month":
+            total = svc_price * max(1, round(nights / 30))
+        else:
+            total = svc_price * nights
+        total_str = f"{currency} {total:,.0f}" if total else ""
+        ci_str = ci_date.strftime("%d %b %Y")
+        co_str = co_date.strftime("%d %b %Y")
+
+        bk_number = "BK-" + "".join(random.choices(_str.digits, k=6))
+        try:
+            if reschedule_id:
+                from bson import ObjectId
+                await self.db.bookings.update_one(
+                    {"_id": ObjectId(reschedule_id)},
+                    {"$set": {
+                        "status": "reschedule_requested",
+                        "checkin_date": str(ci_date),
+                        "checkout_date": str(co_date),
+                        "nights": nights,
+                        "total_price": total,
+                        "reschedule_requested_at": datetime.utcnow(),
+                    }}
+                )
+                bk_number = reschedule_bk_num or bk_number
+            else:
+                await self.db.bookings.insert_one({
+                    "user_id": user_id,
+                    "customer_id": str(customer_id),
+                    "service_name": svc_name,
+                    "service_id": svc_id,
+                    "price": svc_price,
+                    "price_unit": price_unit,
+                    "checkin_date": str(ci_date),
+                    "checkout_date": str(co_date),
+                    "nights": nights,
+                    "total_price": total,
+                    "status": "pending",
+                    "booking_number": bk_number,
+                    "created_at": datetime.utcnow(),
+                    "created_by": "customer",
+                })
+        except Exception as e:
+            logger.error(f"[BookingAgent] rental booking create error: {e}")
+
+        # Clear context
+        try:
+            await self.db.pending_catalogs.update_one(
+                {"customer_id": customer_id, "user_id": user_id},
+                {"$set": {"action_context": None}}
+            )
+        except Exception:
+            pass
+
+        try:
+            from ai_service import get_drafter
+            ai = get_drafter()
+            action_word = "reschedule request" if reschedule_id else "reservation request"
+            prompt = (
+                f"You are a business owner on WhatsApp. A customer just sent their stay dates for a rental.\n\n"
+                f"Customer: {customer_name}\nListing: {svc_name}\n"
+                f"Check-in: {ci_str}\nCheck-out: {co_str} ({nights} night{'s' if nights != 1 else ''})\n"
+                f"Total: {total_str}\nRef: {bk_number}\nLanguage: {language}\n\n"
+                f"Write a warm reply in {language} (2-3 sentences max):\n"
+                f"1. Acknowledge their {action_word} for *{svc_name}*\n"
+                f"2. Confirm the dates: *{ci_str}* → *{co_str}* and total if available\n"
+                f"3. Say a team member will confirm shortly, share ref *{bk_number}*\n"
+                f"4. CRITICAL: NEVER say 'confirmed' — it is PENDING human review\n"
+                f"Output only the customer-facing message."
+            )
+            reply = await ai._call_llm(prompt, model_pref="standard")
+        except Exception as e:
+            logger.error(f"[BookingAgent] rental ack AI error: {e}")
+            action_word = "change" if reschedule_id else "reservation"
+            total_line = f" · Total: {total_str}" if total_str else ""
+            reply = (
+                f"Got it {customer_name}! 🏠 Your {action_word} request for *{svc_name}* "
+                f"(*{ci_str}* → *{co_str}*{total_line}) has been received (Ref: *{bk_number}*).\n\n"
+                f"We'll confirm your reservation shortly! 🙏"
+            )
+
+        flag_reason = (
+            f"Rental reschedule: {svc_name} → new dates {ci_str} to {co_str} (Ref: {bk_number})"
+            if reschedule_id else
+            f"Rental reservation: {svc_name} {ci_str} to {co_str}, {nights} nights (Ref: {bk_number})"
+        )
+        return {
+            "handled": True,
+            "messages": [{"text": reply}],
+            "escalate": False,
+            "flag_for_human": True,
+            "flag_reason": flag_reason,
+            "context_update": {
+                "state": "ongoing",
+                "last_intent": "BOOKING_REQUEST",
+                "pending_rental_dates_input": False,
+                "checkin_date": None,
+                "checkout_date": None,
+                "nights": None,
             },
         }
 
@@ -456,11 +1066,26 @@ class BookingAgent(BaseAgent):
                         except Exception as e:
                             logger.error(f"[BookingAgent] availability catalog upsert: {e}")
 
+                    # Build menu gate so customer can pick a listing by number
+                    _avail_menu = {
+                        str(i): {"name": s["name"], "price": s.get("price", 0), "id": str(s["_id"]),
+                                 "type": "service", "service_category": "rental",
+                                 "price_unit": s.get("price_unit", "night")}
+                        for i, s in enumerate(avail_services, 1)
+                    } if avail_services else {}
+                    _avail_ctx = {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"}
+                    if _avail_menu:
+                        _avail_ctx.update({
+                            "active_menu": True, "menu_type": "service_selection",
+                            "menu_items": _avail_menu, "waiting_for_selection": True,
+                            "menu_sent_at": datetime.utcnow().isoformat(),
+                            "checkin_date": str(ci_date), "checkout_date": str(co_date), "nights": nights,
+                        })
                     return {
                         "handled": True,
                         "messages": messages_out,
                         "escalate": False,
-                        "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+                        "context_update": _avail_ctx,
                     }
 
             # ── Rental: month-calendar availability view ──────────────────────
@@ -532,11 +1157,24 @@ class BookingAgent(BaseAgent):
                 except Exception as e:
                     logger.error(f"[BookingAgent] month-cal catalog upsert: {e}")
 
+            _cal_menu = {
+                str(i): {"name": s["name"], "price": s.get("price", 0), "id": str(s["_id"]),
+                         "type": "service", "service_category": "rental",
+                         "price_unit": s.get("price_unit", "night")}
+                for i, s in enumerate(services, 1)
+            } if services else {}
+            _cal_ctx = {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"}
+            if _cal_menu:
+                _cal_ctx.update({
+                    "active_menu": True, "menu_type": "service_selection",
+                    "menu_items": _cal_menu, "waiting_for_selection": True,
+                    "menu_sent_at": datetime.utcnow().isoformat(),
+                })
             return {
                 "handled": True,
                 "messages": messages_out,
                 "escalate": False,
-                "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+                "context_update": _cal_ctx,
             }
 
         # Schedule block — skip for rental businesses (they don't have open/close hours)
@@ -613,11 +1251,28 @@ class BookingAgent(BaseAgent):
                 "_Reply with the service you'd like to book and we'll sort out a time!_ \U0001f4c5"
             )})
 
+        # Build menu gate state so customer can immediately select a service by number
+        _sched_menu = {}
+        if services:
+            _fp = services[:PAGE_SIZE]
+            _sched_menu = {
+                str(i): {"name": s["name"], "price": s.get("price", 0), "id": str(s["_id"]),
+                         "type": "service", "duration": s.get("duration"),
+                         "service_category": s.get("service_category", "appointment")}
+                for i, s in enumerate(_fp, 1)
+            }
+        _sched_ctx = {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"}
+        if _sched_menu:
+            _sched_ctx.update({
+                "active_menu": True, "menu_type": "service_selection",
+                "menu_items": _sched_menu, "waiting_for_selection": True,
+                "menu_sent_at": datetime.utcnow().isoformat(),
+            })
         return {
             "handled": True,
             "messages": messages_out,
             "escalate": False,
-            "context_update": {"state": "ongoing", "last_intent": "AVAILABILITY_CHECK"},
+            "context_update": _sched_ctx,
         }
 
     # ── Booking Status ───────────────────────────────────────────────────────────
@@ -636,7 +1291,7 @@ class BookingAgent(BaseAgent):
                 "user_id": user_id,
                 "customer_id": str(customer_id),
                 "status": {"$in": ["pending", "confirmed"]},
-            }).sort("date", 1).to_list(5)
+            }).sort([("checkin_date", 1), ("date", 1)]).to_list(5)
         except Exception as e:
             logger.error(f"[BookingAgent] booking_status query error: {e}")
             bookings = []
@@ -750,8 +1405,18 @@ class BookingAgent(BaseAgent):
         from agents.conversation_state import save_state
         bk_num = booking.get("booking_number", "")
         svc = booking.get("service_name", "Service")
-        date_str = booking.get("date", "")
-        time_str = booking.get("time", "")
+        # Support both rental (checkin/checkout) and service (date/time)
+        if booking.get("checkin_date"):
+            ci = booking.get("checkin_date", "")
+            co = booking.get("checkout_date", "")
+            date_str = f"Check-in: {ci}" + (f" → {co}" if co else "")
+            reschedule_label = "Change dates"
+        else:
+            date_str = booking.get("date", "")
+            time_str = booking.get("time", "")
+            if time_str:
+                date_str = f"{date_str} at {time_str}"
+            reschedule_label = "Reschedule to a new date/time"
         await save_state(self.db, user_id, customer_id, {
             "pending_booking_action": str(booking["_id"]),
             "pending_booking_list": None,
@@ -760,11 +1425,11 @@ class BookingAgent(BaseAgent):
             "handled": True,
             "escalate": False,
             "messages": [{"text": (
-                f"\U0001f4cc *{svc}* — {date_str} at {time_str}\n"
+                f"\U0001f4cc *{svc}* — {date_str}\n"
                 f"Ref: *{bk_num}*\n\n"
                 f"What would you like to do?\n"
                 f"1\ufe0f\u20e3 Cancel this booking\n"
-                f"2\ufe0f\u20e3 Reschedule to a new date/time\n\n"
+                f"2\ufe0f\u20e3 {reschedule_label}\n\n"
                 f"_Reply with *1* or *2*_"
             )}],
         }
@@ -803,22 +1468,42 @@ class BookingAgent(BaseAgent):
         self, booking: dict, customer_name: str, currency: str,
         language: str, user_id: str, customer_id: str
     ) -> Dict[str, Any]:
-        """Start reschedule flow — reuse booking_date_input context."""
+        """Start reschedule flow — handles both services (single date) and rentals (check-in + check-out)."""
         bk_num = booking.get("booking_number", "")
         svc = booking.get("service_name", "Service")
         svc_id = booking.get("service_id", "")
         price = booking.get("price", 0)
+        is_rental_bk = bool(booking.get("checkin_date"))
         from agents.conversation_state import save_state
+
+        if is_rental_bk:
+            # Rental reschedule — need new check-in AND check-out
+            action_context = "rental_dates_input"
+            ask_msg = (
+                f"Let's change your reservation for *{svc}* (Ref: *{bk_num}*).\n\n"
+                f"🏠 *What are your new check-in and check-out dates?*\n"
+                f"_Reply with both dates, e.g. *15 April to 20 April* or *15/04 - 20/04*_"
+            )
+        else:
+            action_context = "booking_date_input"
+            ask_msg = (
+                f"Let's reschedule *{svc}* (Ref: *{bk_num}*).\n\n"
+                f"📅 *What new date would you like?*\n"
+                f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_"
+            )
+
         await save_state(self.db, user_id, customer_id, {
             "pending_booking_action": None,
             "pending_booking_list": None,
+            # Set the right override flag so router sends next message to BookingAgent
+            "pending_booking_date_input": not is_rental_bk,
+            "pending_rental_dates_input": is_rental_bk,
         })
-        # Set pending_catalogs to booking_date_input so server.py date handler picks it up
         try:
             await self.db.pending_catalogs.update_one(
                 {"customer_id": customer_id, "user_id": user_id},
                 {"$set": {
-                    "action_context": "booking_date_input",
+                    "action_context": action_context,
                     "booking_service_id": svc_id,
                     "booking_service_name": svc,
                     "booking_service_price": price,
@@ -833,11 +1518,7 @@ class BookingAgent(BaseAgent):
         return {
             "handled": True,
             "escalate": False,
-            "messages": [{"text": (
-                f"Let's reschedule *{svc}* (Ref: *{bk_num}*).\n\n"
-                f"\U0001f4c5 *What new date would you like?*\n"
-                f"_Reply with a date, e.g. *tomorrow*, *Monday*, *15 March*, or *2026-03-15*_"
-            )}],
+            "messages": [{"text": ask_msg}],
         }
 
     # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -845,7 +1526,22 @@ class BookingAgent(BaseAgent):
     async def _ai_intro(
         self, message, customer_name, language, business_knowledge, history,
         is_rental=False, intent="BOOKING_REQUEST", confidence=1.0, careful_instruction="",
-    ) -> Optional[str]:
+        active_context: Optional[str] = None
+    ) -> dict:
+        """
+        Single AI call that returns three pieces needed to build the services/listings message:
+          - intro : 1-2 sentence warm human reply to the customer
+          - header: the list header ("Our Services" / "Our Listings") in their language
+          - footer: the instruction line ("Reply with a number to book") in their language
+
+        Falls back to ui_strings.t() if the AI call fails — no English hardcoding.
+        """
+        from .ui_strings import t as _t
+        import json as _json, re as _re
+
+        fallback_header = _t("listings_header" if is_rental else "services_header", language)
+        fallback_footer = _t("rental_select_instruction" if is_rental else "book_number_instruction", language)
+
         try:
             from ai_service import get_drafter
             ai = get_drafter()
@@ -857,38 +1553,116 @@ class BookingAgent(BaseAgent):
             )
             if careful_instruction:
                 intent_hint += f"\n{careful_instruction}\n"
-            if is_rental:
-                prompt = (
-                    f"{intent_hint}"
-                    f"Customer is looking to book a rental/property. "
-                    f"Write 1 warm short line in {language} welcoming them to browse listings "
-                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
-                    f"STRICT RULES — breaking any of these = wrong answer:\n"
-                    f"- NEVER mention or suggest specific dates, days, or times\n"
-                    f"- NEVER state or imply a booking has been made or confirmed\n"
-                    f"- NEVER mention prices or availability\n"
-                    f"- Just a warm welcome line, nothing else"
-                )
-            else:
-                prompt = (
-                    f"{intent_hint}"
-                    f"Customer wants to book a service. "
-                    f"Write 1 warm short line in {language} acknowledging their request "
-                    f"and letting them know you'll show them the options "
-                    f"(WhatsApp tone, no bullet points). Output only the customer-facing message.\n"
-                    f"STRICT RULES — breaking any of these = wrong answer:\n"
-                    f"- NEVER mention or suggest specific dates, days, or times\n"
-                    f"- NEVER state or imply anything is booked, confirmed, or scheduled\n"
-                    f"- NEVER mention prices or opening hours\n"
-                    f"- NEVER reference previous bookings or past conversations\n"
-                    f"- Just a warm 1-line intro, nothing else"
-                )
-            intro = await ai._call_llm(prompt, model_pref="standard")
-            if intro and len(intro.strip()) < 120:
-                return intro.strip()
+            context_note = ""
+            if active_context:
+                context_note = f"\n⚠️ CONTEXT: The user is currently in the middle of a booking, at the '{active_context}' step. "
+                if active_context == "booking_date_input":
+                    context_note += "They were just asked for a DATE. "
+                elif active_context == "booking_service_select":
+                    context_note += "They were just asked to SELECT A SERVICE from a list. "
+                elif active_context == "booking_time_select":
+                    context_note += "They were just asked to SELECT A TIME slot. "
+                context_note += "Acknowledge their message naturally and, if they didn't provide the info needed, gently guide them back to this step."
+
+            listing_type = "rental/property listings" if is_rental else "services/appointments"
+            prompt = (
+                f"{intent_hint}{context_note}"
+                f"You are a business owner on WhatsApp. A customer wants to see your {listing_type}.\n"
+                f"Business info: {bk}\n\n"
+                f"Respond in: {language}\n\n"
+                f"Return ONLY valid JSON with exactly these 3 keys:\n"
+                f'{{\n'
+                f'  "intro": "1-2 sentence warm human reply in {language}. Match their energy. '
+                f'Never confirm a booking. No corporate tone. Think: what would a real business owner text back?",\n'
+                f'  "header": "A short bold title for the {listing_type} list — in {language}. '
+                f'With a relevant emoji. E.g. in English: \'📋 *Our Services*\'. In Swahili: \'📋 *Huduma Zetu*\'.",\n'
+                f'  "footer": "A short instruction line in {language} telling the customer to reply with a number to select. '
+                f'In italics (wrap in _underscores_). Natural, informal. E.g. \'_Jibu na namba kuchagua_\' or \'_Reply with a number_\'"\n'
+                f'}}\n\n'
+                f"JSON only. No markdown fences."
+            )
+            raw = await ai._call_llm(prompt, model_pref="standard")
+            match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            if match:
+                data = _json.loads(match.group())
+                return {
+                    "intro": (data.get("intro") or "").strip(),
+                    "header": (data.get("header") or fallback_header).strip(),
+                    "footer": (data.get("footer") or fallback_footer).strip(),
+                }
         except Exception as e:
             logger.error(f"[BookingAgent] AI intro error: {e}")
-        return None
+
+        return {"intro": None, "header": fallback_header, "footer": fallback_footer}
+
+    async def _handle_off_script(
+        self, message: str, customer_name: str, language: str,
+        business_knowledge: str, business_hours: str,
+        history, services, currency: str,
+        step: str, step_hint: str,
+    ) -> Dict[str, Any]:
+        """
+        A customer said something off-script during an active booking step
+        (asked about price, hours, availability, anything).
+        Answer their actual question naturally, then bring them back to where they were.
+        Never go silent. Never be robotic.
+        """
+        try:
+            from ai_service import get_drafter
+            ai = get_drafter()
+
+            _bk = (business_knowledge or "")[:600]
+            _hrs = (business_hours or "")[:200]
+            _hist = ""
+            if history:
+                _recent = history[-6:] if len(history) > 6 else history
+                _hist = "\n".join(f"{'Customer' if m.get('role')=='user' else 'You'}: {m.get('content','')}" for m in _recent)
+
+            _svc_list = ""
+            if services:
+                _svc_list = ", ".join(s.get("name","") for s in services[:6])
+
+            prompt = f"""You are a business owner replying on WhatsApp to {customer_name}.
+You're helping them book. Mid-booking, they asked: "{message}"
+
+Business info: {_bk}
+Hours: {_hrs}
+Services/products: {_svc_list}
+Currency: {currency}
+
+Recent chat:
+{_hist}
+
+Instructions:
+- Answer their question directly and honestly. Be natural, brief, warm.
+- {step_hint}
+- Do NOT repeat the full menu or list. Just answer + one soft nudge back.
+- No bullet lists unless the question needs one. No corporate tone.
+- Reply in: {language}
+- 1-3 sentences max unless the question genuinely needs more.
+
+Output only the WhatsApp reply. Nothing else."""
+
+            reply = await ai._call_llm(prompt, model_pref="standard")
+            reply = (reply or "").strip().strip('"').strip()
+            if not reply:
+                raise ValueError("Empty AI reply")
+
+            logger.info(f"[BookingAgent] off-script reply (step={step}): {reply[:80]}")
+            return {
+                "handled": True,
+                "messages": [{"text": reply}],
+                "escalate": False,
+                "context_update": {"state": "ongoing"},
+            }
+        except Exception as e:
+            logger.error(f"[BookingAgent] _handle_off_script error: {e}")
+            # Hard fallback — never go silent
+            return {
+                "handled": True,
+                "messages": [{"text": f"Sorry, I didn't quite catch that — could you let me know what you'd like to book? 😊"}],
+                "escalate": False,
+            }
 
     async def _handle_customer_chat(
         self, message, intent, customer_name, language,
@@ -905,26 +1679,41 @@ They just sent a casual message or greeting: "{message}"
 
 Business info: {bk}
 
-Think one sentence about how to warmly acknowledge their message, then pivot to asking if they need help or want to book a service / see your listings. Output only the customer-facing message.
+Output only the customer-facing message. Think: what would a real salon/clinic owner say when a regular walks in and says hi?
 
 Rules:
-- Be warm and natural, match their energy.
-- MUST end by gently asking if they want to see your services/listings, or if they need to book an appointment.
-- Do NOT push specific services yet, just make the offer.
-- Max 2 sentences. WhatsApp tone.
+- Be warm and genuinely human — match their energy and language exactly.
+- Acknowledge their greeting naturally first (1 short line).
+- Then ask ONE open question: what can you help them with today, or are they looking to book something.
+- Do NOT immediately list services or push the booking menu — wait for them to respond.
+- Max 2 sentences. Pure WhatsApp tone — casual and real.
 - Language: {language}
-- CRITICAL: NEVER say an order/booking has been placed, confirmed, or is being processed.
-- CRITICAL: NEVER suggest specific dates, times, or time slots.
-- ONLY invite them to browse or ask what they need — do NOT imply any action has been taken."""
+- CRITICAL: NEVER confirm or imply any booking or appointment has been made."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
             return {
                 "handled": True,
                 "messages": [{"text": reply}],
                 "escalate": False,
-                "context_update": {"state": "ongoing", "last_intent": intent},
+                "context_update": {
+                    "state": "ongoing",
+                    "last_intent": intent,
+                    # If customer replies "yes/sure/ok", route them to booking instead of ChatAgent
+                    "waiting_for_service_request": True,
+                    "preferred_language": language,
+                },
             }
         except Exception as e:
             logger.error(f"[BookingAgent] customer_chat handler error: {e}")
-            return {"handled": False}
+            return {
+                "handled": True,
+                "messages": [{"text": f"Hi {customer_name}! 😊 How can I help you today? Are you looking to book something?"}],
+                "escalate": False,
+                "context_update": {
+                    "state": "ongoing",
+                    "last_intent": intent,
+                    "waiting_for_service_request": True,
+                    "preferred_language": language,
+                },
+            }
 

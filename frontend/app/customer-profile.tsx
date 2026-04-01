@@ -32,7 +32,7 @@ export default function CustomerProfileScreen() {
   const initialName = params.customerName || '';
   const customerPhone = params.customerPhone || '';
 
-  const { isServiceBusiness } = useBusiness();
+  const { isServiceBusiness, businessType: bizType } = useBusiness();
   const [name, setName] = useState(initialName);
   const [notes, setNotes] = useState('');
   const [tags, setTags] = useState<string[]>([]);
@@ -204,7 +204,9 @@ export default function CustomerProfileScreen() {
           {isServiceBusiness ? (
             bookingCount > 0 && (
               <Text style={styles.statsText}>
-                {bookingCount} {bookingCount === 1 ? 'appointment' : 'appointments'}
+                {bookingCount} {bookingCount === 1
+                  ? (bizType === 'tech' ? 'demo' : bizType === 'creator' ? 'collab' : bizType === 'restaurant' ? 'reservation' : bizType === 'fitness' ? 'session' : bizType === 'rental' ? 'booking' : 'appointment')
+                  : (bizType === 'tech' ? 'demos' : bizType === 'creator' ? 'collabs' : bizType === 'restaurant' ? 'reservations' : bizType === 'fitness' ? 'sessions' : bizType === 'rental' ? 'bookings' : 'appointments')}
               </Text>
             )
           ) : (

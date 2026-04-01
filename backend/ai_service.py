@@ -497,64 +497,62 @@ class AIMessageDrafter:
             return ""
 
     def _create_prompt(self, context: Dict, business_name: str, tone: str, business_knowledge: str = None) -> str:
-        """Create the core auto-reply prompt — engineered for maximum human authenticity."""
+        """Create the core auto-reply prompt — sounds like a real person, not a bot."""
 
         # Business knowledge section
         business_context = ""
         if business_knowledge:
-            business_context = f"\nBusiness info:\n{business_knowledge}\n"
+            business_context = f"\nContext:\n{business_knowledge}\n"
 
         # Conversation memory (long-term summary)
         memory_section = ""
         if context.get('conversation_memory'):
-            memory_section = f"\nBackground (previous sessions): {context['conversation_memory']}\n"
+            memory_section = f"\nPrevious sessions: {context['conversation_memory']}\n"
 
         # Format conversation history — last 12 messages
-        conversation_history = "(No messages yet — this is the first contact)"
+        conversation_history = "(first message)"
         if context.get('conversation_log'):
             conversation_history = "\n".join(context['conversation_log'][-12:])
+
+        is_ongoing = bool(context.get('conversation_log') and len(context['conversation_log']) > 2)
 
         # Anti-repetition: block same opener as last outgoing message
         repetition_block = ""
         if context.get('last_outgoing_message'):
             first_words = ' '.join(context['last_outgoing_message'].split()[:4])
-            repetition_block = f'\nDO NOT start your reply with "{first_words}" or any variation of it. Open completely differently.'
+            repetition_block = f'\nAlso do NOT start with "{first_words}" — vary your opener.'
 
-        # Mid-conversation: no greetings
-        no_greeting_rule = ""
-        if context.get('conversation_log') and len(context['conversation_log']) > 2:
-            no_greeting_rule = "\nThis conversation is already in progress — do NOT open with any greeting (Hi, Hey, Hello, Habari, etc). Dive straight into the answer."
+        # Hard no-greeting rule for ongoing conversations
+        greeting_rule = ""
+        if is_ongoing:
+            greeting_rule = (
+                "\n⛔ NO GREETING. The conversation is already in progress. "
+                "NEVER open with: Hey, Hi, Hello, Hey there, Habari, Mambo, Hujambo, "
+                "Good morning, Good afternoon, Thanks for reaching out, or any other opener. "
+                "Go straight to the point — pretend you're already mid-conversation."
+            )
 
         # Customer notes hint
-        notes_hint = f"\nCustomer note: {context['notes'][:120]}" if context.get('notes') else ""
+        notes_hint = f"\nNote about them: {context['notes'][:120]}" if context.get('notes') else ""
 
-        prompt = f"""You are the owner of {business_name}, replying to {context['name']} on WhatsApp right now.
-
-You are NOT a bot. You are NOT a customer service agent. You are a real person who runs this business — you know your products, you know your prices, you talk naturally.
+        prompt = f"""You are {business_name}, texting {context['name']} on WhatsApp.
 {business_context}{memory_section}{notes_hint}
-Recent chat:
+Chat:
 {conversation_history}
 
-YOUR TASK: Reply to the customer's LAST message above.
+Read the whole conversation above. Understand what's going on. Then reply to their last message like a real person texting — natural, brief, on-point.
 
-HOW TO READ THE CONVERSATION:
-- Their LAST message is what you're replying to. History is context only.
-- If they changed topic from what was discussed before, follow THEM — don't drag old topics.
-- If their last message is a direct continuation ("ok", "yes", "how much?", "send it"), continue naturally from context.
-- If they greeted you fresh, greet back briefly then get to the point.
+Rules:
+- Match their energy and language exactly. Swahili → Swahili. Sheng → Sheng. Mixed → mix the same way. Never translate.
+- Simple message = simple reply. "ok", "thanks", "sure" gets a one-liner back, not a paragraph.
+- Answer questions directly from the info you have. Never say "let me check" when the answer is right there.
+- 1-3 sentences. No padding. No corporate speak.
+- Never use: "Absolutely", "Certainly", "Of course", "Great choice", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for reaching out", "As per", "Kindly note", "Hope this finds you well" — all bot phrases.
+- Emojis only when they genuinely fit. Never: 😊😇🙏✨💯
+- Only use facts you actually know. Never invent prices, dates, stock, or promises.
+- If something genuinely needs a real person (complaint, custom request, unanswerable question), start with [NEEDS_HUMAN] then give a natural holding reply.{greeting_rule}{repetition_block}
 
-HOW TO WRITE (this is critical — read every rule):
-1. Sound like a real person texting, not a company. Short. Direct. No corporate filler.
-2. BANNED phrases — never use these ever: "Sure thing", "Absolutely", "Certainly", "Of course", "Great choice", "I'd be happy to", "Feel free to", "Don't hesitate to", "I hope this helps", "Thank you for reaching out", "I understand your concern", "Please be advised", "As per", "Kindly note", "I apologize for any inconvenience". These make you sound like a bot.
-3. LANGUAGE: Reply in EXACTLY the language they used in their last message. If they mixed languages (e.g. Sheng, Pidgin, Kiswahili+English), you mix the same way — in ONE natural sentence. NEVER write the same thing twice in two languages. One message, one natural flow.
-4. EMOJIS: Only when it genuinely fits (✅ for confirmation, 🔥 for excitement). Skip emojis on plain answers. Never use 😊😇🙏 — those are bot emojis.
-5. LENGTH: 1-3 sentences. If they asked a simple question, give a simple answer. Don't pad.
-6. CATALOG ANSWERS: If you have product info above, you already know your stock — answer directly with name, price, availability. NEVER say "let me check" or "I'll get back to you" when the answer is right in front of you.
-7. HONESTY: Only use facts from the conversation and business info above. NEVER invent prices, dates, names, or promises.
-8. ESCALATE SIGNAL: If the customer asks something you genuinely cannot answer (no info in context, custom request, real complaint), start your reply with [NEEDS_HUMAN] then give a natural holding reply like "Let me confirm that for you" or "Give me a sec on that". Do NOT use [NEEDS_HUMAN] for anything you can actually answer.
-{repetition_block}{no_greeting_rule}
-
-Reply:"""
+Output ONLY the reply. Nothing else."""
 
         return prompt
 
