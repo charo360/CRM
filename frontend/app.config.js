@@ -17,7 +17,7 @@ export default {
     },
     android: {
       package: "com.zilo.reply",
-      versionCode: 7,
+      versionCode: 8,
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#2DB843"
