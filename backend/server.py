@@ -11626,7 +11626,8 @@ async def evolution_webhook(request: Request):
                 logging.info(f"Auto-reply gate: customer_override={_customer_auto_reply}, global={_global_auto_reply}, audience={_user_settings.get('auto_reply_audience','everyone')}, result={_should_auto_reply}")
 
                 if not _should_auto_reply:
-                    logging.info(f"Auto-reply BLOCKED for {from_number} (customer_override={_customer_auto_reply}, global={_global_auto_reply})")
+                    logging.warning(f"⚠️ MESSAGE DROPPED: Auto-reply BLOCKED for {from_number} (customer_override={_customer_auto_reply}, global={_global_auto_reply})")
+                    print(f"⚠️ MESSAGE NOT REPLIED: {from_number} - Auto-reply disabled", flush=True)
                     return {"status": "ok", "message": "auto-reply disabled for this contact"}
 
                 # AI message quota gate — check monthly usage against plan limit
@@ -11639,7 +11640,21 @@ async def evolution_webhook(request: Request):
                     _used_month = _usage_doc.get("month", "")
                     _used_count = _usage_doc.get("count", 0) if _used_month == _cur_month else 0
                     if _used_count >= _monthly_quota:
-                        logging.info(f"AI quota reached for user {user['_id']}: {_used_count}/{_monthly_quota} ({_plan})")
+                        logging.error(f"⚠️ MESSAGE DROPPED: AI quota reached for user {user['_id']}: {_used_count}/{_monthly_quota} ({_plan})")
+                        print(f"⚠️ MESSAGE NOT REPLIED: {from_number} - AI quota exhausted ({_used_count}/{_monthly_quota})", flush=True)
+                        # Send one-time notification to business owner
+                        try:
+                            ws_quota = get_whatsapp_service(db)
+                            owner_phone = user.get("phone_number") or user.get("whatsapp", {}).get("phone_number")
+                            if owner_phone and _used_count == _monthly_quota:  # Only notify once when limit is hit
+                                await ws_quota.send_message(
+                                    user_id=user["_id"],
+                                    to_number=owner_phone,
+                                    message=f"⚠️ *AI Message Quota Exhausted*\n\nYou've used all {_monthly_quota} AI messages for this month ({_plan} plan).\n\nCustomer messages will still be saved, but AI auto-replies are paused until next month or you upgrade your plan.",
+                                    send_context="system_alert"
+                                )
+                        except Exception as quota_notif_err:
+                            logging.error(f"Failed to send quota notification: {quota_notif_err}")
                         return {"status": "ok", "message": "ai_quota_reached"}
                     # Increment counter atomically (optimistic — before send to prevent race conditions)
                     _new_count = _used_count + 1
@@ -12841,9 +12856,23 @@ async def evolution_webhook(request: Request):
                         
                         # If AI service failed (returns None), skip auto-reply
                         if reply_text is None:
-                            logging.warning(f"AI service failed for {from_number} - skipping auto-reply. Reason: {result.get('ai_reason', 'Unknown')}")
-                            print(f"WARNING: AI failed, no auto-reply sent to {from_number}", flush=True)
-                            return {"status": "ok", "message": "AI service unavailable, auto-reply skipped"}
+                            ai_error_reason = result.get('ai_reason', 'Unknown')
+                            logging.error(f"⚠️ MESSAGE DROPPED: AI service failed for {from_number} - Reason: {ai_error_reason}")
+                            print(f"⚠️ MESSAGE NOT REPLIED: {from_number} - AI service failed: {ai_error_reason}", flush=True)
+                            # Send fallback acknowledgment to customer so they know message was received
+                            try:
+                                ws_fallback = get_whatsapp_service(db)
+                                await ws_fallback.send_message(
+                                    user_id=user["_id"],
+                                    to_number=from_number,
+                                    message="Thank you for your message. We've received it and will get back to you shortly.",
+                                    customer_name=c_name,
+                                    send_context="fallback_ack"
+                                )
+                                logging.info(f"Sent fallback acknowledgment to {from_number}")
+                            except Exception as fallback_err:
+                                logging.error(f"Fallback acknowledgment also failed: {fallback_err}")
+                            return {"status": "ok", "message": "AI service unavailable, fallback sent"}
                         
                         print(f"DEBUG: AI reply received ({len(reply_text)} chars): {reply_text[:100]}", flush=True)
                         logging.info(f"AI raw reply for {from_number}: {reply_text[:300]}")
@@ -12989,10 +13018,23 @@ async def evolution_webhook(request: Request):
                             logging.info(f"Auto-replied to {c_name} ({from_number}), images_sent={len(images_sent)}")
                         
                     except Exception as e:
-                        print(f"ERROR: Auto-reply failed: {e}", flush=True)
-                        logging.error(f"Auto-reply failed for {from_number}: {e}")
+                        print(f"⚠️ MESSAGE NOT REPLIED: {from_number} - Exception in auto-reply: {e}", flush=True)
+                        logging.error(f"⚠️ MESSAGE DROPPED: Auto-reply exception for {from_number}: {e}")
                         import traceback
                         traceback.print_exc()
+                        # Send fallback acknowledgment on exception
+                        try:
+                            ws_error = get_whatsapp_service(db)
+                            await ws_error.send_message(
+                                user_id=user["_id"],
+                                to_number=from_number,
+                                message="Thank you for your message. We've received it and will respond shortly.",
+                                customer_name=customer_name,
+                                send_context="error_fallback"
+                            )
+                            logging.info(f"Sent error fallback to {from_number}")
+                        except Exception as err_fallback:
+                            logging.error(f"Error fallback also failed: {err_fallback}")
             
             return {"status": "ok"}
         
