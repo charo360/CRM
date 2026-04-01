@@ -7608,8 +7608,8 @@ async def evolution_webhook(request: Request):
             direction = "outgoing" if from_me else "incoming"
             parsed_message_type = parsed.get("message_type", "text")
             parsed_image_url = parsed.get("image_url")
-            print(f"DEBUG: Webhook received. Direction={direction}, Body='{body}'")
-            logging.info(f"messages.upsert: direction={direction}, from={from_number}, evo_id={evo_msg_id_log}, body={body[:60]}")
+            print(f"DEBUG: Webhook received. Direction={direction}, Body='{body}', from_me={from_me}, from_number={from_number}")
+            logging.info(f"messages.upsert: direction={direction}, from={from_number}, evo_id={evo_msg_id_log}, body={body[:60]}, from_me={from_me}")
 
             # For incoming messages: fire blue-tick read receipt back to Evolution API immediately
             if not from_me:
