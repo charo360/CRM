@@ -5702,10 +5702,10 @@ class ProductUpdate(BaseModel):
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
-    "free":     {"products": 5,   "images": 25},
-    "starter":  {"products": 20,  "images": 100},
-    "standard": {"products": 50,  "images": 250},
-    "pro":      {"products": None, "images": None},  # None = unlimited
+    "free":     {"products": 20,  "images": 100},
+    "starter":  {"products": 50,  "images": 250},
+    "standard": {"products": 100, "images": 500},
+    "pro":      {"products": 500, "images": None},  # None = unlimited images
 }
 
 def get_plan_limits(user: dict) -> dict:
