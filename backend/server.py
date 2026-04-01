@@ -6205,80 +6205,92 @@ PLAN_FEATURES = {
 }
 
 # Regional pricing: currency -> (starter, standard, pro)
-# Anchor: KES 700 / 1500 / 2500  ≈  USD 5.40 / 11.60 / 19.30
+# Full prices (post-intro). Intro price = 50% off for first 3 months.
+# Anchor: KES 1400 / 3000 / 5000 full  →  KES 700 / 1500 / 2500 intro (50% off)
+# USD equivalent: ~$10.80 / $23 / $38 full  →  ~$5.40 / $11.60 / $19.30 intro
 REGIONAL_PRICING = {
     # East Africa
-    "KES": (700, 1500, 2500),       # Kenya
-    "TZS": (14000, 30000, 50000),   # Tanzania
-    "UGX": (20000, 43000, 72000),   # Uganda
-    "RWF": (6000, 13000, 22000),    # Rwanda
-    "ETB": (300, 650, 1100),        # Ethiopia
-    "BIF": (16000, 34000, 57000),   # Burundi
-    "SOS": (3000, 6500, 11000),     # Somalia
+    "KES": (1400, 3000, 5000),        # Kenya
+    "TZS": (28000, 60000, 100000),    # Tanzania
+    "UGX": (40000, 86000, 144000),    # Uganda
+    "RWF": (12000, 26000, 44000),     # Rwanda
+    "ETB": (600, 1300, 2200),         # Ethiopia
+    "BIF": (32000, 68000, 114000),    # Burundi
+    "SOS": (6000, 13000, 22000),      # Somalia
     # West Africa
-    "NGN": (4500, 9500, 16000),     # Nigeria
-    "GHS": (45, 95, 160),           # Ghana
-    "XOF": (3500, 7500, 12500),     # CFA (Senegal, Ivory Coast, etc.)
-    "XAF": (3500, 7500, 12500),     # CFA (Cameroon, etc.)
+    "NGN": (9000, 19000, 32000),      # Nigeria
+    "GHS": (90, 190, 320),            # Ghana
+    "XOF": (7000, 15000, 25000),      # CFA (Senegal, Ivory Coast, etc.)
+    "XAF": (7000, 15000, 25000),      # CFA (Cameroon, etc.)
     # Southern Africa
-    "ZAR": (100, 210, 350),         # South Africa
-    "CDF": (15000, 32000, 53000),   # DR Congo
+    "ZAR": (200, 420, 700),           # South Africa
+    "CDF": (30000, 64000, 106000),    # DR Congo
     # North Africa / Middle East
-    "EGP": (170, 360, 600),         # Egypt
-    "MAD": (55, 115, 195),          # Morocco
-    "TND": (17, 36, 60),            # Tunisia
-    "AED": (20, 43, 71),            # UAE
-    "SAR": (20, 43, 71),            # Saudi Arabia
+    "EGP": (340, 720, 1200),          # Egypt
+    "MAD": (110, 230, 390),           # Morocco
+    "TND": (34, 72, 120),             # Tunisia
+    "AED": (40, 86, 142),             # UAE
+    "SAR": (40, 86, 142),             # Saudi Arabia
     # South Asia
-    "INR": (450, 960, 1600),        # India
-    "PKR": (1500, 3200, 5400),      # Pakistan
-    "BDT": (600, 1300, 2100),       # Bangladesh
+    "INR": (900, 1920, 3200),         # India
+    "PKR": (3000, 6400, 10800),       # Pakistan
+    "BDT": (1200, 2600, 4200),        # Bangladesh
     # Southeast Asia
-    "PHP": (300, 650, 1100),        # Philippines
-    "IDR": (85000, 180000, 300000), # Indonesia
-    "MYR": (25, 54, 90),            # Malaysia
-    "THB": (190, 410, 680),         # Thailand
-    "VND": (135000, 290000, 480000),# Vietnam
+    "PHP": (600, 1300, 2200),         # Philippines
+    "IDR": (170000, 360000, 600000),  # Indonesia
+    "MYR": (50, 108, 180),            # Malaysia
+    "THB": (380, 820, 1360),          # Thailand
+    "VND": (270000, 580000, 960000),  # Vietnam
     # East Asia
-    "CNY": (39, 84, 140),           # China
-    "JPY": (800, 1700, 2900),       # Japan
-    "KRW": (7200, 15500, 26000),    # South Korea
+    "CNY": (78, 168, 280),            # China
+    "JPY": (1600, 3400, 5800),        # Japan
+    "KRW": (14400, 31000, 52000),     # South Korea
     # Americas
-    "USD": (10, 18, 28),            # USA/Canada (Tier 1)
-    "BRL": (30, 65, 108),           # Brazil
-    "MXN": (100, 215, 360),         # Mexico
-    "COP": (22000, 47000, 78000),   # Colombia
-    "CLP": (4800, 10200, 17000),    # Chile
-    "ARS": (4500, 9600, 16000),     # Argentina
+    "USD": (20, 36, 56),              # USA/Canada (Tier 1)
+    "BRL": (60, 130, 216),            # Brazil
+    "MXN": (200, 430, 720),           # Mexico
+    "COP": (44000, 94000, 156000),    # Colombia
+    "CLP": (9600, 20400, 34000),      # Chile
+    "ARS": (9000, 19200, 32000),      # Argentina
     # Europe
-    "GBP": (8, 14, 22),             # UK (Tier 1)
-    "EUR": (9, 16, 25),             # Eurozone (Tier 1)
-    "AUD": (15, 27, 42),            # Australia (Tier 1)
-    "NZD": (16, 28, 44),            # New Zealand (Tier 1)
-    "CAD": (13, 23, 36),            # Canada (Tier 1)
-    "CHF": (9, 16, 25),             # Switzerland (Tier 1)
-    "SGD": (13, 23, 36),            # Singapore (Tier 1)
+    "GBP": (16, 28, 44),              # UK (Tier 1)
+    "EUR": (18, 32, 50),              # Eurozone (Tier 1)
+    "AUD": (30, 54, 84),              # Australia (Tier 1)
+    "NZD": (32, 56, 88),              # New Zealand (Tier 1)
+    "CAD": (26, 46, 72),              # Canada (Tier 1)
+    "CHF": (18, 32, 50),              # Switzerland (Tier 1)
+    "SGD": (26, 46, 72),              # Singapore (Tier 1)
 }
 
 def get_regional_plans(currency: str) -> list:
-    """Get subscription plans with regional pricing"""
+    """
+    Get subscription plans with regional pricing.
+    Returns full price + intro price (50% off for first 3 months).
+    The app should display: "KES 700/mo for 3 months, then KES 1,400/mo"
+    """
     prices = REGIONAL_PRICING.get(currency, REGIONAL_PRICING["USD"])
     plan_ids = ["starter", "standard", "pro"]
     plans = []
     for i, plan_id in enumerate(plan_ids):
         plan = PLAN_FEATURES[plan_id].copy()
-        amount = prices[i]
-        # Format display amount with commas
-        if amount >= 1000:
-            display = f"{amount:,.0f}/month"
-        else:
-            display = f"{amount}/month"
+        full_amount = prices[i]
+        intro_amount = round(full_amount * 0.5)
+
+        def _fmt(amt):
+            return f"{amt:,.0f}" if amt >= 1000 else str(amt)
+
         plans.append({
             "id": plan_id,
             "name": plan["name"],
-            "amount": amount,
+            # Full price (what they pay after 3 months)
+            "amount": full_amount,
+            "amount_display": f"{_fmt(full_amount)}/month",
+            # Intro price (what they pay for first 3 months — 50% off)
+            "intro_amount": intro_amount,
+            "intro_amount_display": f"{_fmt(intro_amount)}/month",
+            "intro_months": 3,
+            "intro_label": f"First 3 months at 50% off — then {currency} {_fmt(full_amount)}/mo",
             "currency": currency,
-            "amount_display": display,
             "interval": plan["interval"],
             "features": plan["features"]
         })
