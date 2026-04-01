@@ -729,6 +729,17 @@ JSON only, no markdown:"""
         result["_relationship"] = relationship
         result["_hours_since_last"] = threaded.get("hours_since_last")
 
+        # Language MUST come from the current message, not the conversation history.
+        # The LLM sees history which may contain the bot's own Swahili/other-language replies
+        # and incorrectly labels the language as Swahili even when the customer writes English.
+        # _detect_language only looks at the incoming message — always use it to override.
+        detected_lang = _detect_language(message)
+        # Only override if: (a) detected lang is non-English (strong signal), OR
+        # (b) current message is English and LLM returned a different language (history contamination)
+        llm_lang = result.get("language", "English")
+        if detected_lang != "English" or llm_lang != "English":
+            result["language"] = detected_lang
+
         # Ensure alternative_intents field exists (1.2)
         if "alternative_intents" not in result:
             result["alternative_intents"] = []

@@ -1572,8 +1572,11 @@ class BookingAgent(BaseAgent):
                 f"Respond in: {language}\n\n"
                 f"Return ONLY valid JSON with exactly these 3 keys:\n"
                 f'{{\n'
-                f'  "intro": "1-2 sentence warm human reply in {language}. Match their energy. '
-                f'Never confirm a booking. No corporate tone. Think: what would a real business owner text back?",\n'
+                f'  "intro": "1-2 sentence natural reply in {language}. Match the customer\'s energy and language. '
+                f'BANNED openers — never start with: Hey there, Hi there, Hello there, Thanks for reaching out, '
+                f'Thank you for contacting us, I\'d be happy to, Of course, Certainly, Sure thing, '
+                f'Let me show you, Allow me to, Great question, Absolutely. '
+                f'Just reply like a real person would on WhatsApp. Short and human. No corporate tone.",\n'
                 f'  "header": "A short bold title for the {listing_type} list — in {language}. '
                 f'With a relevant emoji. E.g. in English: \'📋 *Our Services*\'. In Swahili: \'📋 *Huduma Zetu*\'.",\n'
                 f'  "footer": "A short instruction line in {language} telling the customer to reply with a number to select. '
