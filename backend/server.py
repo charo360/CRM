@@ -406,6 +406,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+async def _pick_evolution_server() -> Dict:
+    """
+    Pick the least-loaded active Evolution API server from the evo_servers pool.
+    Falls back to the global EVOLUTION_API_URL env var if no servers in DB.
+    """
+    servers = await db.evo_servers.find({"status": "active"}).to_list(50)
+    if not servers:
+        # No servers registered — return the global env var server
+        return {
+            "url": os.environ.get("EVOLUTION_API_URL", "").rstrip("/"),
+            "api_key": os.environ.get("EVOLUTION_API_KEY", ""),
+        }
+    # Pick server with the most remaining capacity
+    best = min(servers, key=lambda s: s.get("current_users", 0) / max(s.get("max_users", 25), 1))
+    return {
+        "url": best["url"].rstrip("/"),
+        "api_key": best["api_key"],
+        "server_id": best["_id"],
+    }
+
+
+async def _seed_evo_servers():
+    """
+    On startup, register the current env-var Evolution API server into evo_servers
+    if it isn't already there. This makes the existing single server part of the pool.
+    """
+    url = os.environ.get("EVOLUTION_API_URL", "").rstrip("/")
+    key = os.environ.get("EVOLUTION_API_KEY", "")
+    if not url:
+        return
+    existing = await db.evo_servers.find_one({"url": url})
+    if not existing:
+        await db.evo_servers.insert_one({
+            "_id": str(uuid.uuid4()),
+            "url": url,
+            "api_key": key,
+            "label": "evo-1",
+            "max_users": 25,
+            "current_users": 0,
+            "status": "active",
+            "added_at": datetime.utcnow(),
+        })
+        logging.info(f"[EvoPool] Registered primary server: {url}")
+    else:
+        # Keep api_key in sync with env var
+        if existing.get("api_key") != key:
+            await db.evo_servers.update_one({"_id": existing["_id"]}, {"$set": {"api_key": key}})
+
+
 async def _auto_promote_to_customer(customer_id: str, user_id: str):
     """
     Automatically promote a contact to is_customer=True when they place an order.
@@ -1904,6 +1953,9 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
         country_code = request.country_code or detect_country_from_phone(phone)
         country_config = get_payment_methods_for_country(country_code)
 
+        # Assign least-loaded Evolution API server
+        _evo_server = await _pick_evolution_server()
+
         user_id = str(uuid.uuid4())
         user_doc = {
             "_id": user_id,
@@ -1917,9 +1969,19 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
             "payment_methods": [{"name": m, "details": ""} for m in country_config["methods"][:3]],
             "created_at": datetime.utcnow(),
             "setup_complete": False,
+            # Evolution API server assignment — enables multi-server scaling
+            "evolution_url": _evo_server.get("url", ""),
+            "evolution_api_key": _evo_server.get("api_key", ""),
         }
         await db.users.insert_one(user_doc)
         user = user_doc
+
+        # Increment user count on the assigned server
+        if _evo_server.get("server_id"):
+            await db.evo_servers.update_one(
+                {"_id": _evo_server["server_id"]},
+                {"$inc": {"current_users": 1}}
+            )
     else:
         user_id = user["_id"]
 
@@ -2350,6 +2412,53 @@ async def update_product_actions(request: Request, user = Depends(get_current_us
         {"$set": {"settings.product_actions": validated}}
     )
     return {"status": "ok", "actions": validated}
+
+
+# ============ EVOLUTION SERVER POOL (admin) ============
+
+@api_router.get("/admin/evo-servers")
+async def list_evo_servers(user = Depends(get_current_user)):
+    """List all Evolution API servers in the pool (owner only)"""
+    servers = await db.evo_servers.find({}).to_list(50)
+    return serialize_doc(servers)
+
+@api_router.post("/admin/evo-servers")
+async def add_evo_server(request: Request, user = Depends(get_current_user)):
+    """
+    Add a new Evolution API server to the pool.
+    Body: { "url": "https://...", "api_key": "...", "label": "evo-2", "max_users": 25 }
+    """
+    data = await request.json()
+    url = (data.get("url") or "").rstrip("/")
+    api_key = data.get("api_key") or ""
+    label = data.get("label") or f"evo-{url[-6:]}"
+    max_users = int(data.get("max_users") or 25)
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    existing = await db.evo_servers.find_one({"url": url})
+    if existing:
+        raise HTTPException(status_code=409, detail="Server already registered")
+    current = await db.users.count_documents({"evolution_url": url})
+    server_id = str(uuid.uuid4())
+    await db.evo_servers.insert_one({
+        "_id": server_id,
+        "url": url,
+        "api_key": api_key,
+        "label": label,
+        "max_users": max_users,
+        "current_users": current,
+        "status": "active",
+        "added_at": datetime.utcnow(),
+    })
+    logging.info(f"[EvoPool] Added new server: {label} ({url}) — capacity {max_users}")
+    return {"status": "ok", "server_id": server_id, "label": label}
+
+@api_router.delete("/admin/evo-servers/{server_id}")
+async def remove_evo_server(server_id: str, user = Depends(get_current_user)):
+    """Mark server inactive — existing users keep their assignment"""
+    await db.evo_servers.update_one({"_id": server_id}, {"$set": {"status": "inactive"}})
+    return {"status": "ok"}
+
 
 # ============ CONTACT CLASSIFICATION ============
 
@@ -15710,6 +15819,12 @@ async def startup_tasks():
         logging.info(f"Uploads folder ensured at: {uploads_dir}")
     except Exception as e:
         logging.error(f"Failed to create folders: {e}")
+
+    # ---- P0.5: Seed Evolution API server pool ----
+    try:
+        await _seed_evo_servers()
+    except Exception as e:
+        logging.warning(f"[EvoPool] Failed to seed evo_servers: {e}")
 
     # ---- P1: Ensure database indexes ----
     try:

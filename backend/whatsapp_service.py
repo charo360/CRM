@@ -184,9 +184,30 @@ class WhatsAppService:
         self._broadcast_queues: Dict[str, asyncio.Queue] = {}
         self._broadcast_tasks: Dict[str, asyncio.Task] = {}
 
-    def _headers(self) -> Dict:
+    async def _resolve_server(self, user_id: str = None) -> tuple:
+        """
+        Return (base_url, api_key) for the given user.
+        Uses the user's assigned Evolution server if set, otherwise falls back to global env vars.
+        This enables multi-server scaling — each user is pinned to one server.
+        """
+        if user_id:
+            try:
+                user = await self.db.users.find_one(
+                    {"_id": user_id},
+                    {"evolution_url": 1, "evolution_api_key": 1}
+                )
+                if user:
+                    url = (user.get("evolution_url") or "").rstrip("/")
+                    key = user.get("evolution_api_key") or ""
+                    if url:
+                        return url, key
+            except Exception:
+                pass
+        return self.base_url, self.api_key
+
+    def _headers(self, api_key: str = None) -> Dict:
         return {
-            "apikey": self.api_key,
+            "apikey": api_key or self.api_key,
             "Content-Type": "application/json",
         }
 
@@ -227,7 +248,10 @@ class WhatsAppService:
         # Strip + and any non-digit chars for Evolution API
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
 
-        # Wake up Evolution API first (handles Render free-tier cold start)
+        # Resolve which Evolution server this user is on
+        base_url, api_key = await self._resolve_server(user_id)
+
+        # Wake up Evolution API first (handles Render cold start)
         await self._wake_up_evolution()
 
         try:
@@ -244,9 +268,9 @@ class WhatsAppService:
                 }
 
                 create_resp = await client.post(
-                    f"{self.base_url}/instance/create",
+                    f"{base_url}/instance/create",
                     json=create_payload,
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
 
                 if create_resp.status_code not in (200, 201):
@@ -257,9 +281,9 @@ class WhatsAppService:
                         # Try to get a pairing code from the existing instance (no delete/recreate needed)
                         await asyncio.sleep(3)
                         pairing_attempt = await client.get(
-                            f"{self.base_url}/instance/connect/{instance_name}",
+                            f"{base_url}/instance/connect/{instance_name}",
                             params={"number": clean_number},
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
                         if pairing_attempt.status_code == 200:
                             code_data = pairing_attempt.json()
@@ -269,7 +293,7 @@ class WhatsAppService:
                             webhook_base = os.environ.get('WEBHOOK_BASE_URL', 'http://host.docker.internal:8000')
                             try:
                                 await client.post(
-                                    f"{self.base_url}/webhook/set/{instance_name}",
+                                    f"{base_url}/webhook/set/{instance_name}",
                                     json={"webhook": {
                                         "enabled": True,
                                         "url": f"{webhook_base}/api/webhooks/evolution",
@@ -277,7 +301,7 @@ class WhatsAppService:
                                         "webhookBase64": False,
                                         "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CHATS_UPDATE", "CONNECTION_UPDATE"],
                                     }},
-                                    headers=self._headers(),
+                                    headers=self._headers(api_key),
                                 )
                             except Exception:
                                 pass
@@ -301,15 +325,15 @@ class WhatsAppService:
                         # Pairing code request failed — fall back to delete + recreate
                         logger.warning(f"Fresh pairing failed ({pairing_attempt.status_code}), trying delete+recreate for {instance_name}")
                         try:
-                            await client.delete(f"{self.base_url}/instance/logout/{instance_name}", headers=self._headers())
+                            await client.delete(f"{base_url}/instance/logout/{instance_name}", headers=self._headers(api_key))
                         except Exception:
                             pass
                         await asyncio.sleep(2)
                         for _attempt in range(3):
                             try:
                                 del_resp = await client.delete(
-                                    f"{self.base_url}/instance/delete/{instance_name}",
-                                    headers=self._headers(),
+                                    f"{base_url}/instance/delete/{instance_name}",
+                                    headers=self._headers(api_key),
                                 )
                                 logger.info(f"Deleted instance {instance_name}: {del_resp.status_code}")
                                 if del_resp.status_code in (200, 204):
@@ -321,9 +345,9 @@ class WhatsAppService:
                         # Recreate
                         create_payload["token"] = str(uuid.uuid4())
                         create_resp = await client.post(
-                            f"{self.base_url}/instance/create",
+                            f"{base_url}/instance/create",
                             json=create_payload,
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
                         if create_resp.status_code not in (200, 201):
                             logger.error(f"Failed to recreate instance: {create_resp.text}")
@@ -354,9 +378,9 @@ class WhatsAppService:
                 }
                 try:
                     wh_resp = await client.post(
-                        f"{self.base_url}/webhook/set/{instance_name}",
+                        f"{base_url}/webhook/set/{instance_name}",
                         json=webhook_payload,
-                        headers=self._headers(),
+                        headers=self._headers(api_key),
                     )
                     if wh_resp.status_code in (200, 201):
                         logger.info(f"Webhook configured for {instance_name}")
@@ -369,9 +393,9 @@ class WhatsAppService:
                 await asyncio.sleep(10)
 
                 code_resp = await client.get(
-                    f"{self.base_url}/instance/connect/{instance_name}",
+                    f"{base_url}/instance/connect/{instance_name}",
                     params={"number": clean_number},
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
 
                 if code_resp.status_code != 200:
@@ -413,21 +437,22 @@ class WhatsAppService:
 
     async def get_instance_status(self, user_id: str) -> Dict:
         """Check the connection status of a user's WhatsApp instance"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "evolution_url": 1, "evolution_api_key": 1})
         wa = user.get("whatsapp") if user else None
 
         if not wa or not wa.get("instance_name"):
             return {"connected": False, "status": "not_connected"}
 
         instance_name = wa["instance_name"]
+        base_url, api_key = await self._resolve_server(user_id)
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 # First check fetchInstances for 401 logout — connectionState alone is unreliable
                 try:
                     fi_resp = await client.get(
-                        f"{self.base_url}/instance/fetchInstances",
-                        headers=self._headers(),
+                        f"{base_url}/instance/fetchInstances",
+                        headers=self._headers(api_key),
                     )
                     if fi_resp.status_code == 200:
                         instances = fi_resp.json()
@@ -444,8 +469,8 @@ class WhatsAppService:
                     logger.debug(f"fetchInstances check failed: {fi_err}")
 
                 resp = await client.get(
-                    f"{self.base_url}/instance/connectionState/{instance_name}",
-                    headers=self._headers(),
+                    f"{base_url}/instance/connectionState/{instance_name}",
+                    headers=self._headers(api_key),
                 )
 
                 if resp.status_code == 200:
@@ -458,8 +483,8 @@ class WhatsAppService:
                         logger.info(f"Instance {instance_name} was connected but is now closed — attempting auto-reconnect")
                         try:
                             reconnect_resp = await client.get(
-                                f"{self.base_url}/instance/connect/{instance_name}",
-                                headers=self._headers(),
+                                f"{base_url}/instance/connect/{instance_name}",
+                                headers=self._headers(api_key),
                             )
                             if reconnect_resp.status_code == 200:
                                 logger.info(f"Auto-reconnect triggered for {instance_name}")
@@ -467,8 +492,8 @@ class WhatsAppService:
                                 await asyncio.sleep(3)
                                 # Re-check state
                                 recheck = await client.get(
-                                    f"{self.base_url}/instance/connectionState/{instance_name}",
-                                    headers=self._headers(),
+                                    f"{base_url}/instance/connectionState/{instance_name}",
+                                    headers=self._headers(api_key),
                                 )
                                 if recheck.status_code == 200:
                                     new_state = recheck.json().get("instance", {}).get("state", "close")
@@ -520,12 +545,12 @@ class WhatsAppService:
             async with httpx.AsyncClient(timeout=15) as client:
                 # Logout first (unlinks WhatsApp)
                 await client.delete(
-                    f"{self.base_url}/instance/logout/{instance_name}",
+                    f"{base_url}/instance/logout/{instance_name}",
                     headers=self._headers(),
                 )
                 # Delete the instance
                 await client.delete(
-                    f"{self.base_url}/instance/delete/{instance_name}",
+                    f"{base_url}/instance/delete/{instance_name}",
                     headers=self._headers(),
                 )
         except Exception as e:
@@ -835,7 +860,8 @@ class WhatsAppService:
                     return {"status": "limit_reached", "message": limit_check["reason"]}
 
             # Get user's WhatsApp config and AI model
-            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
+            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "evolution_url": 1, "evolution_api_key": 1})
+            base_url, api_key = await self._resolve_server(user_id)
             wa = user.get("whatsapp") if user else None
             # Manual sends always cost 1 credit flat (no AI used)
             # AI-assisted sends (auto_reply, broadcast, order_confirm) use the model multiplier
@@ -976,9 +1002,9 @@ class WhatsAppService:
                             payload["mimetype"] = _resolved_mimetype
                         logger.info(f"Sending media payload: {payload}")  # DEBUG LOG
                         resp = await client.post(
-                            f"{self.base_url}/message/sendMedia/{instance_name}",
+                            f"{base_url}/message/sendMedia/{instance_name}",
                             json=payload,
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
                     else:
                         # Send text message
@@ -992,9 +1018,9 @@ class WhatsAppService:
                             "text": _msg_text,
                         }
                         resp = await client.post(
-                            f"{self.base_url}/message/sendText/{instance_name}",
+                            f"{base_url}/message/sendText/{instance_name}",
                             json=payload,
-                            headers=self._headers(),
+                            headers=self._headers(api_key),
                         )
 
                     logger.info(f"Evolution API response status: {resp.status_code}")
@@ -2077,11 +2103,11 @@ class WhatsAppService:
         try:
             async with httpx.AsyncClient(timeout=10) as _client:
                 await _client.delete(
-                    f"{self.base_url}/instance/logout/{instance_name}",
+                    f"{base_url}/instance/logout/{instance_name}",
                     headers=self._headers(),
                 )
                 await _client.delete(
-                    f"{self.base_url}/instance/delete/{instance_name}",
+                    f"{base_url}/instance/delete/{instance_name}",
                     headers=self._headers(),
                 )
             logger.info(f"Orphaned instance {instance_name} deleted successfully")
