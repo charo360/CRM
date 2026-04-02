@@ -6326,9 +6326,10 @@ async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dic
         )
         creds.refresh(GRequest())
 
+        # Use /purchases/subscriptions/ — NOT /purchases/products/ (that's for one-time items)
         url = (
             f"https://androidpublisher.googleapis.com/androidpublisher/v3"
-            f"/applications/{package_name}/purchases/products/{product_id}"
+            f"/applications/{package_name}/purchases/subscriptions/{product_id}"
             f"/tokens/{purchase_token}"
         )
         async with httpx.AsyncClient(timeout=15) as client:
@@ -6338,11 +6339,16 @@ async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dic
             return {"valid": False, "reason": f"Google API error: {resp.status_code}"}
 
         data = resp.json()
-        # purchaseState 0 = purchased, 1 = canceled
-        if data.get("purchaseState", -1) != 0:
-            return {"valid": False, "reason": "Purchase not completed"}
+        # paymentState: 1 = received, 2 = free trial — 0 = pending (not yet paid)
+        payment_state = data.get("paymentState", 0)
+        expiry_millis = int(data.get("expiryTimeMillis", 0))
+        expiry_dt = datetime.utcfromtimestamp(expiry_millis / 1000) if expiry_millis else None
+        if payment_state not in (1, 2):
+            return {"valid": False, "reason": f"Payment not confirmed (paymentState={payment_state})"}
+        if expiry_dt and expiry_dt < datetime.utcnow():
+            return {"valid": False, "reason": "Subscription already expired"}
 
-        return {"valid": True, "order_id": data.get("orderId")}
+        return {"valid": True, "order_id": data.get("orderId"), "expiry_date": expiry_dt.isoformat() if expiry_dt else None}
     except ImportError:
         logging.warning("google-auth not installed — skipping Google Play verification")
         return {"valid": True, "reason": "no_google_auth_lib"}
