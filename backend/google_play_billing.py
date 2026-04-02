@@ -171,7 +171,7 @@ SUBSCRIPTION_LIMITS = {
         'max_customers': 100,
         'max_products': 20,
         'max_team_members': 1,
-        'ai_messages_per_month': 50,
+        'ai_messages_per_month': 100,
         'features': ['basic_crm']
     },
     'starter': {
