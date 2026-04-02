@@ -237,26 +237,65 @@ class WhatsAppService:
     async def create_instance(self, user_id: str, phone_number: str, force_new: bool = False) -> Dict:
         """
         Create an Evolution API instance for a user and request a pairing code.
-        Returns the 8-digit pairing code for the user to enter in WhatsApp.
-        If force_new=True, generates a new instance name with timestamp to bypass stuck instances.
+        Always uses the canonical base instance name (no timestamps) — one instance per user.
+        Deletes ALL existing instances for this user before creating a fresh one.
         """
-        if force_new:
-            import time
-            instance_name = f"{self._instance_name(user_id)}_{int(time.time())}"
-        else:
-            instance_name = self._instance_name(user_id)
-        # Strip + and any non-digit chars for Evolution API
+        # ALWAYS use the canonical base name — no timestamps, one instance per user
+        instance_name = self._instance_name(user_id)
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
 
-        # Resolve which Evolution server this user is on
         base_url, api_key = await self._resolve_server(user_id)
-
-        # Wake up Evolution API first (handles Render cold start)
         await self._wake_up_evolution()
 
         try:
             async with httpx.AsyncClient(timeout=180) as client:
-                # Step 1: Create instance
+
+                # ── Step 0: Delete ALL existing instances for this user ──────────
+                # Collect every instance name we know about for this user:
+                # 1. The canonical base name
+                # 2. Whatever is stored in the DB (may be a stale timestamped name)
+                import re as _re_ci
+                user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+                db_instance = (user_doc or {}).get("whatsapp", {}).get("instance_name", "")
+                instances_to_delete = set(filter(None, [instance_name, db_instance]))
+
+                # Also fetch the full list from Evolution API and add any that match this user's prefix
+                try:
+                    fetch_resp = await client.get(
+                        f"{base_url}/instance/fetchInstances",
+                        headers=self._headers(api_key),
+                    )
+                    if fetch_resp.status_code == 200:
+                        all_instances = fetch_resp.json()
+                        if isinstance(all_instances, list):
+                            for inst in all_instances:
+                                iname = inst.get("instance", {}).get("instanceName") or inst.get("instanceName") or ""
+                                # Match base name OR base name + timestamp suffix
+                                if iname == instance_name or _re_ci.match(rf"^{_re_ci.escape(instance_name)}_\d{{9,13}}$", iname):
+                                    instances_to_delete.add(iname)
+                except Exception as fe:
+                    logger.warning(f"Could not fetch instance list for cleanup: {fe}")
+
+                # Delete all collected instances
+                for old_inst in instances_to_delete:
+                    try:
+                        await client.delete(f"{base_url}/instance/logout/{old_inst}", headers=self._headers(api_key))
+                    except Exception:
+                        pass
+                    for _attempt in range(2):
+                        try:
+                            d = await client.delete(f"{base_url}/instance/delete/{old_inst}", headers=self._headers(api_key))
+                            if d.status_code in (200, 204):
+                                logger.info(f"Deleted old instance {old_inst} for user {user_id}")
+                                break
+                        except Exception:
+                            pass
+                        await asyncio.sleep(1)
+
+                await asyncio.sleep(2)  # brief pause before recreating
+                # ─────────────────────────────────────────────────────────────────
+
+                # Step 1: Create the single canonical instance
                 create_payload = {
                     "instanceName": instance_name,
                     "token": str(uuid.uuid4()),
@@ -275,86 +314,8 @@ class WhatsAppService:
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    # Instance already exists — try to get a fresh pairing code from it directly
-                    if "already" in error_detail.lower() or "exists" in error_detail.lower() or create_resp.status_code == 403:
-                        logger.info(f"Instance {instance_name} already exists — requesting fresh pairing code directly")
-                        # Try to get a pairing code from the existing instance (no delete/recreate needed)
-                        await asyncio.sleep(3)
-                        pairing_attempt = await client.get(
-                            f"{base_url}/instance/connect/{instance_name}",
-                            params={"number": clean_number},
-                            headers=self._headers(api_key),
-                        )
-                        if pairing_attempt.status_code == 200:
-                            code_data = pairing_attempt.json()
-                            pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
-                            logger.info(f"Got fresh pairing code for existing instance {instance_name}: {pairing_code}")
-                            # Update webhook on existing instance too
-                            webhook_base = os.environ.get('WEBHOOK_BASE_URL', 'http://host.docker.internal:8000')
-                            try:
-                                await client.post(
-                                    f"{base_url}/webhook/set/{instance_name}",
-                                    json={"webhook": {
-                                        "enabled": True,
-                                        "url": f"{webhook_base}/api/webhooks/evolution",
-                                        "webhookByEvents": False,
-                                        "webhookBase64": False,
-                                        "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CHATS_UPDATE", "CONNECTION_UPDATE"],
-                                    }},
-                                    headers=self._headers(api_key),
-                                )
-                            except Exception:
-                                pass
-                            await self.db.users.update_one(
-                                {"_id": user_id},
-                                {"$set": {
-                                    "whatsapp.number": phone_number,
-                                    "whatsapp.instance_name": instance_name,
-                                    "whatsapp.status": "pairing",
-                                    "whatsapp.pairing_code": pairing_code,
-                                    "whatsapp.created_at": datetime.utcnow(),
-                                }}
-                            )
-                            return {
-                                "status": "pairing",
-                                "pairing_code": pairing_code,
-                                "instance_name": instance_name,
-                                "message": "Enter this code in WhatsApp > Linked Devices > Link with phone number",
-                            }
-
-                        # Pairing code request failed — fall back to delete + recreate
-                        logger.warning(f"Fresh pairing failed ({pairing_attempt.status_code}), trying delete+recreate for {instance_name}")
-                        try:
-                            await client.delete(f"{base_url}/instance/logout/{instance_name}", headers=self._headers(api_key))
-                        except Exception:
-                            pass
-                        await asyncio.sleep(2)
-                        for _attempt in range(3):
-                            try:
-                                del_resp = await client.delete(
-                                    f"{base_url}/instance/delete/{instance_name}",
-                                    headers=self._headers(api_key),
-                                )
-                                logger.info(f"Deleted instance {instance_name}: {del_resp.status_code}")
-                                if del_resp.status_code in (200, 204):
-                                    break
-                            except Exception as del_err:
-                                logger.warning(f"Delete attempt {_attempt+1} failed: {del_err}")
-                            await asyncio.sleep(2)
-                        await asyncio.sleep(3)
-                        # Recreate
-                        create_payload["token"] = str(uuid.uuid4())
-                        create_resp = await client.post(
-                            f"{base_url}/instance/create",
-                            json=create_payload,
-                            headers=self._headers(api_key),
-                        )
-                        if create_resp.status_code not in (200, 201):
-                            logger.error(f"Failed to recreate instance: {create_resp.text}")
-                            return {"status": "error", "message": f"Failed to create WhatsApp instance: {create_resp.text}"}
-                    else:
-                        logger.error(f"Failed to create instance: {error_detail}")
-                        return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}
+                    logger.error(f"Failed to create instance: {error_detail}")
+                    return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}
 
                 # Step 1b: Configure webhook so we receive messages in real-time
                 # Evolution API runs in Docker, so use host.docker.internal
@@ -2088,33 +2049,53 @@ class WhatsAppService:
         if user:
             return user
 
-        # Check if this is a stale force_new instance (base_name_<10-digit-ts>)
         import re as _re
-        base_name = _re.sub(r'_\d{9,13}$', '', instance_name)
-        if base_name == instance_name:
-            return None  # no suffix to strip
 
-        user = await self.db.users.find_one({"whatsapp.instance_name": base_name})
-        if not user:
+        # Case 1: incoming instance has a timestamp suffix — check if base name matches DB
+        base_name = _re.sub(r'_\d{9,13}$', '', instance_name)
+        if base_name != instance_name:
+            user = await self.db.users.find_one({"whatsapp.instance_name": base_name})
+            if user:
+                # DB has base name but this is a newer timestamped orphan — delete it
+                logger.info(f"Orphaned timestamped instance {instance_name} (DB has base={base_name}) — auto-deleting")
+                await self._delete_orphaned_instance(instance_name, user)
+                return None
+            # Also check: DB might have a DIFFERENT timestamp — find user by base prefix
+            user = await self.db.users.find_one({"whatsapp.instance_name": {"$regex": f"^{_re.escape(base_name)}"}})
+            if user:
+                active = user.get("whatsapp", {}).get("instance_name", "")
+                if active != instance_name:
+                    logger.info(f"Orphaned instance {instance_name} (active={active}) — auto-deleting")
+                    await self._delete_orphaned_instance(instance_name, user)
+                    return None
             return None
 
-        # Found via base name — this is an orphaned ghost instance. Delete it silently.
-        logger.info(f"Orphaned instance {instance_name} (base={base_name}) — auto-deleting from Evolution")
+        # Case 2: incoming instance has NO timestamp — check if DB has a timestamped version for this base
+        user = await self.db.users.find_one({"whatsapp.instance_name": {"$regex": f"^{_re.escape(instance_name)}_\\d{{9,13}}$"}})
+        if user:
+            active = user.get("whatsapp", {}).get("instance_name", "")
+            logger.info(f"Orphaned base instance {instance_name} (DB has timestamped={active}) — auto-deleting")
+            await self._delete_orphaned_instance(instance_name, user)
+            return None
+
+        return None
+
+    async def _delete_orphaned_instance(self, instance_name: str, user: dict) -> None:
+        """Delete an orphaned Evolution API instance that is no longer the active one."""
         try:
+            base_url, api_key = await self._resolve_server(user["_id"])
             async with httpx.AsyncClient(timeout=10) as _client:
                 await _client.delete(
                     f"{base_url}/instance/logout/{instance_name}",
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
                 await _client.delete(
                     f"{base_url}/instance/delete/{instance_name}",
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
             logger.info(f"Orphaned instance {instance_name} deleted successfully")
         except Exception as _e:
             logger.warning(f"Could not delete orphaned instance {instance_name}: {_e}")
-
-        return None  # Don't process this webhook — it's from the old dead instance
 
     # ============ CONTACT & HISTORY SYNC ============
 
