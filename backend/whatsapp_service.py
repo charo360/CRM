@@ -300,7 +300,7 @@ class WhatsAppService:
                     "instanceName": instance_name,
                     "token": str(uuid.uuid4()),
                     "number": clean_number,
-                    "qrcode": True,
+                    "qrcode": False,
                     "integration": "WHATSAPP-BAILEYS",
                     "reject_call": False,
                     "groupsIgnore": True,
