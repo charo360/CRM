@@ -123,9 +123,31 @@ class WhatsAppService:
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    # Instance might already exist — try to connect anyway
+                    # Instance already exists — force-delete it and recreate for a fresh pairing code
                     if "already" in error_detail.lower() or "exists" in error_detail.lower():
-                        logger.info(f"Instance {instance_name} already exists, requesting new pairing code")
+                        logger.info(f"Instance {instance_name} already exists — force-deleting for fresh pairing")
+                        try:
+                            await client.delete(
+                                f"{self.base_url}/instance/logout/{instance_name}",
+                                headers=self._headers(),
+                            )
+                            await asyncio.sleep(1)
+                            await client.delete(
+                                f"{self.base_url}/instance/delete/{instance_name}",
+                                headers=self._headers(),
+                            )
+                            await asyncio.sleep(2)
+                        except Exception as del_err:
+                            logger.warning(f"Force-delete of stale instance failed: {del_err}")
+                        # Re-create the instance fresh
+                        create_resp = await client.post(
+                            f"{self.base_url}/instance/create",
+                            json=create_payload,
+                            headers=self._headers(),
+                        )
+                        if create_resp.status_code not in (200, 201):
+                            logger.error(f"Failed to recreate instance after force-delete: {create_resp.text}")
+                            return {"status": "error", "message": "Failed to create WhatsApp instance after cleanup"}
                     else:
                         logger.error(f"Failed to create instance: {error_detail}")
                         return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}

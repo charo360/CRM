@@ -1402,6 +1402,13 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
             await db.users.delete_one({"_id": user_id})
         raise HTTPException(status_code=500, detail=result.get("message", "Failed to start WhatsApp pairing"))
 
+    # Guard: if pairing code is empty, instance is stuck — abort rather than create a dangling session
+    if not result.get("pairing_code"):
+        logging.error(f"create_instance returned empty pairing code for user {user_id} — aborting auth")
+        if is_new_user:
+            await db.users.delete_one({"_id": user_id})
+        raise HTTPException(status_code=500, detail="Could not generate a pairing code. Please wait a moment and try again.")
+
     # Create a session token to track this auth attempt
     import secrets
     session_token = secrets.token_urlsafe(32)
@@ -4650,12 +4657,16 @@ async def delete_account(user = Depends(get_current_user)):
     """
     user_id = user["_id"]
 
-    # Disconnect WhatsApp instance first
-    try:
-        whatsapp_service = get_whatsapp_service(db)
-        await whatsapp_service.disconnect_instance(user_id)
-    except Exception as e:
-        logging.error(f"Error disconnecting WhatsApp during account deletion: {e}")
+    # Disconnect WhatsApp instance first — retry once on failure
+    whatsapp_service = get_whatsapp_service(db)
+    for attempt in range(2):
+        try:
+            await whatsapp_service.disconnect_instance(user_id)
+            break
+        except Exception as e:
+            logging.error(f"Account deletion: WhatsApp disconnect attempt {attempt + 1} failed for user {user_id}: {e}")
+            if attempt == 1:
+                logging.warning(f"Account deletion: Evolution API instance may still be alive for user {user_id} — manual cleanup may be needed")
 
     # Delete all user data from every collection
     await db.customers.delete_many({"user_id": user_id})
