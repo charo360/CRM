@@ -501,21 +501,22 @@ class WhatsAppService:
             return {"status": "not_connected"}
 
         instance_name = wa["instance_name"]
+        base_url, api_key = await self._resolve_server(user_id)
 
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 # Logout first (unlinks WhatsApp)
                 await client.delete(
                     f"{base_url}/instance/logout/{instance_name}",
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
                 # Delete the instance
                 await client.delete(
                     f"{base_url}/instance/delete/{instance_name}",
-                    headers=self._headers(),
+                    headers=self._headers(api_key),
                 )
         except Exception as e:
-            logger.error(f"Error deleting instance: {e}")
+            logger.error(f"Error deleting instance {instance_name}: {e}")
 
         # Clear WhatsApp config from user
         await self.db.users.update_one(
@@ -971,8 +972,8 @@ class WhatsAppService:
                         # Send text message
                         # Append invisible zero-width space to ALL AI/automated messages so the
                         # receiving end can identify them and skip replying (AI↔AI loop guard).
-                        # Only exclude contexts where a human owner is manually sending (broadcast, product_send).
-                        _HUMAN_SEND_CONTEXTS = {"broadcast", "product_send"}
+                        # Only exclude contexts where a human owner is manually sending (broadcast, product_send, manual).
+                        _HUMAN_SEND_CONTEXTS = {"broadcast", "product_send", "manual"}
                         _msg_text = message + "\u200B" if send_context not in _HUMAN_SEND_CONTEXTS else message
                         payload = {
                             "number": clean_to,

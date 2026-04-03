@@ -2121,6 +2121,13 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
             await db.users.delete_one({"_id": user_id})
         raise HTTPException(status_code=500, detail=err_msg)
 
+    # Guard: empty pairing code means instance is stuck — abort instead of creating a dangling session
+    if not result.get("pairing_code"):
+        logging.error(f"whatsapp-start: empty pairing code for user {user_id} — aborting")
+        if is_new_user:
+            await db.users.delete_one({"_id": user_id})
+        raise HTTPException(status_code=500, detail="Could not generate a pairing code. Please wait a moment and try again.")
+
     # Create a session token to track this auth attempt
     import secrets
     session_token = secrets.token_urlsafe(32)
@@ -6725,12 +6732,16 @@ async def delete_account(user = Depends(get_current_user)):
     """
     user_id = user["_id"]
 
-    # Disconnect WhatsApp instance first
-    try:
-        whatsapp_service = get_whatsapp_service(db)
-        await whatsapp_service.disconnect_instance(user_id)
-    except Exception as e:
-        logging.error(f"Error disconnecting WhatsApp during account deletion: {e}")
+    # Disconnect WhatsApp instance first — retry once on failure
+    whatsapp_service = get_whatsapp_service(db)
+    for _attempt in range(2):
+        try:
+            await whatsapp_service.disconnect_instance(user_id)
+            break
+        except Exception as e:
+            logging.error(f"Account deletion: WhatsApp disconnect attempt {_attempt + 1} failed for user {user_id}: {e}")
+            if _attempt == 1:
+                logging.warning(f"Account deletion: Evolution API instance may still be alive for user {user_id}")
 
     # Delete all user data from every collection
     await db.customers.delete_many({"user_id": user_id})
@@ -11676,7 +11687,15 @@ async def evolution_webhook(request: Request):
                 if customer and customer.get("needs_human"):
                     _needs_human_at = customer.get("needs_human_at")
                     _escalation_expired = False
-                    if _needs_human_at:
+                    if not _needs_human_at:
+                        # No timestamp — flag was set by older code; clear it immediately so we don't permanently block
+                        _escalation_expired = True
+                        logging.info(f"[Escalation] Auto-expiring needs_human for {customer_name} — no needs_human_at timestamp")
+                        await db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$unset": {"needs_human": "", "needs_human_reason": "", "needs_human_at": ""}}
+                        )
+                    else:
                         from datetime import timezone as _tz
                         _now_utc = datetime.now(_tz.utc)
                         if hasattr(_needs_human_at, "tzinfo") and _needs_human_at.tzinfo is None:
@@ -12247,7 +12266,8 @@ async def evolution_webhook(request: Request):
                 # Router returned None = AI explicitly disabled (personal contact / silenced)
                 # Do NOT fall through to raw AI generation in this case
                 if not button_action and agent_result is None:
-                    logging.info(f"[Webhook] Router returned None for {from_number} — silencing reply")
+                    logging.warning(f"⚠️ AUTO-REPLY SILENCED: Router returned None for {from_number} — contact marked as personal or ai_enabled=False")
+                    print(f"⚠️ MESSAGE NOT REPLIED: {from_number} - contact silenced by router (personal/ai_disabled)", flush=True)
                     return {"status": "ok"}
 
                 if agent_result and agent_result.get("handled"):
