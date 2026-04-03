@@ -11,6 +11,7 @@ export type BusinessType =
   | 'healthcare'
   | 'creator'
   | 'rental'
+  | 'general'
   | '';
 
 export interface BusinessConfig {
@@ -105,6 +106,16 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     staffLabel: '', customerLabel: 'Guest',
     showCheckinCheckout: true,
   },
+  general: {
+    // Fintech, NGO, info, assistant-only — no bookings, just chat & broadcast
+    catalogLabel: 'Resources', catalogItemLabel: 'Resource',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: false, salesTabLabel: 'Sales',
+    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Appointment',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
+  },
 };
 
 const DEFAULT_CONFIG: BusinessConfig = {
@@ -148,7 +159,7 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
 
   const config = TYPE_CONFIGS[businessType] ?? DEFAULT_CONFIG;
   const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental'].includes(businessType);
-  const isRetailBusiness  = ['retail', 'restaurant', 'creator'].includes(businessType);
+  const isRetailBusiness  = ['retail', 'restaurant', 'creator', 'general'].includes(businessType);
 
   return (
     <BusinessContext.Provider value={{

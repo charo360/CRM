@@ -779,9 +779,9 @@ export default function AccountScreen() {
                 <Text style={styles.settingText}>Business Type</Text>
                 <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
                   {({
-                    retail: 'Retail', salon: 'Salon & Beauty', services: 'Services',
+                    retail: 'Retail', salon: 'Salon & Beauty', services: 'Services / Tech',
                     fitness: 'Fitness', restaurant: 'Restaurant', healthcare: 'Healthcare',
-                    creator: 'Creator', rental: 'Rental / Airbnb'
+                    creator: 'Creator', rental: 'Rental / Airbnb', general: 'General / Other'
                   } as any)[businessType] || businessType}
                 </Text>
               </View>
@@ -970,6 +970,7 @@ export default function AccountScreen() {
                   { id: 'healthcare', icon: '🏥',   label: 'Healthcare',      desc: 'Clinic & medical' },
                   { id: 'creator',    icon: '🎨',   label: 'Creator',         desc: 'Digital products' },
                   { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb', desc: 'Properties & cars' },
+                  { id: 'general',    icon: '💬',   label: 'General / Other', desc: 'Fintech, NGO & info' },
                 ].map(bt => (
                   <TouchableOpacity
                     key={bt.id}
