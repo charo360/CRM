@@ -10,6 +10,7 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 import { settingsAPI, apiClient } from '../../context/api';
 
 Notifications.setNotificationHandler({
@@ -32,6 +33,7 @@ export default function TabsLayout() {
   const [dailyPulseEnabled, setDailyPulseEnabled] = useState(false);
 
   const { user } = useAuth();
+  const { config } = useBusiness();
   const notificationListener = useRef<any>();
   const responseListener = useRef<any>();
 
@@ -179,7 +181,7 @@ export default function TabsLayout() {
                   }] : []),
                   {
                     icon: 'cube-outline',
-                    label: 'Product Catalog',
+                    label: `${config.catalogLabel} Catalog`,
                     onPress: () => setShowProductCatalog(true)
                   },
                   {
@@ -242,9 +244,19 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
+          name="bookings"
+          options={{
+            title: 'Bookings',
+            href: config.bookingsTabVisible ? undefined : null,
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="calendar" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="sales"
           options={{
-            title: 'Sales',
+            title: config.salesTabLabel || 'Sales',
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="cash" size={size} color={color} />
             ),

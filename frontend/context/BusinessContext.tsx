@@ -22,6 +22,12 @@ export interface BusinessConfig {
   salesTabLabel: string;
   dashboardMode: 'sales' | 'bookings' | 'hybrid';
   primaryColor: string;
+  // Booking workflow
+  bookingMode: 'appointment' | 'rental' | 'class' | 'none';
+  bookingLabel: string;          // "Appointment", "Class", "Booking", "Reservation"
+  staffLabel: string;            // "Stylist", "Doctor", "Trainer", "Technician", ""
+  customerLabel: string;         // "Client", "Patient", "Member", "Guest", "Customer"
+  showCheckinCheckout: boolean;  // rental: true (date range), others: false (time slot)
 }
 
 const TYPE_CONFIGS: Record<string, BusinessConfig> = {
@@ -30,48 +36,74 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     showDuration: false, showStock: true,
     bookingsTabVisible: false, salesTabLabel: 'Sales',
     dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
   },
   salon: {
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Stylist', customerLabel: 'Client',
+    showCheckinCheckout: false,
   },
   services: {
+    // Covers tech/IT services, freelance, trades, repairs
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Technician', customerLabel: 'Client',
+    showCheckinCheckout: false,
   },
   fitness: {
-    catalogLabel: 'Services', catalogItemLabel: 'Class',
+    catalogLabel: 'Classes', catalogItemLabel: 'Class',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'class', bookingLabel: 'Class',
+    staffLabel: 'Trainer', customerLabel: 'Member',
+    showCheckinCheckout: false,
   },
   restaurant: {
     catalogLabel: 'Menu', catalogItemLabel: 'Item',
     showDuration: false, showStock: false,
     bookingsTabVisible: false, salesTabLabel: 'Sales',
     dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Guest',
+    showCheckinCheckout: false,
   },
   healthcare: {
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Doctor', customerLabel: 'Patient',
+    showCheckinCheckout: false,
   },
   creator: {
     catalogLabel: 'Products', catalogItemLabel: 'Product',
     showDuration: false, showStock: false,
     bookingsTabVisible: false, salesTabLabel: 'Sales',
     dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
   },
   rental: {
+    // Properties, cars, equipment — check-in/checkout date range (NOT time slots)
     catalogLabel: 'Listings', catalogItemLabel: 'Listing',
     showDuration: false, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Revenue',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'rental', bookingLabel: 'Booking',
+    staffLabel: '', customerLabel: 'Guest',
+    showCheckinCheckout: true,
   },
 };
 
@@ -80,6 +112,9 @@ const DEFAULT_CONFIG: BusinessConfig = {
   showDuration: false, showStock: true,
   bookingsTabVisible: true, salesTabLabel: 'Sales',
   dashboardMode: 'hybrid', primaryColor: '#25D366',
+  bookingMode: 'appointment', bookingLabel: 'Appointment',
+  staffLabel: '', customerLabel: 'Customer',
+  showCheckinCheckout: false,
 };
 
 interface BusinessContextType {

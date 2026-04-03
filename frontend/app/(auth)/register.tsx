@@ -21,7 +21,7 @@ import { COUNTRIES } from '../../components/CountryPicker';
 const BUSINESS_TYPES = [
   { id: 'retail',     icon: '🛍️',  label: 'Retail',           desc: 'Physical or online shop' },
   { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',   desc: 'Hair, nails & beauty services' },
-  { id: 'services',   icon: '🔧',   label: 'Services',         desc: 'Freelance, trades & repairs' },
+  { id: 'services',   icon: '🔧',   label: 'Services / Tech',  desc: 'IT, freelance, trades & repairs' },
   { id: 'fitness',    icon: '🏋️',  label: 'Fitness',          desc: 'Gym, classes & training' },
   { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',       desc: 'Food & dining' },
   { id: 'healthcare', icon: '🏥',   label: 'Healthcare',       desc: 'Clinic, dental & medical' },

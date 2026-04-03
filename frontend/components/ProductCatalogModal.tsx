@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { productsAPI, settingsAPI } from '../context/api';
+import { useBusiness } from '../context/BusinessContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_GAP = 10;
@@ -72,6 +73,10 @@ export default function ProductCatalogModal({
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
     const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
     const [subscriptionPlan, setSubscriptionPlan] = useState('free');
+
+    const { config } = useBusiness();
+    const catalogLabel = config.catalogLabel;
+    const itemLabel = config.catalogItemLabel;
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
@@ -519,7 +524,7 @@ export default function ProductCatalogModal({
                     <TouchableOpacity onPress={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); setAiFailedBanner(false); }}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitle}>{addMode ? 'Add Product' : editMode ? 'Edit Product' : 'Product Details'}</Text>
+                    <Text style={styles.headerTitle}>{addMode ? `Add ${itemLabel}` : editMode ? `Edit ${itemLabel}` : `${itemLabel} Details`}</Text>
                     {!editMode && selectedProduct ? (
                         <TouchableOpacity onPress={() => startEdit(selectedProduct)}>
                             <Ionicons name="create-outline" size={24} color="#25D366" />
@@ -543,7 +548,7 @@ export default function ProductCatalogModal({
                                 </View>
                             )}
                             <View style={styles.formGroup}>
-                                <Text style={styles.formLabel}>Product Name *</Text>
+                                <Text style={styles.formLabel}>{itemLabel} Name *</Text>
                                 <TextInput
                                     style={styles.formInput}
                                     value={editName}
@@ -704,14 +709,14 @@ export default function ProductCatalogModal({
                                 {saving ? (
                                     <ActivityIndicator color="#FFF" size="small" />
                                 ) : (
-                                    <Text style={styles.saveBtnText}>{addMode ? 'Add Product' : 'Save Changes'}</Text>
+                                    <Text style={styles.saveBtnText}>{addMode ? `Add ${itemLabel}` : 'Save Changes'}</Text>
                                 )}
                             </TouchableOpacity>
 
                             {!addMode && selectedProduct && (
                                 <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDeleteProduct(selectedProduct)}>
                                     <Ionicons name="trash-outline" size={18} color="#FF6B6B" />
-                                    <Text style={styles.deleteBtnText}>Delete Product</Text>
+                                    <Text style={styles.deleteBtnText}>Delete {itemLabel}</Text>
                                 </TouchableOpacity>
                             )}
                         </View>
@@ -827,7 +832,7 @@ export default function ProductCatalogModal({
                                         onPress={() => startEdit(selectedProduct)}
                                     >
                                         <Ionicons name="create-outline" size={22} color="#4A90D9" />
-                                        <Text style={styles.actionBtnText}>Edit Product</Text>
+                                        <Text style={styles.actionBtnText}>Edit {itemLabel}</Text>
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
@@ -856,7 +861,7 @@ export default function ProductCatalogModal({
                     <TouchableOpacity onPress={onClose}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitle}>Product Catalog</Text>
+                    <Text style={styles.headerTitle}>{catalogLabel} Catalog</Text>
                     <TouchableOpacity onPress={startAddProduct}>
                         <Ionicons name="add-circle-outline" size={26} color="#25D366" />
                     </TouchableOpacity>
