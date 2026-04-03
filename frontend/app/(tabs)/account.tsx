@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/api';
 
 import { NotificationHandler } from '../../utils/notification-handler';
@@ -115,7 +116,12 @@ export default function AccountScreen() {
   // Team Management State
   const [showTeamModal, setShowTeamModal] = useState(false);
 
+  // Business Type State
+  const [businessType, setBusinessType] = useState('');
+  const [showBusinessTypePicker, setShowBusinessTypePicker] = useState(false);
+
   const { user, logout, refreshUser } = useAuth();
+  const { refresh: refreshBusinessContext } = useBusiness();
   const router = useRouter();
 
   // IAP refs for purchase callbacks
@@ -150,6 +156,7 @@ export default function AccountScreen() {
       setAiModel(settingsRes.data.ai_model || 'standard');
       setAutoReplyEnabled(settingsRes.data.auto_reply_enabled || false);
       setAutoReplyAudience(settingsRes.data.auto_reply_audience || 'everyone');
+      setBusinessType(settingsRes.data.business_type || 'retail');
 
       // Fetch WhatsApp status
       try {
@@ -763,6 +770,23 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Analytics</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => setShowBusinessTypePicker(true)}
+            >
+              <Ionicons name="storefront-outline" size={24} color="#25D366" />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.settingText}>Business Type</Text>
+                <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
+                  {({
+                    retail: 'Retail', salon: 'Salon & Beauty', services: 'Services',
+                    fitness: 'Fitness', restaurant: 'Restaurant', healthcare: 'Healthcare',
+                    creator: 'Creator', rental: 'Rental / Airbnb'
+                  } as any)[businessType] || businessType}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>
@@ -917,6 +941,73 @@ export default function AccountScreen() {
         </View>
 
 
+
+        {/* Business Type Picker Modal */}
+        <Modal
+          visible={showBusinessTypePicker}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowBusinessTypePicker(false)}
+        >
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' }}>
+            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 36 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>Business Type</Text>
+                <TouchableOpacity onPress={() => setShowBusinessTypePicker(false)}>
+                  <Text style={{ color: '#8B9DC3', fontSize: 16 }}>Close</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 16 }}>
+                Changing your business type personalises your dashboard, catalog labels, and booking features.
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                {[
+                  { id: 'retail',     icon: '🛍️',  label: 'Retail',          desc: 'Shop & products' },
+                  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',  desc: 'Hair & services' },
+                  { id: 'services',   icon: '🔧',   label: 'Services',        desc: 'Trades & repairs' },
+                  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',         desc: 'Gym & classes' },
+                  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',      desc: 'Food & dining' },
+                  { id: 'healthcare', icon: '🏥',   label: 'Healthcare',      desc: 'Clinic & medical' },
+                  { id: 'creator',    icon: '🎨',   label: 'Creator',         desc: 'Digital products' },
+                  { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb', desc: 'Properties & cars' },
+                ].map(bt => (
+                  <TouchableOpacity
+                    key={bt.id}
+                    style={{
+                      width: '47%',
+                      backgroundColor: businessType === bt.id ? 'rgba(37,211,102,0.08)' : 'rgba(255,255,255,0.05)',
+                      borderRadius: 12,
+                      padding: 14,
+                      borderWidth: 1.5,
+                      borderColor: businessType === bt.id ? '#25D366' : 'transparent',
+                      position: 'relative',
+                    }}
+                    onPress={async () => {
+                      setBusinessType(bt.id);
+                      setShowBusinessTypePicker(false);
+                      try {
+                        await settingsAPI.updateSettings({ business_type: bt.id });
+                        await refreshBusinessContext();
+                      } catch (e) {
+                        console.log('Failed to update business type', e);
+                      }
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 26, marginBottom: 6 }}>{bt.icon}</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: businessType === bt.id ? '#25D366' : '#FFFFFF', marginBottom: 2 }}>{bt.label}</Text>
+                    <Text style={{ fontSize: 11, color: '#64748B' }}>{bt.desc}</Text>
+                    {businessType === bt.id && (
+                      <View style={{ position: 'absolute', top: 8, right: 8 }}>
+                        <Ionicons name="checkmark-circle" size={18} color="#25D366" />
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         {/* AI Model Picker Modal */}
         <Modal
