@@ -37,6 +37,7 @@ export default function LoginScreen() {
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const refreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentCodeRef = useRef<string>('');
 
   const router = useRouter();
   const { startWhatsAppAuth, checkWhatsAppAuth, refreshPairingCode } = useAuth();
@@ -57,6 +58,7 @@ export default function LoginScreen() {
   const startPairingTimers = useCallback((code: string, token: string) => {
     clearTimers();
     setPairingCode(code);
+    currentCodeRef.current = code;
     setCountdown(60);
     setCopied(false);
 
@@ -112,6 +114,11 @@ export default function LoginScreen() {
           } else {
             router.replace('/(tabs)/customers');
           }
+        } else if (result.pairingCode && result.pairingCode !== currentCodeRef.current) {
+          currentCodeRef.current = result.pairingCode;
+          setPairingCode(result.pairingCode);
+          setCountdown(60);
+          Clipboard.setStringAsync(result.pairingCode);
         }
       } catch (e) { /* ignore */ }
     }, 5000);

@@ -2171,7 +2171,9 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
     status = await whatsapp_service.get_instance_status(user_id)
 
     if not status.get("connected"):
-        return {"status": "waiting", "connected": False}
+        user_doc = await db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        current_code = (user_doc or {}).get("whatsapp", {}).get("pairing_code", "")
+        return {"status": "waiting", "connected": False, "pairing_code": current_code}
 
     # WhatsApp connected! Issue JWT
     token = create_token(user_id, phone)
@@ -2234,9 +2236,12 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
     user_id = session["user_id"]
     phone = session["phone"]
 
-    # Request new pairing code
+    # Request new pairing code from existing instance (no delete/recreate)
     whatsapp_service = get_whatsapp_service(db)
-    result = await whatsapp_service.create_instance(user_id, phone)
+    result = await whatsapp_service.refresh_pairing_code(user_id)
+    if result.get("status") == "error":
+        # Instance gone — fall back to full recreation
+        result = await whatsapp_service.create_instance(user_id, phone, force_new=True)
 
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result.get("message", "Failed to refresh pairing code"))
@@ -7541,7 +7546,22 @@ async def evolution_webhook(request: Request):
                         asyncio.create_task(_run_initial_sync(user_id))
 
             return {"status": "ok"}
-        
+
+        # Handle QR code update — Evolution API switches to QR mode every ~45s, invalidating the pairing code.
+        # Re-request a fresh pairing code immediately so the frontend polling picks it up.
+        if event == "qrcode.updated":
+            user = await whatsapp_service.find_user_by_instance(instance_name)
+            if user and user.get("whatsapp", {}).get("status") == "pairing":
+                try:
+                    refresh_result = await whatsapp_service.refresh_pairing_code(user["_id"])
+                    if refresh_result.get("status") == "pairing":
+                        logging.info(f"qrcode.updated: refreshed pairing code for user {user['_id']}: {refresh_result['pairing_code']}")
+                    else:
+                        logging.warning(f"qrcode.updated: could not refresh pairing code for {instance_name}: {refresh_result.get('message')}")
+                except Exception as qr_err:
+                    logging.warning(f"qrcode.updated: exception refreshing pairing code for {instance_name}: {qr_err}")
+            return {"status": "ok"}
+
         # Handle message status updates (sent/delivered/read receipts)
         if event == "messages.update":
             import json as _json

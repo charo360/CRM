@@ -492,6 +492,46 @@ class WhatsAppService:
             logger.error(f"Error checking instance status: {e}")
             return {"connected": False, "status": "error"}
 
+    async def refresh_pairing_code(self, user_id: str) -> Dict:
+        """Re-request a pairing code from the existing instance without deleting/recreating it.
+        Called by the whatsapp-refresh endpoint and the qrcode.updated webhook handler."""
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+        wa = user.get("whatsapp") if user else None
+        if not wa or not wa.get("instance_name"):
+            return {"status": "error", "message": "No instance found"}
+
+        instance_name = wa["instance_name"]
+        phone = wa.get("number", "")
+        clean_number = phone.lstrip("+").replace(" ", "").replace("-", "")
+        if not clean_number:
+            return {"status": "error", "message": "No phone number on record"}
+
+        base_url, api_key = await self._resolve_server(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                code_resp = await client.get(
+                    f"{base_url}/instance/connect/{instance_name}",
+                    params={"number": clean_number},
+                    headers=self._headers(api_key),
+                )
+                if code_resp.status_code != 200:
+                    return {"status": "error", "message": f"Evolution API returned {code_resp.status_code}"}
+
+                code_data = code_resp.json()
+                pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
+                if not pairing_code:
+                    return {"status": "error", "message": "Empty pairing code"}
+
+                await self.db.users.update_one(
+                    {"_id": user_id},
+                    {"$set": {"whatsapp.pairing_code": pairing_code}}
+                )
+                logger.info(f"Refreshed pairing code for {instance_name}: {pairing_code}")
+                return {"status": "pairing", "pairing_code": pairing_code}
+        except Exception as e:
+            logger.error(f"Error refreshing pairing code for {instance_name}: {e}")
+            return {"status": "error", "message": str(e)}
+
     async def disconnect_instance(self, user_id: str) -> Dict:
         """Disconnect and delete a user's WhatsApp instance"""
         user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})

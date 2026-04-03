@@ -30,6 +30,7 @@ interface WhatsAppCheckResult {
   connected: boolean;
   message?: string;
   isNewUser?: boolean;
+  pairingCode?: string;
 }
 
 interface AuthContextType {
@@ -157,7 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
       }
 
-      return { success: true, connected: false };
+      return { success: true, connected: false, pairingCode: response.data.pairing_code };
     } catch (error: any) {
       return {
         success: false,
