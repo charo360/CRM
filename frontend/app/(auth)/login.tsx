@@ -152,19 +152,10 @@ export default function LoginScreen() {
   };
 
   const handleOpenWhatsApp = () => {
-    if (pairingCode) {
-      const link = `https://wa.me/login?code=${pairingCode}`;
-      Linking.openURL(link)
-        .catch(() => Linking.openURL('whatsapp://'))
-        .catch(() => {
-          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually and go to Linked Devices.');
-        });
-    } else {
-      Linking.openURL('whatsapp://')
-        .catch(() => {
-          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually.');
-        });
-    }
+    Linking.openURL('whatsapp://')
+      .catch(() => {
+        Alert.alert('Open WhatsApp manually', 'Go to WhatsApp → 3-dot menu → Linked Devices → Link a Device → Link with phone number');
+      });
   };
 
   const handleCancel = () => {
@@ -269,9 +260,9 @@ export default function LoginScreen() {
                 {[
                   'Open WhatsApp on this phone',
                   'Tap the 3-dot menu (⋮) → Linked Devices',
-                  'Tap "Link a Device"',
-                  'Choose "Link with phone number" at the bottom',
-                  'Enter the code shown above',
+                  'Tap "Link a Device" — a QR scanner opens',
+                  'Scroll down or tap "Link with phone number" at the bottom of the QR screen',
+                  'Type the code exactly as shown above (ignore any notification)',
                 ].map((step, i) => (
                   <View key={i} style={styles.stepRow}>
                     <View style={styles.stepBadge}>
