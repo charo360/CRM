@@ -17,11 +17,23 @@ import { useAuth } from '../../context/AuthContext';
 import { settingsAPI } from '../../context/api';
 import { COUNTRIES } from '../../components/CountryPicker';
 
+const BUSINESS_TYPES = [
+  { id: 'fashion', label: 'Fashion', icon: 'shirt-outline' as const },
+  { id: 'food', label: 'Food & Drinks', icon: 'restaurant-outline' as const },
+  { id: 'beauty', label: 'Beauty & Salon', icon: 'cut-outline' as const },
+  { id: 'electronics', label: 'Electronics', icon: 'phone-portrait-outline' as const },
+  { id: 'grocery', label: 'Grocery', icon: 'basket-outline' as const },
+  { id: 'services', label: 'Services', icon: 'construct-outline' as const },
+  { id: 'health', label: 'Health', icon: 'medkit-outline' as const },
+  { id: 'other', label: 'Other', icon: 'grid-outline' as const },
+];
+
 export default function RegisterScreen() {
   const { countryCode } = useLocalSearchParams<{ countryCode: string }>();
   const country = COUNTRIES.find(c => c.code === (countryCode || 'US'));
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
+  const [businessType, setBusinessType] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { register, user } = useAuth();
@@ -31,12 +43,15 @@ export default function RegisterScreen() {
       Alert.alert('Error', 'Please enter your business name');
       return;
     }
+    if (!businessType) {
+      Alert.alert('Error', 'Please select your business type');
+      return;
+    }
 
     setLoading(true);
     try {
-      const result = await register(businessName, ownerName);
+      const result = await register(businessName, ownerName, businessType);
       if (result.success) {
-        // Save country and currency settings
         if (country) {
           try {
             await settingsAPI.updateSettings({
@@ -61,17 +76,15 @@ export default function RegisterScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <View style={styles.content}>
           <View style={styles.header}>
             <View style={styles.connectedBadge}>
               <Ionicons name="checkmark-circle" size={20} color="#25D366" />
               <Text style={styles.connectedText}>WhatsApp Connected</Text>
             </View>
-            <Text style={styles.title}>Setup Business</Text>
-            <Text style={styles.subtitle}>
-              Tell us about your business to get started
-            </Text>
+            <Text style={styles.title}>Setup Your Business</Text>
+            <Text style={styles.subtitle}>Tell us about your business to personalise your experience</Text>
           </View>
 
           <View style={styles.form}>
@@ -104,6 +117,32 @@ export default function RegisterScreen() {
               </View>
             </View>
 
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Business Type *</Text>
+              <View style={styles.typeGrid}>
+                {BUSINESS_TYPES.map((type) => {
+                  const selected = businessType === type.id;
+                  return (
+                    <TouchableOpacity
+                      key={type.id}
+                      style={[styles.typeCard, selected && styles.typeCardSelected]}
+                      onPress={() => setBusinessType(type.id)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name={type.icon}
+                        size={24}
+                        color={selected ? '#25D366' : '#888'}
+                      />
+                      <Text style={[styles.typeLabel, selected && styles.typeLabelSelected]}>
+                        {type.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
             {user?.phone_number ? (
               <View style={styles.phoneDisplay}>
                 <Text style={styles.phoneLabel}>WhatsApp Number</Text>
@@ -123,21 +162,6 @@ export default function RegisterScreen() {
               )}
             </TouchableOpacity>
           </View>
-
-          <View style={styles.features}>
-            <Text style={styles.featuresTitle}>What you get:</Text>
-            {[
-              'Manage customer contacts',
-              'Set follow-up reminders',
-              'Send receipts via WhatsApp',
-              'Broadcast promotions',
-            ].map((feature, index) => (
-              <View key={index} style={styles.featureItem}>
-                <Ionicons name="checkmark-circle" size={20} color="#25D366" />
-                <Text style={styles.featureText}>{feature}</Text>
-              </View>
-            ))}
-          </View>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -155,7 +179,8 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 24,
-    paddingTop: 80,
+    paddingTop: 64,
+    paddingBottom: 40,
   },
   connectedBadge: {
     flexDirection: 'row',
@@ -174,28 +199,32 @@ const styles = StyleSheet.create({
     marginLeft: 6,
   },
   header: {
-    marginBottom: 32,
+    marginBottom: 28,
   },
   title: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: 'bold',
     color: '#FFFFFF',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#666',
+    fontSize: 14,
+    color: '#888',
+    lineHeight: 20,
   },
   form: {
-    marginBottom: 32,
+    marginBottom: 24,
   },
   inputGroup: {
     marginBottom: 20,
   },
   label: {
-    fontSize: 14,
-    color: '#FFFFFF',
+    fontSize: 13,
+    color: '#AAAAAA',
     marginBottom: 8,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -209,60 +238,70 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    height: 56,
+    height: 52,
     fontSize: 16,
     color: '#FFFFFF',
+  },
+  typeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  typeCard: {
+    width: '22%',
+    aspectRatio: 1,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+    paddingVertical: 8,
+  },
+  typeCardSelected: {
+    borderColor: '#25D366',
+    backgroundColor: 'rgba(37,211,102,0.08)',
+  },
+  typeLabel: {
+    fontSize: 10,
+    color: '#888',
+    marginTop: 6,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  typeLabelSelected: {
+    color: '#25D366',
   },
   phoneDisplay: {
     backgroundColor: '#1A2942',
     borderRadius: 12,
-    padding: 16,
-    marginBottom: 24,
+    padding: 14,
+    marginBottom: 20,
   },
   phoneLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666',
     marginBottom: 4,
   },
   phoneValue: {
-    fontSize: 16,
+    fontSize: 15,
     color: '#25D366',
     fontWeight: '600',
   },
   button: {
     backgroundColor: '#25D366',
-    borderRadius: 12,
+    borderRadius: 14,
     height: 56,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 8,
   },
   buttonDisabled: {
     opacity: 0.7,
   },
   buttonText: {
     color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  features: {
-    backgroundColor: '#1A2942',
-    borderRadius: 16,
-    padding: 20,
-  },
-  featuresTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 16,
-  },
-  featureItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  featureText: {
-    fontSize: 14,
-    color: '#FFFFFF',
-    marginLeft: 12,
+    fontSize: 17,
+    fontWeight: '700',
   },
 });
