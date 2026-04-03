@@ -6758,6 +6758,12 @@ async def delete_account(user = Depends(get_current_user)):
     await db.pending_classifications.delete_many({"user_id": user_id})
     await db.pending_catalogs.delete_many({"user_id": user_id})
 
+    # Delete team member records — both the user's own membership AND any team they owned
+    # Without this, the phone stays in team_members and triggers fast-login on re-registration
+    await db.team_members.delete_many({"user_id": user_id})
+    await db.team_members.delete_many({"business_id": user_id})
+    await db.wa_auth_sessions.delete_many({"user_id": user_id})
+
     # Delete the user record itself
     await db.users.delete_one({"_id": user_id})
 
