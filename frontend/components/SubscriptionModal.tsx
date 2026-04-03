@@ -68,10 +68,17 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       setPurchasing(true);
       const Purchases = require('react-native-purchases').default;
       const offerings = await Purchases.getOfferings();
-      if (!offerings.current) throw new Error('No offerings available');
+      if (!offerings.current && !offerings.all) throw new Error('No offerings available');
 
-      const pkg = offerings.current.availablePackages.find(
-        (p: any) => p.identifier.includes(plan.id)
+      // Search all offerings by product identifier (crm_starter_monthly contains 'starter', etc.)
+      const allPackages = [
+        ...(offerings.current?.availablePackages || []),
+        ...Object.values(offerings.all || {}).flatMap((o: any) => o.availablePackages || []),
+      ];
+      const pkg = allPackages.find(
+        (p: any) =>
+          p.product?.identifier?.includes(plan.id) ||
+          p.identifier?.includes(plan.id)
       );
       if (!pkg) throw new Error('Product not found');
 
