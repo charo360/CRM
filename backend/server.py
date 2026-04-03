@@ -5053,6 +5053,13 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
     sales_today = sales_result[0]["total"] if sales_result else 0
     sales_count = sales_result[0]["count"] if sales_result else 0
 
+    # Today's bookings count
+    bookings_today = await db.bookings.count_documents({
+        "user_id": uid,
+        "created_at": {"$gte": today_start, "$lt": today_end},
+        "status": {"$nin": ["cancelled"]}
+    })
+
     # Total customers (confirmed only, not raw contacts)
     total_customers = await db.customers.count_documents({
         "user_id": uid,
@@ -5064,6 +5071,7 @@ async def get_dashboard_summary(user = Depends(get_current_user)):
         "followups_today": followups_today,
         "sales_today": sales_today,
         "sales_count_today": sales_count,
+        "bookings_today": bookings_today,
         "total_customers": total_customers,
     }
 

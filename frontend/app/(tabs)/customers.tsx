@@ -18,6 +18,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, dashboardAPI, messageHelpers } from '../../context/api';
 import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import * as Contacts from 'expo-contacts';
@@ -47,6 +48,7 @@ interface DashboardSummary {
   followups_today: number;
   sales_today: number;
   sales_count_today: number;
+  bookings_today?: number;
   total_customers: number;
 }
 
@@ -196,6 +198,7 @@ export default function CustomersScreen() {
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
   const { user, token } = useAuth();
+  const { config, isServiceBusiness } = useBusiness();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
@@ -954,7 +957,9 @@ export default function CustomersScreen() {
     const items: { label: string; color: string }[] = [];
     tags.forEach(t => items.push({ label: t, color: TAG_COLORS[t] || '#8696A0' }));
     if (purchaseCount > 0) {
-      items.push({ label: `${purchaseCount} ${purchaseCount === 1 ? 'Sale' : 'Sales'}`, color: '#00A884' });
+      const singular = isServiceBusiness ? config.bookingLabel : 'Sale';
+      const plural   = isServiceBusiness ? `${config.bookingLabel}s` : 'Sales';
+      items.push({ label: `${purchaseCount} ${purchaseCount === 1 ? singular : plural}`, color: '#00A884' });
     }
 
     const [index, setIndex] = useState(0);
@@ -1783,15 +1788,27 @@ export default function CustomersScreen() {
                 </View>
               </TouchableOpacity>
               <View style={styles.dashboardDivider} />
-              <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/sales')}>
-                <View style={[styles.dashboardIcon, { backgroundColor: '#4A90D920' }]}>
-                  <Ionicons name="cash" size={14} color="#4A90D9" />
-                </View>
-                <View style={styles.dashboardInfo}>
-                  <Text style={styles.dashboardValue} numberOfLines={1} adjustsFontSizeToFit>{currency} {dashboardSummary.sales_today.toLocaleString()}</Text>
-                  <Text style={styles.dashboardLabel}>Sales</Text>
-                </View>
-              </TouchableOpacity>
+              {isServiceBusiness ? (
+                <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/bookings' as any)}>
+                  <View style={[styles.dashboardIcon, { backgroundColor: '#6366F120' }]}>
+                    <Ionicons name="calendar" size={14} color="#6366F1" />
+                  </View>
+                  <View style={styles.dashboardInfo}>
+                    <Text style={styles.dashboardValue} numberOfLines={1}>{dashboardSummary.bookings_today ?? 0}</Text>
+                    <Text style={styles.dashboardLabel}>{config.bookingLabel}s</Text>
+                  </View>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/sales')}>
+                  <View style={[styles.dashboardIcon, { backgroundColor: '#4A90D920' }]}>
+                    <Ionicons name="cash" size={14} color="#4A90D9" />
+                  </View>
+                  <View style={styles.dashboardInfo}>
+                    <Text style={styles.dashboardValue} numberOfLines={1} adjustsFontSizeToFit>{currency} {dashboardSummary.sales_today.toLocaleString()}</Text>
+                    <Text style={styles.dashboardLabel}>{config.salesTabLabel}</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
             </View>
           )}
 

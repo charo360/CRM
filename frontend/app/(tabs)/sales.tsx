@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient, settingsAPI } from '../../context/api';
+import { useBusiness } from '../../context/BusinessContext';
 import { useRouter } from 'expo-router';
 
 interface Customer {
@@ -38,6 +39,8 @@ interface Sale {
   is_credit?: boolean;
   due_date?: string;
   paid_date?: string;
+  source?: string;          // 'booking' | 'whatsapp' | 'manual' etc.
+  booking_id?: string;
   created_at: string;
 }
 
@@ -70,6 +73,7 @@ const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Sala
 
 export default function SalesScreen() {
   const router = useRouter();
+  const { config } = useBusiness();
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -646,7 +650,9 @@ export default function SalesScreen() {
     );
   };
 
-  const renderSale = ({ item: sale }: { item: Sale }) => (
+  const renderSale = ({ item: sale }: { item: Sale }) => {
+    const isFromBooking = sale.source === 'booking';
+    return (
     <TouchableOpacity
       style={styles.saleCard}
       onPress={() => {
@@ -686,6 +692,12 @@ export default function SalesScreen() {
       <View style={styles.saleDetails}>
         <Ionicons name="pricetag-outline" size={14} color="#666" />
         <Text style={styles.itemText}>{sale.item}</Text>
+        {isFromBooking && (
+          <View style={[styles.receiptBadge, { backgroundColor: '#1E3A5F' }]}>
+            <Ionicons name="calendar" size={13} color="#60A5FA" />
+            <Text style={[styles.receiptText, { color: '#60A5FA' }]}>Booking</Text>
+          </View>
+        )}
         {!!sale.receipt_sent && (
           <View style={styles.receiptBadge}>
             <Ionicons name="checkmark-circle" size={14} color="#25D366" />
@@ -695,6 +707,7 @@ export default function SalesScreen() {
       </View>
     </TouchableOpacity>
   );
+  };
 
   const renderExpense = ({ item: expense }: { item: Expense }) => (
     <View style={styles.saleCard}>
