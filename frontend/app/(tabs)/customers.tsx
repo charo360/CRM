@@ -990,7 +990,7 @@ export default function CustomersScreen() {
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
-  const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+  const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://crm-1-pnfo.onrender.com';
 
   const CustomerAvatar = ({ customer }: { customer: Customer }) => {
     const [imgError, setImgError] = React.useState(false);
@@ -1323,7 +1323,7 @@ export default function CustomersScreen() {
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
             {pendingClassifications.slice(0, 10).map((item: any) => (
-              <View key={item.customer_id} style={styles.pendingCard}>
+              <View key={item.customer_id || item.id || item.phone_number} style={styles.pendingCard}>
                 <View style={styles.pendingCardTop}>
                   <View style={[styles.pendingTypeBadge, { backgroundColor: item.suggested_type === 'supplier' ? '#4A90D920' : '#25D36620' }]}>
                     <Ionicons
