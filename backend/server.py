@@ -1083,6 +1083,7 @@ class UserCreate(BaseModel):
     phone_number: str
     business_name: str
     owner_name: Optional[str] = None
+    business_type: Optional[str] = None
 
 class UserResponse(BaseModel):
     id: str
@@ -2182,7 +2183,11 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
     await db.wa_auth_sessions.delete_one({"_id": request.session_token})
 
     user = await db.users.find_one({"_id": user_id})
-    is_new_user = session["is_new_user"] or not user.get("setup_complete", True)
+    is_new_user = (
+        session["is_new_user"]
+        or not user.get("setup_complete", True)
+        or not user.get("business_name", "").strip()
+    )
 
     # Auto-trigger contact sync + profile pictures + classification in background
     async def _auto_sync(uid):
@@ -2275,15 +2280,18 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
     Requires JWT (issued after WhatsApp connects).
     """
     # Update the user's business info
+    update_fields = {
+        "business_name": user_data.business_name,
+        "owner_name": user_data.owner_name or "",
+        "setup_complete": True,
+        "role": TeamMemberRole.OWNER,
+        "business_id": user["_id"],  # Owner's user_id is the business_id
+    }
+    if user_data.business_type:
+        update_fields["business_type"] = user_data.business_type
     await db.users.update_one(
         {"_id": user["_id"]},
-        {"$set": {
-            "business_name": user_data.business_name,
-            "owner_name": user_data.owner_name or "",
-            "setup_complete": True,
-            "role": TeamMemberRole.OWNER,
-            "business_id": user["_id"],  # Owner's user_id is the business_id
-        }}
+        {"$set": update_fields}
     )
 
     # Create team member entry for the owner

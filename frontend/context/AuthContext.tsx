@@ -41,7 +41,7 @@ interface AuthContextType {
   startWhatsAppAuth: (phone: string, countryCode?: string) => Promise<WhatsAppStartResult>;
   checkWhatsAppAuth: (sessionToken: string) => Promise<WhatsAppCheckResult>;
   refreshPairingCode: (sessionToken: string) => Promise<{ success: boolean; pairingCode?: string; pairingData?: any; message?: string }>;
-  register: (businessName: string, ownerName?: string) => Promise<{ success: boolean; message?: string }>;
+  register: (businessName: string, ownerName?: string, businessType?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -187,12 +187,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const register = async (businessName: string, ownerName?: string) => {
+  const register = async (businessName: string, ownerName?: string, businessType?: string) => {
     try {
       const response = await apiClient.post('/auth/register', {
         phone_number: user?.phone_number || '',
         business_name: businessName,
         owner_name: ownerName,
+        business_type: businessType,
       });
 
       if (response.data.user) {
