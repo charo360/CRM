@@ -275,9 +275,16 @@ export default function BookingsScreen() {
       Alert.alert('Missing Fields', 'Please select a service.');
       return;
     }
-    if (!newBooking.date || !newBooking.time) {
-      Alert.alert('Missing Fields', 'Please set a date and time.');
-      return;
+    if (config.showCheckinCheckout) {
+      if (!newBooking.checkin_date || !newBooking.checkout_date) {
+        Alert.alert('Missing Fields', 'Please set check-in and check-out dates.');
+        return;
+      }
+    } else {
+      if (!newBooking.date || !newBooking.time) {
+        Alert.alert('Missing Fields', 'Please set a date and time.');
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -285,9 +292,13 @@ export default function BookingsScreen() {
       const payload: any = {
         service_id: newBooking.service_id,
         date: newBooking.date,
-        time: newBooking.time,
+        time: config.showCheckinCheckout ? '00:00' : newBooking.time,
         notes: newBooking.notes,
         price: svc?.price || 0,
+        ...(config.showCheckinCheckout && {
+          checkin_date: newBooking.checkin_date,
+          checkout_date: newBooking.checkout_date,
+        }),
       };
       if (isWalkInCustomer) {
         payload.customer_name = 'Walk-in Customer';
