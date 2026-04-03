@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider } from '../context/AuthContext';
+import { BusinessProvider } from '../context/BusinessContext';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet, Platform } from 'react-native';
 import { settingsAPI } from '../context/api';
@@ -43,6 +44,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.container}>
       <AuthProvider>
+        <BusinessProvider>
         <StatusBar style="light" />
         <Stack
           screenOptions={{
@@ -56,6 +58,7 @@ export default function RootLayout() {
           <Stack.Screen name="chat" options={{ headerShown: false, animation: 'slide_from_right' }} />
           <Stack.Screen name="customer-profile" options={{ headerShown: false, animation: 'slide_from_right' }} />
         </Stack>
+        </BusinessProvider>
       </AuthProvider>
     </GestureHandlerRootView>
   );

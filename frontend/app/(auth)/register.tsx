@@ -15,51 +15,55 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { settingsAPI } from '../../context/api';
+import { useBusiness } from '../../context/BusinessContext';
 import { COUNTRIES } from '../../components/CountryPicker';
 
 const BUSINESS_TYPES = [
-  { id: 'fashion', label: 'Fashion', icon: 'shirt-outline' as const },
-  { id: 'food', label: 'Food & Drinks', icon: 'restaurant-outline' as const },
-  { id: 'beauty', label: 'Beauty & Salon', icon: 'cut-outline' as const },
-  { id: 'electronics', label: 'Electronics', icon: 'phone-portrait-outline' as const },
-  { id: 'grocery', label: 'Grocery', icon: 'basket-outline' as const },
-  { id: 'services', label: 'Services', icon: 'construct-outline' as const },
-  { id: 'health', label: 'Health', icon: 'medkit-outline' as const },
-  { id: 'other', label: 'Other', icon: 'grid-outline' as const },
+  { id: 'retail',     icon: '🛍️',  label: 'Retail',           desc: 'Physical or online shop' },
+  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',   desc: 'Hair, nails & beauty services' },
+  { id: 'services',   icon: '🔧',   label: 'Services',         desc: 'Freelance, trades & repairs' },
+  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',          desc: 'Gym, classes & training' },
+  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',       desc: 'Food & dining' },
+  { id: 'healthcare', icon: '🏥',   label: 'Healthcare',       desc: 'Clinic, dental & medical' },
+  { id: 'creator',    icon: '🎨',   label: 'Creator',          desc: 'Digital products & content' },
+  { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb',  desc: 'Properties, cars & equipment' },
 ];
 
 export default function RegisterScreen() {
   const { countryCode } = useLocalSearchParams<{ countryCode: string }>();
   const country = COUNTRIES.find(c => c.code === (countryCode || 'US'));
+  const [step, setStep] = useState<'info' | 'type'>('info');
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
   const [businessType, setBusinessType] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { register, user } = useAuth();
+  const { refresh: refreshBusinessContext } = useBusiness();
 
-  const handleRegister = async () => {
+  const handleNextStep = () => {
     if (!businessName.trim()) {
       Alert.alert('Error', 'Please enter your business name');
       return;
     }
-    if (!businessType) {
-      Alert.alert('Error', 'Please select your business type');
-      return;
-    }
+    setStep('type');
+  };
 
+  const handleRegister = async (selectedType: string) => {
+    setBusinessType(selectedType);
     setLoading(true);
     try {
-      const result = await register(businessName, ownerName, businessType);
+      const result = await register(businessName, ownerName, selectedType);
       if (result.success) {
+        const settingsPayload: any = { business_type: selectedType };
         if (country) {
-          try {
-            await settingsAPI.updateSettings({
-              country_code: country.code,
-              currency: country.currency || 'USD',
-            });
-          } catch (e) {}
+          settingsPayload.country_code = country.code;
+          settingsPayload.currency = country.currency || 'USD';
         }
+        try {
+          await settingsAPI.updateSettings(settingsPayload);
+          await refreshBusinessContext();
+        } catch (e) {}
         router.replace('/(tabs)/customers');
       } else {
         Alert.alert('Error', result.message || 'Registration failed');
@@ -71,20 +75,70 @@ export default function RegisterScreen() {
     }
   };
 
+  if (step === 'type') {
+    return (
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.content}>
+            <TouchableOpacity style={styles.backBtn} onPress={() => setStep('info')}>
+              <Ionicons name="arrow-back" size={22} color="#94A3B8" />
+            </TouchableOpacity>
+
+            <View style={styles.header}>
+              <Text style={styles.stepLabel}>Step 2 of 2</Text>
+              <Text style={styles.title}>What kind of business?</Text>
+              <Text style={styles.subtitle}>
+                This personalises your dashboard, products, and booking features.
+              </Text>
+            </View>
+
+            <View style={styles.typeGrid}>
+              {BUSINESS_TYPES.map(bt => (
+                <TouchableOpacity
+                  key={bt.id}
+                  style={[styles.typeCard, businessType === bt.id && styles.typeCardActive]}
+                  onPress={() => !loading && handleRegister(bt.id)}
+                  disabled={loading}
+                  activeOpacity={0.8}
+                >
+                  {loading && businessType === bt.id ? (
+                    <ActivityIndicator color="#25D366" style={{ marginBottom: 8 }} />
+                  ) : (
+                    <Text style={styles.typeIcon}>{bt.icon}</Text>
+                  )}
+                  <Text style={[styles.typeLabel, businessType === bt.id && styles.typeLabelActive]}>
+                    {bt.label}
+                  </Text>
+                  <Text style={styles.typeDesc}>{bt.desc}</Text>
+                  {businessType === bt.id && !loading && (
+                    <View style={styles.typeCheck}>
+                      <Ionicons name="checkmark-circle" size={20} color="#25D366" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.content}>
           <View style={styles.header}>
             <View style={styles.connectedBadge}>
               <Ionicons name="checkmark-circle" size={20} color="#25D366" />
               <Text style={styles.connectedText}>WhatsApp Connected</Text>
             </View>
-            <Text style={styles.title}>Setup Your Business</Text>
-            <Text style={styles.subtitle}>Tell us about your business to personalise your experience</Text>
+            <Text style={styles.stepLabel}>Step 1 of 2</Text>
+            <Text style={styles.title}>Setup Business</Text>
+            <Text style={styles.subtitle}>Tell us about your business to get started</Text>
           </View>
 
           <View style={styles.form}>
@@ -117,32 +171,6 @@ export default function RegisterScreen() {
               </View>
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Business Type *</Text>
-              <View style={styles.typeGrid}>
-                {BUSINESS_TYPES.map((type) => {
-                  const selected = businessType === type.id;
-                  return (
-                    <TouchableOpacity
-                      key={type.id}
-                      style={[styles.typeCard, selected && styles.typeCardSelected]}
-                      onPress={() => setBusinessType(type.id)}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons
-                        name={type.icon}
-                        size={24}
-                        color={selected ? '#25D366' : '#888'}
-                      />
-                      <Text style={[styles.typeLabel, selected && styles.typeLabelSelected]}>
-                        {type.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-
             {user?.phone_number ? (
               <View style={styles.phoneDisplay}>
                 <Text style={styles.phoneLabel}>WhatsApp Number</Text>
@@ -150,17 +178,24 @@ export default function RegisterScreen() {
               </View>
             ) : null}
 
-            <TouchableOpacity
-              style={[styles.button, loading && styles.buttonDisabled]}
-              onPress={handleRegister}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Text style={styles.buttonText}>Get Started</Text>
-              )}
+            <TouchableOpacity style={styles.button} onPress={handleNextStep}>
+              <Text style={styles.buttonText}>Next →</Text>
             </TouchableOpacity>
+          </View>
+
+          <View style={styles.features}>
+            <Text style={styles.featuresTitle}>What you get:</Text>
+            {[
+              'AI-powered customer management',
+              'Bookings & appointments',
+              'Sales & revenue tracking',
+              'WhatsApp automations',
+            ].map((feature, index) => (
+              <View key={index} style={styles.featureItem}>
+                <Ionicons name="checkmark-circle" size={20} color="#25D366" />
+                <Text style={styles.featureText}>{feature}</Text>
+              </View>
+            ))}
           </View>
         </View>
       </ScrollView>
@@ -242,36 +277,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FFFFFF',
   },
-  typeGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
+  typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 24 },
   typeCard: {
-    width: '22%',
-    aspectRatio: 1,
-    backgroundColor: '#1A2942',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: 'transparent',
-    paddingVertical: 8,
+    width: '47%', backgroundColor: '#1A2942', borderRadius: 16,
+    padding: 18, borderWidth: 2, borderColor: '#1A2942',
+    alignItems: 'flex-start', position: 'relative',
   },
-  typeCardSelected: {
-    borderColor: '#25D366',
-    backgroundColor: 'rgba(37,211,102,0.08)',
-  },
-  typeLabel: {
-    fontSize: 10,
-    color: '#888',
-    marginTop: 6,
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  typeLabelSelected: {
-    color: '#25D366',
-  },
+  typeCardActive: { borderColor: '#25D366', backgroundColor: 'rgba(37,211,102,0.08)' },
+  typeIcon: { fontSize: 32, marginBottom: 10 },
+  typeLabel: { fontSize: 15, fontWeight: '700', color: '#FFFFFF', marginBottom: 4 },
+  typeLabelActive: { color: '#25D366' },
+  typeDesc: { fontSize: 12, color: '#64748B', lineHeight: 17 },
+  typeCheck: { position: 'absolute', top: 10, right: 10 },
   phoneDisplay: {
     backgroundColor: '#1A2942',
     borderRadius: 12,
