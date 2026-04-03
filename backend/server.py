@@ -2236,8 +2236,16 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
     user_id = session["user_id"]
     phone = session["phone"]
 
-    # Request new pairing code from existing instance (no delete/recreate)
     whatsapp_service = get_whatsapp_service(db)
+
+    # If already connected (race: user entered code just before the 50s timer fired),
+    # do NOT touch the instance — calling refresh on a live connection returns no pairing
+    # code, which triggers the create_instance fallback and deletes the session.
+    current_status = await whatsapp_service.get_instance_status(user_id)
+    if current_status.get("connected"):
+        return {"status": "connected", "pairing_code": "", "pairing_data": {}}
+
+    # Request new pairing code from existing instance (no delete/recreate)
     result = await whatsapp_service.refresh_pairing_code(user_id)
     if result.get("status") == "error":
         # Instance gone — fall back to full recreation
