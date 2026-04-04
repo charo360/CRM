@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, View, Platform, Modal, TouchableOpacity, Text, Animated } from 'react-native';
+import { StyleSheet, View, Platform, Modal, TouchableOpacity, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
@@ -11,16 +10,14 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 
 import { useAuth } from '../../context/AuthContext';
-import { settingsAPI, apiClient } from '../../context/api';
 import { useBusiness } from '../../context/BusinessContext';
+import { settingsAPI, apiClient } from '../../context/api';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
     shouldPlaySound: true,
-    shouldSetBadge: false,
+    shouldSetBadge: true,
   }),
 });
 
@@ -29,6 +26,8 @@ export default function TabsLayout() {
   const router = useRouter();
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [showBusinessKnowledge, setShowBusinessKnowledge] = useState(false);
+  const [knowledgeEmpty, setKnowledgeEmpty] = useState(true);
+  const [knowledgeBannerDismissed, setKnowledgeBannerDismissed] = useState(false);
 
   // Settings State
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
@@ -37,24 +36,18 @@ export default function TabsLayout() {
 
   const { user } = useAuth();
   const { config, isRetailBusiness } = useBusiness();
-  const notificationListener = useRef<any>(null);
-  const responseListener = useRef<any>(null);
+  const notificationListener = useRef<any>();
+  const responseListener = useRef<any>();
 
-  const [showSetupBanner, setShowSetupBanner] = useState(false);
-  const BANNER_DISMISSED_KEY = 'setup_banner_dismissed';
-
-  useEffect(() => {
-    if (!user) return;
-    const needsSetup = !user.business_name;
-    if (!needsSetup) { setShowSetupBanner(false); return; }
-    AsyncStorage.getItem(BANNER_DISMISSED_KEY).then((dismissed) => {
-      if (!dismissed) setShowSetupBanner(true);
-    });
-  }, [user?.business_name]);
-
-  const dismissBanner = async () => {
-    await AsyncStorage.setItem(BANNER_DISMISSED_KEY, 'true');
-    setShowSetupBanner(false);
+  const checkKnowledge = async () => {
+    try {
+      const data = await settingsAPI.getBusinessKnowledge();
+      const isFilled = !!data?.business_description?.trim();
+      setKnowledgeEmpty(!isFilled);
+      if (isFilled) setKnowledgeBannerDismissed(false);
+    } catch (e) {
+      setKnowledgeEmpty(true);
+    }
   };
 
   // Fetch initial settings only after auth is ready
@@ -62,6 +55,7 @@ export default function TabsLayout() {
     if (user) {
       loadSettings();
       registerForPushNotifications();
+      checkKnowledge();
     }
     return () => {
       if (notificationListener.current) notificationListener.current.remove();
@@ -175,7 +169,9 @@ export default function TabsLayout() {
             backgroundColor: '#0A1628',
             borderBottomWidth: 1,
             borderBottomColor: '#1A2942',
-            height: Platform.OS === 'ios' ? 100 : 80,
+            height: Platform.OS === 'ios'
+              ? (knowledgeEmpty && !knowledgeBannerDismissed ? 136 : 100)
+              : (knowledgeEmpty && !knowledgeBannerDismissed ? 116 : 80),
           },
           headerTitleStyle: {
             color: '#FFFFFF',
@@ -270,9 +266,19 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
+          name="bookings"
+          options={{
+            title: 'Bookings',
+            href: config.bookingsTabVisible ? undefined : null,
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="calendar" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="sales"
           options={{
-            title: 'Sales',
+            title: config.salesTabLabel || 'Sales',
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="cash" size={size} color={color} />
             ),
@@ -289,16 +295,6 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
-          name="bookings"
-          options={{
-            title: 'Bookings',
-            href: config.bookingsTabVisible ? undefined : null,
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="calendar" size={size} color={color} />
-            ),
-          }}
-        />
-        <Tabs.Screen
           name="account"
           options={{
             title: 'Account',
@@ -309,31 +305,33 @@ export default function TabsLayout() {
         />
       </Tabs>
 
-      {showSetupBanner && (
-        <View style={styles.setupBanner}>
-          <TouchableOpacity
-            style={styles.setupBannerContent}
-            onPress={() => { setShowBusinessKnowledge(true); dismissBanner(); }}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="bulb-outline" size={18} color="#0A1628" />
-            <Text style={styles.setupBannerText}>
-              Set up your business to activate your AI assistant → tap <Text style={styles.setupBannerBold}>⋮</Text>
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={dismissBanner} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close" size={16} color="#0A1628" />
-          </TouchableOpacity>
-        </View>
-      )}
-
       <ProductCatalogModal
         visible={showProductCatalog}
         onClose={() => setShowProductCatalog(false)}
       />
+      {knowledgeEmpty && !knowledgeBannerDismissed && (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => setShowBusinessKnowledge(true)}
+          style={[styles.knowledgeBanner, { top: Platform.OS === 'ios' ? 100 : 80 }]}
+        >
+          <Ionicons name="book-outline" size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
+          <Text style={styles.knowledgeBannerText} numberOfLines={1}>
+            Set up Business Knowledge — help your AI reply smarter
+          </Text>
+          <TouchableOpacity
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            onPress={(e) => { e.stopPropagation(); setKnowledgeBannerDismissed(true); }}
+            style={{ marginLeft: 8 }}
+          >
+            <Ionicons name="close" size={16} color="rgba(255,255,255,0.8)" />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      )}
+
       <BusinessKnowledgeModal
         visible={showBusinessKnowledge}
-        onClose={() => setShowBusinessKnowledge(false)}
+        onClose={() => { setShowBusinessKnowledge(false); checkKnowledge(); }}
       />
     </>
   );
@@ -350,36 +348,26 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
   },
-  setupBanner: {
+  knowledgeBanner: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 100 : 80,
-    left: 12,
-    right: 12,
+    left: 0,
+    right: 0,
+    zIndex: 999,
     backgroundColor: '#25D366',
-    borderRadius: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    zIndex: 999,
-    elevation: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
+    elevation: 8,
   },
-  setupBannerContent: {
+  knowledgeBannerText: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  setupBannerText: {
-    flex: 1,
+    color: '#FFFFFF',
     fontSize: 13,
-    color: '#0A1628',
-  },
-  setupBannerBold: {
-    fontWeight: '700',
+    fontWeight: '600',
   },
 });

@@ -19,15 +19,15 @@ import { useBusiness } from '../../context/BusinessContext';
 import { COUNTRIES } from '../../components/CountryPicker';
 
 const BUSINESS_TYPES = [
-  { id: 'retail',     icon: '🛍️',  label: 'Retail',      desc: 'Physical or online shop' },
-  { id: 'salon',      icon: '✂️',  label: 'Salon & Beauty', desc: 'Hair, nails & beauty services' },
-  { id: 'services',   icon: '🔧',  label: 'Services',     desc: 'Freelance, trades & repairs' },
-  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',      desc: 'Gym, classes & training' },
-  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',   desc: 'Food & dining' },
-  { id: 'healthcare', icon: '🏥',  label: 'Healthcare',   desc: 'Clinic, dental & medical' },
-  { id: 'creator',    icon: '🎨',  label: 'Creator',      desc: 'Digital products & content' },
-  { id: 'rental',     icon: '🏠',  label: 'Rental / Airbnb', desc: 'Properties, cars & equipment' },
-  { id: 'tech',       icon: '💻',  label: 'Tech / SaaS',   desc: 'Software, fintech & agencies' },
+  { id: 'retail',     icon: '🛍️',  label: 'Retail',           desc: 'Physical or online shop' },
+  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',   desc: 'Hair, nails & beauty services' },
+  { id: 'services',   icon: '🔧',   label: 'Services / Tech',  desc: 'IT, freelance, trades & repairs' },
+  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',          desc: 'Gym, classes & training' },
+  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',       desc: 'Food & dining' },
+  { id: 'healthcare', icon: '🏥',   label: 'Healthcare',       desc: 'Clinic, dental & medical' },
+  { id: 'creator',    icon: '🎨',   label: 'Creator',          desc: 'Digital products & content' },
+  { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb',  desc: 'Properties, cars & equipment' },
+  { id: 'general',    icon: '💬',   label: 'General / Other',  desc: 'Fintech, NGO, info & assistant' },
 ];
 
 export default function RegisterScreen() {
@@ -54,7 +54,7 @@ export default function RegisterScreen() {
     setBusinessType(selectedType);
     setLoading(true);
     try {
-      const result = await register(businessName, ownerName);
+      const result = await register(businessName, ownerName, selectedType);
       if (result.success) {
         const settingsPayload: any = { business_type: selectedType };
         if (country) {
@@ -205,43 +205,79 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A1628' },
-  scrollContent: { flexGrow: 1 },
-  content: { flex: 1, padding: 24, paddingTop: 60 },
-  backBtn: { marginBottom: 16, alignSelf: 'flex-start', padding: 4 },
-  stepLabel: { fontSize: 13, color: '#25D366', fontWeight: '600', marginBottom: 6 },
+  container: {
+    flex: 1,
+    backgroundColor: '#0A1628',
+  },
+  scrollContent: {
+    flexGrow: 1,
+  },
+  content: {
+    flex: 1,
+    padding: 24,
+    paddingTop: 64,
+    paddingBottom: 40,
+  },
   connectedBadge: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 20,
-    paddingHorizontal: 14, paddingVertical: 8, alignSelf: 'flex-start', marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(37,211,102,0.1)',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignSelf: 'flex-start',
+    marginBottom: 16,
   },
-  connectedText: { color: '#25D366', fontSize: 13, fontWeight: '600', marginLeft: 6 },
-  header: { marginBottom: 28 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 8 },
-  subtitle: { fontSize: 15, color: '#64748B', lineHeight: 22 },
-  form: { marginBottom: 32 },
-  inputGroup: { marginBottom: 20 },
-  label: { fontSize: 14, color: '#FFFFFF', marginBottom: 8 },
+  connectedText: {
+    color: '#25D366',
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  header: {
+    marginBottom: 28,
+  },
+  title: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 6,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#888',
+    lineHeight: 20,
+  },
+  form: {
+    marginBottom: 24,
+  },
+  inputGroup: {
+    marginBottom: 20,
+  },
+  label: {
+    fontSize: 13,
+    color: '#AAAAAA',
+    marginBottom: 8,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   inputContainer: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#1A2942', borderRadius: 12, paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    paddingHorizontal: 16,
   },
-  inputIcon: { marginRight: 12 },
-  input: { flex: 1, height: 56, fontSize: 16, color: '#FFFFFF' },
-  phoneDisplay: { backgroundColor: '#1A2942', borderRadius: 12, padding: 16, marginBottom: 24 },
-  phoneLabel: { fontSize: 12, color: '#666', marginBottom: 4 },
-  phoneValue: { fontSize: 16, color: '#25D366', fontWeight: '600' },
-  button: {
-    backgroundColor: '#25D366', borderRadius: 12,
-    height: 56, alignItems: 'center', justifyContent: 'center',
+  inputIcon: {
+    marginRight: 12,
   },
-  buttonText: { color: '#FFFFFF', fontSize: 18, fontWeight: '600' },
-  features: { backgroundColor: '#1A2942', borderRadius: 16, padding: 20 },
-  featuresTitle: { fontSize: 16, fontWeight: '600', color: '#FFFFFF', marginBottom: 16 },
-  featureItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  featureText: { fontSize: 14, color: '#FFFFFF', marginLeft: 12 },
-
-  // Business type grid
+  input: {
+    flex: 1,
+    height: 52,
+    fontSize: 16,
+    color: '#FFFFFF',
+  },
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 24 },
   typeCard: {
     width: '47%', backgroundColor: '#1A2942', borderRadius: 16,
@@ -254,4 +290,59 @@ const styles = StyleSheet.create({
   typeLabelActive: { color: '#25D366' },
   typeDesc: { fontSize: 12, color: '#64748B', lineHeight: 17 },
   typeCheck: { position: 'absolute', top: 10, right: 10 },
+  phoneDisplay: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 20,
+  },
+  phoneLabel: {
+    fontSize: 11,
+    color: '#666',
+    marginBottom: 4,
+  },
+  phoneValue: {
+    fontSize: 15,
+    color: '#25D366',
+    fontWeight: '600',
+  },
+  button: {
+    backgroundColor: '#25D366',
+    borderRadius: 14,
+    height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  buttonDisabled: {
+    opacity: 0.7,
+  },
+  buttonText: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  features: {
+    marginTop: 28,
+    paddingBottom: 16,
+    backgroundColor: '#0A1628',
+  },
+  featuresTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8B9DC3',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  featureItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  featureText: {
+    fontSize: 14,
+    color: '#CBD5E1',
+  },
 });

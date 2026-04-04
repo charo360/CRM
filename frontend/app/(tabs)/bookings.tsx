@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { apiClient, bookingsAPI, productsAPI } from '../../context/api';
+import { useBusiness } from '../../context/BusinessContext';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -179,6 +180,7 @@ function BookingCard({ booking, onPress }: { booking: Booking; onPress: () => vo
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
 export default function BookingsScreen() {
+  const { config } = useBusiness();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [services, setServices] = useState<Service[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -199,6 +201,8 @@ export default function BookingsScreen() {
     service_id: '',
     service_name: '',
     date: formatDate(new Date()),
+    checkin_date: '',
+    checkout_date: '',
     time: '09:00',
     notes: '',
   });
@@ -271,9 +275,16 @@ export default function BookingsScreen() {
       Alert.alert('Missing Fields', 'Please select a service.');
       return;
     }
-    if (!newBooking.date || !newBooking.time) {
-      Alert.alert('Missing Fields', 'Please set a date and time.');
-      return;
+    if (config.showCheckinCheckout) {
+      if (!newBooking.checkin_date || !newBooking.checkout_date) {
+        Alert.alert('Missing Fields', 'Please set check-in and check-out dates.');
+        return;
+      }
+    } else {
+      if (!newBooking.date || !newBooking.time) {
+        Alert.alert('Missing Fields', 'Please set a date and time.');
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -281,9 +292,13 @@ export default function BookingsScreen() {
       const payload: any = {
         service_id: newBooking.service_id,
         date: newBooking.date,
-        time: newBooking.time,
+        time: config.showCheckinCheckout ? '00:00' : newBooking.time,
         notes: newBooking.notes,
         price: svc?.price || 0,
+        ...(config.showCheckinCheckout && {
+          checkin_date: newBooking.checkin_date,
+          checkout_date: newBooking.checkout_date,
+        }),
       };
       if (isWalkInCustomer) {
         payload.customer_name = 'Walk-in Customer';
@@ -292,7 +307,7 @@ export default function BookingsScreen() {
       }
       await bookingsAPI.createBooking(payload);
       setShowNewModal(false);
-      setNewBooking({ customer_id: '', customer_name: '', service_id: '', service_name: '', date: formatDate(new Date()), time: '09:00', notes: '' });
+      setNewBooking({ customer_id: '', customer_name: '', service_id: '', service_name: '', date: formatDate(new Date()), checkin_date: '', checkout_date: '', time: '09:00', notes: '' });
       setSelectedCustomer(null);
       setIsWalkInCustomer(false);
       setCustomerSearchQuery('');
@@ -481,7 +496,7 @@ export default function BookingsScreen() {
             <TouchableOpacity onPress={() => { setShowNewModal(false); setCustomerSearchQuery(''); }}>
               <Ionicons name="close" size={24} color="#94A3B8" />
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>New Booking</Text>
+            <Text style={styles.modalTitle}>New {config.bookingLabel}</Text>
             <TouchableOpacity onPress={handleCreate} disabled={saving}>
               {saving
                 ? <ActivityIndicator size="small" color="#25D366" />
@@ -492,7 +507,7 @@ export default function BookingsScreen() {
 
           <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
             {/* Customer selection */}
-            <Text style={styles.fieldLabel}>Customer *</Text>
+            <Text style={styles.fieldLabel}>{config.customerLabel} *</Text>
             <TouchableOpacity
               style={styles.customerSelect}
               onPress={() => setCustomerSelectVisible(true)}
@@ -523,8 +538,8 @@ export default function BookingsScreen() {
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
 
-            {/* Service selection */}
-            <Text style={styles.fieldLabel}>Service *</Text>
+            {/* Service / Listing selection */}
+            <Text style={styles.fieldLabel}>{config.catalogItemLabel} *</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
               {services.map(s => (
                 <TouchableOpacity
@@ -544,29 +559,51 @@ export default function BookingsScreen() {
               ))}
             </ScrollView>
 
-            {/* Date */}
-            <Text style={styles.fieldLabel}>Date *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor="#475569"
-              value={newBooking.date}
-              onChangeText={text => setNewBooking(prev => ({ ...prev, date: text }))}
-            />
-
-            {/* Time */}
-            <Text style={styles.fieldLabel}>Time *</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-              {['08:00','09:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00'].map(t => (
-                <TouchableOpacity
-                  key={t}
-                  style={[styles.timeChip, newBooking.time === t && styles.timeChipActive]}
-                  onPress={() => setNewBooking(prev => ({ ...prev, time: t }))}
-                >
-                  <Text style={[styles.timeChipText, newBooking.time === t && styles.timeChipTextActive]}>{t}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+            {config.showCheckinCheckout ? (
+              <>
+                {/* Rental: check-in / check-out date range */}
+                <Text style={styles.fieldLabel}>Check-in Date *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#475569"
+                  value={newBooking.checkin_date}
+                  onChangeText={text => setNewBooking(prev => ({ ...prev, checkin_date: text, date: text }))}
+                />
+                <Text style={styles.fieldLabel}>Check-out Date *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#475569"
+                  value={newBooking.checkout_date}
+                  onChangeText={text => setNewBooking(prev => ({ ...prev, checkout_date: text }))}
+                />
+              </>
+            ) : (
+              <>
+                {/* Appointment / Class: date + time slots */}
+                <Text style={styles.fieldLabel}>Date *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#475569"
+                  value={newBooking.date}
+                  onChangeText={text => setNewBooking(prev => ({ ...prev, date: text }))}
+                />
+                <Text style={styles.fieldLabel}>Time *</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
+                  {['08:00','09:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00'].map(t => (
+                    <TouchableOpacity
+                      key={t}
+                      style={[styles.timeChip, newBooking.time === t && styles.timeChipActive]}
+                      onPress={() => setNewBooking(prev => ({ ...prev, time: t }))}
+                    >
+                      <Text style={[styles.timeChipText, newBooking.time === t && styles.timeChipTextActive]}>{t}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
+            )}
 
             {/* Notes */}
             <Text style={styles.fieldLabel}>Notes</Text>

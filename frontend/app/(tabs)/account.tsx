@@ -24,20 +24,18 @@ import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/a
 
 import { NotificationHandler } from '../../utils/notification-handler';
 import TeamManagementModal from '../../components/TeamManagementModal';
-import ProductActionsModal from '../../components/ProductActionsModal';
-import SubscriptionModal from '../../components/SubscriptionModal';
 // IAP stubs — real react-native-iap is linked only in native production builds
 type ProductPurchase = { purchaseToken?: string; transactionId?: string };
 type PurchaseError = { code?: string; message?: string };
-const initConnection = async () => { };
+const initConnection = async () => {};
 const requestPurchase = async (_opts: any) => { throw new Error('IAP not available in this build'); };
-const purchaseUpdatedListener = (_cb: any): { remove: () => void } => ({ remove: () => { } });
-const purchaseErrorListener = (_cb: any): { remove: () => void } => ({ remove: () => { } });
-const finishTransaction = async (_opts: any) => { };
+const purchaseUpdatedListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
+const purchaseErrorListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
+const finishTransaction = async (_opts: any) => {};
 
 // Product IDs for credit bundles on each platform
 const CREDIT_PRODUCT_IDS: Record<string, string> = {
-  credits_500: Platform.OS === 'ios' ? 'com.charo360.credits500' : 'charo360_credits_500',
+  credits_500:  Platform.OS === 'ios' ? 'com.charo360.credits500'  : 'charo360_credits_500',
   credits_1000: Platform.OS === 'ios' ? 'com.charo360.credits1000' : 'charo360_credits_1000',
   credits_2500: Platform.OS === 'ios' ? 'com.charo360.credits2500' : 'charo360_credits_2500',
   credits_5000: Platform.OS === 'ios' ? 'com.charo360.credits5000' : 'charo360_credits_5000',
@@ -69,26 +67,7 @@ interface Product {
   in_stock: boolean;
 }
 
-type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-type DayHours = { open: string; close: string; closed: boolean };
-const DEFAULT_HOURS: Record<DayKey, DayHours> = {
-  mon: { open: '08:00', close: '17:00', closed: false },
-  tue: { open: '08:00', close: '17:00', closed: false },
-  wed: { open: '08:00', close: '17:00', closed: false },
-  thu: { open: '08:00', close: '17:00', closed: false },
-  fri: { open: '08:00', close: '17:00', closed: false },
-  sat: { open: '09:00', close: '14:00', closed: true },
-  sun: { open: '09:00', close: '14:00', closed: true },
-};
-const DAY_LABELS: Record<DayKey, string> = {
-  mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday',
-  fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
-};
-
 export default function AccountScreen() {
-  const router = useRouter();
-  const { user, logout } = useAuth();
-  const { refresh: refreshBusinessContext } = useBusiness();
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -106,8 +85,6 @@ export default function AccountScreen() {
   const [waMsgLimit, setWaMsgLimit] = useState(50);
   const [waCountdown, setWaCountdown] = useState(0);
   const [waCopied, setWaCopied] = useState(false);
-  const [waDisconnectReason, setWaDisconnectReason] = useState<string | null>(null);
-  const waHealthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -124,25 +101,8 @@ export default function AccountScreen() {
 
   // Credit Top-up State
   const [extraCredits, setExtraCredits] = useState(0);
-  
-  // Subscription Modal
-  const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
   const [buyingCredits, setBuyingCredits] = useState<string | null>(null);
-
-  // Business Type State
-  const [businessType, setBusinessType] = useState('retail');
-  const [savingBusinessType, setSavingBusinessType] = useState(false);
-  const [showBtDropdown, setShowBtDropdown] = useState(false);
-
-  // Business Hours State
-  const [businessHours, setBusinessHours] = useState<Record<DayKey, DayHours>>(DEFAULT_HOURS);
-  const [savingHours, setSavingHours] = useState(false);
-
-  // Rental Availability State
-  const [blockedDates, setBlockedDates] = useState<string[]>([]);
-  const [calendarMonth, setCalendarMonth] = useState(new Date());
-  const [savingAvailability, setSavingAvailability] = useState(false);
 
   // AI Model State
   const [aiModel, setAiModel] = useState('standard');
@@ -156,8 +116,13 @@ export default function AccountScreen() {
   // Team Management State
   const [showTeamModal, setShowTeamModal] = useState(false);
 
-  // Product Actions State
-  const [showProductActionsModal, setShowProductActionsModal] = useState(false);
+  // Business Type State
+  const [businessType, setBusinessType] = useState('');
+  const [showBusinessTypePicker, setShowBusinessTypePicker] = useState(false);
+
+  const { user, logout, refreshUser } = useAuth();
+  const { refresh: refreshBusinessContext } = useBusiness();
+  const router = useRouter();
 
   // IAP refs for purchase callbacks
   const pendingBundleIdRef = useRef<string | null>(null);
@@ -167,7 +132,7 @@ export default function AccountScreen() {
   useEffect(() => {
     fetchData();
     // Init IAP connection
-    initConnection().catch(() => { });
+    initConnection().catch(() => {});
     return () => {
       purchaseListenerRef.current?.remove();
       errorListenerRef.current?.remove();
@@ -192,12 +157,6 @@ export default function AccountScreen() {
       setAutoReplyEnabled(settingsRes.data.auto_reply_enabled || false);
       setAutoReplyAudience(settingsRes.data.auto_reply_audience || 'everyone');
       setBusinessType(settingsRes.data.business_type || 'retail');
-      if (settingsRes.data.business_hours) {
-        setBusinessHours({ ...DEFAULT_HOURS, ...settingsRes.data.business_hours });
-      }
-      if (settingsRes.data.rental_availability) {
-        setBlockedDates(settingsRes.data.rental_availability);
-      }
 
       // Fetch WhatsApp status
       try {
@@ -207,7 +166,6 @@ export default function AccountScreen() {
         setWaNumber(waRes.number || '');
         setWaMsgSent(waRes.messages_sent || 0);
         setWaMsgLimit(waRes.messages_limit || 50);
-        setWaDisconnectReason(waRes.disconnect_reason || null);
       } catch (e) {
         console.log('WhatsApp status not available');
       }
@@ -224,80 +182,15 @@ export default function AccountScreen() {
     }
   };
 
-  const saveBusinessHours = async () => {
-    setSavingHours(true);
-    try {
-      await apiClient.put('/settings', { business_hours: businessHours });
-    } catch (e) {
-      Alert.alert('Error', 'Failed to save business hours');
-    } finally {
-      setSavingHours(false);
-    }
-  };
-
-  const saveRentalAvailability = async () => {
-    setSavingAvailability(true);
-    try {
-      await apiClient.put('/settings', { rental_availability: blockedDates });
-      Alert.alert('Saved', 'Availability calendar updated.');
-    } catch (e) {
-      Alert.alert('Error', 'Failed to save availability');
-    } finally {
-      setSavingAvailability(false);
-    }
-  };
-
-  const toggleBlockedDate = (dateStr: string) => {
-    setBlockedDates(prev =>
-      prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr]
-    );
-  };
-
-  const getCalendarDays = (month: Date): (string | null)[] => {
-    const year = month.getFullYear();
-    const mo = month.getMonth();
-    const firstDay = new Date(year, mo, 1).getDay();
-    const daysInMonth = new Date(year, mo + 1, 0).getDate();
-    const days: (string | null)[] = [];
-    for (let i = 0; i < firstDay; i++) days.push(null);
-    for (let d = 1; d <= daysInMonth; d++) {
-      const mm = String(mo + 1).padStart(2, '0');
-      const dd = String(d).padStart(2, '0');
-      days.push(`${year}-${mm}-${dd}`);
-    }
-    return days;
-  };
-
   const clearWaTimers = useCallback(() => {
     if (waCountdownRef.current) { clearInterval(waCountdownRef.current); waCountdownRef.current = null; }
     if (waPollingRef.current) { clearInterval(waPollingRef.current); waPollingRef.current = null; }
     if (waRefreshRef.current) { clearTimeout(waRefreshRef.current); waRefreshRef.current = null; }
-    if (waHealthPollRef.current) { clearInterval(waHealthPollRef.current); waHealthPollRef.current = null; }
   }, []);
 
   useEffect(() => {
     return () => clearWaTimers();
   }, [clearWaTimers]);
-
-  // Poll WhatsApp health every 30s — detect silent disconnects without user needing to refresh
-  useEffect(() => {
-    if (waHealthPollRef.current) clearInterval(waHealthPollRef.current);
-    waHealthPollRef.current = setInterval(async () => {
-      try {
-        const waRes = await whatsappAPI.getStatus();
-        setWaConnected(waRes.connected);
-        setWaStatus(waRes.status);
-        setWaDisconnectReason(waRes.disconnect_reason || null);
-        if (waRes.connected) {
-          setWaMsgSent(waRes.messages_sent || 0);
-          setWaMsgLimit(waRes.messages_limit || 50);
-        }
-      } catch (_e) { /* ignore network errors — don't flash false disconnects */ }
-    }, 30000);
-    return () => {
-      if (waHealthPollRef.current) clearInterval(waHealthPollRef.current);
-    };
-  }, []);
 
   const startPairingTimers = useCallback((code: string) => {
     clearWaTimers();
@@ -426,22 +319,40 @@ export default function AccountScreen() {
   };
 
   const handleSubscribe = async (plan: SubscriptionPlan) => {
-    setShowSubscriptionModal(true);
-  };
+    if (!user) return;
 
-  const handleSubscriptionSuccess = async () => {
-    try {
-      await fetchData();
-    } catch (error) {
-      console.error('Error refreshing after subscription:', error);
-    }
+    Alert.alert(
+      'Subscribe',
+      `Subscribe to ${plan.name} plan (${plan.currency || currency} ${plan.amount_display})?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Subscribe',
+          onPress: async () => {
+            setSubscribing(true);
+            try {
+              await apiClient.post('/subscription/verify-purchase', {
+                plan_id: plan.id,
+                purchase_token: `manual_${Date.now()}`,
+                platform: Platform.OS,
+              });
+              Alert.alert('Success', 'Your subscription has been activated!');
+              refreshUser();
+            } catch (error: any) {
+              Alert.alert('Error', error.response?.data?.detail || 'Failed to activate subscription');
+            } finally {
+              setSubscribing(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleTogglePulse = async (value: boolean) => {
     setPulseEnabled(value);
     try {
-      const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-      await apiClient.put('/settings', { daily_pulse_enabled: value, timezone: deviceTimezone });
+      await apiClient.put('/settings', { daily_pulse_enabled: value });
       if (value) {
         Alert.alert('Daily Pulse Enabled', `You'll receive your business summary every day at ${formatTime(pulseTime)} via WhatsApp.`);
       }
@@ -459,8 +370,7 @@ export default function AccountScreen() {
       const newTime = `${hours}:${minutes}`;
       setPulseTime(newTime);
       try {
-        const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-        await apiClient.put('/settings', { daily_pulse_time: newTime, timezone: deviceTimezone });
+        await apiClient.put('/settings', { daily_pulse_time: newTime });
       } catch (error) {
         Alert.alert('Error', 'Failed to update time');
       }
@@ -586,54 +496,6 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>WhatsApp Business</Text>
           <View style={styles.settingsCard}>
-            {/* Disconnection warning banner */}
-            {!waConnected && waStatus === 'disconnected' && (
-              <View style={{ backgroundColor: 'rgba(255,68,68,0.12)', borderRadius: 10, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(255,68,68,0.3)' }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
-                  <Ionicons name="warning" size={18} color="#FF4444" />
-                  <Text style={{ color: '#FF4444', fontSize: 14, fontWeight: '700', marginLeft: 8 }}>WhatsApp Disconnected</Text>
-                </View>
-                <Text style={{ color: '#FFB3B3', fontSize: 13, lineHeight: 19, marginBottom: 10 }}>
-                  {waDisconnectReason === 'conflict'
-                    ? 'WhatsApp was opened on another device and replaced this connection. Your bot is not responding to messages.'
-                    : waDisconnectReason === 'logged_out'
-                    ? 'Your WhatsApp session was logged out. You need to reconnect to resume your bot.'
-                    : waDisconnectReason === 'reconnect_timeout'
-                    ? 'WhatsApp failed to reconnect after 60 seconds. Tap below to re-link your number.'
-                    : 'Your WhatsApp connection dropped. Your bot is not responding to messages.'}
-                </Text>
-                <TouchableOpacity
-                  style={{ backgroundColor: '#FF4444', borderRadius: 8, paddingVertical: 10, alignItems: 'center' }}
-                  onPress={async () => {
-                    const phoneToUse = waNumber || waPhoneInput;
-                    if (!phoneToUse) {
-                      Alert.alert('Reconnect', 'Please enter your phone number below to reconnect.');
-                      return;
-                    }
-                    setWaConnecting(true);
-                    setWaPairingCode('');
-                    try {
-                      const res = await whatsappAPI.connect(phoneToUse);
-                      if (res.pairing_code) {
-                        setWaDisconnectReason(null);
-                        startPairingTimers(res.pairing_code);
-                      } else {
-                        Alert.alert('Error', res.message || 'Failed to get pairing code');
-                      }
-                    } catch (e: any) {
-                      Alert.alert('Error', e.response?.data?.detail || 'Could not start reconnection. Try again.');
-                    } finally {
-                      setWaConnecting(false);
-                    }
-                  }}
-                  disabled={waConnecting}
-                >
-                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '700' }}>
-                    {waConnecting ? 'Connecting...' : '🔄 Reconnect WhatsApp'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
             {waConnected ? (
               <View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
@@ -657,10 +519,12 @@ export default function AccountScreen() {
                     try {
                       Alert.alert('Syncing...', 'Pulling contacts and chat history from WhatsApp. This may take a few minutes...');
                       const result = await whatsappAPI.sync();
+                      const c = result.contacts || {};
+                      const h = result.history || {};
                       const t = result.totals || {};
                       Alert.alert(
-                        'Sync Started ✅',
-                        `Syncing contacts and chat history in the background.\n\nCurrently in app: ${t.customers || 0} contacts, ${t.messages || 0} messages.\n\nRefresh your Contacts tab in 1-3 minutes to see your WhatsApp contacts and chats appear.`
+                        'Sync Complete',
+                        `This sync: ${c.created || 0} new contacts, ${c.updated || 0} updated, ${h.chats_synced || 0} chats synced, ${h.messages_synced || 0} messages pulled\n\nTotal in app: ${t.customers || 0} contacts, ${t.messages || 0} messages (${t.synced_messages || 0} from WhatsApp history)\n\nAI classification running in background. Go to Customers tab to see your contacts and tap any to view chat history.`
                       );
                     } catch (e: any) {
                       Alert.alert('Sync Failed', e.response?.data?.detail || e.message || 'Could not sync WhatsApp data. Try again.');
@@ -709,15 +573,7 @@ export default function AccountScreen() {
                 <Text style={{ color: '#8B9DC3', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection...</Text>
                 <TouchableOpacity
                   style={{ marginTop: 14, alignItems: 'center' }}
-                  onPress={async () => {
-                    clearWaTimers();
-                    setWaPairingCode('');
-                    // Delete the stale instance on Evolution API so the next connect starts fresh
-                    try { await whatsappAPI.disconnect(); } catch (_e) { /* ignore — instance may already be gone */ }
-                    setWaConnected(false);
-                    setWaStatus('not_connected');
-                    setWaDisconnectReason(null);
-                  }}
+                  onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaPhoneInput(''); }}
                 >
                   <Text style={{ color: '#8B9DC3', fontSize: 14 }}>Cancel</Text>
                 </TouchableOpacity>
@@ -888,234 +744,6 @@ export default function AccountScreen() {
           ))}
         </View>
 
-        {/* Business Type */}
-        {(() => {
-          const BT_OPTIONS = [
-            { id: 'retail',     label: '🛍️ Retail',          desc: 'Physical / online shop' },
-            { id: 'salon',      label: '✂️ Salon',            desc: 'Beauty & hair' },
-            { id: 'services',   label: '🔧 Services',         desc: 'Freelance & trades' },
-            { id: 'fitness',    label: '🏋️ Fitness',          desc: 'Gym & classes' },
-            { id: 'restaurant', label: '🍽️ Restaurant',       desc: 'Food & dining' },
-            { id: 'healthcare', label: '🏥 Healthcare',       desc: 'Clinic & medical' },
-            { id: 'creator',    label: '🎨 Creator',          desc: 'Digital products' },
-            { id: 'rental',     label: '🏠 Rental / Airbnb',  desc: 'Properties, cars & equipment' },
-            { id: 'tech',       label: '💻 Tech / SaaS',      desc: 'Software, fintech & agencies' },
-          ];
-          const selected = BT_OPTIONS.find(b => b.id === businessType) || BT_OPTIONS[0];
-          return (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Business Type</Text>
-              <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>Tells the AI how to handle bookings and products.</Text>
-              {/* Dropdown trigger */}
-              <TouchableOpacity
-                style={styles.btDropdownTrigger}
-                onPress={() => setShowBtDropdown(v => !v)}
-                activeOpacity={0.8}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.btDropdownLabel}>{selected.label}</Text>
-                  <Text style={styles.btDropdownDesc}>{selected.desc}</Text>
-                </View>
-                <Ionicons
-                  name={showBtDropdown ? 'chevron-up' : 'chevron-down'}
-                  size={18}
-                  color='#25D366'
-                />
-              </TouchableOpacity>
-              {/* Options list */}
-              {showBtDropdown && (
-                <View style={styles.btDropdownList}>
-                  {BT_OPTIONS.map((bt, idx) => (
-                    <TouchableOpacity
-                      key={bt.id}
-                      style={[
-                        styles.btDropdownItem,
-                        bt.id === businessType && styles.btDropdownItemActive,
-                        idx === BT_OPTIONS.length - 1 && { borderBottomWidth: 0 },
-                      ]}
-                      onPress={async () => {
-                        setShowBtDropdown(false);
-                        if (businessType === bt.id) return;
-                        setBusinessType(bt.id);
-                        setSavingBusinessType(true);
-                        try {
-                          await apiClient.put('/settings', { business_type: bt.id });
-                          await refreshBusinessContext();
-                          Alert.alert('Success', 'Business type updated. UI will adapt accordingly.');
-                        } catch (e) {
-                          Alert.alert('Error', 'Failed to save business type');
-                        } finally {
-                          setSavingBusinessType(false);
-                        }
-                      }}
-                    >
-                      <Text style={[styles.btDropdownItemLabel, bt.id === businessType && { color: '#25D366' }]}>{bt.label}</Text>
-                      <Text style={styles.btDropdownItemDesc}>{bt.desc}</Text>
-                      {bt.id === businessType && (
-                        <Ionicons name='checkmark' size={16} color='#25D366' style={{ marginLeft: 'auto' }} />
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-              {savingBusinessType && <Text style={{ color: '#64748B', fontSize: 12, marginTop: 8 }}>Saving...</Text>}
-            </View>
-          );
-        })()}
-
-        {/* Business Hours / Rental Availability */}
-        {businessType === 'rental' ? (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Date Availability</Text>
-            <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 12, marginTop: -4 }}>
-              Tap dates to mark them as <Text style={{ color: '#EF4444' }}>unavailable</Text> (blocked). All other dates are bookable.
-            </Text>
-            {/* Month navigation */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-              <TouchableOpacity
-                onPress={() => setCalendarMonth(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
-                style={{ padding: 6 }}
-              >
-                <Ionicons name="chevron-back" size={20} color="#25D366" />
-              </TouchableOpacity>
-              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>
-                {calendarMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}
-              </Text>
-              <TouchableOpacity
-                onPress={() => setCalendarMonth(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
-                style={{ padding: 6 }}
-              >
-                <Ionicons name="chevron-forward" size={20} color="#25D366" />
-              </TouchableOpacity>
-            </View>
-            {/* Day labels */}
-            <View style={{ flexDirection: 'row', marginBottom: 4 }}>
-              {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
-                <Text key={d} style={{ flex: 1, textAlign: 'center', color: '#64748B', fontSize: 11, fontWeight: '700' }}>{d}</Text>
-              ))}
-            </View>
-            {/* Calendar grid */}
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#0F1E35', borderRadius: 12, borderWidth: 1, borderColor: '#1A2942', padding: 6 }}>
-              {getCalendarDays(calendarMonth).map((dateStr, i) => {
-                if (!dateStr) return <View key={`empty-${i}`} style={{ width: '14.28%', aspectRatio: 1 }} />;
-                const today = new Date();
-                const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
-                const isPast = dateStr < todayStr;
-                const isBlocked = blockedDates.includes(dateStr);
-                const dayNum = parseInt(dateStr.split('-')[2]);
-                return (
-                  <TouchableOpacity
-                    key={dateStr}
-                    style={{
-                      width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center',
-                      borderRadius: 6, margin: 1,
-                      backgroundColor: isBlocked ? '#EF444422' : 'transparent',
-                      opacity: isPast ? 0.35 : 1,
-                    }}
-                    onPress={() => !isPast && toggleBlockedDate(dateStr)}
-                    disabled={isPast}
-                  >
-                    <Text style={{
-                      fontSize: 13, fontWeight: '600',
-                      color: isBlocked ? '#EF4444' : dateStr === todayStr ? '#25D366' : '#FFFFFF',
-                    }}>{dayNum}</Text>
-                    {isBlocked && <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: '#EF4444', marginTop: 1 }} />}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            {/* Legend */}
-            <View style={{ flexDirection: 'row', gap: 16, marginTop: 10, marginBottom: 12 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: '#25D36630' }} />
-                <Text style={{ color: '#64748B', fontSize: 12 }}>Available</Text>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: '#EF444422', borderWidth: 1, borderColor: '#EF4444' }} />
-                <Text style={{ color: '#64748B', fontSize: 12 }}>Blocked</Text>
-              </View>
-              {blockedDates.length > 0 && (
-                <TouchableOpacity onPress={() => setBlockedDates([])} style={{ marginLeft: 'auto' }}>
-                  <Text style={{ color: '#64748B', fontSize: 12, textDecorationLine: 'underline' }}>Clear all</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            {blockedDates.length > 0 && (
-              <Text style={{ color: '#64748B', fontSize: 12, marginBottom: 10 }}>
-                {blockedDates.length} date{blockedDates.length !== 1 ? 's' : ''} blocked
-              </Text>
-            )}
-            <TouchableOpacity
-              style={[styles.saveHoursBtn, savingAvailability && { opacity: 0.6 }]}
-              onPress={saveRentalAvailability}
-              disabled={savingAvailability}
-            >
-              {savingAvailability
-                ? <ActivityIndicator size="small" color="#FFFFFF" />
-                : <Text style={styles.saveHoursBtnText}>Save Availability</Text>
-              }
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Business Hours</Text>
-            <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 10, marginTop: -4 }}>
-              Sets booking availability — customers can't book outside these times.
-            </Text>
-            <View style={styles.hoursCard}>
-              {(['mon','tue','wed','thu','fri','sat','sun'] as DayKey[]).map((day, idx) => {
-                const h = businessHours[day];
-                return (
-                  <View key={day} style={[styles.hoursRow, idx === 6 && { borderBottomWidth: 0 }]}>
-                    <Text style={styles.hoursDay}>{DAY_LABELS[day].slice(0,3)}</Text>
-                    <TouchableOpacity
-                      style={[styles.hoursToggle, !h.closed && styles.hoursToggleActive]}
-                      onPress={() => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], closed: !prev[day].closed } }))}
-                    >
-                      <Text style={[styles.hoursToggleText, !h.closed && styles.hoursToggleTextActive]}>
-                        {h.closed ? 'Closed' : 'Open'}
-                      </Text>
-                    </TouchableOpacity>
-                    {!h.closed ? (
-                      <View style={styles.hoursTimeRow}>
-                        <TextInput
-                          style={styles.hoursTimeInput}
-                          value={h.open}
-                          onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], open: v } }))}
-                          placeholder="08:00"
-                          placeholderTextColor="#475569"
-                          maxLength={5}
-                        />
-                        <Text style={{ color: '#64748B', fontSize: 13 }}>–</Text>
-                        <TextInput
-                          style={styles.hoursTimeInput}
-                          value={h.close}
-                          onChangeText={v => setBusinessHours(prev => ({ ...prev, [day]: { ...prev[day], close: v } }))}
-                          placeholder="17:00"
-                          placeholderTextColor="#475569"
-                          maxLength={5}
-                        />
-                      </View>
-                    ) : (
-                      <View style={{ flex: 1 }} />
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-            <TouchableOpacity
-              style={[styles.saveHoursBtn, savingHours && { opacity: 0.6 }]}
-              onPress={saveBusinessHours}
-              disabled={savingHours}
-            >
-              {savingHours
-                ? <ActivityIndicator size="small" color="#FFFFFF" />
-                : <Text style={styles.saveHoursBtnText}>Save Hours</Text>
-              }
-            </TouchableOpacity>
-          </View>
-        )}
-
         {/* Settings */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Settings</Text>
@@ -1124,10 +752,10 @@ export default function AccountScreen() {
               style={styles.settingItem}
               onPress={() => setShowTeamModal(true)}
             >
-              <Ionicons
-                name={user?.team_members_count && user.team_members_count > 1 ? "people" : "person-add-outline"}
-                size={24}
-                color={user?.team_members_count && user.team_members_count > 1 ? "#4A90D9" : "#25D366"}
+              <Ionicons 
+                name={user?.team_members_count && user.team_members_count > 1 ? "people" : "person-add-outline"} 
+                size={24} 
+                color={user?.team_members_count && user.team_members_count > 1 ? "#4A90D9" : "#25D366"} 
               />
               <Text style={styles.settingText}>
                 {user?.team_members_count && user.team_members_count > 1 ? "Team Management" : "Add Team Members"}
@@ -1142,6 +770,23 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Analytics</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => setShowBusinessTypePicker(true)}
+            >
+              <Ionicons name="storefront-outline" size={24} color="#25D366" />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.settingText}>Business Type</Text>
+                <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
+                  {({
+                    retail: 'Retail', salon: 'Salon & Beauty', services: 'Services / Tech',
+                    fitness: 'Fitness', restaurant: 'Restaurant', healthcare: 'Healthcare',
+                    creator: 'Creator', rental: 'Rental / Airbnb', general: 'General / Other'
+                  } as any)[businessType] || businessType}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>
@@ -1150,17 +795,6 @@ export default function AccountScreen() {
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="book-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Business Knowledge</Text>
-              <Ionicons name="chevron-forward" size={20} color="#666" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.settingItem}
-              onPress={() => setShowProductActionsModal(true)}
-            >
-              <Ionicons name="options-outline" size={24} color="#6366f1" />
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.settingText}>WhatsApp Product Actions</Text>
-                <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>Customise buttons shown when sending products</Text>
-              </View>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
             <TouchableOpacity
@@ -1183,8 +817,8 @@ export default function AccountScreen() {
                 {autoReplyEnabled && (
                   <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
                     {autoReplyAudience === 'everyone' ? 'Replying to everyone' :
-                      autoReplyAudience === 'customers_only' ? 'Customers only' :
-                        'New contacts only'}
+                     autoReplyAudience === 'customers_only' ? 'Customers only' :
+                     'New contacts only'}
                   </Text>
                 )}
               </View>
@@ -1212,8 +846,8 @@ export default function AccountScreen() {
                   <Text style={styles.settingText}>Reply Audience</Text>
                   <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
                     {autoReplyAudience === 'everyone' ? 'Everyone who messages' :
-                      autoReplyAudience === 'customers_only' ? 'Only saved customers' :
-                        'Only new / first-time contacts'}
+                     autoReplyAudience === 'customers_only' ? 'Only saved customers' :
+                     'Only new / first-time contacts'}
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#666" />
@@ -1308,11 +942,73 @@ export default function AccountScreen() {
 
 
 
-        {/* Product Actions Modal */}
-        <ProductActionsModal
-          visible={showProductActionsModal}
-          onClose={() => setShowProductActionsModal(false)}
-        />
+        {/* Business Type Picker Modal */}
+        <Modal
+          visible={showBusinessTypePicker}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowBusinessTypePicker(false)}
+        >
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' }}>
+            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 36 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>Business Type</Text>
+                <TouchableOpacity onPress={() => setShowBusinessTypePicker(false)}>
+                  <Text style={{ color: '#8B9DC3', fontSize: 16 }}>Close</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 16 }}>
+                Changing your business type personalises your dashboard, catalog labels, and booking features.
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                {[
+                  { id: 'retail',     icon: '🛍️',  label: 'Retail',          desc: 'Shop & products' },
+                  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',  desc: 'Hair & services' },
+                  { id: 'services',   icon: '🔧',   label: 'Services',        desc: 'Trades & repairs' },
+                  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',         desc: 'Gym & classes' },
+                  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',      desc: 'Food & dining' },
+                  { id: 'healthcare', icon: '🏥',   label: 'Healthcare',      desc: 'Clinic & medical' },
+                  { id: 'creator',    icon: '🎨',   label: 'Creator',         desc: 'Digital products' },
+                  { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb', desc: 'Properties & cars' },
+                  { id: 'general',    icon: '💬',   label: 'General / Other', desc: 'Fintech, NGO & info' },
+                ].map(bt => (
+                  <TouchableOpacity
+                    key={bt.id}
+                    style={{
+                      width: '47%',
+                      backgroundColor: businessType === bt.id ? 'rgba(37,211,102,0.08)' : 'rgba(255,255,255,0.05)',
+                      borderRadius: 12,
+                      padding: 14,
+                      borderWidth: 1.5,
+                      borderColor: businessType === bt.id ? '#25D366' : 'transparent',
+                      position: 'relative',
+                    }}
+                    onPress={async () => {
+                      setBusinessType(bt.id);
+                      setShowBusinessTypePicker(false);
+                      try {
+                        await settingsAPI.updateSettings({ business_type: bt.id });
+                        await refreshBusinessContext();
+                      } catch (e) {
+                        console.log('Failed to update business type', e);
+                      }
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ fontSize: 26, marginBottom: 6 }}>{bt.icon}</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: businessType === bt.id ? '#25D366' : '#FFFFFF', marginBottom: 2 }}>{bt.label}</Text>
+                    <Text style={{ fontSize: 11, color: '#64748B' }}>{bt.desc}</Text>
+                    {businessType === bt.id && (
+                      <View style={{ position: 'absolute', top: 8, right: 8 }}>
+                        <Ionicons name="checkmark-circle" size={18} color="#25D366" />
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         {/* AI Model Picker Modal */}
         <Modal
@@ -1401,9 +1097,9 @@ export default function AccountScreen() {
               )}
 
               {[
-                { bundle_id: 'credits_500', label: '500 Credits', price: '$2.99', note: '~500 manual msgs or ~312 GPT-4o mini replies' },
-                { bundle_id: 'credits_1000', label: '1,000 Credits', price: '$4.99', note: '~1,000 manual msgs or ~625 GPT-4o mini replies' },
-                { bundle_id: 'credits_2500', label: '2,500 Credits', price: '$9.99', note: '~2,500 manual msgs or ~1,562 GPT-4o mini replies' },
+                { bundle_id: 'credits_500',  label: '500 Credits',   price: '$2.99',  note: '~500 manual msgs or ~312 GPT-4o mini replies' },
+                { bundle_id: 'credits_1000', label: '1,000 Credits', price: '$4.99',  note: '~1,000 manual msgs or ~625 GPT-4o mini replies' },
+                { bundle_id: 'credits_2500', label: '2,500 Credits', price: '$9.99',  note: '~2,500 manual msgs or ~1,562 GPT-4o mini replies' },
                 { bundle_id: 'credits_5000', label: '5,000 Credits', price: '$17.99', note: 'Best value — ~5,000 manual msgs or ~3,125 GPT-4o mini replies' },
               ].map((bundle) => (
                 <TouchableOpacity
@@ -1615,7 +1311,7 @@ export default function AccountScreen() {
                   setShowAudiencePicker(false);
                   try {
                     await settingsAPI.updateSettings({ auto_reply_audience: opt.value });
-                  } catch (e) { }
+                  } catch (e) {}
                 }}
               >
                 <View style={{ flex: 1 }}>
@@ -1676,14 +1372,6 @@ export default function AccountScreen() {
         onClose={() => setShowTeamModal(false)}
         userRole={user?.role || 'owner'}
         userId={user?.id || ''}
-      />
-
-      {/* Subscription Modal */}
-      <SubscriptionModal
-        visible={showSubscriptionModal}
-        onClose={() => setShowSubscriptionModal(false)}
-        onSuccess={handleSubscriptionSuccess}
-        currentPlan={user?.subscription_plan}
       />
 
     </SafeAreaView >
@@ -1861,92 +1549,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
-  btDropdownTrigger: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0F1E35',
-    borderWidth: 1,
-    borderColor: '#25D366',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  btDropdownLabel: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  btDropdownDesc: {
-    color: '#64748B',
-    fontSize: 12,
-    marginTop: 2,
-  },
-  btDropdownList: {
-    backgroundColor: '#0F1E35',
-    borderWidth: 1,
-    borderColor: '#1A2942',
-    borderRadius: 12,
-    marginTop: 6,
-    overflow: 'hidden',
-  },
-  btDropdownItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 13,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1A2942',
-  },
-  btDropdownItemActive: {
-    backgroundColor: 'rgba(37,211,102,0.08)',
-  },
-  btDropdownItemLabel: {
-    color: '#94A3B8',
-    fontSize: 14,
-    fontWeight: '600',
-    width: 120,
-  },
-  btDropdownItemDesc: {
-    color: '#64748B',
-    fontSize: 12,
-    flex: 1,
-  },
-  hoursCard: {
-    backgroundColor: '#0F1E35',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#1A2942',
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
-  hoursRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1A2942',
-    gap: 8,
-  },
-  hoursDay: { color: '#FFFFFF', fontSize: 13, fontWeight: '600', width: 34 },
-  hoursToggle: {
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6,
-    backgroundColor: '#0A1628', borderWidth: 1, borderColor: '#334155', width: 58, alignItems: 'center',
-  },
-  hoursToggleActive: { borderColor: '#25D366', backgroundColor: '#25D36615' },
-  hoursToggleText: { color: '#64748B', fontSize: 12, fontWeight: '600' },
-  hoursToggleTextActive: { color: '#25D366' },
-  hoursTimeRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  hoursTimeInput: {
-    backgroundColor: '#0A1628', color: '#FFFFFF', borderRadius: 6,
-    borderWidth: 1, borderColor: '#1A2942', paddingHorizontal: 8, paddingVertical: 4,
-    fontSize: 13, width: 54, textAlign: 'center',
-  },
-  saveHoursBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#25D366', borderRadius: 10, paddingVertical: 12,
-  },
-  saveHoursBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '600' },
   settingsCard: {
     backgroundColor: '#1A2942',
     borderRadius: 12,

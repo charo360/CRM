@@ -16,7 +16,6 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient } from '../../context/api';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
 export default function LoginScreen() {
@@ -36,7 +35,6 @@ export default function LoginScreen() {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const refreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentCodeRef = useRef<string>('');
 
   const router = useRouter();
@@ -48,7 +46,6 @@ export default function LoginScreen() {
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
     if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     if (refreshRef.current) { clearTimeout(refreshRef.current); refreshRef.current = null; }
-    if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
   }, []);
 
   useEffect(() => {
@@ -61,13 +58,6 @@ export default function LoginScreen() {
     currentCodeRef.current = code;
     setCountdown(60);
     setCopied(false);
-
-    // Keep backend alive during pairing (before user is authenticated)
-    if (!keepAliveRef.current) {
-      keepAliveRef.current = setInterval(async () => {
-        try { await apiClient.get('/health', { timeout: 8000 }); } catch (_) {}
-      }, 4 * 60 * 1000);
-    }
 
     // Copy to clipboard immediately
     Clipboard.setStringAsync(code).then(() => {
@@ -169,19 +159,22 @@ export default function LoginScreen() {
   };
 
   const handleOpenWhatsApp = () => {
-    if (pairingCode) {
-      const link = `https://wa.me/login?code=${pairingCode}`;
-      Linking.openURL(link)
-        .catch(() => Linking.openURL('whatsapp://'))
-        .catch(() => {
-          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually and go to Linked Devices.');
-        });
-    } else {
-      Linking.openURL('whatsapp://')
-        .catch(() => {
-          Alert.alert('Error', 'Could not open WhatsApp. Please open it manually.');
-        });
-    }
+    // Try regular WhatsApp first; on Android fall back to WhatsApp Business package
+    Linking.openURL('whatsapp://')
+      .catch(() => {
+        if (Platform.OS === 'android') {
+          Linking.openURL('intent://send/#Intent;scheme=whatsapp;package=com.whatsapp.w4b;end')
+            .catch(() => Alert.alert(
+              'Open WhatsApp manually',
+              'Go to WhatsApp or WhatsApp Business → 3-dot menu → Linked Devices → Link a Device → Link with phone number'
+            ));
+        } else {
+          Alert.alert(
+            'Open WhatsApp manually',
+            'Go to WhatsApp or WhatsApp Business → Settings → Linked Devices → Link a Device → Link with phone number'
+          );
+        }
+      });
   };
 
   const handleCancel = () => {
@@ -245,11 +238,9 @@ export default function LoginScreen() {
             </View>
           ) : (
             <View style={styles.pairingSection}>
-              <Text style={styles.pairingTitle}>Enter this code in WhatsApp</Text>
-              <Text style={styles.pairingInstructions}>
-                Open WhatsApp {'>'} Linked Devices {'>'} Link a Device {'>'} Link with phone number
-              </Text>
 
+              {/* ── Code box ── */}
+              <Text style={styles.pairingTitle}>Your pairing code</Text>
               <TouchableOpacity
                 onPress={handleCopyCode}
                 activeOpacity={0.7}
@@ -263,31 +254,48 @@ export default function LoginScreen() {
                     color={copied ? '#25D366' : '#8B9DC3'}
                   />
                   <Text style={[styles.copyText, copied && { color: '#25D366' }]}>
-                    {copied ? 'Copied to clipboard!' : 'Tap to copy code'}
+                    {copied ? 'Copied!' : 'Tap to copy'}
                   </Text>
                 </View>
               </TouchableOpacity>
 
-              <View style={styles.notificationBox}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
-                  <Ionicons name="notifications" size={18} color="#25D366" />
-                  <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600', marginLeft: 8 }}>Check your phone for push notification</Text>
-                </View>
-                <Text style={{ color: '#8B9DC3', fontSize: 12, lineHeight: 18 }}>
-                  WhatsApp will send a notification to link this device. Tap it to open the pairing screen, then enter the code above.
-                </Text>
-              </View>
-
+              {/* ── Auto-refresh status ── */}
               <View style={styles.countdownRow}>
-                <View style={[styles.countdownDot, { backgroundColor: countdown > 10 ? '#25D366' : '#FF4444' }]} />
-                <Text style={[styles.countdownText, countdown <= 10 && { color: '#FF4444' }]}>
-                  {countdown > 0 ? `Code refreshes in ${countdown}s` : 'Refreshing code...'}
+                <View style={[styles.countdownDot, { backgroundColor: countdown > 10 ? '#25D366' : '#FFA500' }]} />
+                <Text style={[styles.countdownText, countdown <= 10 && { color: '#FFA500' }]}>
+                  {countdown > 0 ? `Code valid for ${countdown}s — auto-renews` : 'Getting new code...'}
                 </Text>
               </View>
 
+              {/* ── Open WhatsApp button ── */}
+              <TouchableOpacity style={styles.openWaButton} onPress={handleOpenWhatsApp}>
+                <Ionicons name="logo-whatsapp" size={20} color="#FFFFFF" />
+                <Text style={styles.openWaText}>Open WhatsApp</Text>
+              </TouchableOpacity>
+
+              {/* ── Numbered steps ── */}
+              <View style={styles.stepsBox}>
+                <Text style={styles.stepsTitle}>How to enter the code:</Text>
+                {[
+                  'Open WhatsApp or WhatsApp Business on this phone',
+                  'Tap 3-dot menu (⋮) → Linked Devices  (Business: Settings → Linked Devices)',
+                  'Tap "Link a Device" — a QR scanner opens',
+                  'Tap "Link with phone number" at the bottom of the QR screen',
+                  'Type the code exactly as shown above',
+                ].map((step, i) => (
+                  <View key={i} style={styles.stepRow}>
+                    <View style={styles.stepBadge}>
+                      <Text style={styles.stepBadgeText}>{i + 1}</Text>
+                    </View>
+                    <Text style={styles.stepText}>{step}</Text>
+                  </View>
+                ))}
+              </View>
+
+              {/* ── Waiting indicator ── */}
               <View style={styles.waitingRow}>
                 <ActivityIndicator size="small" color="#25D366" />
-                <Text style={styles.waitingText}>Waiting for connection...</Text>
+                <Text style={styles.waitingText}>Waiting for you to connect...</Text>
               </View>
 
               <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
@@ -395,27 +403,25 @@ const styles = StyleSheet.create({
   pairingTitle: {
     color: '#FFFFFF',
     fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  pairingInstructions: {
-    color: '#8B9DC3',
-    fontSize: 13,
-    marginBottom: 16,
-    lineHeight: 20,
+    fontWeight: '700',
+    marginBottom: 12,
+    textAlign: 'center',
   },
   codeBox: {
-    backgroundColor: 'rgba(37,211,102,0.1)',
-    borderRadius: 12,
-    padding: 20,
+    backgroundColor: 'rgba(37,211,102,0.12)',
+    borderRadius: 14,
+    paddingVertical: 22,
+    paddingHorizontal: 20,
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(37,211,102,0.3)',
   },
   codeText: {
     color: '#25D366',
-    fontSize: 36,
+    fontSize: 40,
     fontWeight: '700',
-    letterSpacing: 8,
+    letterSpacing: 10,
   },
   copyRow: {
     flexDirection: 'row',
@@ -431,7 +437,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 14,
   },
   countdownDot: {
     width: 8,
@@ -443,36 +449,73 @@ const styles = StyleSheet.create({
     color: '#8B9DC3',
     fontSize: 12,
   },
-  notificationBox: {
-    backgroundColor: 'rgba(37,211,102,0.05)',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
   openWaButton: {
     backgroundColor: '#25D366',
-    borderRadius: 10,
-    paddingVertical: 14,
+    borderRadius: 12,
+    paddingVertical: 15,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginBottom: 18,
+    gap: 10,
   },
   openWaText: {
     color: '#FFFFFF',
     fontSize: 16,
+    fontWeight: '700',
+  },
+  stepsBox: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 18,
+  },
+  stepsTitle: {
+    color: '#8B9DC3',
+    fontSize: 12,
     fontWeight: '600',
-    marginLeft: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+  },
+  stepBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(37,211,102,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    marginTop: 1,
+    flexShrink: 0,
+  },
+  stepBadgeText: {
+    color: '#25D366',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  stepText: {
+    color: '#CCCCCC',
+    fontSize: 13,
+    lineHeight: 20,
+    flex: 1,
   },
   waitingRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
     marginBottom: 16,
   },
   waitingText: {
     color: '#8B9DC3',
-    fontSize: 11,
+    fontSize: 12,
     textAlign: 'center',
-    marginTop: 8,
   },
   cancelButton: {
     alignItems: 'center',

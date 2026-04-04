@@ -11,20 +11,24 @@ export type BusinessType =
   | 'healthcare'
   | 'creator'
   | 'rental'
-  | 'tech'
+  | 'general'
   | '';
 
-// ── Per-type config ────────────────────────────────────────────────────────────
-
 export interface BusinessConfig {
-  catalogLabel: string;       // "Products" | "Services" | "Menu"
-  catalogItemLabel: string;   // "Product" | "Service" | "Item"
-  showDuration: boolean;      // service businesses track duration, not stock
-  showStock: boolean;         // retail tracks stock
-  bookingsTabVisible: boolean;// tab shows in main bar vs 3-dot menu
-  salesTabLabel: string;      // "Sales" for all, could be "Revenue" etc.
+  catalogLabel: string;
+  catalogItemLabel: string;
+  showDuration: boolean;
+  showStock: boolean;
+  bookingsTabVisible: boolean;
+  salesTabLabel: string;
   dashboardMode: 'sales' | 'bookings' | 'hybrid';
-  primaryColor: string;       // accent for type-specific UI (all use #25D366 for now)
+  primaryColor: string;
+  // Booking workflow
+  bookingMode: 'appointment' | 'rental' | 'class' | 'none';
+  bookingLabel: string;          // "Appointment", "Class", "Booking", "Reservation"
+  staffLabel: string;            // "Stylist", "Doctor", "Trainer", "Technician", ""
+  customerLabel: string;         // "Client", "Patient", "Member", "Guest", "Customer"
+  showCheckinCheckout: boolean;  // rental: true (date range), others: false (time slot)
 }
 
 const TYPE_CONFIGS: Record<string, BusinessConfig> = {
@@ -33,54 +37,84 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     showDuration: false, showStock: true,
     bookingsTabVisible: false, salesTabLabel: 'Sales',
     dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
   },
   salon: {
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Stylist', customerLabel: 'Client',
+    showCheckinCheckout: false,
   },
   services: {
+    // Covers tech/IT services, freelance, trades, repairs
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Technician', customerLabel: 'Client',
+    showCheckinCheckout: false,
   },
   fitness: {
-    catalogLabel: 'Services', catalogItemLabel: 'Class',
+    catalogLabel: 'Classes', catalogItemLabel: 'Class',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'class', bookingLabel: 'Class',
+    staffLabel: 'Trainer', customerLabel: 'Member',
+    showCheckinCheckout: false,
   },
   restaurant: {
     catalogLabel: 'Menu', catalogItemLabel: 'Item',
     showDuration: false, showStock: false,
-    bookingsTabVisible: true, salesTabLabel: 'Sales',
-    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingsTabVisible: false, salesTabLabel: 'Sales',
+    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Guest',
+    showCheckinCheckout: false,
   },
   healthcare: {
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Doctor', customerLabel: 'Patient',
+    showCheckinCheckout: false,
   },
   creator: {
-    catalogLabel: 'Collab Packages', catalogItemLabel: 'Package',
+    catalogLabel: 'Products', catalogItemLabel: 'Product',
     showDuration: false, showStock: false,
-    bookingsTabVisible: true, salesTabLabel: 'Revenue',
-    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingsTabVisible: false, salesTabLabel: 'Sales',
+    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
   },
   rental: {
+    // Properties, cars, equipment — check-in/checkout date range (NOT time slots)
     catalogLabel: 'Listings', catalogItemLabel: 'Listing',
     showDuration: false, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Revenue',
     dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'rental', bookingLabel: 'Booking',
+    staffLabel: '', customerLabel: 'Guest',
+    showCheckinCheckout: true,
   },
-  tech: {
-    catalogLabel: 'Plans', catalogItemLabel: 'Plan',
+  general: {
+    // Fintech, NGO, info, assistant-only — no bookings, just chat & broadcast
+    catalogLabel: 'Resources', catalogItemLabel: 'Resource',
     showDuration: false, showStock: false,
-    bookingsTabVisible: true, salesTabLabel: 'Revenue',
-    dashboardMode: 'hybrid', primaryColor: '#25D366',
+    bookingsTabVisible: false, salesTabLabel: 'Sales',
+    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Appointment',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
   },
 };
 
@@ -89,16 +123,17 @@ const DEFAULT_CONFIG: BusinessConfig = {
   showDuration: false, showStock: true,
   bookingsTabVisible: true, salesTabLabel: 'Sales',
   dashboardMode: 'hybrid', primaryColor: '#25D366',
+  bookingMode: 'appointment', bookingLabel: 'Appointment',
+  staffLabel: '', customerLabel: 'Customer',
+  showCheckinCheckout: false,
 };
-
-// ── Context ────────────────────────────────────────────────────────────────────
 
 interface BusinessContextType {
   businessType: BusinessType;
   config: BusinessConfig;
   isLoading: boolean;
-  isServiceBusiness: boolean;   // salon | services | fitness | healthcare
-  isRetailBusiness: boolean;    // retail | restaurant | creator
+  isServiceBusiness: boolean;
+  isRetailBusiness: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -123,8 +158,8 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { load(); }, [load]);
 
   const config = TYPE_CONFIGS[businessType] ?? DEFAULT_CONFIG;
-  const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental', 'restaurant', 'creator', 'tech'].includes(businessType);
-  const isRetailBusiness  = ['retail'].includes(businessType);
+  const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental'].includes(businessType);
+  const isRetailBusiness  = ['retail', 'restaurant', 'creator', 'general'].includes(businessType);
 
   return (
     <BusinessContext.Provider value={{

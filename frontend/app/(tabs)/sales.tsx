@@ -19,7 +19,6 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient, settingsAPI } from '../../context/api';
 import { useBusiness } from '../../context/BusinessContext';
-import { useAuth } from '../../context/AuthContext';
 import { useRouter } from 'expo-router';
 
 interface Customer {
@@ -40,8 +39,9 @@ interface Sale {
   is_credit?: boolean;
   due_date?: string;
   paid_date?: string;
+  source?: string;          // 'booking' | 'whatsapp' | 'manual' etc.
+  booking_id?: string;
   created_at: string;
-  source?: 'sale' | 'booking';
 }
 
 interface Order {
@@ -73,14 +73,13 @@ const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Sala
 
 export default function SalesScreen() {
   const router = useRouter();
-  const { isServiceBusiness } = useBusiness();
-  const { user } = useAuth();
+  const { config } = useBusiness();
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [paymentMethods, setPaymentMethods] = useState<{name:string;details?:string;fields?:{label:string;value:string}[]}[]>([{name:'Cash'},{name:'Mobile Money',fields:[{label:'Phone Number',value:''}]}]);
+  const [paymentMethods, setPaymentMethods] = useState<{name:string;details:string}[]>([{name:'Cash',details:''},{name:'Mobile Money',details:''}]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -92,7 +91,6 @@ export default function SalesScreen() {
   const [saleDetailsVisible, setSaleDetailsVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderDetailsVisible, setOrderDetailsVisible] = useState(false);
-  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -105,9 +103,8 @@ export default function SalesScreen() {
   const [paymentSettingsVisible, setPaymentSettingsVisible] = useState(false);
   const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
   const [newMethodName, setNewMethodName] = useState('');
-  const [newMethodFieldValues, setNewMethodFieldValues] = useState<string[]>([]);
+  const [newMethodDetails, setNewMethodDetails] = useState('');
   const [customMethodName, setCustomMethodName] = useState('');
-  const [customFields, setCustomFields] = useState<{label:string;value:string}[]>([]);
 
   // Customer selection state
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
@@ -148,14 +145,14 @@ export default function SalesScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [revenueRes, expensesRes, ordersRes, customersRes, userRes] = await Promise.all([
-        apiClient.get('/revenue'),
+      const [salesRes, expensesRes, ordersRes, customersRes, userRes] = await Promise.all([
+        apiClient.get('/sales'),
         apiClient.get('/expenses'),
         apiClient.get('/orders'),
         apiClient.get('/customers'),
         apiClient.get('/auth/me'),
       ]);
-      setSales(revenueRes.data);
+      setSales(salesRes.data);
       setExpenses(expensesRes.data);
       setOrders(ordersRes.data);
       setCustomers(customersRes.data);
@@ -360,24 +357,22 @@ export default function SalesScreen() {
     setEditingReceipt(true);
   };
 
-  // Shared date filter helper — compares local calendar dates
+  // Shared date filter helper — compares UTC calendar dates (backend stores UTC)
   const passesDateFilter = (isoString: string): boolean => {
     if (dateFilter === 'All Time') return true;
-    // Force UTC parsing: backend stores UTC without 'Z', JS would misread as local otherwise
-    const utcString = isoString.endsWith('Z') || isoString.includes('+') ? isoString : isoString + 'Z';
-    const d = new Date(utcString);
-    // Compare using LOCAL date (what the user sees on their clock)
-    const itemDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const d = new Date(isoString);
+    // Use UTC components to match what the backend stored
+    const itemDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (dateFilter === 'Today') return itemDay.getTime() === today.getTime();
+    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    if (dateFilter === 'Today') return itemDay.getTime() === todayUTC.getTime();
     if (dateFilter === 'This Week') {
-      const weekAgo = new Date(today);
-      weekAgo.setDate(weekAgo.getDate() - 6);
+      const weekAgo = new Date(todayUTC);
+      weekAgo.setUTCDate(weekAgo.getUTCDate() - 6);
       return itemDay >= weekAgo;
     }
     if (dateFilter === 'This Month') {
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
       return itemDay >= monthStart;
     }
     return true;
@@ -412,16 +407,13 @@ export default function SalesScreen() {
     const totalRevenue = filteredSales.reduce((sum, s) => sum + s.amount, 0);
     const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
     const netProfit = totalRevenue - totalExpenses;
-    const salesCount = filteredSales.filter(s => s.source !== 'booking').length;
-    const bookingsCount = filteredSales.filter(s => s.source === 'booking').length;
+    const salesCount = filteredSales.length;
     const avgSale = salesCount > 0 ? totalRevenue / salesCount : 0;
 
     // Order analytics — filtered by date
-    const totalOrders = filteredOrders.filter(
-      o => !['cancelled', 'Cancelled'].includes(o.status ?? '')
-    ).length;
+    const totalOrders = filteredOrders.length;
     const pendingPayment = filteredOrders
-      .filter(o => ['Pending', 'Unpaid', 'Partial', 'unpaid', 'pending', 'partial'].includes(o.payment_status))
+      .filter(o => o.payment_status === 'Pending' || o.payment_status === 'Partial')
       .reduce((sum, o) => sum + o.total_amount, 0);
     const ordersToDeliver = filteredOrders.filter(
       o => o.delivery_status === 'Processing' || o.delivery_status === 'Shipped'
@@ -443,7 +435,6 @@ export default function SalesScreen() {
       totalExpenses,
       netProfit,
       salesCount,
-      bookingsCount,
       avgSale,
       topCustomer,
       totalOrders,
@@ -630,25 +621,25 @@ export default function SalesScreen() {
       'How was this credit sale paid?',
       [
         ...paymentMethods.map((method) => ({
-          text: method.name,
+          text: method,
           onPress: async () => {
             try {
-              await apiClient.put(`/sales/${sale.id}/mark-paid?payment_method=${encodeURIComponent(method.name)}`);
+              await apiClient.put(`/sales/${sale.id}/mark-paid?payment_method=${encodeURIComponent(method)}`);
 
               // Update local state
               const updatedSales = sales.map((s) =>
                 s.id === sale.id
-                  ? { ...s, paid_date: new Date().toISOString(), payment_method: method.name }
+                  ? { ...s, paid_date: new Date().toISOString(), payment_method: method }
                   : s
               );
               setSales(updatedSales);
 
               // Update selected sale if it's open
               if (selectedSale?.id === sale.id) {
-                setSelectedSale({ ...sale, paid_date: new Date().toISOString(), payment_method: method.name });
+                setSelectedSale({ ...sale, paid_date: new Date().toISOString(), payment_method: method });
               }
 
-              Alert.alert('Success', `Sale marked as paid via ${method.name}!`);
+              Alert.alert('Success', `Sale marked as paid via ${method}!`);
             } catch (error) {
               Alert.alert('Error', 'Failed to mark sale as paid');
             }
@@ -659,11 +650,12 @@ export default function SalesScreen() {
     );
   };
 
-  const renderSale = ({ item: sale }: { item: Sale }) => (
+  const renderSale = ({ item: sale }: { item: Sale }) => {
+    const isFromBooking = sale.source === 'booking';
+    return (
     <TouchableOpacity
       style={styles.saleCard}
       onPress={() => {
-        if (sale.source === 'booking') return;
         setSelectedSale(sale);
         setSaleDetailsVisible(true);
       }}
@@ -671,11 +663,8 @@ export default function SalesScreen() {
     >
       <View style={styles.saleHeader}>
         <View style={styles.saleCustomer}>
-          <View style={[styles.avatar, sale.source === 'booking' && { backgroundColor: '#1E3A5F' }]}>
-            {sale.source === 'booking'
-              ? <Ionicons name="calendar" size={16} color="#4A90E2" />
-              : <Text style={styles.avatarText}>{sale.customer_name.charAt(0)}</Text>
-            }
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{sale.customer_name.charAt(0)}</Text>
           </View>
           <View>
             <Text style={styles.customerName}>{sale.customer_name}</Text>
@@ -691,24 +680,24 @@ export default function SalesScreen() {
         </View>
         <View style={styles.amountContainer}>
           <Text style={styles.amount}>{currency} {sale.amount.toLocaleString()}</Text>
-          {sale.source === 'booking' ? (
-            <View style={[styles.paymentBadge, { backgroundColor: '#1E3A5F' }]}>
-              <Text style={[styles.paymentText, { color: '#4A90E2' }]}>Booking</Text>
-            </View>
-          ) : (
-            <View style={[
-              styles.paymentBadge,
-              sale.payment_method === 'M-Pesa' && styles.mpesaBadge,
-              sale.is_credit && styles.creditBadge
-            ]}>
-              <Text style={styles.paymentText}>{sale.payment_method || 'Credit'}</Text>
-            </View>
-          )}
+          <View style={[
+            styles.paymentBadge,
+            sale.payment_method === 'M-Pesa' && styles.mpesaBadge,
+            sale.is_credit && styles.creditBadge
+          ]}>
+            <Text style={styles.paymentText}>{sale.payment_method || 'Credit'}</Text>
+          </View>
         </View>
       </View>
       <View style={styles.saleDetails}>
-        <Ionicons name={sale.source === 'booking' ? 'calendar-outline' : 'pricetag-outline'} size={14} color="#666" />
+        <Ionicons name="pricetag-outline" size={14} color="#666" />
         <Text style={styles.itemText}>{sale.item}</Text>
+        {isFromBooking && (
+          <View style={[styles.receiptBadge, { backgroundColor: '#1E3A5F' }]}>
+            <Ionicons name="calendar" size={13} color="#60A5FA" />
+            <Text style={[styles.receiptText, { color: '#60A5FA' }]}>Booking</Text>
+          </View>
+        )}
         {!!sale.receipt_sent && (
           <View style={styles.receiptBadge}>
             <Ionicons name="checkmark-circle" size={14} color="#25D366" />
@@ -718,6 +707,7 @@ export default function SalesScreen() {
       </View>
     </TouchableOpacity>
   );
+  };
 
   const renderExpense = ({ item: expense }: { item: Expense }) => (
     <View style={styles.saleCard}>
@@ -771,134 +761,52 @@ export default function SalesScreen() {
       }
     };
 
-    const isExpanded = expandedOrders.has(order.id);
-
-    const toggleExpand = () => {
-      const newExpanded = new Set(expandedOrders);
-      if (isExpanded) {
-        newExpanded.delete(order.id);
-      } else {
-        newExpanded.add(order.id);
-      }
-      setExpandedOrders(newExpanded);
-    };
-
     return (
-      <View style={styles.saleCard}>
-        <TouchableOpacity onPress={toggleExpand}>
-          <View style={styles.saleHeader}>
-            <View style={styles.saleCustomer}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{order.customer_name.charAt(0)}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.customerName} numberOfLines={1}>{order.customer_name}</Text>
-                <Text style={styles.saleDate}>
-                  {new Date(order.created_at).toLocaleDateString('en-KE', {
-                    month: 'short',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </Text>
-              </View>
+      <TouchableOpacity
+        style={styles.saleCard}
+        onPress={() => {
+          setSelectedOrder(order);
+          setOrderDetailsVisible(true);
+        }}
+      >
+        <View style={styles.saleHeader}>
+          <View style={styles.saleCustomer}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{order.customer_name.charAt(0)}</Text>
             </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {order.total_amount.toLocaleString()}</Text>
-              <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={20} color="#666" />
-            </View>
-          </View>
-          <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-            <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
-              <Text style={styles.statusBadgeText}>{order.payment_status}</Text>
-            </View>
-            <View style={[styles.statusBadge, { backgroundColor: getDeliveryStatusColor(order.delivery_status) }]}>
-              <Text style={styles.statusBadgeText}>{order.delivery_status}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.customerName} numberOfLines={1}>{order.customer_name}</Text>
+              <Text style={styles.saleDate}>
+                {new Date(order.created_at).toLocaleDateString('en-KE', {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </Text>
             </View>
           </View>
-          <View style={styles.saleDetails}>
-            <Text style={styles.itemText}>{order.product} (x{order.quantity})</Text>
-            <Text style={styles.paymentText}>@ {currency} {order.price.toLocaleString()} each</Text>
+          <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {order.total_amount.toLocaleString()}</Text>
+        </View>
+        <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
+            <Text style={styles.statusBadgeText}>{order.payment_status}</Text>
           </View>
-        </TouchableOpacity>
-
-        {isExpanded && (
-          <View style={{ marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#2A3F5F' }}>
-            <View style={{ gap: 10 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={{ color: '#888', fontSize: 13 }}>Customer Phone</Text>
-                <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{order.customer_phone}</Text>
-              </View>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={{ color: '#888', fontSize: 13 }}>Unit Price</Text>
-                <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{currency} {order.price.toLocaleString()}</Text>
-              </View>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={{ color: '#888', fontSize: 13 }}>Quantity</Text>
-                <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>{order.quantity}</Text>
-              </View>
-              {order.notes && (
-                <View style={{ marginTop: 4 }}>
-                  <Text style={{ color: '#888', fontSize: 13, marginBottom: 4 }}>Notes</Text>
-                  <Text style={{ color: '#FFF', fontSize: 13, backgroundColor: '#1A2942', padding: 8, borderRadius: 6 }}>{order.notes}</Text>
-                </View>
-              )}
-              {order.due_date && (
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                  <Text style={{ color: '#888', fontSize: 13 }}>Due Date</Text>
-                  <Text style={{ color: '#FFD700', fontSize: 13, fontWeight: '600' }}>
-                    {new Date(order.due_date).toLocaleDateString('en-KE', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </Text>
-                </View>
-              )}
-            </View>
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-              <TouchableOpacity
-                style={{ flex: 1, backgroundColor: '#1E3A5F', padding: 10, borderRadius: 8, alignItems: 'center' }}
-                onPress={() => {
-                  setSelectedOrder(order);
-                  setOrderDetailsVisible(true);
-                }}
-              >
-                <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>Full Details</Text>
-              </TouchableOpacity>
-              {order.payment_status === 'Paid' && (
-                <TouchableOpacity
-                  style={{ flex: 1, backgroundColor: '#1A3A2A', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#25D366' }}
-                  onPress={() => {
-                    Alert.alert(
-                      'Convert to Sale',
-                      'Choose payment method:',
-                      paymentMethods.map(pm => ({
-                        text: pm.name,
-                        onPress: async () => {
-                          try {
-                            await apiClient.post(`/orders/${order.id}/convert-to-sale?payment_method=${encodeURIComponent(pm.name)}`);
-                            setOrders(orders.filter(o => o.id !== order.id));
-                            Alert.alert('Success', 'Order converted to sale!');
-                            fetchData();
-                          } catch (error) {
-                            Alert.alert('Error', 'Failed to convert order');
-                          }
-                        },
-                      }))
-                    );
-                  }}
-                >
-                  <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>Convert to Sale</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+          <View style={[styles.statusBadge, { backgroundColor: getDeliveryStatusColor(order.delivery_status) }]}>
+            <Text style={styles.statusBadgeText}>{order.delivery_status}</Text>
           </View>
-        )}
-
-        {!isExpanded && order.payment_status === 'Paid' && (
+        </View>
+        <View style={styles.saleDetails}>
+          <Text style={styles.itemText}>{order.product} (x{order.quantity})</Text>
+          <Text style={styles.paymentText}>@ {currency} {order.price.toLocaleString()} each</Text>
+        </View>
+        {order.payment_status === 'Paid' && (
           <View style={{ backgroundColor: '#1A3A2A', borderRadius: 8, padding: 8, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <Ionicons name="checkmark-circle" size={14} color="#25D366" />
             <Text style={{ color: '#25D366', fontSize: 12, fontWeight: '600' }}>Ready to convert to sale</Text>
           </View>
         )}
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -1006,13 +914,10 @@ export default function SalesScreen() {
             <View style={styles.analyticsCard}>
               <Text style={styles.analyticsLabel}>Revenue</Text>
               <Text style={styles.analyticsValue}>{currency} {analytics.totalRevenue.toLocaleString()}</Text>
-              {isServiceBusiness && analytics.bookingsCount > 0 && (
-                <Text style={styles.analyticsSubtext}>{analytics.bookingsCount} booking{analytics.bookingsCount !== 1 ? 's' : ''} included</Text>
-              )}
             </View>
             <View style={styles.analyticsCard}>
-              <Text style={styles.analyticsLabel}>{isServiceBusiness ? 'Sales' : 'Avg Sale'}</Text>
-              <Text style={styles.analyticsValue}>{isServiceBusiness ? analytics.salesCount : `${currency} ${Math.round(analytics.avgSale).toLocaleString()}`}</Text>
+              <Text style={styles.analyticsLabel}>Avg Sale</Text>
+              <Text style={styles.analyticsValue}>{currency} {Math.round(analytics.avgSale).toLocaleString()}</Text>
             </View>
             {!!analytics.topCustomer && (
               <View style={[styles.analyticsCard, { marginRight: 0 }]}>
@@ -1989,10 +1894,10 @@ export default function SalesScreen() {
                           'This will convert the order to a sale and remove it from orders. Choose payment method:',
                           [
                             ...paymentMethods.map((method) => ({
-                              text: method.name,
+                              text: method,
                               onPress: async () => {
                                 try {
-                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method.name)}`);
+                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method)}`);
                                   setOrders(orders.filter(o => o.id !== selectedOrder.id));
                                   setOrderDetailsVisible(false);
                                   Alert.alert('Success', 'Order converted to sale!');
@@ -2055,11 +1960,11 @@ export default function SalesScreen() {
         visible={paymentSettingsVisible}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setCustomMethodName(''); }}
+        onRequestClose={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}
       >
         <SafeAreaView style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setCustomMethodName(''); }}>
+            <TouchableOpacity onPress={() => { setPaymentSettingsVisible(false); setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}>
               <Text style={styles.modalCancel}>Close</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle}>Payment Methods</Text>
@@ -2073,8 +1978,7 @@ export default function SalesScreen() {
 
             {/* Existing methods */}
             {paymentMethods.map((method, index) => {
-              const summary = method.fields && method.fields.length > 0 ? method.fields.filter(f => f.value).map(f => `${f.label}: ${f.value}`).join('  ·  ') : (method.details || '');
-              const iconName = method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') || method.name.toLowerCase().includes('mtn') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') || method.name.toLowerCase().includes('mastercard') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') ? 'logo-paypal' : method.name.toLowerCase().includes('stripe') ? 'card' : method.name.toLowerCase().includes('bitcoin') || method.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
+              const iconName = method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') || method.name.toLowerCase().includes('mastercard') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') ? 'logo-paypal' : method.name.toLowerCase().includes('stripe') ? 'card' : method.name.toLowerCase().includes('bitcoin') || method.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
               return (
                 <View key={index} style={styles.pmCard}>
                   <View style={styles.pmCardIcon}>
@@ -2082,8 +1986,8 @@ export default function SalesScreen() {
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.pmCardName}>{method.name}</Text>
-                    {summary ? (
-                      <Text style={styles.pmCardDetails}>{summary}</Text>
+                    {method.details ? (
+                      <Text style={styles.pmCardDetails}>{method.details}</Text>
                     ) : (
                       <Text style={[styles.pmCardDetails, { color: '#444', fontStyle: 'italic' }]}>No details added</Text>
                     )}
@@ -2111,29 +2015,26 @@ export default function SalesScreen() {
                 <Text style={styles.pmAddTitle}>Add Payment Method</Text>
 
                 {/* Quick presets */}
-                <Text style={styles.pmPresetLabel}>Select a method:</Text>
+                <Text style={styles.pmPresetLabel}>Quick Add:</Text>
                 <View style={styles.pmPresetGrid}>
                   {[
-                    { name: 'M-Pesa (Send Money)', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0712 345 678', kb: 'phone-pad' }] },
-                    { name: 'M-Pesa Paybill', icon: 'phone-portrait', fields: [{ label: 'Business No.', placeholder: 'e.g. 400200', kb: 'number-pad' }, { label: 'Account No.', placeholder: 'e.g. your phone / order ID', kb: 'default' }] },
-                    { name: 'M-Pesa Till (Buy Goods)', icon: 'phone-portrait', fields: [{ label: 'Till No.', placeholder: 'e.g. 123456', kb: 'number-pad' }] },
-                    { name: 'Airtel Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0733 123 456', kb: 'phone-pad' }] },
-                    { name: 'MTN Mobile Money', icon: 'phone-portrait', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0770 123 456', kb: 'phone-pad' }] },
-                    { name: 'Bank Transfer', icon: 'business', fields: [{ label: 'Bank Name', placeholder: 'e.g. KCB', kb: 'default' }, { label: 'Account No.', placeholder: 'e.g. 1234567890', kb: 'number-pad' }, { label: 'Account Name', placeholder: 'e.g. John Doe / Company', kb: 'default' }] },
-                    { name: 'PayPal', icon: 'logo-paypal', fields: [{ label: 'PayPal Email', placeholder: 'e.g. pay@youremail.com', kb: 'email-address' }] },
-                    { name: 'Cash', icon: 'cash', fields: [] },
-                    { name: 'Visa/Card', icon: 'card', fields: [{ label: 'POS / Reference', placeholder: 'e.g. card machine details', kb: 'default' }] },
-                    { name: 'Stripe', icon: 'card', fields: [{ label: 'Payment Link', placeholder: 'https://buy.stripe.com/...', kb: 'default' }] },
-                    { name: 'Custom', icon: 'add-circle-outline', fields: [] },
+                    { name: 'M-Pesa', placeholder: 'Phone number e.g. 0712 345 678', icon: 'phone-portrait' },
+                    { name: 'PayPal', placeholder: 'PayPal email address', icon: 'logo-paypal' },
+                    { name: 'Bank Transfer', placeholder: 'Account number / bank name', icon: 'business' },
+                    { name: 'Cash', placeholder: '', icon: 'cash' },
+                    { name: 'Visa/Card', placeholder: 'POS terminal or card reference', icon: 'card' },
+                    { name: 'Airtel Money', placeholder: 'Phone number', icon: 'phone-portrait' },
+                    { name: 'Stripe', placeholder: 'Payment link', icon: 'card' },
+                    { name: 'Bitcoin/Crypto', placeholder: 'Wallet address', icon: 'logo-bitcoin' },
+                    { name: 'Other', placeholder: 'Details', icon: 'wallet' },
                   ].filter(p => !paymentMethods.find(m => m.name === p.name)).map(preset => (
                     <TouchableOpacity
                       key={preset.name}
                       style={[styles.pmPresetChip, newMethodName === preset.name && styles.pmPresetChipActive]}
                       onPress={() => {
-                        setNewMethodName(preset.name);
-                        setCustomMethodName('');
-                        setCustomFields([]);
-                        setNewMethodFieldValues(preset.fields.map(() => ''));
+                        setNewMethodName(preset.name === 'Other' ? '' : preset.name);
+                        setCustomMethodName(preset.name === 'Other' ? '' : '');
+                        setNewMethodDetails('');
                       }}
                     >
                       <Ionicons name={preset.icon as any} size={14} color={newMethodName === preset.name ? '#25D366' : '#6B7D99'} />
@@ -2142,147 +2043,63 @@ export default function SalesScreen() {
                   ))}
                 </View>
 
-                {/* Custom payment method builder */}
-                {newMethodName === 'Custom' && (
-                  <View style={{ marginTop: 8 }}>
-                    <Text style={styles.pmFieldLabel}>Payment Method Name</Text>
-                    <TextInput
-                      style={styles.pmInput}
-                      value={customMethodName}
-                      onChangeText={setCustomMethodName}
-                      placeholder="e.g. Venmo, GCash, Zelle"
-                      placeholderTextColor="#555"
-                    />
-                    
-                    <Text style={[styles.pmFieldLabel, { marginTop: 12 }]}>Fields (optional):</Text>
-                    {customFields.map((field, fi) => (
-                      <View key={fi} style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
-                        <TextInput
-                          style={[styles.pmInput, { flex: 1 }]}
-                          value={field.label}
-                          onChangeText={t => {
-                            const updated = [...customFields];
-                            updated[fi].label = t;
-                            setCustomFields(updated);
-                          }}
-                          placeholder="Field name (e.g. Phone, Account No.)"
-                          placeholderTextColor="#555"
-                        />
-                        <TextInput
-                          style={[styles.pmInput, { flex: 1.5 }]}
-                          value={field.value}
-                          onChangeText={t => {
-                            const updated = [...customFields];
-                            updated[fi].value = t;
-                            setCustomFields(updated);
-                          }}
-                          placeholder="Value"
-                          placeholderTextColor="#555"
-                        />
-                        <TouchableOpacity
-                          onPress={() => setCustomFields(customFields.filter((_, i) => i !== fi))}
-                          style={{ justifyContent: 'center' }}
-                        >
-                          <Ionicons name="close-circle" size={22} color="#FF6B6B" />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                    <TouchableOpacity
-                      style={[styles.addButton, { marginTop: 4 }]}
-                      onPress={() => setCustomFields([...customFields, { label: '', value: '' }])}
-                    >
-                      <Ionicons name="add" size={16} color="#25D366" />
-                      <Text style={[styles.addButtonText, { fontSize: 13 }]}>Add field</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
+                {/* Custom name if "Other" or typing */}
+                <Text style={styles.pmFieldLabel}>Method Name</Text>
+                <TextInput
+                  style={styles.pmInput}
+                  value={newMethodName || customMethodName}
+                  onChangeText={(t) => { setCustomMethodName(t); setNewMethodName(''); }}
+                  placeholder="e.g. Chipper Cash, Wave, Venmo..."
+                  placeholderTextColor="#555"
+                />
 
-                {/* Dynamic fields for selected preset */}
-                {newMethodName && newMethodName !== 'Custom' && [
-                  { name: 'M-Pesa (Send Money)', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0712 345 678', kb: 'phone-pad' }] },
-                  { name: 'M-Pesa Paybill', fields: [{ label: 'Business No.', placeholder: 'e.g. 400200', kb: 'number-pad' }, { label: 'Account No.', placeholder: 'e.g. your phone / order ID', kb: 'default' }] },
-                  { name: 'M-Pesa Till (Buy Goods)', fields: [{ label: 'Till No.', placeholder: 'e.g. 123456', kb: 'number-pad' }] },
-                  { name: 'Airtel Money', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0733 123 456', kb: 'phone-pad' }] },
-                  { name: 'MTN Mobile Money', fields: [{ label: 'Phone Number', placeholder: 'e.g. 0770 123 456', kb: 'phone-pad' }] },
-                  { name: 'Bank Transfer', fields: [{ label: 'Bank Name', placeholder: 'e.g. KCB', kb: 'default' }, { label: 'Account No.', placeholder: 'e.g. 1234567890', kb: 'number-pad' }, { label: 'Account Name', placeholder: 'e.g. John Doe / Company', kb: 'default' }] },
-                  { name: 'PayPal', fields: [{ label: 'PayPal Email', placeholder: 'e.g. pay@youremail.com', kb: 'email-address' }] },
-                  { name: 'Cash', fields: [] },
-                  { name: 'Visa/Card', fields: [{ label: 'POS / Reference', placeholder: 'e.g. card machine details', kb: 'default' }] },
-                  { name: 'Stripe', fields: [{ label: 'Payment Link', placeholder: 'https://buy.stripe.com/...', kb: 'default' }] },
-                ].find(p => p.name === newMethodName)?.fields.map((field, fi) => (
-                  <View key={fi} style={{ marginBottom: 8 }}>
-                    <Text style={styles.pmFieldLabel}>{field.label}</Text>
-                    <TextInput
-                      style={styles.pmInput}
-                      value={newMethodFieldValues[fi] || ''}
-                      onChangeText={t => {
-                        const updated = [...newMethodFieldValues];
-                        updated[fi] = t;
-                        setNewMethodFieldValues(updated);
-                      }}
-                      placeholder={field.placeholder}
-                      placeholderTextColor="#555"
-                      autoCapitalize="none"
-                      keyboardType={(field.kb as any) || 'default'}
-                    />
-                  </View>
-                )) || (newMethodName === 'Cash' && <Text style={[styles.pmCardDetails, { marginTop: 8, color: '#555' }]}>No details needed for cash payments</Text>)}
+                {/* Details field */}
+                <Text style={styles.pmFieldLabel}>
+                  {newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'Phone Number' :
+                   newMethodName === 'PayPal' ? 'PayPal Email' :
+                   newMethodName === 'Bank Transfer' ? 'Account Number / Bank Name' :
+                   newMethodName === 'Stripe' ? 'Payment Link' :
+                   newMethodName === 'Bitcoin/Crypto' ? 'Wallet Address' :
+                   newMethodName === 'Visa/Card' ? 'POS / Card Reference' :
+                   'Details (optional)'}
+                </Text>
+                <TextInput
+                  style={styles.pmInput}
+                  value={newMethodDetails}
+                  onChangeText={setNewMethodDetails}
+                  placeholder={
+                    newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'e.g. 0712 345 678' :
+                    newMethodName === 'PayPal' ? 'e.g. payments@youremail.com' :
+                    newMethodName === 'Bank Transfer' ? 'e.g. KCB 1234567890' :
+                    newMethodName === 'Stripe' ? 'e.g. https://buy.stripe.com/...' :
+                    newMethodName === 'Bitcoin/Crypto' ? 'e.g. 1A1zP1eP5...' :
+                    'Optional — helps customers know how to pay'
+                  }
+                  placeholderTextColor="#555"
+                  autoCapitalize="none"
+                  keyboardType={newMethodName === 'PayPal' ? 'email-address' : newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'phone-pad' : 'default'}
+                />
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                   <TouchableOpacity
                     style={[styles.cancelAddButton, { flex: 1 }]}
-                    onPress={() => { setAddingPaymentMethod(false); setNewMethodName(''); setCustomMethodName(''); }}
+                    onPress={() => { setAddingPaymentMethod(false); setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName(''); }}
                   >
                     <Text style={styles.cancelAddText}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.saveAddButton, { flex: 1 }]}
                     onPress={async () => {
-                      let name = '';
-                      let newEntry: {name:string;fields?:{label:string;value:string}[]};
-                      
-                      if (newMethodName === 'Custom') {
-                        name = customMethodName.trim();
-                        if (!name) { Alert.alert('Error', 'Please enter a payment method name'); return; }
-                        if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) {
-                          Alert.alert('Error', 'This payment method already exists'); return;
-                        }
-                        const validFields = customFields.filter(f => f.label.trim() || f.value.trim());
-                        if (validFields.length > 0) {
-                          newEntry = { name, fields: validFields };
-                        } else {
-                          newEntry = { name };
-                        }
-                      } else if (newMethodName) {
-                        name = newMethodName;
-                        if (paymentMethods.find(m => m.name.toLowerCase() === name.toLowerCase())) {
-                          Alert.alert('Error', 'This payment method already exists'); return;
-                        }
-                        const presetFields = [
-                          { name: 'M-Pesa (Send Money)', fields: [{ label: 'Phone Number', placeholder: '', kb: 'phone-pad' }] },
-                          { name: 'M-Pesa Paybill', fields: [{ label: 'Business No.', placeholder: '', kb: 'number-pad' }, { label: 'Account No.', placeholder: '', kb: 'default' }] },
-                          { name: 'M-Pesa Till (Buy Goods)', fields: [{ label: 'Till No.', placeholder: '', kb: 'number-pad' }] },
-                          { name: 'Airtel Money', fields: [{ label: 'Phone Number', placeholder: '', kb: 'phone-pad' }] },
-                          { name: 'MTN Mobile Money', fields: [{ label: 'Phone Number', placeholder: '', kb: 'phone-pad' }] },
-                          { name: 'Bank Transfer', fields: [{ label: 'Bank Name', placeholder: '', kb: 'default' }, { label: 'Account No.', placeholder: '', kb: 'number-pad' }, { label: 'Account Name', placeholder: '', kb: 'default' }] },
-                          { name: 'PayPal', fields: [{ label: 'PayPal Email', placeholder: '', kb: 'email-address' }] },
-                          { name: 'Cash', fields: [] },
-                          { name: 'Visa/Card', fields: [{ label: 'POS / Reference', placeholder: '', kb: 'default' }] },
-                          { name: 'Stripe', fields: [{ label: 'Payment Link', placeholder: '', kb: 'default' }] },
-                        ].find(p => p.name === newMethodName);
-                        if (presetFields && presetFields.fields.length > 0) {
-                          newEntry = { name, fields: presetFields.fields.map((f, fi) => ({ label: f.label, value: newMethodFieldValues[fi] || '' })) };
-                        } else {
-                          newEntry = { name };
-                        }
-                      } else {
-                        Alert.alert('Error', 'Please select a payment method'); return;
+                      const finalName = (newMethodName || customMethodName).trim();
+                      if (!finalName) { Alert.alert('Error', 'Please select or enter a payment method name'); return; }
+                      if (paymentMethods.find(m => m.name.toLowerCase() === finalName.toLowerCase())) {
+                        Alert.alert('Error', 'This payment method already exists'); return;
                       }
-                      
+                      const newEntry = { name: finalName, details: newMethodDetails.trim() };
                       const updated = [...paymentMethods, newEntry];
                       setPaymentMethods(updated);
                       setAddingPaymentMethod(false);
-                      setNewMethodName(''); setNewMethodFieldValues([]); setCustomMethodName(''); setCustomFields([]);
+                      setNewMethodName(''); setNewMethodDetails(''); setCustomMethodName('');
                       try { await apiClient.put('/settings', { payment_methods: updated }); }
                       catch (e) { console.error('Error saving payment methods:', e); Alert.alert('Error', 'Failed to save'); }
                     }}

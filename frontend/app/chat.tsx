@@ -525,7 +525,7 @@ export default function ChatScreen() {
     const isOutgoing = item.direction === 'outgoing';
     const isDocument = item.message_type === 'document';
     const hasImage = !isDocument && (item.message_type === 'image' || item.image_url);
-    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://crm-1-pnfo.onrender.com';
     let imageUri = item.image_url
       ? (item.image_url.startsWith('http') || item.image_url.startsWith('file://') ? item.image_url : `${backendUrl}${item.image_url}`)
       : null;

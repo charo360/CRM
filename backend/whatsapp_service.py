@@ -9,7 +9,7 @@ import asyncio
 import httpx
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -44,107 +44,6 @@ def get_model_credits(ai_model: str) -> float:
     """Return credit cost for a given AI model slug."""
     return MODEL_MESSAGE_CREDITS.get(ai_model or "standard", 1.6)
 
-# Absolute path to the backend folder (same dir as this file)
-_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-
-async def download_whatsapp_media(instance_name: str, message_obj: dict, media_type: str = "image") -> Optional[str]:
-    """
-    Download media from Evolution API and save it locally.
-    message_obj must be the full Evolution API message object (with key + message fields).
-    Returns a publicly accessible URL or None if download fails.
-    """
-    try:
-        import aiofiles
-        import base64
-
-        logger.info(f"[MEDIA] Attempting {media_type} download for instance={instance_name}")
-        logger.info(f"[MEDIA] Evolution API URL: {EVOLUTION_API_URL}")
-        logger.info(f"[MEDIA] Message obj keys: {list(message_obj.keys())}")
-
-        # Call Evolution API to get media base64
-        # Evolution API requires the FULL message object (key + message content with encrypted keys)
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{EVOLUTION_API_URL}/chat/getBase64FromMediaMessage/{instance_name}",
-                json={"message": message_obj},
-                headers={"apikey": EVOLUTION_API_KEY}
-            )
-
-            logger.info(f"[MEDIA] Evolution API response: HTTP {resp.status_code}")
-            if resp.status_code not in (200, 201):
-                logger.error(f"[MEDIA] Failed to download media: HTTP {resp.status_code} - {resp.text[:500]}")
-                return None
-
-            data = resp.json()
-            base64_data = data.get("base64")
-
-            if not base64_data:
-                logger.error(f"[MEDIA] No base64 data in Evolution API response. Keys returned: {list(data.keys())}")
-                return None
-
-            logger.info(f"[MEDIA] Got base64 data, length={len(base64_data)}")
-
-            # Remove data URI prefix if present (e.g., "data:image/jpeg;base64,")
-            if "," in base64_data and base64_data.startswith("data:"):
-                base64_data = base64_data.split(",", 1)[1]
-
-            # Decode base64
-            media_bytes = base64.b64decode(base64_data)
-            logger.info(f"[MEDIA] Decoded {len(media_bytes)} bytes of {media_type}")
-
-            # Save to absolute uploads folder path
-            upload_dir = os.path.join(_BACKEND_DIR, "uploads", "whatsapp_media")
-            os.makedirs(upload_dir, exist_ok=True)
-            logger.info(f"[MEDIA] Saving to dir: {upload_dir}")
-
-            # Generate unique filename with proper extension
-            if media_type == "image":
-                ext = "jpg"
-            elif media_type == "document":
-                ext = "pdf"
-            else:
-                ext = "bin"
-
-            filename = f"{uuid.uuid4()}.{ext}"
-            filepath = os.path.join(upload_dir, filename)
-
-            async with aiofiles.open(filepath, 'wb') as f:
-                await f.write(media_bytes)
-
-            logger.info(f"[MEDIA] Saved {media_type} to {filepath}")
-
-            # Return public URL
-            server_url = os.environ.get("SERVER_URL", "http://localhost:8000").rstrip("/")
-            public_url = f"{server_url}/uploads/whatsapp_media/{filename}"
-            logger.info(f"[MEDIA] Accessible at: {public_url}")
-            return public_url
-
-    except Exception as e:
-        logger.error(f"[MEDIA] Error downloading WhatsApp media: {e}", exc_info=True)
-        return None
-
-def _is_valid_contact_phone(phone: str, own_digits: str = "") -> bool:
-    """
-    Central gate — returns True only if `phone` is a real E.164-style number
-    that is safe to store as a contact.
-
-    Rules:
-      - Must contain digits after stripping leading '+'
-      - Length must be 7–15 digits (valid E.164 range)
-      - Must not equal the business owner's own number
-    This rejects @lid garbage numbers (16+ digits), empty strings, and self-contacts.
-    """
-    if not phone:
-        return False
-    digits = phone.lstrip("+").replace(" ", "").replace("-", "")
-    if not digits.isdigit():
-        return False
-    if len(digits) < 7 or len(digits) > 15:
-        return False
-    if own_digits and digits == own_digits:
-        return False
-    return True
-
 # Rate limiting
 DAILY_MESSAGE_LIMIT = 500  # Max messages per user per day (WhatsApp safety)
 BROADCAST_COOLDOWN_HOURS = 24  # Min hours between broadcasts
@@ -165,10 +64,8 @@ MANUAL_SEND_READ_DELAY = (0.5, 1.5) # For manual sends from app (user is waiting
 TYPING_PAUSE_CHANCE = 0.3           # 30% chance of a pause per slot
 TYPING_PAUSE_DURATION = (0.5, 1.5)  # How long each pause lasts
 
-# Broadcast delays: human-like pacing to avoid WhatsApp spam detection
-BROADCAST_DELAY = (45, 180)         # 45s–3min between each message (feels natural)
-BROADCAST_BATCH_SIZE = 10           # Send in batches of 10
-BROADCAST_BATCH_BREAK = (300, 900)  # 5–15 min break between batches
+# Broadcast delays: time between each broadcast message
+BROADCAST_DELAY = (2, 5)            # Random delay between broadcast sends
 
 # Max typing indicator duration (WhatsApp resets typing after ~25s)
 MAX_TYPING_DURATION = 22
@@ -184,138 +81,76 @@ class WhatsAppService:
         self._broadcast_queues: Dict[str, asyncio.Queue] = {}
         self._broadcast_tasks: Dict[str, asyncio.Task] = {}
 
-    async def _resolve_server(self, user_id: str = None) -> tuple:
-        """
-        Return (base_url, api_key) for the given user.
-        Uses the user's assigned Evolution server if set, otherwise falls back to global env vars.
-        This enables multi-server scaling — each user is pinned to one server.
-        """
-        if user_id:
-            try:
-                user = await self.db.users.find_one(
-                    {"_id": user_id},
-                    {"evolution_url": 1, "evolution_api_key": 1}
-                )
-                if user:
-                    url = (user.get("evolution_url") or "").rstrip("/")
-                    key = user.get("evolution_api_key") or ""
-                    if url:
-                        return url, key
-            except Exception:
-                pass
-        return self.base_url, self.api_key
-
-    def _headers(self, api_key: str = None) -> Dict:
+    def _headers(self) -> Dict:
         return {
-            "apikey": api_key or self.api_key,
+            "apikey": self.api_key,
             "Content-Type": "application/json",
         }
 
     def _instance_name(self, user_id: str) -> str:
         """Generate a unique instance name for a user"""
         return f"user_{user_id.replace('-', '_')}"
-    
 
     # ============ INSTANCE MANAGEMENT ============
 
-    async def _wake_up_evolution(self):
-        """Ping Evolution API to wake it up from Render free-tier sleep."""
-        logger.info(f"Waking up Evolution API at {self.base_url} ...")
-        for attempt in range(1, 7):
-            try:
-                async with httpx.AsyncClient(timeout=30) as ping_client:
-                    resp = await ping_client.get(f"{self.base_url}/", headers=self._headers())
-                    if resp.status_code < 500:
-                        logger.info(f"Evolution API awake (attempt {attempt}, status {resp.status_code})")
-                        return True
-            except Exception as e:
-                logger.warning(f"Wake-up ping attempt {attempt} failed: {e}")
-            await asyncio.sleep(10)
-        logger.error("Evolution API did not respond after 6 wake-up attempts")
-        return False
-
-    async def create_instance(self, user_id: str, phone_number: str, force_new: bool = False) -> Dict:
+    async def create_instance(self, user_id: str, phone_number: str) -> Dict:
         """
         Create an Evolution API instance for a user and request a pairing code.
-        Always uses the canonical base instance name (no timestamps) — one instance per user.
-        Deletes ALL existing instances for this user before creating a fresh one.
+        Returns the 8-digit pairing code for the user to enter in WhatsApp.
         """
-        # ALWAYS use the canonical base name — no timestamps, one instance per user
         instance_name = self._instance_name(user_id)
+        # Strip + and any non-digit chars for Evolution API
         clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
 
-        base_url, api_key = await self._resolve_server(user_id)
-        await self._wake_up_evolution()
-
         try:
-            async with httpx.AsyncClient(timeout=180) as client:
-
-                # ── Step 0: Delete ALL existing instances for this user ──────────
-                # Collect every instance name we know about for this user:
-                # 1. The canonical base name
-                # 2. Whatever is stored in the DB (may be a stale timestamped name)
-                import re as _re_ci
-                user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
-                db_instance = (user_doc or {}).get("whatsapp", {}).get("instance_name", "")
-                instances_to_delete = set(filter(None, [instance_name, db_instance]))
-
-                # Also fetch the full list from Evolution API and add any that match this user's prefix
-                try:
-                    fetch_resp = await client.get(
-                        f"{base_url}/instance/fetchInstances",
-                        headers=self._headers(api_key),
-                    )
-                    if fetch_resp.status_code == 200:
-                        all_instances = fetch_resp.json()
-                        if isinstance(all_instances, list):
-                            for inst in all_instances:
-                                iname = inst.get("instance", {}).get("instanceName") or inst.get("instanceName") or ""
-                                # Match base name OR base name + timestamp suffix
-                                if iname == instance_name or _re_ci.match(rf"^{_re_ci.escape(instance_name)}_\d{{9,13}}$", iname):
-                                    instances_to_delete.add(iname)
-                except Exception as fe:
-                    logger.warning(f"Could not fetch instance list for cleanup: {fe}")
-
-                # Delete all collected instances
-                for old_inst in instances_to_delete:
-                    try:
-                        await client.delete(f"{base_url}/instance/logout/{old_inst}", headers=self._headers(api_key))
-                    except Exception:
-                        pass
-                    for _attempt in range(2):
-                        try:
-                            d = await client.delete(f"{base_url}/instance/delete/{old_inst}", headers=self._headers(api_key))
-                            if d.status_code in (200, 204):
-                                logger.info(f"Deleted old instance {old_inst} for user {user_id}")
-                                break
-                        except Exception:
-                            pass
-                        await asyncio.sleep(1)
-
-                await asyncio.sleep(2)  # brief pause before recreating
-                # ─────────────────────────────────────────────────────────────────
-
-                # Step 1: Create the single canonical instance
+            async with httpx.AsyncClient(timeout=60) as client:
+                # Step 1: Create instance
                 create_payload = {
                     "instanceName": instance_name,
                     "token": str(uuid.uuid4()),
                     "number": clean_number,
-                    "qrcode": False,
+                    "qrcode": True,
                     "integration": "WHATSAPP-BAILEYS",
                     "reject_call": False,
                     "groupsIgnore": True,
                 }
 
                 create_resp = await client.post(
-                    f"{base_url}/instance/create",
+                    f"{self.base_url}/instance/create",
                     json=create_payload,
-                    headers=self._headers(api_key),
+                    headers=self._headers(),
                 )
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    logger.error(f"Failed to create instance: {error_detail}")
-                    return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}
+                    # Instance already exists — force-delete it and recreate for a fresh pairing code
+                    if "already" in error_detail.lower() or "exists" in error_detail.lower():
+                        logger.info(f"Instance {instance_name} already exists — force-deleting for fresh pairing")
+                        try:
+                            await client.delete(
+                                f"{self.base_url}/instance/logout/{instance_name}",
+                                headers=self._headers(),
+                            )
+                            await asyncio.sleep(1)
+                            await client.delete(
+                                f"{self.base_url}/instance/delete/{instance_name}",
+                                headers=self._headers(),
+                            )
+                            await asyncio.sleep(2)
+                        except Exception as del_err:
+                            logger.warning(f"Force-delete of stale instance failed: {del_err}")
+                        # Re-create the instance fresh
+                        create_resp = await client.post(
+                            f"{self.base_url}/instance/create",
+                            json=create_payload,
+                            headers=self._headers(),
+                        )
+                        if create_resp.status_code not in (200, 201):
+                            logger.error(f"Failed to recreate instance after force-delete: {create_resp.text}")
+                            return {"status": "error", "message": "Failed to create WhatsApp instance after cleanup"}
+                    else:
+                        logger.error(f"Failed to create instance: {error_detail}")
+                        return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}
 
                 # Step 1b: Configure webhook so we receive messages in real-time
                 # Evolution API runs in Docker, so use host.docker.internal
@@ -339,9 +174,9 @@ class WhatsAppService:
                 }
                 try:
                     wh_resp = await client.post(
-                        f"{base_url}/webhook/set/{instance_name}",
+                        f"{self.base_url}/webhook/set/{instance_name}",
                         json=webhook_payload,
-                        headers=self._headers(api_key),
+                        headers=self._headers(),
                     )
                     if wh_resp.status_code in (200, 201):
                         logger.info(f"Webhook configured for {instance_name}")
@@ -350,23 +185,72 @@ class WhatsAppService:
                 except Exception as wh_err:
                     logger.warning(f"Webhook setup error for {instance_name}: {wh_err}")
 
-                # Step 2: Wait for Baileys WebSocket to establish before requesting pairing code
-                await asyncio.sleep(10)
+                # Step 2: Wait for Baileys WebSocket — poll until "connecting" state or timeout
+                # WA Business needs a bit more time than regular WA to establish the socket
+                await asyncio.sleep(5)
+                for _wait in range(5):
+                    try:
+                        state_resp = await client.get(
+                            f"{self.base_url}/instance/connectionState/{instance_name}",
+                            headers=self._headers(),
+                        )
+                        if state_resp.status_code == 200:
+                            _state = state_resp.json().get("instance", {}).get("state", "")
+                            if _state in ("connecting", "open", "close"):
+                                break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2)
 
-                code_resp = await client.get(
-                    f"{base_url}/instance/connect/{instance_name}",
-                    params={"number": clean_number},
-                    headers=self._headers(api_key),
-                )
+                # Step 3: Request pairing code — retry up to 3× with 5s back-off
+                # Works for both WhatsApp and WhatsApp Business (same Baileys protocol)
+                pairing_code = ""
+                last_code_error = ""
+                for attempt in range(3):
+                    try:
+                        code_resp = await client.get(
+                            f"{self.base_url}/instance/connect/{instance_name}",
+                            params={"number": clean_number},
+                            headers=self._headers(),
+                            timeout=30,
+                        )
+                        if code_resp.status_code == 200:
+                            code_data = code_resp.json()
+                            pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
+                            if pairing_code:
+                                logger.info(f"Pairing code obtained on attempt {attempt + 1} for {instance_name}")
+                                break
+                            else:
+                                last_code_error = f"Empty code in response: {code_resp.text[:200]}"
+                        else:
+                            last_code_error = f"HTTP {code_resp.status_code}: {code_resp.text[:200]}"
+                    except Exception as ce:
+                        last_code_error = str(ce)
+                    if attempt < 2:
+                        logger.warning(f"Pairing code attempt {attempt + 1} failed for {instance_name}: {last_code_error} — retrying in 5s")
+                        await asyncio.sleep(5)
 
-                if code_resp.status_code != 200:
-                    logger.error(f"Failed to get pairing code: {code_resp.text}")
-                    return {"status": "error", "message": "Failed to generate pairing code"}
+                if not pairing_code:
+                    logger.error(f"Failed to get pairing code after 3 attempts: {last_code_error}")
+                    return {"status": "error", "message": "Failed to generate pairing code. Please try again."}
 
-                code_data = code_resp.json()
-                pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
+                # Step 4: Store instance info in user record
+                # Detect WA Business vs regular WA from the profile info if available
+                is_business_account = False
+                try:
+                    profile_resp = await client.get(
+                        f"{self.base_url}/instance/fetchInstances",
+                        headers=self._headers(),
+                    )
+                    if profile_resp.status_code == 200:
+                        instances = profile_resp.json()
+                        for inst in (instances if isinstance(instances, list) else []):
+                            if inst.get("name") == instance_name:
+                                is_business_account = inst.get("isBusiness", False) or inst.get("businessId") is not None
+                                break
+                except Exception:
+                    pass
 
-                # Step 3: Store instance info in user record
                 await self.db.users.update_one(
                     {"_id": user_id},
                     {"$set": {
@@ -374,6 +258,7 @@ class WhatsAppService:
                         "whatsapp.instance_name": instance_name,
                         "whatsapp.status": "pairing",
                         "whatsapp.pairing_code": pairing_code,
+                        "whatsapp.is_business": is_business_account,
                         "whatsapp.created_at": datetime.utcnow(),
                     }}
                 )
@@ -386,81 +271,34 @@ class WhatsAppService:
                     "message": "Enter this code in WhatsApp > Linked Devices > Link with phone number",
                 }
 
-        except httpx.ConnectError as ce:
-            logger.error(f"Cannot connect to Evolution API at {self.base_url}: {ce}")
-            return {"status": "error", "message": f"WhatsApp service connection failed: {str(ce)}"}
-        except httpx.TimeoutException as te:
-            logger.error(f"Timeout connecting to Evolution API at {self.base_url}: {te}")
-            return {"status": "error", "message": "WhatsApp service timed out. Please try again."}
+        except httpx.ConnectError:
+            logger.error("Cannot connect to Evolution API — is it running?")
+            return {"status": "error", "message": "WhatsApp service is not available. Please try again later."}
         except Exception as e:
             logger.error(f"Error creating instance: {e}")
             return {"status": "error", "message": str(e)}
 
     async def get_instance_status(self, user_id: str) -> Dict:
         """Check the connection status of a user's WhatsApp instance"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "evolution_url": 1, "evolution_api_key": 1})
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
         wa = user.get("whatsapp") if user else None
 
         if not wa or not wa.get("instance_name"):
             return {"connected": False, "status": "not_connected"}
 
         instance_name = wa["instance_name"]
-        base_url, api_key = await self._resolve_server(user_id)
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                # First check fetchInstances for 401 logout — connectionState alone is unreliable
-                try:
-                    fi_resp = await client.get(
-                        f"{base_url}/instance/fetchInstances",
-                        headers=self._headers(api_key),
-                    )
-                    if fi_resp.status_code == 200:
-                        instances = fi_resp.json()
-                        for inst in instances:
-                            if inst.get("name") == instance_name:
-                                if inst.get("disconnectionReasonCode") == 401:
-                                    logger.warning(f"Instance {instance_name} was logged out by WhatsApp (401) — marking as disconnected, needs force_new")
-                                    await self.db.users.update_one(
-                                        {"_id": user_id},
-                                        {"$set": {"whatsapp.status": "disconnected", "whatsapp.force_new": True}}
-                                    )
-                                    return {"connected": False, "status": "disconnected", "number": wa.get("number"), "instance_name": instance_name, "force_new": True}
-                except Exception as fi_err:
-                    logger.debug(f"fetchInstances check failed: {fi_err}")
-
                 resp = await client.get(
-                    f"{base_url}/instance/connectionState/{instance_name}",
-                    headers=self._headers(api_key),
+                    f"{self.base_url}/instance/connectionState/{instance_name}",
+                    headers=self._headers(),
                 )
 
                 if resp.status_code == 200:
                     data = resp.json()
                     state = data.get("instance", {}).get("state", "close")
                     is_open = state == "open"
-
-                    # Auto-reconnect: if instance exists but is closed, try to reconnect it
-                    if not is_open and wa.get("status") == "connected":
-                        logger.info(f"Instance {instance_name} was connected but is now closed — attempting auto-reconnect")
-                        try:
-                            reconnect_resp = await client.get(
-                                f"{base_url}/instance/connect/{instance_name}",
-                                headers=self._headers(api_key),
-                            )
-                            if reconnect_resp.status_code == 200:
-                                logger.info(f"Auto-reconnect triggered for {instance_name}")
-                                # Give it a moment to reconnect
-                                await asyncio.sleep(3)
-                                # Re-check state
-                                recheck = await client.get(
-                                    f"{base_url}/instance/connectionState/{instance_name}",
-                                    headers=self._headers(api_key),
-                                )
-                                if recheck.status_code == 200:
-                                    new_state = recheck.json().get("instance", {}).get("state", "close")
-                                    is_open = new_state == "open"
-                        except Exception as re_err:
-                            logger.warning(f"Auto-reconnect failed for {instance_name}: {re_err}")
 
                     # Update DB if status changed
                     new_status = "connected" if is_open else "disconnected"
@@ -470,67 +308,20 @@ class WhatsAppService:
                             {"$set": {"whatsapp.status": new_status}}
                         )
 
-                    disconnect_reason = wa.get("disconnect_reason") if not is_open else None
-                    disconnected_at = wa.get("disconnected_at").isoformat() if (not is_open and wa.get("disconnected_at")) else None
-                    reconnecting_since = wa.get("reconnecting_since")
                     return {
                         "connected": is_open,
                         "status": new_status,
                         "number": wa.get("number"),
                         "instance_name": instance_name,
-                        "disconnect_reason": disconnect_reason,
-                        "disconnected_at": disconnected_at,
-                        "reconnecting": bool(reconnecting_since and is_open),
                     }
                 else:
-                    return {"connected": False, "status": "unknown", "number": wa.get("number"),
-                            "disconnect_reason": wa.get("disconnect_reason")}
+                    return {"connected": False, "status": "unknown", "number": wa.get("number")}
 
         except httpx.ConnectError:
             return {"connected": False, "status": "service_unavailable"}
         except Exception as e:
             logger.error(f"Error checking instance status: {e}")
             return {"connected": False, "status": "error"}
-
-    async def refresh_pairing_code(self, user_id: str) -> Dict:
-        """Re-request a pairing code from the existing instance without deleting/recreating it.
-        Called by the whatsapp-refresh endpoint and the qrcode.updated webhook handler."""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
-        wa = user.get("whatsapp") if user else None
-        if not wa or not wa.get("instance_name"):
-            return {"status": "error", "message": "No instance found"}
-
-        instance_name = wa["instance_name"]
-        phone = wa.get("number", "")
-        clean_number = phone.lstrip("+").replace(" ", "").replace("-", "")
-        if not clean_number:
-            return {"status": "error", "message": "No phone number on record"}
-
-        base_url, api_key = await self._resolve_server(user_id)
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                code_resp = await client.get(
-                    f"{base_url}/instance/connect/{instance_name}",
-                    params={"number": clean_number},
-                    headers=self._headers(api_key),
-                )
-                if code_resp.status_code != 200:
-                    return {"status": "error", "message": f"Evolution API returned {code_resp.status_code}"}
-
-                code_data = code_resp.json()
-                pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
-                if not pairing_code:
-                    return {"status": "error", "message": "Empty pairing code"}
-
-                await self.db.users.update_one(
-                    {"_id": user_id},
-                    {"$set": {"whatsapp.pairing_code": pairing_code}}
-                )
-                logger.info(f"Refreshed pairing code for {instance_name}: {pairing_code}")
-                return {"status": "pairing", "pairing_code": pairing_code}
-        except Exception as e:
-            logger.error(f"Error refreshing pairing code for {instance_name}: {e}")
-            return {"status": "error", "message": str(e)}
 
     async def disconnect_instance(self, user_id: str) -> Dict:
         """Disconnect and delete a user's WhatsApp instance"""
@@ -541,22 +332,21 @@ class WhatsAppService:
             return {"status": "not_connected"}
 
         instance_name = wa["instance_name"]
-        base_url, api_key = await self._resolve_server(user_id)
 
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 # Logout first (unlinks WhatsApp)
                 await client.delete(
-                    f"{base_url}/instance/logout/{instance_name}",
-                    headers=self._headers(api_key),
+                    f"{self.base_url}/instance/logout/{instance_name}",
+                    headers=self._headers(),
                 )
                 # Delete the instance
                 await client.delete(
-                    f"{base_url}/instance/delete/{instance_name}",
-                    headers=self._headers(api_key),
+                    f"{self.base_url}/instance/delete/{instance_name}",
+                    headers=self._headers(),
                 )
         except Exception as e:
-            logger.error(f"Error deleting instance {instance_name}: {e}")
+            logger.error(f"Error deleting instance: {e}")
 
         # Clear WhatsApp config from user
         await self.db.users.update_one(
@@ -729,109 +519,6 @@ class WhatsAppService:
 
     # ============ MESSAGING ============
 
-    async def resolve_media_to_base64(self, u: str) -> 'Optional[Tuple[str, str]]':
-        """Return (base64_str, mime_type) for local files/remote URLs, or None on failure."""
-        if not u:
-            return None
-
-        import base64 as _b64
-        import os
-        from pathlib import Path as _Path
-        import httpx
-        from urllib.parse import urlparse as _up
-        
-        _backend_dir = _Path(os.path.dirname(__file__))
-
-        # --- Local file path ---
-        _path_part = None
-        if u.startswith('/uploads/') or u.startswith('uploads/'):
-            _path_part = u.lstrip('/')
-        elif u.startswith('http://') or u.startswith('https://'):
-            _parsed = _up(u)
-            _host = _parsed.netloc
-            if 'localhost' in _host or '127.0.0.1' in _host or 'docker.internal' in _host:
-                _path_part = _parsed.path.lstrip('/')
-        else:
-            _path_part = u.lstrip('/')
-
-        if _path_part:
-            _file = _backend_dir / _path_part
-            if _file.exists():
-                try:
-                    _ext = _file.suffix.lower().replace('.', '') or 'jpeg'
-                    _data = _b64.b64encode(_file.read_bytes()).decode()
-                    logger.info(f"[resolve_media] local file → base64 ({_file.name})")
-                    return (_data, f"image/{_ext}")
-                except Exception as _re:
-                    logger.warning(f"[resolve_media] Could not read local image {_file}: {_re}")
-            else:
-                _server_url = os.environ.get("SERVER_URL", "").rstrip("/")
-                if _server_url:
-                    _fallback_url = f"{_server_url}/{_path_part}"
-                    logger.info(f"[resolve_media] local file missing, trying HTTP fallback: {_fallback_url}")
-                    try:
-                        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
-                            _r = await _dl.get(_fallback_url, headers={"User-Agent": "Mozilla/5.0"})
-                        if _r.status_code == 200:
-                            _ct = _r.headers.get("content-type", "image/jpeg")
-                            _mime = _ct.split(";")[0].strip() or "image/jpeg"
-                            _data = _b64.b64encode(_r.content).decode()
-                            logger.info(f"[resolve_media] HTTP fallback downloaded → base64")
-                            return (_data, _mime)
-                        else:
-                            logger.warning(f"[resolve_media] HTTP fallback failed: HTTP {_r.status_code}")
-                    except Exception as _fbe:
-                        logger.warning(f"[resolve_media] HTTP fallback exception: {_fbe}")
-
-        # --- Remote URL (ImgBB, Cloudinary, S3, etc.) ---
-        if u.startswith('http://') or u.startswith('https://'):
-            _download_url = u
-            if '.s3.' in u or '.s3-' in u or 's3.amazonaws.com' in u:
-                try:
-                    _parsed = _up(u)
-                    _bucket = None
-                    _key = None
-                    _region = os.environ.get('AWS_REGION', 'us-east-1')
-
-                    if '.s3.' in _parsed.netloc and '.amazonaws.com' in _parsed.netloc:
-                        _parts = _parsed.netloc.split('.s3.')
-                        _bucket = _parts[0]
-                        _key = _parsed.path.lstrip('/')
-                        if '.' in _parts[1]:
-                            _region_part = _parts[1].split('.')[0]
-                            if _region_part != 'amazonaws':
-                                _region = _region_part
-
-                    if _bucket and _key:
-                        import boto3
-                        _s3 = boto3.client('s3',
-                            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-                            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-                            region_name=_region
-                        )
-                        _download_url = _s3.generate_presigned_url(
-                            'get_object',
-                            Params={'Bucket': _bucket, 'Key': _key},
-                            ExpiresIn=3600
-                        )
-                except Exception as _s3e:
-                    logger.warning(f"[resolve_media] Could not regenerate S3 URL: {_s3e}")
-                
-            try:
-                async with httpx.AsyncClient(timeout=20, follow_redirects=True) as _dl:
-                    _r = await _dl.get(_download_url, headers={"User-Agent": "Mozilla/5.0"})
-                if _r.status_code == 200:
-                    _ct = _r.headers.get("content-type", "image/jpeg")
-                    _mime = _ct.split(";")[0].strip() or "image/jpeg"
-                    _data = _b64.b64encode(_r.content).decode()
-                    return (_data, _mime)
-                else:
-                    logger.warning(f"[resolve_media] Failed to dwl {_download_url[:100]}: HTTP {_r.status_code}")
-            except Exception as _de:
-                logger.warning(f"[resolve_media] Could not download image: {_de}")
-
-        return None
-
     async def send_message(
         self,
         user_id: str,
@@ -843,27 +530,23 @@ class WhatsAppService:
         media_filename: Optional[str] = None,
         send_context: str = "manual",
         ai_model: Optional[str] = None,
-        bypass_limits: bool = False,
     ) -> Dict:
         """
         Send a WhatsApp message via Evolution API.
         Auto-creates customer contact if needed.
         Enforces rate limits.
         Simulates human behavior (typing + delays) to prevent bans.
-
-        send_context: 'manual' | 'auto_reply' | 'order_confirm' | 'broadcast' | 'system'
-        bypass_limits: skip monthly/daily credit checks (for system messages like daily pulse)
+        
+        send_context: 'manual' | 'auto_reply' | 'order_confirm' | 'broadcast'
         """
         try:
-            # Check rate limits (skip for system/service messages sent to the owner)
-            if not bypass_limits:
-                limit_check = await self.check_message_limit(user_id)
-                if not limit_check["allowed"]:
-                    return {"status": "limit_reached", "message": limit_check["reason"]}
+            # Check rate limits
+            limit_check = await self.check_message_limit(user_id)
+            if not limit_check["allowed"]:
+                return {"status": "limit_reached", "message": limit_check["reason"]}
 
             # Get user's WhatsApp config and AI model
-            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "evolution_url": 1, "evolution_api_key": 1})
-            base_url, api_key = await self._resolve_server(user_id)
+            user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1})
             wa = user.get("whatsapp") if user else None
             # Manual sends always cost 1 credit flat (no AI used)
             # AI-assisted sends (auto_reply, broadcast, order_confirm) use the model multiplier
@@ -983,46 +666,29 @@ class WhatsAppService:
                         if not clean_filename:
                             clean_filename = "image.jpg" if (media_type or "image") == "image" else "document.pdf"
                         # Send media message (FLAT structure fix)
-                        _resolved_media = None
-                        _resolved_media = media_url
-                        _resolved_mimetype = None
-                        if media_url:
-                            _media_res = await self.resolve_media_to_base64(media_url)
-                            if _media_res:
-                                _base_64_str, _mime = _media_res
-                                _resolved_media = _base_64_str
-                                _resolved_mimetype = _mime
-
                         payload = {
                             "number": clean_to,
                             "mediatype": media_type or "image",
-                            "media": _resolved_media,
+                            "media": media_url,
                             "caption": message,
                             "fileName": clean_filename,
                         }
-                        if _resolved_mimetype:
-                            payload["mimetype"] = _resolved_mimetype
                         logger.info(f"Sending media payload: {payload}")  # DEBUG LOG
                         resp = await client.post(
-                            f"{base_url}/message/sendMedia/{instance_name}",
+                            f"{self.base_url}/message/sendMedia/{instance_name}",
                             json=payload,
-                            headers=self._headers(api_key),
+                            headers=self._headers(),
                         )
                     else:
                         # Send text message
-                        # Append invisible zero-width space to ALL AI/automated messages so the
-                        # receiving end can identify them and skip replying (AI↔AI loop guard).
-                        # Only exclude contexts where a human owner is manually sending (broadcast, product_send, manual).
-                        _HUMAN_SEND_CONTEXTS = {"broadcast", "product_send", "manual"}
-                        _msg_text = message + "\u200B" if send_context not in _HUMAN_SEND_CONTEXTS else message
                         payload = {
                             "number": clean_to,
-                            "text": _msg_text,
+                            "text": message,
                         }
                         resp = await client.post(
-                            f"{base_url}/message/sendText/{instance_name}",
+                            f"{self.base_url}/message/sendText/{instance_name}",
                             json=payload,
-                            headers=self._headers(api_key),
+                            headers=self._headers(),
                         )
 
                     logger.info(f"Evolution API response status: {resp.status_code}")
@@ -1131,13 +797,12 @@ class WhatsAppService:
         instance_name = user["whatsapp"]["instance_name"]
         clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
 
-        # Evolution API v2 button format
         formatted_buttons = []
         for btn in buttons[:3]:
             formatted_buttons.append({
-                "title": btn.get("title", btn.get("buttonId", "Button")),
-                "displayText": btn.get("displayText", btn.get("buttonId", "Button")),
-                "id": btn.get("id", btn.get("buttonId", "btn")),
+                "type": "replyButton",
+                "buttonId": btn.get("buttonId", "btn"),
+                "buttonText": btn.get("buttonText", {"displayText": "Button"}),
             })
 
         payload = {
@@ -1145,12 +810,14 @@ class WhatsAppService:
             "title": title,
             "description": description,
             "buttons": formatted_buttons,
-            "footer": footer_text or "",
+            "footerText": footer_text or "",
         }
 
         if media_url:
-            payload["media"] = media_url
-            payload["mediatype"] = "image"
+            payload["mediaMessage"] = {
+                "mediatype": "image",
+                "media": media_url,
+            }
 
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -1169,261 +836,6 @@ class WhatsAppService:
         except Exception as e:
             logger.error(f"Error sending button message: {e}")
             return {"status": "error", "message": str(e)}
-
-    # ============ PRODUCT CATALOG MESSAGES ============
-
-    async def send_product_showcase(
-        self,
-        user_id: str,
-        to_number: str,
-        product: Dict[str, Any],
-        send_buttons: bool = True,
-        cart_context: Optional[Dict] = None,
-    ) -> Dict:
-        """Send product image with caption then interactive buttons using authenticated client"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
-        if not user or not user.get("whatsapp", {}).get("instance_name"):
-            return {"status": "error", "message": "WhatsApp not connected"}
-
-        instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
-
-        price = product.get('price', 0)
-        price_str = f"{currency} {price:,.0f}" if price else "Price on request"
-        in_stock = product.get('in_stock', True)
-        _is_rental = (product.get('service_category') == 'rental' or product.get('offering_type') == 'rental')
-        stock_label = "" if _is_rental else ("✅ In Stock" if in_stock else "❌ Out of Stock")
-        desc = product.get('description', '') or ''
-        if desc.strip().lower() == 'add product description':
-            desc = ''
-
-        caption = f"🌟 *{product['name']}*\n💰 {price_str}" + (f"\n{stock_label}" if stock_label else "")
-        if desc.strip():
-            caption += f"\n\n{desc}"
-
-        # Collect ALL images for this product (deduplicated)
-        images = product.get('images', [])
-        image_url = product.get('image_url')
-        logger.info(f"[showcase] raw image_url={image_url!r} images={images}")
-        all_imgs: list = []
-        if image_url:
-            all_imgs.append(image_url)
-        for _img in images:
-            if _img and _img not in all_imgs:
-                all_imgs.append(_img)
-
-        result = None
-        if all_imgs:
-            # Send extra images first (no caption)
-            for _extra in all_imgs[1:]:
-                await self.send_message(
-                    user_id=user_id,
-                    to_number=to_number,
-                    message="",
-                    media_url=_extra,
-                    send_context="product_showcase"
-                )
-                await asyncio.sleep(0.4)
-            # Send main image with caption
-            result = await self.send_message(
-                user_id=user_id,
-                to_number=to_number,
-                message=caption,
-                media_url=all_imgs[0],
-                send_context="product_showcase"
-            )
-        else:
-            result = await self.send_message(
-                user_id=user_id,
-                to_number=to_number,
-                message=caption,
-                send_context="product_showcase"
-            )
-
-        # Step 2: numbered action text using business's custom actions
-        if send_buttons and in_stock:
-            await asyncio.sleep(1)
-            # Load user's custom product actions (or fall back to business-type defaults)
-            _user_doc = user
-            _biz_type_wa = ((_user_doc or {}).get("settings") or {}).get("business_type", "retail").lower()
-            _type_defaults = {
-                "retail":     [{"label": "Order Now",          "action_type": "order",       "index": 1},
-                               {"label": "Add to Cart",        "action_type": "add_to_cart", "index": 2},
-                               {"label": "See Similar",        "action_type": "similar",     "index": 3}],
-                "restaurant": [{"label": "Order Now",          "action_type": "order",       "index": 1},
-                               {"label": "Make Reservation",   "action_type": "book",        "index": 2},
-                               {"label": "View Menu",          "action_type": "info",        "index": 3}],
-                "salon":      [{"label": "Book Appointment",   "action_type": "book",        "index": 1},
-                               {"label": "View Price List",    "action_type": "info",        "index": 2},
-                               {"label": "See Similar",        "action_type": "similar",     "index": 3}],
-                "fitness":    [{"label": "Join / Enroll",      "action_type": "order",       "index": 1},
-                               {"label": "Book a Class",       "action_type": "book",        "index": 2},
-                               {"label": "View Schedule",      "action_type": "info",        "index": 3}],
-                "healthcare": [{"label": "Book Appointment",   "action_type": "book",        "index": 1},
-                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
-                               {"label": "Learn More",         "action_type": "info",        "index": 3}],
-                "rental":     [{"label": "Check Availability", "action_type": "book",        "index": 1},
-                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
-                               {"label": "View Details",       "action_type": "info",        "index": 3}],
-                "tech":       [{"label": "Start Free Trial",   "action_type": "subscribe",   "index": 1},
-                               {"label": "Book a Demo",        "action_type": "book",        "index": 2},
-                               {"label": "View Pricing",       "action_type": "info",        "index": 3}],
-                "creator":    [{"label": "Subscribe / Buy",    "action_type": "subscribe",   "index": 1},
-                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
-                               {"label": "Learn More",         "action_type": "info",        "index": 3}],
-                "services":   [{"label": "Book Now",           "action_type": "book",        "index": 1},
-                               {"label": "Get a Quote",        "action_type": "quote",       "index": 2},
-                               {"label": "Learn More",         "action_type": "info",        "index": 3}],
-            }
-            _fallback_actions = _type_defaults.get(_biz_type_wa, _type_defaults["retail"])
-            _actions = (_user_doc or {}).get("settings", {}).get("product_actions") or _fallback_actions
-            # Always add "Back to Catalog" as the last option
-            _back_index = len(_actions) + 1
-            _actions_with_back = _actions + [{"label": "🔙 Back to Catalog", "action_type": "back", "index": _back_index}]
-            _count = len(_actions_with_back)
-            _reply_hint = f"1-{_count}"
-            action_lines = "\n".join(
-                f"{a['index']}\ufe0f\u20e3  {a['label']}" for a in _actions_with_back
-            )
-            # Add hint that 0 = view all images (mirrors catalog_select UX)
-            _has_images = bool(all_imgs)
-            _img_hint = "\n0\ufe0f\u20e3  View all images" if _has_images else ""
-            if cart_context and cart_context.get("item_count", 0) > 0:
-                _cc = cart_context
-                _cart_currency = _cc.get("currency", "")
-                _cart_count = _cc.get("item_count", 0)
-                _cart_total = _cc.get("total", 0)
-                _item_word = "item" if _cart_count == 1 else "items"
-                _cart_line = f"🛒 *Your cart: {_cart_count} {_item_word}* — {_cart_currency} {_cart_total:,.0f}\n\n"
-                actions_text = f"{_cart_line}*What would you like to add to your cart?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
-            else:
-                actions_text = f"*What would you like to do?*\n\n{action_lines}{_img_hint}\n\n_Reply with a number_"
-            
-            await self.send_message(
-                user_id=user_id,
-                to_number=to_number,
-                message=actions_text,
-                send_context="product_actions"
-            )
-
-        return result or {"status": "sent"}
-
-    async def send_product_list(
-        self,
-        user_id: str,
-        to_number: str,
-        title: str,
-        products: List[Dict[str, Any]],
-        category: Optional[str] = None,
-        has_more: bool = False,
-        page_num: int = 1,
-        header_text: Optional[str] = None
-    ) -> Dict:
-        """Send multiple products as a numbered list (max 8 per page). If has_more, option 9 = next page."""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
-        if not user or not user.get("whatsapp", {}).get("instance_name"):
-            return {"status": "error", "message": "WhatsApp not connected"}
-
-        instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
-
-        # Show max 8 products as options 1-8
-        page_label = f" (Page {page_num})" if page_num > 1 else ""
-        lines = []
-        if header_text:
-            lines.append(f"{header_text}\n")
-        lines.append(f"🛍️ *{title}{page_label}*\n")
-        
-        for i, p in enumerate(products[:8], 1):
-            price = p.get('price', 0)
-            _p_is_rental = (p.get('service_category') == 'rental' or p.get('offering_type') == 'rental')
-            stock = "" if _p_is_rental else ("✅" if p.get('in_stock', True) else "❌")
-            price_str = f"{currency} {price:,.0f}" if price else "POA"
-            lines.append(f"{i}️⃣  *{p['name']}* — {price_str}" + (f" {stock}" if stock else ""))
-        if has_more:
-            lines.append(f"9\ufe0f\u20e3  ➡️ *See more products*")
-        lines.append(f"0\ufe0f\u20e3  🖼️ *View all images for these products*")
-        lines.append("\n_Reply with a number to select_")
-        return await self.send_message(
-            user_id=user_id,
-            to_number=to_number,
-            message="\n".join(lines),
-            send_context="catalog_list"
-        )
-
-    async def send_product_with_buttons(
-        self,
-        user_id: str,
-        to_number: str,
-        product: Dict[str, Any],
-        include_share: bool = True
-    ) -> Dict:
-        """Send a single product with interactive buttons (no image)"""
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "settings": 1, "currency": 1})
-        if not user or not user.get("whatsapp", {}).get("instance_name"):
-            return {"status": "error", "message": "WhatsApp not connected"}
-
-        instance_name = user["whatsapp"]["instance_name"]
-        currency = user.get("currency") or user.get("settings", {}).get("currency", "USD")
-        clean_to = to_number.lstrip('+').replace(' ', '').replace('-', '')
-
-        price = product.get('price', 0)
-        price_str = f"{currency} {price:,.0f}" if price else "Price on request"
-        in_stock = product.get('in_stock', True)
-        product_id = str(product.get('_id', product.get('id', '')))
-
-        description = f"💰 {price_str}"
-        if product.get('description'):
-            description += f"\n{product['description'][:200]}"
-
-        buttons = []
-        if in_stock:
-            buttons.append({"title": "Order Now", "displayText": "🛒 Order Now", "id": f"order_{product_id}"})
-        buttons.append({"title": "More Info", "displayText": "📋 More Info", "id": f"details_{product_id}"})
-        if include_share:
-            buttons.append({"title": "Share", "displayText": "📱 Share", "id": f"share_{product_id}"})
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            poll_options = []
-            if in_stock:
-                poll_options.append("🛒 Order Now")
-            poll_options.append("📋 More Info")
-            if include_share:
-                poll_options.append("📱 Share")
-            resp = await client.post(
-                f"{self.base_url}/message/sendPoll/{instance_name}",
-                json={
-                    "number": clean_to,
-                    "name": f"✨ {product['name']}",
-                    "values": poll_options[:3],
-                    "selectableCount": 1,
-                },
-                headers=self._headers(),
-            )
-            if resp.status_code in (200, 201):
-                return {"status": "success", "data": resp.json()}
-            else:
-                raise Exception(f"sendPoll error: {resp.status_code} {resp.text[:200]}")
-
-    def format_product_message(self, product: Dict[str, Any], currency: str = 'USD') -> str:
-        """Format a product into a rich text message"""
-        price = product.get('price', 0)
-        price_str = f"{currency} {price:,.0f}" if price else "Price on request"
-        in_stock = product.get('in_stock', True)
-        _is_rental = (product.get('service_category') == 'rental' or product.get('offering_type') == 'rental')
-        stock_label = "" if _is_rental else ("✅ In Stock" if in_stock else "❌ Out of Stock")
-        parts = [
-            f"🛍️ *{product['name'].upper()}*",
-            "",
-            f"💰 *Price:* {price_str}",
-        ]
-        if stock_label:
-            parts.append(stock_label)
-        if product.get('description'):
-            parts.extend(["", "📝 *Description:*", product['description']])
-        return "\n".join(parts)
 
     # ============ BROADCAST (asyncio queue) ============
 
@@ -1542,13 +954,10 @@ class WhatsAppService:
         """Handle connection.update webhook from Evolution API"""
         state = data.get("state") or data.get("instance", {}).get("state", "")
 
-        user = await self.find_user_by_instance(instance_name)
+        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
         if not user:
-            logger.debug(f"No user found for instance {instance_name} — ignoring")
+            logger.warning(f"No user found for instance {instance_name}")
             return
-
-        # Always log the state so we can see what Evolution is actually reporting
-        logger.info(f"connection.update: instance={instance_name}, state={state!r}, user={user['_id']}")
 
         if state == "open":
             await self.db.users.update_one(
@@ -1556,80 +965,24 @@ class WhatsAppService:
                 {"$set": {
                     "whatsapp.status": "connected",
                     "whatsapp.connected_at": datetime.utcnow(),
-                    "whatsapp.disconnect_reason": None,
-                    "whatsapp.disconnected_at": None,
-                    "whatsapp.reconnecting_since": None,
                 }}
             )
-            logger.info(f"Instance {instance_name} → CONNECTED for user {user['_id']}")
-
+            logger.info(f"Instance {instance_name} connected for user {user['_id']}")
         elif state in ("close", "refused"):
-            # Detect specific disconnect reasons from Evolution API payload
-            # "conflict" means WhatsApp was opened on another device and kicked us out
-            status_reason = data.get("statusReason", "")
-            last_disconnect = data.get("lastDisconnect", {})
-            reason_tag = (
-                last_disconnect.get("error", {}).get("output", {}).get("statusCode")
-                or data.get("reasonNode", {}).get("tag")
-                or ""
-            )
-            if "conflict" in str(data).lower() or reason_tag == "conflict":
-                disconnect_reason = "conflict"
-            elif status_reason == 401 or "logged_out" in str(data).lower():
-                disconnect_reason = "logged_out"
-            else:
-                disconnect_reason = "unknown"
-
             await self.db.users.update_one(
                 {"_id": user["_id"]},
-                {"$set": {
-                    "whatsapp.status": "disconnected",
-                    "whatsapp.disconnect_reason": disconnect_reason,
-                    "whatsapp.disconnected_at": datetime.utcnow(),
-                    "whatsapp.reconnecting_since": None,
-                }}
+                {"$set": {"whatsapp.status": "disconnected"}}
             )
-            logger.warning(f"Instance {instance_name} → DISCONNECTED ({disconnect_reason}) for user {user['_id']}")
-
-        elif state == "connecting":
-            # Evolution is in a reconnect loop.
-            # Set reconnecting_since only if not already set, so we can measure how long it takes.
-            wa_doc = (await self.db.users.find_one({"_id": user["_id"]}, {"whatsapp": 1}) or {}).get("whatsapp", {})
-            reconnecting_since = wa_doc.get("reconnecting_since")
-            now = datetime.utcnow()
-
-            if not reconnecting_since:
-                # First "connecting" event — record when the loop started
-                await self.db.users.update_one(
-                    {"_id": user["_id"]},
-                    {"$set": {"whatsapp.reconnecting_since": now}}
-                )
-                logger.info(f"Instance {instance_name} → RECONNECTING (loop started) for user {user['_id']}")
-            else:
-                # Already in a loop — check how long it's been
-                elapsed = (now - reconnecting_since).total_seconds()
-                logger.info(f"Instance {instance_name} → still reconnecting ({elapsed:.0f}s) for user {user['_id']}")
-                if elapsed > 60:
-                    # Stuck for >60s — mark as disconnected so the UI shows the banner
-                    await self.db.users.update_one(
-                        {"_id": user["_id"]},
-                        {"$set": {
-                            "whatsapp.status": "disconnected",
-                            "whatsapp.disconnect_reason": "reconnect_timeout",
-                            "whatsapp.disconnected_at": now,
-                            "whatsapp.reconnecting_since": None,
-                        }}
-                    )
-                    logger.warning(f"Instance {instance_name} → DISCONNECTED (reconnect timeout >60s) for user {user['_id']}")
+            logger.info(f"Instance {instance_name} disconnected for user {user['_id']}")
 
     async def handle_incoming_message(self, instance_name: str, data: Dict):
         """Handle messages.upsert webhook from Evolution API.
         Captures BOTH incoming and outgoing messages so AI has full conversation context.
         """
         # Find the business user who owns this instance
-        user = await self.find_user_by_instance(instance_name)
+        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
         if not user:
-            logger.debug(f"No user found for instance {instance_name} — ignoring")
+            logger.warning(f"No user found for instance {instance_name}")
             return
 
         # Extract message data from Evolution API webhook payload
@@ -1644,75 +997,25 @@ class WhatsAppService:
         if "@g.us" in remote_jid:
             return
 
-        # Skip status updates and broadcasts, but allow real numbers (@s.whatsapp.net) and business LIDs (@lid)
-        if "@s.whatsapp.net" not in remote_jid and "@lid" not in remote_jid:
-            return
-
         # Convert JID to phone number (remove @s.whatsapp.net)
-        _raw_contact = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
-        contact_number = f"+{_raw_contact}" if _raw_contact and not _raw_contact.startswith("+") else _raw_contact
-        own_digits = (user.get("phone_number") or "").lstrip("+").replace(" ", "").replace("-", "")
-        if not _is_valid_contact_phone(contact_number, own_digits):
-            return
+        contact_number = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
+        if contact_number and not contact_number.startswith("+"):
+            contact_number = f"+{contact_number}"
 
         # Get message content
         message_data = msg.get("message", {})
-
-        # Extract poll vote if present (Evolution API v2 poll responses)
-        _poll_vote = ""
-        _poll_raw = message_data.get("pollUpdateMessage", {})
-        if _poll_raw:
-            _vote = _poll_raw.get("vote", {})
-            for _opt in _vote.get("selectedOptions", []):
-                if isinstance(_opt, str):
-                    _poll_vote = _opt
-                    break
-                if isinstance(_opt, dict):
-                    _poll_vote = _opt.get("name") or _opt.get("optionName") or _opt.get("text") or ""
-                    if _poll_vote:
-                        break
-            if _poll_vote:
-                logger.info(f"Poll vote captured: {_poll_vote!r}")
-            else:
-                logger.info(f"Poll update (no vote extracted). Raw: {str(_poll_raw)[:300]}")
-
-        # Extract native flow quick_reply button tap response
-        # Format: interactiveResponseMessage > nativeFlowResponseMessage > paramsJson {"id": "...", "display_text": "..."}
-        _native_btn_id = ""
-        _interactive_resp = message_data.get("interactiveResponseMessage", {})
-        if _interactive_resp:
-            _nfr = _interactive_resp.get("nativeFlowResponseMessage", {})
-            _params_raw = _nfr.get("paramsJson") or _nfr.get("params") or ""
-            if _params_raw:
-                try:
-                    import json as _json
-                    _params = _json.loads(_params_raw) if isinstance(_params_raw, str) else _params_raw
-                    _native_btn_id = _params.get("id") or _params.get("selectedId") or ""
-                except Exception:
-                    pass
-            if not _native_btn_id:
-                # Fallback: try selectedButtonId or body text
-                _native_btn_id = (
-                    _interactive_resp.get("body", {}).get("text", "")
-                    or _interactive_resp.get("selectedButtonId", "")
-                )
-            if _native_btn_id:
-                logger.info(f"Native flow button tap: {_native_btn_id!r}")
-
         body = (
             message_data.get("conversation")
             or message_data.get("extendedTextMessage", {}).get("text")
             or message_data.get("imageMessage", {}).get("caption")
-            or _native_btn_id
             or message_data.get("buttonsResponseMessage", {}).get("selectedButtonId")
             or message_data.get("listResponseMessage", {}).get("singleSelectReply", {}).get("selectedRowId")
-            or _poll_vote
             or ""
         )
 
         # Extract image URL if present
         image_message = message_data.get("imageMessage", {})
-        has_image = bool(image_message.get("url") or image_message.get("directPath"))
+        image_url = image_message.get("url") or image_message.get("directPath")
 
         # Extract document if present
         # Evolution API sends documents in two variants:
@@ -1723,31 +1026,26 @@ class WhatsAppService:
             or (message_data.get("documentWithCaption") or {}).get("message", {}).get("documentMessage")
             or {}
         )
-        has_document = bool(doc_message.get("url") or doc_message.get("directPath"))
+        doc_url = doc_message.get("url") or doc_message.get("directPath")
         doc_filename = doc_message.get("fileName") or doc_message.get("title") or ""
 
-        # Download media from Evolution API and get accessible URL
-        media_url = None
-        message_type = "text"
-        
-        if has_document:
+        if doc_url:
             message_type = "document"
-            # Download document through Evolution API — pass full msg object
-            media_url = await download_whatsapp_media(instance_name, msg, "document")
+            media_url = doc_url
+            # Use doc filename as body if body is empty
+            # Avoid the generic fallback string so frontend can detect it properly
             if not body:
                 body = doc_filename or "📎 Received document"
-        elif has_image:
+        elif image_url:
             message_type = "image"
-            # Download image through Evolution API — pass full msg object
-            media_url = await download_whatsapp_media(instance_name, msg, "image")
-            if not body:
-                body = "📷"  # placeholder so image-only messages pass the guard
+            media_url = image_url
+        else:
+            message_type = "text"
+            media_url = None
 
         push_name = msg.get("pushName", "")
 
         if not contact_number or not body:
-            if _poll_raw:
-                logger.info(f"Poll update dropped (empty body after extraction). Full raw: {str(_poll_raw)[:500]}")
             return
 
         evo_msg_id = key.get("id", "")
@@ -1778,10 +1076,10 @@ class WhatsAppService:
           1 = sent (server), 2 = delivered, 3 = read, 4 = played (audio)
         """
         logger.info(f"handle_message_update called, data type={type(data).__name__}")
-
-        user = await self.find_user_by_instance(instance_name)
+        
+        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
         if not user:
-            logger.debug(f"No user for instance {instance_name} — ignoring")
+            logger.warning(f"No user for instance {instance_name}")
             return
 
         # data can be a list of updates or a single update
@@ -2082,61 +1380,8 @@ class WhatsAppService:
         return {"updated": updated, "errors": errors}
 
     async def find_user_by_instance(self, instance_name: str) -> Optional[Dict]:
-        """Find user by their Evolution API instance name.
-        Falls back to stripping a timestamp suffix (e.g. user_xxx_1774922784 → user_xxx)
-        and auto-deletes the orphaned instance from Evolution so it stops sending webhooks.
-        """
-        user = await self.db.users.find_one({"whatsapp.instance_name": instance_name})
-        if user:
-            return user
-
-        import re as _re
-
-        # Case 1: incoming instance has a timestamp suffix — check if base name matches DB
-        base_name = _re.sub(r'_\d{9,13}$', '', instance_name)
-        if base_name != instance_name:
-            user = await self.db.users.find_one({"whatsapp.instance_name": base_name})
-            if user:
-                # DB has base name but this is a newer timestamped orphan — delete it
-                logger.info(f"Orphaned timestamped instance {instance_name} (DB has base={base_name}) — auto-deleting")
-                await self._delete_orphaned_instance(instance_name, user)
-                return None
-            # Also check: DB might have a DIFFERENT timestamp — find user by base prefix
-            user = await self.db.users.find_one({"whatsapp.instance_name": {"$regex": f"^{_re.escape(base_name)}"}})
-            if user:
-                active = user.get("whatsapp", {}).get("instance_name", "")
-                if active != instance_name:
-                    logger.info(f"Orphaned instance {instance_name} (active={active}) — auto-deleting")
-                    await self._delete_orphaned_instance(instance_name, user)
-                    return None
-            return None
-
-        # Case 2: incoming instance has NO timestamp — check if DB has a timestamped version for this base
-        user = await self.db.users.find_one({"whatsapp.instance_name": {"$regex": f"^{_re.escape(instance_name)}_\\d{{9,13}}$"}})
-        if user:
-            active = user.get("whatsapp", {}).get("instance_name", "")
-            logger.info(f"Orphaned base instance {instance_name} (DB has timestamped={active}) — auto-deleting")
-            await self._delete_orphaned_instance(instance_name, user)
-            return None
-
-        return None
-
-    async def _delete_orphaned_instance(self, instance_name: str, user: dict) -> None:
-        """Delete an orphaned Evolution API instance that is no longer the active one."""
-        try:
-            base_url, api_key = await self._resolve_server(user["_id"])
-            async with httpx.AsyncClient(timeout=10) as _client:
-                await _client.delete(
-                    f"{base_url}/instance/logout/{instance_name}",
-                    headers=self._headers(api_key),
-                )
-                await _client.delete(
-                    f"{base_url}/instance/delete/{instance_name}",
-                    headers=self._headers(api_key),
-                )
-            logger.info(f"Orphaned instance {instance_name} deleted successfully")
-        except Exception as _e:
-            logger.warning(f"Could not delete orphaned instance {instance_name}: {_e}")
+        """Find user by their Evolution API instance name"""
+        return await self.db.users.find_one({"whatsapp.instance_name": instance_name})
 
     # ============ CONTACT & HISTORY SYNC ============
 
@@ -2178,13 +1423,13 @@ class WhatsAppService:
                     jid = contact.get("remoteJid", "")
                     if not jid or "@g.us" in jid or "status@" in jid or "0@s.whatsapp.net" == jid:
                         continue  # Skip groups, status broadcasts, system contacts
-                    if "@s.whatsapp.net" not in jid:
-                        continue  # Skip @lid and other non-standard JIDs (not real phone numbers)
                     phone = jid.split("@")[0] if "@" in jid else jid
-                    phone_with_plus = f"+{phone}" if not phone.startswith("+") else phone
-                    if not _is_valid_contact_phone(phone_with_plus, own_number):
+                    if not phone or not phone.isdigit():
                         continue
-                    phone = phone_with_plus
+                    # Skip own number
+                    if phone == own_number:
+                        continue
+                    phone = f"+{phone}"
 
                     raw_name = (
                         contact.get("pushName")
@@ -2295,13 +1540,13 @@ class WhatsAppService:
                     if not chat_jid or "@g.us" in chat_jid or "status@" in chat_jid:
                         continue  # Skip groups and status broadcasts
 
-                    if "@s.whatsapp.net" not in chat_jid:
-                        continue  # Skip @lid and other non-standard JIDs (not real phone numbers)
                     phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
-                    phone_with_plus = f"+{phone}" if not phone.startswith("+") else phone
-                    if not _is_valid_contact_phone(phone_with_plus, own_number):
+                    if not phone or not phone.isdigit():
                         continue
-                    phone = phone_with_plus
+                    # Skip own number
+                    if phone == own_number:
+                        continue
+                    phone = f"+{phone}"
 
                     # Find or create customer record
                     customer = await self.db.customers.find_one({

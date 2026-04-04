@@ -1,7 +1,6 @@
 import axios from 'axios';
-import Constants from 'expo-constants';
 
-const API_URL = Constants.expoConfig?.extra?.backendUrl || 'https://crm-1-pnfo.onrender.com';
+const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://crm-1-pnfo.onrender.com';
 
 export const apiClient = axios.create({
   baseURL: `${API_URL}/api`,
@@ -149,10 +148,6 @@ export const settingsAPI = {
     country_code?: string;
     ai_model?: string;
     auto_reply_audience?: 'everyone' | 'customers_only' | 'new_contacts_only';
-    business_type?: string;
-    business_hours?: Record<string, { open: string; close: string; closed?: boolean }>;
-    booking_settings?: Record<string, any>;
-    timezone?: string;
   }) => {
     const response = await apiClient.put('/settings', settings);
     return response.data;
@@ -162,8 +157,8 @@ export const settingsAPI = {
    * Register push notification token
    */
   registerPushToken: async (pushToken: string) => {
-    const response = await apiClient.post('/push-token', {
-      token: pushToken
+    const response = await apiClient.post('/notifications/register-token', {
+      push_token: pushToken
     });
     return response.data;
   },
@@ -195,10 +190,6 @@ export const settingsAPI = {
     faqs?: string;
     special_offers?: string;
     business_description?: string;
-    booking_process?: string;
-    cancellation_policy?: string;
-    staff_info?: string;
-    [key: string]: any;
   }) => {
     const response = await apiClient.put('/business-knowledge', knowledge);
     return response.data;
@@ -212,7 +203,7 @@ export const whatsappAPI = {
    * Start WhatsApp pairing: returns 8-digit code for Linked Devices
    */
   connect: async (phoneNumber: string) => {
-    const response = await apiClient.post('/whatsapp/connect', { phone_number: phoneNumber }, { timeout: 180000 });
+    const response = await apiClient.post('/whatsapp/connect', { phone_number: phoneNumber });
     return response.data;
   },
 
@@ -238,16 +229,6 @@ export const whatsappAPI = {
   disconnect: async () => {
     const response = await apiClient.post('/whatsapp/disconnect');
     return response.data;
-  },
-
-  /**
-   * Trigger background fetch of profile pictures for all customers
-   */
-  refreshProfilePictures: async () => {
-    try {
-      const response = await apiClient.post('/customers/refresh-profile-pictures');
-      return response.data;
-    } catch (_) {}
   },
 
   /**
@@ -480,27 +461,22 @@ export const productsAPI = {
   },
 
   /**
-   * Send product to customer via WhatsApp API (with interactive buttons)
+   * Send product to customer via WhatsApp API (with image)
    */
-  sendProductToCustomer: async (productId: string, customerId: string, useButtons: boolean = true) => {
+  sendProductToCustomer: async (productId: string, customerId: string) => {
     const response = await apiClient.post(`/products/${productId}/send`, null, {
-      params: { 
-        customer_id: customerId,
-        use_buttons: useButtons
-      }
+      params: { customer_id: customerId }
     });
     return response.data;
   },
 
   /**
-   * Send multiple products as a catalog to customer via WhatsApp (with interactive list)
+   * Send multiple products as a catalog to customer via WhatsApp
    */
-  sendCatalog: async (customerId: string, productIds: string[], useList: boolean = true) => {
+  sendCatalog: async (customerId: string, productIds: string[]) => {
     const response = await apiClient.post('/products/send-catalog', {
       customer_id: customerId,
       product_ids: productIds,
-    }, {
-      params: { use_list: useList }
     });
     return response.data;
   },
@@ -605,57 +581,6 @@ export const teamAPI = {
    */
   getActivityLogs: async (params?: { limit?: number; user_id?: string; entity_type?: string }) => {
     const response = await apiClient.get('/activity/logs', { params });
-    return response.data;
-  },
-};
-
-// ============ BOOKINGS API ============
-export const bookingsAPI = {
-  getBookings: async (params?: { status?: string; date?: string; service_id?: string }) => {
-    const response = await apiClient.get('/bookings', { params });
-    return response.data;
-  },
-  getBooking: async (bookingId: string) => {
-    const response = await apiClient.get(`/bookings/${bookingId}`);
-    return response.data;
-  },
-  createBooking: async (booking: {
-    customer_id: string;
-    service_id: string;
-    date: string;
-    time: string;
-    staff_id?: string;
-    notes?: string;
-    price?: number;
-  }) => {
-    const response = await apiClient.post('/bookings', booking);
-    return response.data;
-  },
-  updateBooking: async (bookingId: string, updates: {
-    date?: string;
-    time?: string;
-    status?: string;
-    payment_status?: string;
-    staff_id?: string;
-    notes?: string;
-  }) => {
-    const response = await apiClient.put(`/bookings/${bookingId}`, updates);
-    return response.data;
-  },
-  deleteBooking: async (bookingId: string) => {
-    const response = await apiClient.delete(`/bookings/${bookingId}`);
-    return response.data;
-  },
-  sendReminder: async (bookingId: string) => {
-    const response = await apiClient.post(`/bookings/${bookingId}/send-reminder`);
-    return response.data;
-  },
-  getAvailability: async (date: string, serviceId: string) => {
-    const response = await apiClient.get('/availability/day', { params: { date, service_id: serviceId } });
-    return response.data;
-  },
-  getWeekAvailability: async (start: string, serviceId: string) => {
-    const response = await apiClient.get('/availability/week', { params: { start, service_id: serviceId } });
     return response.data;
   },
 };
