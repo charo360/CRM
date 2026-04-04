@@ -138,12 +138,31 @@ function FAQField({
 }
 
 const BUSINESS_TYPES = [
-    { key: 'general', label: 'General', icon: 'storefront-outline' },
-    { key: 'retail', label: 'Retail', icon: 'cart-outline' },
-    { key: 'creator', label: 'Creator', icon: 'videocam-outline' },
-    { key: 'restaurant', label: 'Food & Resto', icon: 'restaurant-outline' },
-    { key: 'service', label: 'Services', icon: 'briefcase-outline' },
+    { key: 'retail',      label: 'Retail',          icon: 'cart-outline' },
+    { key: 'salon',       label: 'Salon & Beauty',  icon: 'color-palette-outline' },
+    { key: 'services',    label: 'Services/Tech',   icon: 'construct-outline' },
+    { key: 'fitness',     label: 'Fitness',         icon: 'barbell-outline' },
+    { key: 'restaurant',  label: 'Restaurant',      icon: 'restaurant-outline' },
+    { key: 'healthcare',  label: 'Healthcare',      icon: 'medkit-outline' },
+    { key: 'creator',     label: 'Creator',         icon: 'videocam-outline' },
+    { key: 'rental',      label: 'Rental',          icon: 'home-outline' },
+    { key: 'general',     label: 'General',         icon: 'storefront-outline' },
 ];
+
+const getTypeConfig = (type: string) => {
+    const configs: Record<string, any> = {
+        retail:     { servicesLabel: 'Products & Prices',          servicesPlaceholder: 'Product - price',                        servicesIcon: 'cart-outline',        showDelivery: true,  deliveryLabel: 'Delivery Zones',   deliveryPlaceholder: 'Area - delivery cost',   hoursLabel: 'Business Hours',    aboutLabel: 'About Your Shop' },
+        salon:      { servicesLabel: 'Services & Prices',          servicesPlaceholder: 'Service - price (e.g. Haircut - $20)',   servicesIcon: 'cut-outline',         showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Business Hours',    aboutLabel: 'About Your Salon' },
+        services:   { servicesLabel: 'Services & Rates',           servicesPlaceholder: 'Service - rate (e.g. Web design - $500)',servicesIcon: 'construct-outline',   showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Working Hours',     aboutLabel: 'About Your Business' },
+        fitness:    { servicesLabel: 'Classes & Prices',           servicesPlaceholder: 'Class - price (e.g. Yoga - $20)',        servicesIcon: 'barbell-outline',     showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Gym / Studio Hours',aboutLabel: 'About Your Fitness Business' },
+        restaurant: { servicesLabel: 'Menu Items & Prices',        servicesPlaceholder: 'Item - price (e.g. Burger - $8)',        servicesIcon: 'restaurant-outline',  showDelivery: true,  deliveryLabel: 'Delivery Zones',   deliveryPlaceholder: 'Area - delivery fee',    hoursLabel: 'Opening Hours',     aboutLabel: 'About Your Restaurant' },
+        healthcare: { servicesLabel: 'Treatments & Fees',          servicesPlaceholder: 'Treatment - fee (e.g. Consult - $50)',   servicesIcon: 'medkit-outline',      showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Clinic Hours',      aboutLabel: 'About Your Practice' },
+        creator:    { servicesLabel: '',                           servicesPlaceholder: '',                                       servicesIcon: '',                    showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Response Hours',    aboutLabel: 'About You' },
+        rental:     { servicesLabel: 'Properties / Items & Rates', servicesPlaceholder: 'Item - rate (e.g. 2BR Apt - $80/night)',  servicesIcon: 'home-outline',        showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Availability Hours',aboutLabel: 'About Your Rental Business' },
+        general:    { servicesLabel: 'Services or Products',       servicesPlaceholder: 'Service or product - price',             servicesIcon: 'storefront-outline',  showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Business Hours',    aboutLabel: 'About Your Business' },
+    };
+    return configs[type] ?? configs.general;
+};
 
 const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'Twitter/X', 'Facebook', 'Snapchat', 'LinkedIn', 'Podcast'];
 
@@ -201,7 +220,10 @@ export default function BusinessKnowledgeModal({
     const fetchKnowledge = async () => {
         setLoading(true);
         try {
-            const data = await settingsAPI.getBusinessKnowledge();
+            const [data, settings] = await Promise.all([
+                settingsAPI.getBusinessKnowledge(),
+                settingsAPI.getSettings(),
+            ]);
             if (data) {
                 setKnowledge({
                     business_description: data.business_description || '',
@@ -212,7 +234,7 @@ export default function BusinessKnowledgeModal({
                     faqs: data.faqs || '',
                     special_offers: data.special_offers || '',
                 });
-                setBusinessType(data.business_type || 'general');
+                setBusinessType(data.business_type || settings.business_type || 'general');
                 setCreator({
                     creator_niche: data.creator_niche || '',
                     creator_platforms: data.creator_platforms || '',
@@ -316,6 +338,7 @@ export default function BusinessKnowledgeModal({
     };
 
     const isCreator = businessType === 'creator';
+    const typeConfig = getTypeConfig(businessType);
 
     return (
         <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -375,12 +398,7 @@ export default function BusinessKnowledgeModal({
 
                         {/* About */}
                         <View style={styles.field}>
-                            <Text style={styles.label}>{isCreator ? 'About You' : 'About Your Business'}</Text>
-                            <Text style={styles.hint}>
-                                {isCreator
-                                    ? 'e.g. "I\'m a lifestyle creator based in Nairobi, I create content on fashion, travel and daily life."'
-                                    : 'e.g. "We sell fresh cakes and pastries. We specialize in custom birthday cakes."'}
-                            </Text>
+                            <Text style={styles.label}>{typeConfig.aboutLabel}</Text>
                             <TextInput
                                 style={styles.input}
                                 placeholder={isCreator ? 'Who are you and what do you create?' : 'What does your business do?'}
@@ -591,55 +609,47 @@ export default function BusinessKnowledgeModal({
                             </>
                         )}
 
-                        {/* ── STANDARD FIELDS (shown for all types) ── */}
+                        {/* ── STANDARD FIELDS (shown for all non-creator types) ── */}
                         {!isCreator && (
-                            <>
-                                {/* Products & Prices */}
-                                <View style={styles.field}>
-                                    <View style={styles.sectionHeader}>
-                                        <Ionicons name="pricetag-outline" size={18} color="#25D366" />
-                                        <Text style={styles.label}>Products & Prices</Text>
-                                    </View>
-                                    <Text style={styles.hint}>Add each product with its price</Text>
-                                    <ListField
-                                        items={productItems}
-                                        onUpdate={setProductItems}
-                                        placeholder="Product - price"
-                                        icon="cart-outline"
-                                    />
+                            <View style={styles.field}>
+                                <View style={styles.sectionHeader}>
+                                    <Ionicons name={typeConfig.servicesIcon as any} size={18} color="#25D366" />
+                                    <Text style={styles.label}>{typeConfig.servicesLabel}</Text>
                                 </View>
-                            </>
+                                <ListField
+                                    items={productItems}
+                                    onUpdate={setProductItems}
+                                    placeholder={typeConfig.servicesPlaceholder}
+                                    icon={typeConfig.servicesIcon}
+                                />
+                            </View>
                         )}
 
                         {/* Business Hours */}
                         <View style={styles.field}>
-                            <Text style={styles.label}>{isCreator ? 'Response Hours' : 'Business Hours'}</Text>
-                            <Text style={styles.hint}>
-                                {isCreator
-                                    ? 'e.g. "I check DMs Mon-Fri 9am-5pm EAT"'
-                                    : 'e.g. "Mon-Sat 8am-6pm, Sunday closed"'}
-                            </Text>
+                            <Text style={styles.label}>{typeConfig.hoursLabel}</Text>
+                            <Text style={styles.hint}>e.g. "Mon–Sat 8am–6pm, Sunday closed"</Text>
                             <TextInput
                                 style={styles.input}
-                                placeholder={isCreator ? 'When do you respond to DMs?' : 'When are you open?'}
+                                placeholder="When are you open / available?"
                                 placeholderTextColor="#555"
                                 value={knowledge.business_hours}
                                 onChangeText={(text) => setKnowledge({ ...knowledge, business_hours: text })}
                             />
                         </View>
 
-                        {/* Delivery - only for non-creators */}
-                        {!isCreator && (
+                        {/* Delivery - only for types that do delivery */}
+                        {typeConfig.showDelivery && (
                             <View style={styles.field}>
                                 <View style={styles.sectionHeader}>
                                     <Ionicons name="bicycle-outline" size={18} color="#25D366" />
-                                    <Text style={styles.label}>Delivery Zones</Text>
+                                    <Text style={styles.label}>{typeConfig.deliveryLabel}</Text>
                                 </View>
                                 <Text style={styles.hint}>Add each delivery area with cost</Text>
                                 <ListField
                                     items={deliveryItems}
                                     onUpdate={setDeliveryItems}
-                                    placeholder="Area - delivery cost"
+                                    placeholder={typeConfig.deliveryPlaceholder}
                                     icon="location-outline"
                                 />
                             </View>
@@ -1071,20 +1081,20 @@ const styles = StyleSheet.create({
     typeGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 10,
+        gap: 8,
         marginTop: 4,
     },
     typeCard: {
         alignItems: 'center',
         justifyContent: 'center',
-        paddingVertical: 12,
-        paddingHorizontal: 14,
+        paddingVertical: 10,
+        paddingHorizontal: 6,
         borderRadius: 12,
         borderWidth: 1.5,
         borderColor: '#2A3952',
         backgroundColor: '#1A2942',
-        minWidth: 90,
-        gap: 6,
+        width: '31%',
+        gap: 5,
     },
     typeCardActive: {
         borderColor: '#25D366',
