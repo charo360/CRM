@@ -197,7 +197,7 @@ export default function CustomersScreen() {
   const [selectedStage, setSelectedStage] = useState<string>('all');
   const [assignmentFilter, setAssignmentFilter] = useState<string>('all'); // 'all', 'assigned_to_me', 'unassigned'
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
-  const [knowledgeEmpty, setKnowledgeEmpty] = useState(false);
+  const [knowledgeEmpty, setKnowledgeEmpty] = useState(true);
   const [knowledgeBannerDismissed, setKnowledgeBannerDismissed] = useState(false);
   const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
 
@@ -217,10 +217,12 @@ export default function CustomersScreen() {
   const checkKnowledge = async () => {
     try {
       const data = await settingsAPI.getBusinessKnowledge();
-      const isEmpty = !data?.business_description?.trim();
-      setKnowledgeEmpty(isEmpty);
-      if (!isEmpty) setKnowledgeBannerDismissed(false);
-    } catch (e) { }
+      const isFilled = !!data?.business_description?.trim();
+      setKnowledgeEmpty(!isFilled);
+      if (isFilled) setKnowledgeBannerDismissed(false);
+    } catch (e) {
+      setKnowledgeEmpty(true);
+    }
   };
 
   const fetchDashboard = async () => {
