@@ -170,6 +170,15 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
               contentContainerStyle={styles.scrollContent}
               showsVerticalScrollIndicator={false}
             >
+              {/* ── Intro Offer Banner ── */}
+              <View style={styles.introBanner}>
+                <Text style={styles.introEmoji}>🎉</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.introTitle}>50% OFF — First 3 Months</Text>
+                  <Text style={styles.introSub}>Limited-time launch offer for new subscribers</Text>
+                </View>
+              </View>
+
               <Text style={styles.subtitle}>
                 Choose the plan that fits your business needs
               </Text>
@@ -200,13 +209,19 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
                       )}
                       
                       <Text style={styles.packageTitle}>{plan.name}</Text>
-                      
+
                       <View style={styles.priceContainer}>
-                        <Text style={styles.packagePrice}>
+                        <Text style={styles.packagePriceStrike}>
                           {plan.currency} {plan.amount.toLocaleString()}
                         </Text>
-                        <Text style={styles.priceInterval}>/month</Text>
+                        <Text style={styles.packagePrice}>
+                          {plan.currency} {Math.round(plan.amount * 0.5).toLocaleString()}
+                        </Text>
+                        <Text style={styles.priceInterval}>/mo · first 3 months</Text>
                       </View>
+                      <Text style={styles.afterIntro}>
+                        then {plan.currency} {plan.amount.toLocaleString()}/month
+                      </Text>
 
                       <View style={styles.featuresContainer}>
                         {plan.features.map((feature, idx) => (
@@ -225,7 +240,7 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
                           styles.selectButtonText,
                           isCurrentPlan && styles.selectButtonTextDisabled
                         ]}>
-                          {isCurrentPlan ? 'Active' : purchasing ? 'Processing...' : 'Subscribe Now'}
+                          {isCurrentPlan ? 'Active' : purchasing ? 'Processing...' : 'Claim 50% Off'}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -242,9 +257,9 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
               </TouchableOpacity>
 
               <Text style={styles.disclaimer}>
-                • Prices shown in your local currency{'\n'}
-                • Cancel anytime from Play Store{'\n'}
-                • Free tier: 100 messages/month
+                • 50% discount applied to first 3 billing months{`\n`}
+                • Full price resumes from month 4 automatically{`\n`}
+                • Cancel anytime from Play Store / App Store
               </Text>
             </ScrollView>
           )}
@@ -365,15 +380,58 @@ const styles = StyleSheet.create({
     alignItems: 'baseline',
     marginBottom: 16,
   },
+  packagePriceStrike: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#6B7C93',
+    textDecorationLine: 'line-through',
+    marginRight: 8,
+    alignSelf: 'flex-end',
+    marginBottom: 2,
+  },
   packagePrice: {
     fontSize: 28,
     fontWeight: 'bold',
     color: '#2DB843',
   },
+  afterIntro: {
+    fontSize: 11,
+    color: '#6B7C93',
+    marginTop: -10,
+    marginBottom: 12,
+    fontStyle: 'italic',
+  },
   priceInterval: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#8B9DC3',
     marginLeft: 4,
+    alignSelf: 'flex-end',
+    marginBottom: 3,
+  },
+  introBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F2D1A',
+    borderWidth: 1.5,
+    borderColor: '#25D366',
+    borderRadius: 12,
+    marginHorizontal: 20,
+    marginTop: 16,
+    padding: 12,
+    gap: 10,
+  },
+  introEmoji: {
+    fontSize: 24,
+  },
+  introTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#25D366',
+  },
+  introSub: {
+    fontSize: 12,
+    color: '#6B9E7A',
+    marginTop: 2,
   },
   featuresContainer: {
     marginBottom: 16,
