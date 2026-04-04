@@ -4357,10 +4357,10 @@ PLAN_FEATURES = {
 }
 
 # Regional pricing: currency -> (starter, standard, pro)
-# Anchor: KES 700 / 1500 / 2500  ≈  USD 5.40 / 11.60 / 19.30
+# Anchor: KES 1400 / 3000 / 5000  ≈  USD 10.80 / 23.20 / 38.60
 REGIONAL_PRICING = {
     # East Africa
-    "KES": (700, 1500, 2500),       # Kenya
+    "KES": (1400, 3000, 5000),       # Kenya
     "TZS": (14000, 30000, 50000),   # Tanzania
     "UGX": (20000, 43000, 72000),   # Uganda
     "RWF": (6000, 13000, 22000),    # Rwanda
