@@ -4656,17 +4656,39 @@ async def delete_account(user = Depends(get_current_user)):
     Required for GDPR/CCPA compliance and app store policies.
     """
     user_id = user["_id"]
-
-    # Disconnect WhatsApp instance first — retry once on failure
     whatsapp_service = get_whatsapp_service(db)
-    for attempt in range(2):
+
+    # Grab instance name BEFORE we delete the user record so retry always works
+    user_record = await db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+    instance_name = (
+        (user_record.get("whatsapp") or {}).get("instance_name")
+        or whatsapp_service._instance_name(user_id)
+    )
+
+    # Try to disconnect — 3 attempts with back-off
+    evo_deleted = False
+    for attempt in range(3):
         try:
             await whatsapp_service.disconnect_instance(user_id)
+            evo_deleted = True
             break
         except Exception as e:
             logging.error(f"Account deletion: WhatsApp disconnect attempt {attempt + 1} failed for user {user_id}: {e}")
-            if attempt == 1:
-                logging.warning(f"Account deletion: Evolution API instance may still be alive for user {user_id} — manual cleanup may be needed")
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+
+    if not evo_deleted:
+        # Final fallback: fire-and-forget direct delete by instance name
+        try:
+            import httpx as _httpx
+            _evo_base = os.environ.get('EVOLUTION_API_URL', 'http://localhost:8080').rstrip('/')
+            _evo_key = os.environ.get('EVOLUTION_API_KEY', '')
+            async with _httpx.AsyncClient(timeout=10) as _c:
+                await _c.delete(f"{_evo_base}/instance/logout/{instance_name}", headers={"apikey": _evo_key})
+                await _c.delete(f"{_evo_base}/instance/delete/{instance_name}", headers={"apikey": _evo_key})
+            logging.info(f"Fallback instance delete sent for {instance_name}")
+        except Exception as fb_err:
+            logging.warning(f"Account deletion: Evolution instance {instance_name} may still exist — run POST /admin/cleanup-instance to remove it. Error: {fb_err}")
 
     # Delete all user data from every collection
     await db.customers.delete_many({"user_id": user_id})
@@ -4686,8 +4708,53 @@ async def delete_account(user = Depends(get_current_user)):
     # Delete the user record itself
     await db.users.delete_one({"_id": user_id})
 
-    logging.info(f"Account deleted for user {user_id}")
+    logging.info(f"Account deleted for user {user_id} (evo_instance_deleted={evo_deleted})")
     return {"status": "success", "message": "Account and all data permanently deleted"}
+
+
+@api_router.post("/admin/cleanup-instance")
+async def force_cleanup_evolution_instance(request: Request, user = Depends(get_current_user)):
+    """
+    Force-delete a stuck Evolution API instance by name or by user_id.
+    Use this when an account was deleted but its WhatsApp instance remains in Evolution API.
+    Body: { "instance_name": "user_abc123" }  OR  { "user_id": "abc-123" }
+    """
+    body = await request.json()
+    instance_name = body.get("instance_name")
+    target_user_id = body.get("user_id")
+
+    if not instance_name and not target_user_id:
+        raise HTTPException(status_code=400, detail="Provide either instance_name or user_id")
+
+    if not instance_name:
+        # Derive from user_id using the same formula as whatsapp_service
+        instance_name = f"user_{target_user_id.replace('-', '_')}"
+
+    results = {}
+    try:
+        import httpx as _httpx
+        evo_base = os.environ.get('EVOLUTION_API_URL', 'http://localhost:8080').rstrip('/')
+        evo_headers = {"apikey": os.environ.get('EVOLUTION_API_KEY', '')}
+        async with _httpx.AsyncClient(timeout=15) as client:
+            # Step 1: logout (unlinks WhatsApp session)
+            logout_resp = await client.delete(f"{evo_base}/instance/logout/{instance_name}", headers=evo_headers)
+            results["logout"] = logout_resp.status_code
+            await asyncio.sleep(1)
+            # Step 2: delete the instance record
+            delete_resp = await client.delete(f"{evo_base}/instance/delete/{instance_name}", headers=evo_headers)
+            results["delete"] = delete_resp.status_code
+            results["delete_body"] = delete_resp.text[:300]
+    except Exception as e:
+        results["error"] = str(e)
+
+    success = results.get("delete") in (200, 201, 404)
+    logging.info(f"Force cleanup instance {instance_name}: {results}")
+    return {
+        "instance_name": instance_name,
+        "success": success,
+        "results": results,
+        "note": "404 on delete means it was already gone — that is fine." if results.get("delete") == 404 else None,
+    }
 
 @api_router.get("/account/export")
 async def export_account_data(user = Depends(get_current_user)):
