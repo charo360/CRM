@@ -322,4 +322,27 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
   },
+  features: {
+    marginTop: 28,
+    paddingBottom: 16,
+    backgroundColor: '#0A1628',
+  },
+  featuresTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8B9DC3',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  featureItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  featureText: {
+    fontSize: 14,
+    color: '#CBD5E1',
+  },
 });
