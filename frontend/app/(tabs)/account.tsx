@@ -24,6 +24,7 @@ import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/a
 
 import { NotificationHandler } from '../../utils/notification-handler';
 import TeamManagementModal from '../../components/TeamManagementModal';
+import SubscriptionModal from '../../components/SubscriptionModal';
 // IAP stubs — real react-native-iap is linked only in native production builds
 type ProductPurchase = { purchaseToken?: string; transactionId?: string };
 type PurchaseError = { code?: string; message?: string };
@@ -115,6 +116,7 @@ export default function AccountScreen() {
 
   // Team Management State
   const [showTeamModal, setShowTeamModal] = useState(false);
+  const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
 
   // Business Type State
   const [businessType, setBusinessType] = useState('');
@@ -704,44 +706,29 @@ export default function AccountScreen() {
 
         {/* Subscription Plans */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Subscription Plans</Text>
-          {plans.map((plan) => (
-            <View
-              key={plan.id}
-              style={[
-                styles.planCard,
-                user?.subscription_plan === plan.id && styles.planCardActive,
-              ]}
-            >
-              <View style={styles.planHeader}>
-                <Text style={styles.planName}>{plan.name}</Text>
-                <Text style={styles.planPrice}>{plan.currency || currency} {plan.amount_display}</Text>
+          <Text style={styles.sectionTitle}>Subscription</Text>
+          <TouchableOpacity
+            style={styles.upgradeCard}
+            onPress={() => setShowSubscriptionModal(true)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.upgradeCardLeft}>
+              <Text style={styles.upgradeEmoji}>🎉</Text>
+              <View>
+                <Text style={styles.upgradeTitle}>
+                  {user?.subscription_plan && user.subscription_plan !== 'free'
+                    ? `Active: ${user.subscription_plan}`
+                    : '50% OFF — First 3 Months'}
+                </Text>
+                <Text style={styles.upgradeSubtitle}>
+                  {user?.subscription_plan && user.subscription_plan !== 'free'
+                    ? 'Tap to manage your subscription'
+                    : 'Limited-time launch offer · Tap to upgrade'}
+                </Text>
               </View>
-              <View style={styles.planFeatures}>
-                {plan.features.map((feature, index) => (
-                  <View key={index} style={styles.featureRow}>
-                    <Ionicons name="checkmark-circle" size={16} color="#25D366" />
-                    <Text style={styles.featureText}>{feature}</Text>
-                  </View>
-                ))}
-              </View>
-              {user?.subscription_plan === plan.id ? (
-                <View style={styles.currentPlanBadge}>
-                  <Text style={styles.currentPlanText}>Current Plan</Text>
-                </View>
-              ) : (
-                <TouchableOpacity
-                  style={styles.subscribeButton}
-                  onPress={() => handleSubscribe(plan)}
-                  disabled={subscribing}
-                >
-                  <Text style={styles.subscribeButtonText}>
-                    {subscribing ? 'Processing...' : 'Subscribe'}
-                  </Text>
-                </TouchableOpacity>
-              )}
             </View>
-          ))}
+            <Ionicons name="chevron-forward" size={20} color="#25D366" />
+          </TouchableOpacity>
         </View>
 
         {/* Settings */}
@@ -1374,6 +1361,13 @@ export default function AccountScreen() {
         userId={user?.id || ''}
       />
 
+      <SubscriptionModal
+        visible={showSubscriptionModal}
+        onClose={() => setShowSubscriptionModal(false)}
+        onSuccess={() => { setShowSubscriptionModal(false); fetchData(); }}
+        currentPlan={user?.subscription_plan || null}
+      />
+
     </SafeAreaView >
   );
 }
@@ -1403,6 +1397,35 @@ const styles = StyleSheet.create({
   section: {
     paddingHorizontal: 16,
     marginBottom: 16,
+  },
+  upgradeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0F2D1A',
+    borderWidth: 1.5,
+    borderColor: '#25D366',
+    borderRadius: 12,
+    padding: 14,
+  },
+  upgradeCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  upgradeEmoji: {
+    fontSize: 26,
+  },
+  upgradeTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#25D366',
+  },
+  upgradeSubtitle: {
+    fontSize: 12,
+    color: '#6B9E7A',
+    marginTop: 2,
   },
   sectionTitle: {
     fontSize: 14,
