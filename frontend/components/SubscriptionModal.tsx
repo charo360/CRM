@@ -377,7 +377,7 @@ const styles = StyleSheet.create({
   },
   priceContainer: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'flex-end',
     marginBottom: 16,
   },
   packagePriceStrike: {
@@ -386,7 +386,6 @@ const styles = StyleSheet.create({
     color: '#6B7C93',
     textDecorationLine: 'line-through',
     marginRight: 8,
-    alignSelf: 'flex-end',
     marginBottom: 2,
   },
   packagePrice: {
