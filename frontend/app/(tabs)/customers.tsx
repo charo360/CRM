@@ -23,6 +23,7 @@ import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, d
 import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
+import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 
 interface Customer {
   id: string;
@@ -196,6 +197,9 @@ export default function CustomersScreen() {
   const [selectedStage, setSelectedStage] = useState<string>('all');
   const [assignmentFilter, setAssignmentFilter] = useState<string>('all'); // 'all', 'assigned_to_me', 'unassigned'
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
+  const [knowledgeEmpty, setKnowledgeEmpty] = useState(false);
+  const [knowledgeBannerDismissed, setKnowledgeBannerDismissed] = useState(false);
+  const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
 
   const { user, token } = useAuth();
   const { config, isServiceBusiness } = useBusiness();
@@ -210,6 +214,15 @@ export default function CustomersScreen() {
     } catch (e) { }
   };
 
+  const checkKnowledge = async () => {
+    try {
+      const data = await settingsAPI.getBusinessKnowledge();
+      const isEmpty = !data?.business_description?.trim();
+      setKnowledgeEmpty(isEmpty);
+      if (!isEmpty) setKnowledgeBannerDismissed(false);
+    } catch (e) { }
+  };
+
   const fetchDashboard = async () => {
     try {
       const data = await dashboardAPI.getSummary();
@@ -220,6 +233,7 @@ export default function CustomersScreen() {
   useEffect(() => {
     loadSettings();
     fetchDashboard();
+    checkKnowledge();
   }, []);
 
   const getModelShortName = (modelId: string) => {
@@ -380,6 +394,8 @@ export default function CustomersScreen() {
     useCallback(() => {
       fetchCustomers();
       fetchDashboard();
+      loadSettings();
+      checkKnowledge();
     }, [fetchCustomers])
   );
 
@@ -1313,6 +1329,34 @@ export default function CustomersScreen() {
           <Text style={[styles.toggleText, viewMode === 'contacts' && styles.toggleTextActive]}>Contacts</Text>
         </TouchableOpacity>
       </View>
+
+      {/* ===== BUSINESS KNOWLEDGE BANNER ===== */}
+      {knowledgeEmpty && !knowledgeBannerDismissed && (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => setShowKnowledgeModal(true)}
+          style={styles.setupBanner}
+        >
+          <View style={styles.setupBannerLeft}>
+            <Ionicons name="book-outline" size={20} color="#FFD700" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.setupBannerTitle}>Set up your Business Knowledge</Text>
+              <Text style={styles.setupBannerSub}>Train your AI with business info so it replies better — tap to fill in now</Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            onPress={(e) => { e.stopPropagation(); setKnowledgeBannerDismissed(true); }}
+          >
+            <Ionicons name="close" size={18} color="#8B9DC3" />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      )}
+
+      <BusinessKnowledgeModal
+        visible={showKnowledgeModal}
+        onClose={() => { setShowKnowledgeModal(false); checkKnowledge(); }}
+      />
 
       {/* ===== AI PENDING APPROVALS ===== */}
       {pendingClassifications.length > 0 && (
@@ -3339,6 +3383,37 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#25D366',
+  },
+  // Setup / profile completion banner
+  setupBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    padding: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FFD700',
+  },
+  setupBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    marginRight: 8,
+  },
+  setupBannerTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  setupBannerSub: {
+    color: '#8B9DC3',
+    fontSize: 12,
+    lineHeight: 16,
   },
   // AI Pending Approvals
   pendingBanner: {
