@@ -23,7 +23,6 @@ import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, d
 import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import * as Contacts from 'expo-contacts';
 import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
-import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 
 interface Customer {
   id: string;
@@ -197,9 +196,6 @@ export default function CustomersScreen() {
   const [selectedStage, setSelectedStage] = useState<string>('all');
   const [assignmentFilter, setAssignmentFilter] = useState<string>('all'); // 'all', 'assigned_to_me', 'unassigned'
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
-  const [knowledgeEmpty, setKnowledgeEmpty] = useState(true);
-  const [knowledgeBannerDismissed, setKnowledgeBannerDismissed] = useState(false);
-  const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
 
   const { user, token } = useAuth();
   const { config, isServiceBusiness } = useBusiness();
@@ -214,17 +210,6 @@ export default function CustomersScreen() {
     } catch (e) { }
   };
 
-  const checkKnowledge = async () => {
-    try {
-      const data = await settingsAPI.getBusinessKnowledge();
-      const isFilled = !!data?.business_description?.trim();
-      setKnowledgeEmpty(!isFilled);
-      if (isFilled) setKnowledgeBannerDismissed(false);
-    } catch (e) {
-      setKnowledgeEmpty(true);
-    }
-  };
-
   const fetchDashboard = async () => {
     try {
       const data = await dashboardAPI.getSummary();
@@ -235,7 +220,6 @@ export default function CustomersScreen() {
   useEffect(() => {
     loadSettings();
     fetchDashboard();
-    checkKnowledge();
   }, []);
 
   const getModelShortName = (modelId: string) => {
@@ -397,7 +381,6 @@ export default function CustomersScreen() {
       fetchCustomers();
       fetchDashboard();
       loadSettings();
-      checkKnowledge();
     }, [fetchCustomers])
   );
 
@@ -1331,34 +1314,6 @@ export default function CustomersScreen() {
           <Text style={[styles.toggleText, viewMode === 'contacts' && styles.toggleTextActive]}>Contacts</Text>
         </TouchableOpacity>
       </View>
-
-      {/* ===== BUSINESS KNOWLEDGE BANNER ===== */}
-      {knowledgeEmpty && !knowledgeBannerDismissed && (
-        <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={() => setShowKnowledgeModal(true)}
-          style={styles.setupBanner}
-        >
-          <View style={styles.setupBannerLeft}>
-            <Ionicons name="book-outline" size={20} color="#FFD700" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.setupBannerTitle}>Set up your Business Knowledge</Text>
-              <Text style={styles.setupBannerSub}>Train your AI with business info so it replies better — tap to fill in now</Text>
-            </View>
-          </View>
-          <TouchableOpacity
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            onPress={(e) => { e.stopPropagation(); setKnowledgeBannerDismissed(true); }}
-          >
-            <Ionicons name="close" size={18} color="#8B9DC3" />
-          </TouchableOpacity>
-        </TouchableOpacity>
-      )}
-
-      <BusinessKnowledgeModal
-        visible={showKnowledgeModal}
-        onClose={() => { setShowKnowledgeModal(false); checkKnowledge(); }}
-      />
 
       {/* ===== AI PENDING APPROVALS ===== */}
       {pendingClassifications.length > 0 && (

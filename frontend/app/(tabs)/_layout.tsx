@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, View, Platform, Modal } from 'react-native';
+import { StyleSheet, View, Platform, Modal, TouchableOpacity, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
@@ -26,6 +26,8 @@ export default function TabsLayout() {
   const router = useRouter();
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [showBusinessKnowledge, setShowBusinessKnowledge] = useState(false);
+  const [knowledgeEmpty, setKnowledgeEmpty] = useState(true);
+  const [knowledgeBannerDismissed, setKnowledgeBannerDismissed] = useState(false);
 
   // Settings State
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
@@ -37,11 +39,23 @@ export default function TabsLayout() {
   const notificationListener = useRef<any>();
   const responseListener = useRef<any>();
 
+  const checkKnowledge = async () => {
+    try {
+      const data = await settingsAPI.getBusinessKnowledge();
+      const isFilled = !!data?.business_description?.trim();
+      setKnowledgeEmpty(!isFilled);
+      if (isFilled) setKnowledgeBannerDismissed(false);
+    } catch (e) {
+      setKnowledgeEmpty(true);
+    }
+  };
+
   // Fetch initial settings only after auth is ready
   React.useEffect(() => {
     if (user) {
       loadSettings();
       registerForPushNotifications();
+      checkKnowledge();
     }
     return () => {
       if (notificationListener.current) notificationListener.current.remove();
@@ -155,7 +169,9 @@ export default function TabsLayout() {
             backgroundColor: '#0A1628',
             borderBottomWidth: 1,
             borderBottomColor: '#1A2942',
-            height: Platform.OS === 'ios' ? 100 : 80,
+            height: Platform.OS === 'ios'
+              ? (knowledgeEmpty && !knowledgeBannerDismissed ? 136 : 100)
+              : (knowledgeEmpty && !knowledgeBannerDismissed ? 116 : 80),
           },
           headerTitleStyle: {
             color: '#FFFFFF',
@@ -293,9 +309,29 @@ export default function TabsLayout() {
         visible={showProductCatalog}
         onClose={() => setShowProductCatalog(false)}
       />
+      {knowledgeEmpty && !knowledgeBannerDismissed && (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => setShowBusinessKnowledge(true)}
+          style={[styles.knowledgeBanner, { top: Platform.OS === 'ios' ? 100 : 80 }]}
+        >
+          <Ionicons name="book-outline" size={16} color="#FFFFFF" style={{ marginRight: 8 }} />
+          <Text style={styles.knowledgeBannerText} numberOfLines={1}>
+            Set up Business Knowledge — help your AI reply smarter
+          </Text>
+          <TouchableOpacity
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            onPress={(e) => { e.stopPropagation(); setKnowledgeBannerDismissed(true); }}
+            style={{ marginLeft: 8 }}
+          >
+            <Ionicons name="close" size={16} color="rgba(255,255,255,0.8)" />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      )}
+
       <BusinessKnowledgeModal
         visible={showBusinessKnowledge}
-        onClose={() => setShowBusinessKnowledge(false)}
+        onClose={() => { setShowBusinessKnowledge(false); checkKnowledge(); }}
       />
     </>
   );
@@ -311,5 +347,27 @@ const styles = StyleSheet.create({
   tabBarLabel: {
     fontSize: 11,
     fontWeight: '500',
+  },
+  knowledgeBanner: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 999,
+    backgroundColor: '#25D366',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 8,
+  },
+  knowledgeBannerText: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
