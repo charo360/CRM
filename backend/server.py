@@ -2328,7 +2328,21 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
     }
     
     await db.customers.insert_one(customer_doc)
-    
+
+    # Fetch WhatsApp profile picture in background (same as webhook auto-create)
+    async def _fetch_pic(uid, cid, phone):
+        try:
+            ws = get_whatsapp_service(db)
+            pic_url = await ws.fetch_profile_picture(uid, phone)
+            if pic_url:
+                await db.customers.update_one(
+                    {"_id": cid},
+                    {"$set": {"profile_picture": pic_url}}
+                )
+        except Exception:
+            pass
+    asyncio.create_task(_fetch_pic(business_id, customer_id, clean_phone))
+
     return CustomerResponse(
         id=customer_id,
         user_id=business_id,
