@@ -185,23 +185,72 @@ class WhatsAppService:
                 except Exception as wh_err:
                     logger.warning(f"Webhook setup error for {instance_name}: {wh_err}")
 
-                # Step 2: Wait for Baileys WebSocket to establish before requesting pairing code
-                await asyncio.sleep(10)
+                # Step 2: Wait for Baileys WebSocket — poll until "connecting" state or timeout
+                # WA Business needs a bit more time than regular WA to establish the socket
+                await asyncio.sleep(5)
+                for _wait in range(5):
+                    try:
+                        state_resp = await client.get(
+                            f"{self.base_url}/instance/connectionState/{instance_name}",
+                            headers=self._headers(),
+                        )
+                        if state_resp.status_code == 200:
+                            _state = state_resp.json().get("instance", {}).get("state", "")
+                            if _state in ("connecting", "open", "close"):
+                                break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2)
 
-                code_resp = await client.get(
-                    f"{self.base_url}/instance/connect/{instance_name}",
-                    params={"number": clean_number},
-                    headers=self._headers(),
-                )
+                # Step 3: Request pairing code — retry up to 3× with 5s back-off
+                # Works for both WhatsApp and WhatsApp Business (same Baileys protocol)
+                pairing_code = ""
+                last_code_error = ""
+                for attempt in range(3):
+                    try:
+                        code_resp = await client.get(
+                            f"{self.base_url}/instance/connect/{instance_name}",
+                            params={"number": clean_number},
+                            headers=self._headers(),
+                            timeout=30,
+                        )
+                        if code_resp.status_code == 200:
+                            code_data = code_resp.json()
+                            pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
+                            if pairing_code:
+                                logger.info(f"Pairing code obtained on attempt {attempt + 1} for {instance_name}")
+                                break
+                            else:
+                                last_code_error = f"Empty code in response: {code_resp.text[:200]}"
+                        else:
+                            last_code_error = f"HTTP {code_resp.status_code}: {code_resp.text[:200]}"
+                    except Exception as ce:
+                        last_code_error = str(ce)
+                    if attempt < 2:
+                        logger.warning(f"Pairing code attempt {attempt + 1} failed for {instance_name}: {last_code_error} — retrying in 5s")
+                        await asyncio.sleep(5)
 
-                if code_resp.status_code != 200:
-                    logger.error(f"Failed to get pairing code: {code_resp.text}")
-                    return {"status": "error", "message": "Failed to generate pairing code"}
+                if not pairing_code:
+                    logger.error(f"Failed to get pairing code after 3 attempts: {last_code_error}")
+                    return {"status": "error", "message": "Failed to generate pairing code. Please try again."}
 
-                code_data = code_resp.json()
-                pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
+                # Step 4: Store instance info in user record
+                # Detect WA Business vs regular WA from the profile info if available
+                is_business_account = False
+                try:
+                    profile_resp = await client.get(
+                        f"{self.base_url}/instance/fetchInstances",
+                        headers=self._headers(),
+                    )
+                    if profile_resp.status_code == 200:
+                        instances = profile_resp.json()
+                        for inst in (instances if isinstance(instances, list) else []):
+                            if inst.get("name") == instance_name:
+                                is_business_account = inst.get("isBusiness", False) or inst.get("businessId") is not None
+                                break
+                except Exception:
+                    pass
 
-                # Step 3: Store instance info in user record
                 await self.db.users.update_one(
                     {"_id": user_id},
                     {"$set": {
@@ -209,6 +258,7 @@ class WhatsAppService:
                         "whatsapp.instance_name": instance_name,
                         "whatsapp.status": "pairing",
                         "whatsapp.pairing_code": pairing_code,
+                        "whatsapp.is_business": is_business_account,
                         "whatsapp.created_at": datetime.utcnow(),
                     }}
                 )

@@ -159,9 +159,21 @@ export default function LoginScreen() {
   };
 
   const handleOpenWhatsApp = () => {
+    // Try regular WhatsApp first; on Android fall back to WhatsApp Business package
     Linking.openURL('whatsapp://')
       .catch(() => {
-        Alert.alert('Open WhatsApp manually', 'Go to WhatsApp → 3-dot menu → Linked Devices → Link a Device → Link with phone number');
+        if (Platform.OS === 'android') {
+          Linking.openURL('intent://send/#Intent;scheme=whatsapp;package=com.whatsapp.w4b;end')
+            .catch(() => Alert.alert(
+              'Open WhatsApp manually',
+              'Go to WhatsApp or WhatsApp Business → 3-dot menu → Linked Devices → Link a Device → Link with phone number'
+            ));
+        } else {
+          Alert.alert(
+            'Open WhatsApp manually',
+            'Go to WhatsApp or WhatsApp Business → Settings → Linked Devices → Link a Device → Link with phone number'
+          );
+        }
       });
   };
 
@@ -265,11 +277,11 @@ export default function LoginScreen() {
               <View style={styles.stepsBox}>
                 <Text style={styles.stepsTitle}>How to enter the code:</Text>
                 {[
-                  'Open WhatsApp on this phone',
-                  'Tap the 3-dot menu (⋮) → Linked Devices',
+                  'Open WhatsApp or WhatsApp Business on this phone',
+                  'Tap 3-dot menu (⋮) → Linked Devices  (Business: Settings → Linked Devices)',
                   'Tap "Link a Device" — a QR scanner opens',
-                  'Scroll down or tap "Link with phone number" at the bottom of the QR screen',
-                  'Type the code exactly as shown above (ignore any notification)',
+                  'Tap "Link with phone number" at the bottom of the QR screen',
+                  'Type the code exactly as shown above',
                 ].map((step, i) => (
                   <View key={i} style={styles.stepRow}>
                     <View style={styles.stepBadge}>
