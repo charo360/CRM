@@ -84,6 +84,68 @@ function _getQueueDescription(method: string, url: string, data?: any): string {
   return `${method.toUpperCase()} ${url} (offline)`;
 }
 
+// Resolve which cache key a mutation URL should update
+function _getMutationCacheKey(url: string): string | null {
+  if (url.match(/\/orders/) && !url.includes('convert-to-sale')) return 'orders';
+  if (url.match(/\/sales/)) return 'sales';
+  if (url.match(/\/bookings/) && !url.includes('reminder')) return 'bookings';
+  if (url.match(/\/customers/)) return 'customers';
+  if (url.match(/\/expenses/)) return 'expenses';
+  if (url.match(/\/products/)) return 'products';
+  return null;
+}
+
+// Extract entity ID from URL like /orders/abc123 → 'abc123'
+function _extractEntityId(url: string): string | null {
+  const match = url.match(/\/[a-z-]+\/([^/?]+)/);
+  return match ? match[1] : null;
+}
+
+// After queuing a mutation, immediately patch the cached list so the UI shows it
+async function _updateCacheAfterMutation(method: string, url: string, data: any, tempId: string) {
+  const cacheKey = _getMutationCacheKey(url);
+  if (!cacheKey) return;
+
+  const cached = await offlineCache.getStale(cacheKey);
+  if (!cached) return;
+
+  // Resolve the actual list array (handles both [] and { items: [] } shapes)
+  let list: any[] | null = null;
+  let listKey: string | null = null;
+  if (Array.isArray(cached)) {
+    list = [...cached];
+  } else if (cached && typeof cached === 'object') {
+    for (const key of Object.keys(cached)) {
+      if (Array.isArray((cached as any)[key])) {
+        list = [...(cached as any)[key]];
+        listKey = key;
+        break;
+      }
+    }
+  }
+  if (!list) return;
+
+  const entityId = _extractEntityId(url);
+  let updatedList: any[];
+
+  if (method === 'delete' && entityId) {
+    updatedList = list.filter((item: any) => item.id !== entityId);
+  } else if ((method === 'put' || method === 'patch') && entityId) {
+    updatedList = list.map((item: any) =>
+      item.id === entityId ? { ...item, ...(data || {}), _queued: true } : item
+    );
+  } else if (method === 'post') {
+    const newItem = { ...(data || {}), id: tempId, _queued: true, created_at: new Date().toISOString() };
+    updatedList = [newItem, ...list];
+  } else {
+    return;
+  }
+
+  const updatedCache = listKey ? { ...(cached as object), [listKey]: updatedList } : updatedList;
+  await offlineCache.set(cacheKey, updatedCache);
+  console.log(`[OfflineCache] Patched cache "${cacheKey}" for offline ${method.toUpperCase()} ${url}`);
+}
+
 // URL → cache key mapping for GET responses
 const URL_CACHE_MAP: Record<string, string> = {
   '/customers': 'customers',
@@ -175,8 +237,10 @@ apiClient.interceptors.response.use(
           description,
         });
         console.log(`[OfflineQueue] Queued: ${description}`);
-        // Return optimistic success so the UI updates normally instead of showing error
+        // Patch the cached list immediately so fetchData() returns the new item
         const tempId = `offline_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        await _updateCacheAfterMutation(method, url, requestData, tempId);
+        // Return optimistic success so the UI updates normally instead of showing error
         return {
           data: { ...(requestData || {}), id: tempId, _queued: true },
           status: 200,
