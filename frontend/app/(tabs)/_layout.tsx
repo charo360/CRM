@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, View, Platform, Modal, TouchableOpacity, Text } from 'react-native';
+import { StyleSheet, View, Platform, TouchableOpacity, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
@@ -16,6 +16,8 @@ import { settingsAPI, apiClient } from '../../context/api';
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
   }),
@@ -36,8 +38,8 @@ export default function TabsLayout() {
 
   const { user } = useAuth();
   const { config, isRetailBusiness } = useBusiness();
-  const notificationListener = useRef<any>();
-  const responseListener = useRef<any>();
+  const notificationListener = useRef<any>(null);
+  const responseListener = useRef<any>(null);
 
   const checkKnowledge = async () => {
     try {
@@ -266,6 +268,15 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
+          name="sales"
+          options={{
+            title: config.salesTabLabel || 'Sales',
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="cash" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="bookings"
           options={{
             title: config.bookingLabel || 'Bookings',
@@ -282,15 +293,6 @@ export default function TabsLayout() {
             href: isRetailBusiness ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="sales"
-          options={{
-            title: config.salesTabLabel || 'Sales',
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="cash" size={size} color={color} />
             ),
           }}
         />
