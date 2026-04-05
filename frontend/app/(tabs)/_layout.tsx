@@ -290,8 +290,7 @@ export default function TabsLayout() {
           name="broadcast"
           options={{
             title: 'Broadcast',
-            // Show broadcast when: retail business, OR no bookings tab active (unset/general type)
-            href: (isRetailBusiness || !config.bookingsTabVisible) ? undefined : null,
+            href: isRetailBusiness ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
             ),
