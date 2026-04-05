@@ -159,6 +159,7 @@ const URL_CACHE_MAP: Record<string, string> = {
   '/settings': 'settings',
   '/business-knowledge': 'business_knowledge',
   '/contacts': 'contacts',
+  '/auth/me': 'auth_me',
 };
 
 function getCacheKey(url: string): string | null {
