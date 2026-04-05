@@ -2504,6 +2504,16 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
             pass
     asyncio.create_task(_fetch_pic(business_id, customer_id, clean_phone))
 
+    # Pull any existing WhatsApp chat history for this number in the background
+    async def _pull_history(uid, cid, phone):
+        try:
+            ws = get_whatsapp_service(db)
+            result = await ws.fetch_history_for_contact(uid, phone, cid)
+            logging.info(f"[HistorySync] create_customer result for {phone}: {result}")
+        except Exception as e:
+            logging.warning(f"[HistorySync] create_customer failed for {phone}: {e}")
+    asyncio.create_task(_pull_history(business_id, customer_id, clean_phone))
+
     return CustomerResponse(
         id=customer_id,
         user_id=business_id,

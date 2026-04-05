@@ -1698,6 +1698,138 @@ class WhatsAppService:
             logger.error(f"Error fetching chat history: {e}")
             return {"status": "error", "message": str(e)}
 
+    async def fetch_history_for_contact(
+        self,
+        user_id: str,
+        phone: str,
+        customer_id: str,
+        max_messages: int = 50,
+    ) -> Dict:
+        """
+        Fetch WhatsApp message history for a single contact and store it in DB.
+        Called immediately after a customer is manually created or imported so their
+        prior conversations appear right away.
+
+        Returns {"status": "success"|"error", "messages_synced": N}.
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1, "phone_number": 1})
+        wa = user.get("whatsapp") if user else None
+        if not wa or not wa.get("instance_name"):
+            return {"status": "error", "message": "WhatsApp not connected"}
+
+        instance_name = wa["instance_name"]
+        own_number = (user.get("phone_number") or "").lstrip("+")
+
+        # Normalise phone → digits only (no +)
+        digits = phone.lstrip("+").replace(" ", "").replace("-", "")
+        if not digits or digits == own_number:
+            return {"status": "skip", "message": "Own number or invalid phone"}
+
+        chat_jid = f"{digits}@s.whatsapp.net"
+
+        # Skip if we already synced history for this customer
+        already_synced = await self.db.messages.count_documents({
+            "customer_id": customer_id,
+            "user_id": user_id,
+            "synced_from_history": True,
+        })
+        if already_synced > 0:
+            return {"status": "skip", "message": "History already synced"}
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                msgs_resp = await client.post(
+                    f"{self.base_url}/chat/findMessages/{instance_name}",
+                    headers=self._headers(),
+                    json={
+                        "where": {"key": {"remoteJid": chat_jid}},
+                        "limit": max_messages,
+                    },
+                )
+                if msgs_resp.status_code != 200:
+                    return {"status": "error", "message": f"Evolution API returned {msgs_resp.status_code}"}
+
+                raw = msgs_resp.json()
+                if isinstance(raw, dict):
+                    msg_container = raw.get("messages", raw)
+                    records = msg_container.get("records", []) if isinstance(msg_container, dict) else (msg_container if isinstance(msg_container, list) else [])
+                elif isinstance(raw, list):
+                    records = raw
+                else:
+                    records = []
+
+                total = 0
+                last_body = None
+                best_push_name = ""
+                for msg in records:
+                    key = msg.get("key", {})
+                    from_me = key.get("fromMe", False)
+                    msg_data = msg.get("message", {})
+                    body = (
+                        msg_data.get("conversation")
+                        or msg_data.get("extendedTextMessage", {}).get("text")
+                        or msg_data.get("imageMessage", {}).get("caption")
+                        or ""
+                    )
+                    if not body:
+                        continue
+
+                    msg_push_name = msg.get("pushName", "")
+                    if msg_push_name and not from_me:
+                        best_push_name = best_push_name or msg_push_name
+
+                    ts = msg.get("messageTimestamp")
+                    msg_time = datetime.utcfromtimestamp(ts) if isinstance(ts, (int, float)) else datetime.utcnow()
+
+                    msg_doc = {
+                        "_id": str(uuid.uuid4()),
+                        "customer_id": customer_id,
+                        "user_id": user_id,
+                        "direction": "outgoing" if from_me else "incoming",
+                        "content": body,
+                        "message_type": "text",
+                        "from_number": f"+{digits}" if not from_me else user.get("phone_number", ""),
+                        "created_at": msg_time,
+                        "synced_from_history": True,
+                    }
+                    if msg_push_name and not from_me:
+                        msg_doc["push_name"] = msg_push_name
+
+                    try:
+                        await self.db.messages.insert_one(msg_doc)
+                        total += 1
+                        last_body = body
+                    except Exception:
+                        pass  # Duplicate key — already stored
+
+                # Update customer's last_message / last_contacted and name if it was a fallback
+                if total > 0:
+                    updates: Dict = {"last_contacted": datetime.utcnow()}
+                    if last_body:
+                        updates["last_message"] = last_body[:200]
+
+                    customer = await self.db.customers.find_one({"_id": customer_id})
+                    if customer:
+                        current_name = customer.get("name", "")
+                        is_fallback = (
+                            not current_name
+                            or current_name.startswith("Contact ")
+                            or current_name.startswith("+")
+                        )
+                        if best_push_name and is_fallback:
+                            updates["name"] = best_push_name
+
+                    await self.db.customers.update_one({"_id": customer_id}, {"$set": updates})
+
+                logger.info(f"[HistorySync] {total} messages pulled for customer {customer_id} ({phone})")
+                return {"status": "success", "messages_synced": total}
+
+        except httpx.ConnectError:
+            return {"status": "error", "message": "Evolution API not reachable"}
+        except Exception as e:
+            logger.error(f"[HistorySync] Failed for {phone}: {e}")
+            return {"status": "error", "message": str(e)}
+
 
 # Singleton instance
 _whatsapp_service = None
