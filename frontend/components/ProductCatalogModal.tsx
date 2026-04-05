@@ -56,6 +56,63 @@ const RESTAURANT_CATEGORIES = [
     'Other'
 ];
 
+// Healthcare-specific categories
+const HEALTHCARE_CATEGORIES = [
+    'Consultation',
+    'Check-up',
+    'Treatment',
+    'Surgery',
+    'Therapy',
+    'Diagnostic',
+    'Vaccination',
+    'Emergency',
+    'Follow-up',
+    'Other'
+];
+
+// Fitness-specific categories
+const FITNESS_CATEGORIES = [
+    'Yoga',
+    'Cardio',
+    'Strength Training',
+    'Pilates',
+    'CrossFit',
+    'Dance',
+    'Martial Arts',
+    'Swimming',
+    'Group Class',
+    'Personal Training',
+    'Other'
+];
+
+// Services/Tech-specific categories
+const SERVICES_CATEGORIES = [
+    'Repair',
+    'Installation',
+    'Maintenance',
+    'Consultation',
+    'Support',
+    'Training',
+    'Inspection',
+    'Cleaning',
+    'Delivery',
+    'Other'
+];
+
+// Salon-specific categories
+const SALON_CATEGORIES = [
+    'Haircut',
+    'Hair Color',
+    'Styling',
+    'Nails',
+    'Facial',
+    'Massage',
+    'Waxing',
+    'Makeup',
+    'Treatment',
+    'Other'
+];
+
 // Rental-specific categories  
 const RENTAL_CATEGORIES = [
     'Apartment',
@@ -70,8 +127,8 @@ const RENTAL_CATEGORIES = [
     'Other'
 ];
 
-// Default categories for other business types
-const DEFAULT_CATEGORIES = [
+// Retail categories (physical products)
+const RETAIL_CATEGORIES = [
     'Electronics',
     'Clothing', 
     'Food & Beverages',
@@ -153,8 +210,12 @@ export default function ProductCatalogModal({
     const getAppropriateCategories = () => {
         if (isCreator) return CREATOR_CATEGORIES;
         if (isRestaurant) return RESTAURANT_CATEGORIES;
+        if (isHealthcare) return HEALTHCARE_CATEGORIES;
+        if (isFitness) return FITNESS_CATEGORIES;
+        if (isServices) return SERVICES_CATEGORIES;
+        if (isSalon) return SALON_CATEGORIES;
         if (isRental) return RENTAL_CATEGORIES;
-        return DEFAULT_CATEGORIES;
+        return RETAIL_CATEGORIES; // Default for retail/general
     };
 
     useEffect(() => {
@@ -685,23 +746,21 @@ export default function ProductCatalogModal({
                                     }
                                     placeholderTextColor="#555"
                                 />
-                                {/* Category suggestions for specific business types */}
-                                {(isCreator || isRestaurant || isRental) && (
-                                    <View style={styles.categorySuggestions}>
-                                        <Text style={styles.suggestionsLabel}>Popular categories:</Text>
-                                        <View style={styles.suggestionChips}>
-                                            {getAppropriateCategories().slice(0, 6).map(cat => (
-                                                <TouchableOpacity
-                                                    key={cat}
-                                                    style={styles.suggestionChip}
-                                                    onPress={() => setEditCategory(cat)}
-                                                >
-                                                    <Text style={styles.suggestionChipText}>{cat}</Text>
-                                                </TouchableOpacity>
-                                            ))}
-                                        </View>
+                                {/* Category suggestions for all business types */}
+                                <View style={styles.categorySuggestions}>
+                                    <Text style={styles.suggestionsLabel}>Popular categories:</Text>
+                                    <View style={styles.suggestionChips}>
+                                        {getAppropriateCategories().slice(0, 6).map(cat => (
+                                            <TouchableOpacity
+                                                key={cat}
+                                                style={styles.suggestionChip}
+                                                onPress={() => setEditCategory(cat)}
+                                            >
+                                                <Text style={styles.suggestionChipText}>{cat}</Text>
+                                            </TouchableOpacity>
+                                        ))}
                                     </View>
-                                )}
+                                </View>
                             </View>
 
                             <View style={styles.formGroup}>
