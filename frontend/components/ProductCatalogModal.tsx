@@ -662,6 +662,7 @@ export default function ProductCatalogModal({
                                 />
                             </View>
 
+                            {!isCreator && (
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Stock Quantity (Optional)</Text>
                                 <TextInput
@@ -674,7 +675,9 @@ export default function ProductCatalogModal({
                                 />
                                 <Text style={styles.stockHint}>Automatically reduces when orders are placed</Text>
                             </View>
+                        )}
 
+{!isCreator && (
                             <View style={styles.stockToggleRow}>
                                 <View>
                                     <Text style={styles.formLabel}>In Stock</Text>
@@ -687,6 +690,7 @@ export default function ProductCatalogModal({
                                     thumbColor={editInStock ? '#25D366' : '#666'}
                                 />
                             </View>
+                        )}
 
                             {(addMode || selectedProduct) && (
                                 <>
@@ -839,11 +843,13 @@ export default function ProductCatalogModal({
                             <View style={styles.detailBody}>
                                 <View style={styles.detailNameRow}>
                                     <Text style={styles.detailName}>{selectedProduct.name}</Text>
-                                    <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
-                                        <Text style={styles.stockBadgeText}>
-                                            {selectedProduct.in_stock === false ? 'Out of Stock' : 'In Stock'}
-                                        </Text>
-                                    </View>
+                                    {!isCreator && (
+                                        <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
+                                            <Text style={styles.stockBadgeText}>
+                                                {selectedProduct.in_stock === false ? 'Out of Stock' : 'In Stock'}
+                                            </Text>
+                                        </View>
+                                    )}
                                 </View>
 
                                 <Text style={styles.detailPrice}>{currency} {selectedProduct.price.toLocaleString()}</Text>
@@ -852,7 +858,7 @@ export default function ProductCatalogModal({
                                     <Ionicons name="pricetag-outline" size={14} color="#8899AA" />
                                     <Text style={styles.detailCategory}>{selectedProduct.category || 'Other'}</Text>
 
-                                    {selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
+                                    {!isCreator && selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
                                         <View style={styles.detailStockInfo}>
                                             <Ionicons name="cube-outline" size={14} color="#8899AA" style={{ marginLeft: 12 }} />
                                             <Text style={styles.detailCategory}>Stock: {selectedProduct.stock_quantity}</Text>
@@ -869,19 +875,21 @@ export default function ProductCatalogModal({
 
                                 {/* Action Buttons */}
                                 <View style={styles.actionButtons}>
-                                    <TouchableOpacity
-                                        style={styles.actionBtn}
-                                        onPress={() => handleToggleStock(selectedProduct)}
-                                    >
-                                        <Ionicons
-                                            name={selectedProduct.in_stock === false ? 'checkmark-circle-outline' : 'close-circle-outline'}
-                                            size={22}
-                                            color={selectedProduct.in_stock === false ? '#25D366' : '#FF6B6B'}
-                                        />
-                                        <Text style={styles.actionBtnText}>
-                                            {selectedProduct.in_stock === false ? 'Mark In Stock' : 'Mark Out of Stock'}
-                                        </Text>
-                                    </TouchableOpacity>
+                                    {!isCreator && (
+                                        <TouchableOpacity
+                                            style={styles.actionBtn}
+                                            onPress={() => handleToggleStock(selectedProduct)}
+                                        >
+                                            <Ionicons
+                                                name={selectedProduct.in_stock === false ? 'checkmark-circle-outline' : 'close-circle-outline'}
+                                                size={22}
+                                                color={selectedProduct.in_stock === false ? '#25D366' : '#FF6B6B'}
+                                            />
+                                            <Text style={styles.actionBtnText}>
+                                                {selectedProduct.in_stock === false ? 'Mark In Stock' : 'Mark Out of Stock'}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    )}
 
                                     <TouchableOpacity
                                         style={styles.actionBtn}
@@ -948,18 +956,22 @@ export default function ProductCatalogModal({
                         <Text style={[styles.statNumber, maxProducts !== null && products.length >= maxProducts && { color: '#FF6B6B' }]}>
                             {products.length}{maxProducts !== null ? `/${maxProducts}` : ''}
                         </Text>
-                        <Text style={styles.statLabel}>Products</Text>
+                        <Text style={styles.statLabel}>{isCreator ? 'Packages' : 'Products'}</Text>
                     </View>
-                    <View style={styles.statDivider} />
-                    <View style={styles.statItem}>
-                        <Text style={[styles.statNumber, { color: '#25D366' }]}>{inStockCount}</Text>
-                        <Text style={styles.statLabel}>In Stock</Text>
-                    </View>
-                    <View style={styles.statDivider} />
-                    <View style={styles.statItem}>
-                        <Text style={[styles.statNumber, { color: '#FF6B6B' }]}>{outOfStockCount}</Text>
-                        <Text style={styles.statLabel}>Out</Text>
-                    </View>
+                    {!isCreator && (
+                        <>
+                            <View style={styles.statDivider} />
+                            <View style={styles.statItem}>
+                                <Text style={[styles.statNumber, { color: '#25D366' }]}>{inStockCount}</Text>
+                                <Text style={styles.statLabel}>In Stock</Text>
+                            </View>
+                            <View style={styles.statDivider} />
+                            <View style={styles.statItem}>
+                                <Text style={[styles.statNumber, { color: '#FF6B6B' }]}>{outOfStockCount}</Text>
+                                <Text style={styles.statLabel}>Out</Text>
+                            </View>
+                        </>
+                    )}
                     <View style={styles.statDivider} />
                     <View style={styles.statItem}>
                         <Text style={styles.statNumber}>{categories.length - 1}</Text>
@@ -1010,8 +1022,13 @@ export default function ProductCatalogModal({
                         <View style={styles.emptyIcon}>
                             <Ionicons name="storefront-outline" size={64} color="#25D366" />
                         </View>
-                        <Text style={styles.emptyText}>Your catalog is empty</Text>
-                        <Text style={styles.emptySubtext}>Add products to share with customers and let AI recommend them automatically</Text>
+                        <Text style={styles.emptyText}>Your {isCreator ? 'content catalog' : 'catalog'} is empty</Text>
+                        <Text style={styles.emptySubtext}>
+                            {isCreator 
+                                ? 'Add content packages to share with brands and let AI recommend them automatically' 
+                                : 'Add products to share with customers and let AI recommend them automatically'
+                            }
+                        </Text>
                         <View style={styles.emptyActionRow}>
                             <TouchableOpacity style={styles.emptyUploadBtn} onPress={() => handleUploadProducts('library')}>
                                 <Ionicons name="images-outline" size={20} color="#FFF" />
