@@ -44,6 +44,7 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                             "pending_order_list", "pending_order_action",
                             "pending_booking_list", "pending_booking_action",
                             "pending_update_step",
+                            "pending_payment_verification",
                         ))
                         if has_unresolved_complaint or has_pending_action:
                             logger.info(
@@ -86,6 +87,9 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                 "total_orders": doc.get("total_orders", 0),
                 "last_complaint_resolved": doc.get("last_complaint_resolved"),  # True/False
                 "personality": doc.get("personality"),  # "direct"|"chatty"|"formal" — detected over time
+                "pending_payment_verification": doc.get("pending_payment_verification", False),
+                "pending_payment_order_id": doc.get("pending_payment_order_id"),
+                "pending_payment_amount": doc.get("pending_payment_amount"),
             }
     except Exception as e:
         logger.error(f"[ConversationState] load error: {e}")
@@ -185,6 +189,9 @@ def _default_state() -> Dict[str, Any]:
         "total_orders": 0,
         "last_complaint_resolved": None,
         "personality": None,
+        "pending_payment_verification": False,
+        "pending_payment_order_id": None,
+        "pending_payment_amount": None,
         # 17: Menu state — tracks active numbered menus waiting for customer selection
         "active_menu": False,
         "menu_type": None,           # "product_selection" | "service_selection" | "booking_confirm"

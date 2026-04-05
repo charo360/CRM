@@ -1045,8 +1045,15 @@ class WhatsAppService:
 
         push_name = msg.get("pushName", "")
 
-        if not contact_number or not body:
+        # Allow image-only messages through even when body (caption) is empty —
+        # payment screenshots often have no caption text.
+        if not contact_number:
             return
+        if not body:
+            if image_url:
+                body = "📷"  # Sentinel so downstream code has a non-empty body
+            else:
+                return
 
         evo_msg_id = key.get("id", "")
 

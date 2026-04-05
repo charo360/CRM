@@ -4,6 +4,7 @@ Runs AI analysis and sends push notifications at scheduled times
 """
 import asyncio
 import logging
+import uuid
 from datetime import datetime, time
 from typing import List
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -222,6 +223,173 @@ class DailyScheduler:
         except Exception as e:
             logger.error(f"Error in check_due_followups: {e}")
 
+    async def run_auto_sequences(self):
+        """
+        Auto-sequence: at day 3 and day 7 after a customer's first contact,
+        create a pending follow-up with an AI-drafted WhatsApp message.
+        Owner reviews and edits in the Follow-ups screen before sending.
+        """
+        import uuid as _uuid
+        from datetime import timedelta
+
+        now = datetime.utcnow()
+
+        for sequence_day in [3, 7]:
+            # Window: customers who joined between (day-0.25) and (day+0.25) days ago
+            # This gives a 6-hour window so we catch them even if the scheduler runs hourly
+            window_start = now - timedelta(days=sequence_day, hours=6)
+            window_end = now - timedelta(days=sequence_day) + timedelta(hours=6)
+
+            try:
+                # Find real customers (not just contacts) created in this window
+                candidates = await self.db.customers.find({
+                    "is_customer": True,
+                    "created_at": {"$gte": window_start, "$lte": window_end},
+                }).to_list(200)
+
+                logger.info(f"[AutoSequence] Day {sequence_day}: found {len(candidates)} candidates")
+
+                for customer in candidates:
+                    try:
+                        user_id = customer["user_id"]
+                        customer_id = str(customer["_id"])
+
+                        # Skip if auto-sequence already created for this customer at this day
+                        existing = await self.db.followups.find_one({
+                            "user_id": user_id,
+                            "customer_id": customer_id,
+                            "is_auto_sequence": True,
+                            "sequence_day": sequence_day,
+                        })
+                        if existing:
+                            continue
+
+                        # Get business owner settings
+                        user = await self.db.users.find_one({"_id": user_id})
+                        if not user:
+                            continue
+
+                        # Draft message via AI
+                        draft_msg = await self._draft_sequence_message(
+                            user, customer, sequence_day
+                        )
+
+                        # Create follow-up due in 1 hour (appears as "today" for the owner)
+                        followup_id = str(_uuid.uuid4())
+                        reminder_date = now + timedelta(hours=1)
+
+                        await self.db.followups.insert_one({
+                            "_id": followup_id,
+                            "user_id": user_id,
+                            "customer_id": customer_id,
+                            "reminder_date": reminder_date,
+                            "message": draft_msg,
+                            "status": "pending",
+                            "type": "whatsapp",
+                            "is_auto_sequence": True,
+                            "sequence_day": sequence_day,
+                            "created_at": now,
+                        })
+
+                        logger.info(
+                            f"[AutoSequence] Created day-{sequence_day} draft for "
+                            f"customer {customer_id} (user {user_id})"
+                        )
+
+                        # Push notification to owner
+                        try:
+                            push_tokens = user.get("push_tokens", [])
+                            if not push_tokens and user.get("push_token"):
+                                push_tokens = [user["push_token"]]
+                            if push_tokens:
+                                import httpx
+                                messages = [
+                                    {
+                                        "to": token,
+                                        "title": f"💬 Day-{sequence_day} follow-up ready — {customer.get('name', 'Customer')}",
+                                        "body": "AI drafted a message. Tap to review and send.",
+                                        "data": {
+                                            "type": "auto_sequence",
+                                            "followup_id": followup_id,
+                                            "customer_id": customer_id,
+                                        },
+                                        "sound": "default",
+                                    }
+                                    for token in push_tokens
+                                    if token.startswith("ExponentPushToken") or token.startswith("ExpoPushToken")
+                                ]
+                                if messages:
+                                    async with httpx.AsyncClient(timeout=10) as client:
+                                        await client.post(
+                                            "https://exp.host/--/api/v2/push/send",
+                                            json=messages,
+                                            headers={"Content-Type": "application/json"},
+                                        )
+                        except Exception as e:
+                            logger.warning(f"[AutoSequence] Push notification failed: {e}")
+
+                    except Exception as e:
+                        logger.error(
+                            f"[AutoSequence] Error processing customer "
+                            f"{customer.get('_id')}: {e}"
+                        )
+
+            except Exception as e:
+                logger.error(f"[AutoSequence] Day {sequence_day} batch failed: {e}")
+
+    async def _draft_sequence_message(self, user: dict, customer: dict, day: int) -> str:
+        """Use AI to draft a natural follow-up message for the customer."""
+        try:
+            business_name = user.get("business_name") or user.get("name") or "us"
+            customer_name = customer.get("name", "there")
+            last_message = customer.get("last_message") or ""
+
+            bk = user.get("business_knowledge", {})
+            business_desc = bk.get("business_description", "") if isinstance(bk, dict) else ""
+            products = bk.get("products_services", "") if isinstance(bk, dict) else ""
+
+            context = f"Business: {business_name}"
+            if business_desc:
+                context += f"\nWhat we do: {business_desc}"
+            if products:
+                context += f"\nProducts/Services: {products}"
+            if last_message:
+                context += f"\nLast thing customer said: {last_message[:200]}"
+
+            if day == 3:
+                goal = (
+                    "Write a short, warm WhatsApp follow-up for a customer who contacted us 3 days ago. "
+                    "Check in, ask if they had any questions, and keep the door open. "
+                    "Casual and friendly tone. Max 2 sentences."
+                )
+            else:  # day 7
+                goal = (
+                    "Write a short WhatsApp nudge for a customer who contacted us 7 days ago but hasn't purchased yet. "
+                    "Gently remind them we're here, maybe mention a current offer or product if relevant. "
+                    "Friendly tone. Max 2 sentences."
+                )
+
+            prompt = f"""{context}
+
+Customer name: {customer_name}
+
+Task: {goal}
+
+Output only the WhatsApp message text. No explanation."""
+
+            from ai_service import get_drafter
+            ai = get_drafter()
+            reply = await ai._call_llm(prompt, model_pref="standard")
+            return reply.strip()
+
+        except Exception as e:
+            logger.error(f"[AutoSequence] AI draft failed: {e}")
+            # Fallback
+            if day == 3:
+                return f"Hi {customer.get('name', 'there')}! 👋 Just checking in — did you have any questions about what we discussed? We're happy to help!"
+            else:
+                return f"Hi {customer.get('name', 'there')}! 😊 Just a quick nudge — we're still here if you're ready to move forward. Let us know how we can help!"
+
     async def run_scheduler(self, check_interval_minutes: int = 60):
         """
         Run the scheduler in a loop, checking every hour for users who need notifications.
@@ -240,6 +408,12 @@ class DailyScheduler:
                 if seconds_since_followup_check >= followup_check_interval:
                     await self.check_due_followups()
                     seconds_since_followup_check = 0
+
+                # Run auto-sequences every scheduler cycle
+                try:
+                    await self.run_auto_sequences()
+                except Exception as e:
+                    logger.error(f"Error in auto sequences: {e}")
 
                 # Run hourly tasks
                 await self.send_daily_notifications()

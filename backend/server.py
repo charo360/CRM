@@ -149,6 +149,7 @@ def sanitize_phone(phone: str) -> str:
 
 # === AGENT SYSTEM ===
 from agents.router import Router
+from agents.payment_verifier import PaymentScreenshotVerifier
 # ====================
 
 def normalize_url(u):
@@ -683,6 +684,8 @@ class FollowUpResponse(BaseModel):
     type: str
     outcome: Optional[str] = None
     outcome_note: Optional[str] = None
+    is_auto_sequence: Optional[bool] = None
+    sequence_day: Optional[int] = None
     created_at: datetime
 
 # Sales/Receipt Models
@@ -1778,6 +1781,164 @@ async def remove_push_token(request: Request, user = Depends(get_current_user)):
         )
     return {"status": "ok"}
 
+async def _verify_payment_and_respond(
+    db,
+    image_url: str,
+    user: dict,
+    customer_id: str,
+    customer_name: str,
+    from_number: str,
+    conv_state: dict,
+):
+    """
+    Background task: AI-verifies a payment screenshot, updates the order,
+    notifies the customer and owner, and clears pending verification state.
+    """
+    from agents.payment_verifier import PaymentScreenshotVerifier
+    from agents.conversation_state import save_state as _save_state
+
+    user_id = user["_id"]
+    expected_order_id = conv_state.get("pending_payment_order_id")
+    expected_amount = conv_state.get("pending_payment_amount")
+    currency = (user.get("settings") or {}).get("currency", "")
+
+    try:
+        verifier = PaymentScreenshotVerifier(db)
+        result = await verifier.verify(
+            image_url=image_url,
+            business_user_id=user_id,
+            customer_id=customer_id,
+            expected_order_id=expected_order_id,
+            expected_amount=expected_amount,
+        )
+    except Exception as e:
+        logging.error(f"[PaymentVerify] Verifier raised: {e}")
+        result = {"verified": False, "reason": f"Internal error: {e}", "extracted": {}}
+
+    ws = get_whatsapp_service(db)
+
+    if result.get("verified"):
+        order_id = result.get("order_id")
+        order_number = result.get("order_number", "")
+        amount = result.get("amount")
+        reference = result.get("reference") or ""
+        payment_method = result.get("payment_method") or ""
+
+        # Mark order as paid
+        try:
+            update_fields = {
+                "payment_status": "Paid",
+                "payment_verified_at": datetime.utcnow(),
+            }
+            if reference:
+                update_fields["payment_reference"] = reference
+            if payment_method:
+                update_fields["payment_method_used"] = payment_method
+            if amount:
+                update_fields["paid_amount"] = amount
+            await db.orders.update_one({"_id": order_id}, {"$set": update_fields})
+            logging.info(f"[PaymentVerify] Order {order_id} marked Paid for customer {customer_id}")
+        except Exception as e:
+            logging.error(f"[PaymentVerify] Failed to update order: {e}")
+
+        # Send receipt to customer
+        amount_str = f"{currency} {amount:,.0f}".strip() if amount else "your payment"
+        ref_line = f"\n📋 Ref: *{reference}*" if reference else ""
+        method_line = f"\n💳 Via: {payment_method}" if payment_method else ""
+        receipt_msg = (
+            f"✅ *Payment Confirmed!*\n\n"
+            f"Thank you {customer_name}! Your payment of *{amount_str}* has been verified "
+            f"and confirmed for order *{order_number}*.{ref_line}{method_line}\n\n"
+            f"We'll process your order right away. 🚀"
+        )
+        try:
+            await ws.send_message(
+                user_id=user_id,
+                to_number=from_number,
+                message=receipt_msg,
+                customer_name=customer_name,
+                send_context="auto_reply",
+            )
+        except Exception as e:
+            logging.error(f"[PaymentVerify] Failed to send receipt: {e}")
+
+        # Push notification to owner
+        try:
+            await send_push_notification(
+                user_id=user_id,
+                title=f"💰 Payment Verified — {customer_name}",
+                body=f"{order_number}: {amount_str} confirmed automatically",
+                data={"type": "payment_verified", "order_id": order_id, "customer_id": customer_id},
+            )
+        except Exception as e:
+            logging.error(f"[PaymentVerify] Push notification failed: {e}")
+
+        # Clear pending state
+        try:
+            await _save_state(db, user_id, customer_id, {
+                "pending_payment_verification": False,
+                "pending_payment_order_id": None,
+                "pending_payment_amount": None,
+                "pending_question": None,
+            })
+        except Exception as e:
+            logging.error(f"[PaymentVerify] Failed to clear state: {e}")
+
+    else:
+        # Verification failed — flag customer for human review
+        reason = result.get("reason", "Could not verify screenshot")
+        extracted = result.get("extracted", {})
+
+        try:
+            await db.customers.update_one(
+                {"_id": customer_id},
+                {"$set": {
+                    "needs_human": True,
+                    "needs_human_reason": f"Payment screenshot auto-verification failed: {reason}",
+                    "needs_human_at": datetime.utcnow(),
+                }}
+            )
+        except Exception as e:
+            logging.error(f"[PaymentVerify] Failed to flag customer: {e}")
+
+        # Message to customer
+        apology_msg = (
+            f"Hi {customer_name}, we received your screenshot but couldn't verify it automatically. "
+            f"Our team has been notified and will manually confirm your payment shortly. "
+            f"Sorry for the inconvenience! 🙏"
+        )
+        try:
+            await ws.send_message(
+                user_id=user_id,
+                to_number=from_number,
+                message=apology_msg,
+                customer_name=customer_name,
+                send_context="auto_reply",
+            )
+        except Exception as e:
+            logging.error(f"[PaymentVerify] Failed to send failure msg: {e}")
+
+        # Push notification to owner with details
+        detail_parts = []
+        if extracted.get("amount"):
+            detail_parts.append(f"{extracted.get('currency','')} {extracted['amount']}")
+        if extracted.get("reference"):
+            detail_parts.append(f"Ref: {extracted['reference']}")
+        if extracted.get("payment_method"):
+            detail_parts.append(extracted["payment_method"])
+        details_str = " | ".join(detail_parts) if detail_parts else "No details extracted"
+
+        try:
+            await send_push_notification(
+                user_id=user_id,
+                title=f"⚠️ Payment Needs Review — {customer_name}",
+                body=details_str,
+                data={"type": "payment_review_needed", "customer_id": customer_id},
+            )
+        except Exception as e:
+            logging.error(f"[PaymentVerify] Owner push failed: {e}")
+
+
 async def send_push_notification(user_id: str, title: str, body: str, data: dict = None):
     """Send Expo push notification to all devices of a user"""
     import httpx
@@ -2830,6 +2991,8 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         message=followup.message,
         status="pending",
         type=followup.type,
+        is_auto_sequence=followup_doc.get("is_auto_sequence"),
+        sequence_day=followup_doc.get("sequence_day"),
         created_at=followup_doc["created_at"]
     )
 
@@ -2865,6 +3028,8 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
             type=f.get("type", "call"),
             outcome=f.get("outcome"),
             outcome_note=f.get("outcome_note"),
+            is_auto_sequence=f.get("is_auto_sequence"),
+            sequence_day=f.get("sequence_day"),
             created_at=f["created_at"]
         ))
     
@@ -2897,6 +3062,8 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
         type=updated.get("type", "call"),
         outcome=updated.get("outcome"),
         outcome_note=updated.get("outcome_note"),
+        is_auto_sequence=updated.get("is_auto_sequence"),
+        sequence_day=updated.get("sequence_day"),
         created_at=updated["created_at"]
     )
 
@@ -5717,7 +5884,29 @@ async def evolution_webhook(request: Request):
                         {"$set": {"read": True}}
                     )
                     return {"status": "ok"}
-                
+
+                # ── PAYMENT SCREENSHOT AUTO-VERIFICATION ──────────────────
+                # If this incoming image has a pending payment verification,
+                # spawn AI verification instead of routing through agent.
+                if parsed.get("image_url") and customer_id:
+                    from agents.conversation_state import load_state as _load_cs
+                    _cs = await _load_cs(db, user["_id"], str(customer_id))
+                    if _cs.get("pending_payment_verification"):
+                        logging.info(f"[PaymentVerify] Spawning verification for {customer_id}")
+                        asyncio.create_task(
+                            _verify_payment_and_respond(
+                                db=db,
+                                image_url=parsed["image_url"],
+                                user=user,
+                                customer_id=str(customer_id),
+                                customer_name=customer_name,
+                                from_number=from_number,
+                                conv_state=_cs,
+                            )
+                        )
+                        return {"status": "ok", "handled_by": "payment_verification"}
+                # ── END PAYMENT VERIFICATION ───────────────────────────────
+
                 # Auto-classify contact in background (customer vs supplier)
                 try:
                     classifier = get_classifier(db)

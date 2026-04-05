@@ -118,12 +118,46 @@ class PaymentAgent:
     ) -> Dict[str, Any]:
         """
         Customer says they've paid.
-        - Always ask for screenshot/proof (never confirm what cannot be verified)
-        - Reply is AI-generated so it matches the customer's language naturally
+        - Looks up most recent unpaid order to include order number in screenshot request
+        - Sets pending_payment_verification state so webhook can auto-verify the screenshot
         """
         amounts = entities.get("amounts", [])
         amount_text = f" of {amounts[0]}" if amounts else ""
         looks_like_txn = self._looks_like_transaction(message)
+
+        # Fetch most recent unpaid order for order number hint
+        pending_order = None
+        pending_order_id = None
+        pending_order_number = None
+        pending_amount = None
+        try:
+            pending_order = await self.db.orders.find_one(
+                {
+                    "user_id": user_id,
+                    "customer_id": customer_id,
+                    "payment_status": {
+                        "$in": ["Pending", "pending", "partial", "Partial", "unpaid", "Unpaid"]
+                    },
+                },
+                sort=[("created_at", -1)],
+            )
+            if pending_order:
+                pending_order_id = str(pending_order["_id"])
+                pending_order_number = pending_order.get("order_number") or (
+                    "ORD-" + str(pending_order["_id"])[:6].upper()
+                )
+                pending_amount = float(
+                    pending_order.get("total_amount") or pending_order.get("amount") or 0
+                ) or None
+        except Exception as e:
+            logger.warning(f"[PaymentAgent] Could not fetch pending order: {e}")
+
+        order_hint = f" for order *{pending_order_number}*" if pending_order_number else ""
+        order_context = (
+            f"The order they likely paid for is order number: {pending_order_number}"
+            if pending_order_number
+            else "No specific order number is on record yet."
+        )
 
         try:
             from ai_service import get_drafter
@@ -140,31 +174,32 @@ Language: {language}
 Customer message: "{message}"
 {txn_note}
 Amount mentioned: {amounts[0] if amounts else "not specified"}
+{order_context}
 
 Write a warm, natural reply in {language} that:
 1. Acknowledges their payment warmly (1 short line)
-2. Asks them to send a screenshot or forward the transaction confirmation from their payment app so you can verify
-3. Reassures them you'll confirm quickly once you see it
-4. WhatsApp tone — casual, human, NOT corporate
-5. Max 3 sentences. No markdown except *bold* for key action words.
-6. NEVER confirm the payment — you cannot verify it without proof.
+2. If an order number is known, mention it naturally
+3. Asks them to send a *screenshot* or forward the transaction confirmation so you can verify it automatically
+4. Reassures them you'll confirm quickly once you receive it
+5. WhatsApp tone — casual, human, NOT corporate
+6. Max 3 sentences. No markdown except *bold* for key words.
+7. NEVER confirm the payment — you cannot verify it without proof.
 
 Output only the customer-facing message."""
 
             reply = await ai._call_llm(prompt, model_pref="standard")
         except Exception as e:
             logger.error(f"[PaymentAgent] AI payment confirm error: {e}")
-            # Graceful English fallback
             if looks_like_txn:
                 reply = (
                     f"Thank you {customer_name}! 🙏 Please send a *screenshot* or forward "
-                    f"the *transaction confirmation* so we can verify and confirm. "
+                    f"the *transaction confirmation*{order_hint} so we can verify and confirm. "
                     f"_We'll sort it out as soon as we see it!_"
                 )
             else:
                 reply = (
                     f"Got it {customer_name}! Please send a *screenshot* or forward the "
-                    f"*transaction message* from your payment app 📸 and we'll confirm right away."
+                    f"*transaction message*{order_hint} from your payment app 📸 and we'll confirm right away."
                 )
 
         return {
@@ -175,9 +210,12 @@ Output only the customer-facing message."""
                 "state": "ongoing",
                 "last_intent": "PAYMENT_CONFIRM",
                 "pending_question": f"Verify payment{amount_text} from {customer_name}",
+                "pending_payment_verification": True,
+                "pending_payment_order_id": pending_order_id,
+                "pending_payment_amount": pending_amount,
             },
-            "flag_for_human": True,
-            "flag_reason": f"Customer reported payment{amount_text} — needs screenshot verification",
+            "flag_for_human": False,
+            "flag_reason": f"Customer reported payment{amount_text} — pending AI screenshot verification",
         }
 
     async def _handle_payment_method_question(

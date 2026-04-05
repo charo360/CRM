@@ -31,6 +31,8 @@ interface FollowUp {
   type: 'call' | 'whatsapp' | 'meeting' | 'email';
   outcome?: string | null;
   outcome_note?: string | null;
+  is_auto_sequence?: boolean;
+  sequence_day?: number;
   created_at: string;
 }
 
@@ -556,6 +558,14 @@ export default function FollowupsScreen() {
 
     return (
       <View key={item.id} style={[styles.followupCard, isOverdue && styles.followupCardOverdue]}>
+        {item.is_auto_sequence && (
+          <View style={styles.aiDraftBadge}>
+            <Ionicons name="sparkles" size={11} color="#A78BFA" />
+            <Text style={styles.aiDraftBadgeText}>
+              AI Draft · Day {item.sequence_day}
+            </Text>
+          </View>
+        )}
         <View style={styles.followupTop}>
           <Ionicons
             name={typeIcons[item.type] as any || 'notifications'}
@@ -2506,5 +2516,23 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFD700',
     marginLeft: 4,
+  },
+  aiDraftBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E1433',
+    borderWidth: 1,
+    borderColor: '#7C3AED',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+    gap: 4,
+  },
+  aiDraftBadgeText: {
+    fontSize: 11,
+    color: '#A78BFA',
+    fontWeight: '600',
   },
 });
