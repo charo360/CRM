@@ -8382,6 +8382,66 @@ async def send_product_to_customer(
         "customer_name": result.get("customer_name")
     }
 
+class AIDescriptionRequest(BaseModel):
+    product_name: str
+    category: Optional[str] = None
+    business_type: Optional[str] = None
+    current_description: Optional[str] = None
+    mode: str = "generate"  # "generate" or "improve"
+
+@api_router.post("/products/ai-description")
+async def generate_ai_description(
+    request: AIDescriptionRequest,
+    user = Depends(get_current_user)
+):
+    """Generate or improve product description using AI based on business type"""
+    from ai_service import get_drafter
+    
+    drafter = get_drafter()
+    business_type = request.business_type or "retail"
+    
+    # Business-specific prompts
+    prompts = {
+        "creator": "As a content creator, write a compelling description for brands looking to sponsor content. Focus on: target audience, engagement rates, content style, deliverables, and brand benefits. Make it professional and appealing to marketing managers.",
+        "restaurant": "As a restaurant, write an appetizing description for this menu item. Focus on: ingredients, preparation method, taste profile, presentation, and why customers will love it. Include allergen warnings if relevant.",
+        "rental": "As a rental business, write a detailed description for this listing. Focus on: key features, amenities, location benefits, ideal use cases, rental terms, and what makes it special. Be informative and trustworthy.",
+        "healthcare": "As a healthcare provider, write a professional description for this service. Focus on: procedure details, benefits, duration, what patients should expect, qualifications, and reassurance. Be clear and professional.",
+        "fitness": "As a fitness business, write a motivating description for this class. Focus on: workout intensity, equipment needed, skill level, benefits, instructor expertise, and what participants will achieve. Be inspiring and informative.",
+        "services": "As a service business, write a clear description for this service. Focus on: scope of work, process, timeline, qualifications, customer benefits, and what sets it apart. Be professional and trustworthy.",
+        "salon": "As a salon, write an appealing description for this beauty service. Focus on: treatment details, benefits, duration, products used, expertise, and results clients can expect. Be luxurious and reassuring.",
+        "retail": "As a retail business, write an engaging product description. Focus on: key features, benefits, quality, use cases, and why customers should choose this product. Be persuasive and informative."
+    }
+    
+    prompt_template = prompts.get(business_type.lower(), prompts["retail"])
+    
+    if request.mode == "improve" and request.current_description:
+        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\nCurrent Description: {request.current_description}\n\n{prompt_template}\n\nPlease improve this description to be more professional and appealing."
+        system_prompt = "You are a professional editor. Improve the given description to be more compelling, clear, and effective. Keep the same meaning but enhance the language. Keep it under 200 words."
+    else:
+        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\n\n{prompt_template}"
+        system_prompt = "You are a professional marketing copywriter. Write compelling, accurate descriptions that help customers understand the value and make informed decisions. Keep descriptions under 200 words and focus on benefits."
+    
+    try:
+        # Use the existing AI service with standard model
+        response = await drafter._call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            model_pref="standard",
+            max_tokens=200
+        )
+        
+        description = response.strip()
+        
+        return {
+            "status": "success",
+            "description": description
+        }
+    except Exception as e:
+        print(f"AI description generation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate description. Please try again.")
+
 class SendCatalogRequest(BaseModel):
     customer_id: str
     product_ids: List[str]

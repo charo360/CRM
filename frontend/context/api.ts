@@ -492,6 +492,26 @@ export const productsAPI = {
       customer_ids: customerIds,
     });
     return response.data;
+  },
+
+  /**
+   * Generate AI description for product based on business type
+   */
+  generateAIDescription: async (params: {
+    product_name: string;
+    category?: string;
+    business_type?: string;
+    current_description?: string;
+    mode?: 'generate' | 'improve';
+  }) => {
+    const response = await apiClient.post('/products/ai-description', {
+      product_name: params.product_name,
+      category: params.category,
+      business_type: params.business_type,
+      current_description: params.current_description,
+      mode: params.mode || 'generate',
+    });
+    return response.data;
   }
 };
 
