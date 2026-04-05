@@ -42,6 +42,34 @@ const CREATOR_CATEGORIES = [
     'Other'
 ];
 
+// Restaurant-specific categories
+const RESTAURANT_CATEGORIES = [
+    'Appetizers',
+    'Main Course',
+    'Desserts',
+    'Beverages',
+    'Breakfast',
+    'Lunch Special',
+    'Dinner Special',
+    'Kids Menu',
+    'Daily Special',
+    'Other'
+];
+
+// Rental-specific categories  
+const RENTAL_CATEGORIES = [
+    'Apartment',
+    'House',
+    'Car',
+    'Equipment',
+    'Venue',
+    'Office Space',
+    'Storage',
+    'Vacation Rental',
+    'Long-term Rental',
+    'Other'
+];
+
 // Default categories for other business types
 const DEFAULT_CATEGORIES = [
     'Electronics',
@@ -109,7 +137,10 @@ export default function ProductCatalogModal({
     const { config } = useBusiness();
     const catalogLabel = config.catalogLabel;
     const itemLabel = config.catalogItemLabel;
-    const isCreator = config.bookingMode === 'none' && config.customerLabel === 'Fan'; // Creator detection
+    const showStock = config.showStock;
+    const isCreator = config.customerLabel === 'Fan'; // Creator detection
+    const isRestaurant = catalogLabel === 'Menu';
+    const isRental = catalogLabel === 'Listings';
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
@@ -117,6 +148,8 @@ export default function ProductCatalogModal({
     // Get appropriate categories based on business type
     const getAppropriateCategories = () => {
         if (isCreator) return CREATOR_CATEGORIES;
+        if (isRestaurant) return RESTAURANT_CATEGORIES;
+        if (isRental) return RENTAL_CATEGORIES;
         return DEFAULT_CATEGORIES;
     };
 
@@ -592,7 +625,12 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editName}
                                     onChangeText={setEditName}
-                                    placeholder={isCreator ? "e.g. Instagram Reel Package" : "e.g. Chocolate Cake"}
+                                    placeholder={
+                                        isCreator ? "e.g. Instagram Reel Package" :
+                                        isRestaurant ? "e.g. Caesar Salad" :
+                                        isRental ? "e.g. 2BR Apartment" :
+                                        "e.g. Chocolate Cake"
+                                    }
                                     placeholderTextColor="#555"
                                 />
                             </View>
@@ -627,15 +665,20 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editCategory}
                                     onChangeText={setEditCategory}
-                                    placeholder={isCreator ? "e.g. Instagram Reel, Sponsored Post" : "e.g. Cakes, Electronics, Clothing"}
+                                    placeholder={
+                                        isCreator ? "e.g. Instagram Reel, Sponsored Post" :
+                                        isRestaurant ? "e.g. Main Course, Appetizers" :
+                                        isRental ? "e.g. Apartment, Car, Equipment" :
+                                        "e.g. Cakes, Electronics, Clothing"
+                                    }
                                     placeholderTextColor="#555"
                                 />
-                                {/* Category suggestions for creators */}
-                                {isCreator && (
+                                {/* Category suggestions for specific business types */}
+                                {(isCreator || isRestaurant || isRental) && (
                                     <View style={styles.categorySuggestions}>
                                         <Text style={styles.suggestionsLabel}>Popular categories:</Text>
                                         <View style={styles.suggestionChips}>
-                                            {CREATOR_CATEGORIES.slice(0, 6).map(cat => (
+                                            {getAppropriateCategories().slice(0, 6).map(cat => (
                                                 <TouchableOpacity
                                                     key={cat}
                                                     style={styles.suggestionChip}
@@ -655,14 +698,19 @@ export default function ProductCatalogModal({
                                     style={[styles.formInput, { height: 80, textAlignVertical: 'top' }]}
                                     value={editDescription}
                                     onChangeText={setEditDescription}
-                                    placeholder={isCreator ? "Describe what brands get with this content package..." : "Describe your product..."}
+                                    placeholder={
+                                        isCreator ? "Describe what brands get with this content package..." :
+                                        isRestaurant ? "Describe ingredients, preparation, allergens..." :
+                                        isRental ? "Describe amenities, location, terms..." :
+                                        "Describe your product..."
+                                    }
                                     placeholderTextColor="#555"
                                     multiline
                                     numberOfLines={3}
                                 />
                             </View>
 
-                            {!isCreator && (
+                            {showStock && (
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Stock Quantity (Optional)</Text>
                                 <TextInput
@@ -677,7 +725,7 @@ export default function ProductCatalogModal({
                             </View>
                         )}
 
-{!isCreator && (
+{showStock && (
                             <View style={styles.stockToggleRow}>
                                 <View>
                                     <Text style={styles.formLabel}>In Stock</Text>
@@ -843,7 +891,7 @@ export default function ProductCatalogModal({
                             <View style={styles.detailBody}>
                                 <View style={styles.detailNameRow}>
                                     <Text style={styles.detailName}>{selectedProduct.name}</Text>
-                                    {!isCreator && (
+                                    {showStock && (
                                         <View style={[styles.stockBadge, selectedProduct.in_stock === false ? styles.stockBadgeRed : styles.stockBadgeGreen]}>
                                             <Text style={styles.stockBadgeText}>
                                                 {selectedProduct.in_stock === false ? 'Out of Stock' : 'In Stock'}
@@ -858,7 +906,7 @@ export default function ProductCatalogModal({
                                     <Ionicons name="pricetag-outline" size={14} color="#8899AA" />
                                     <Text style={styles.detailCategory}>{selectedProduct.category || 'Other'}</Text>
 
-                                    {!isCreator && selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
+                                    {showStock && selectedProduct.stock_quantity !== undefined && selectedProduct.stock_quantity !== null && (
                                         <View style={styles.detailStockInfo}>
                                             <Ionicons name="cube-outline" size={14} color="#8899AA" style={{ marginLeft: 12 }} />
                                             <Text style={styles.detailCategory}>Stock: {selectedProduct.stock_quantity}</Text>
@@ -875,7 +923,7 @@ export default function ProductCatalogModal({
 
                                 {/* Action Buttons */}
                                 <View style={styles.actionButtons}>
-                                    {!isCreator && (
+                                    {showStock && (
                                         <TouchableOpacity
                                             style={styles.actionBtn}
                                             onPress={() => handleToggleStock(selectedProduct)}
@@ -937,7 +985,12 @@ export default function ProductCatalogModal({
                         <Ionicons name="search-outline" size={18} color="#8899AA" />
                         <TextInput
                             style={styles.searchInput}
-                            placeholder={isCreator ? "Search content packages..." : "Search products..."}
+                            placeholder={
+                                isCreator ? "Search content packages..." :
+                                isRestaurant ? "Search menu items..." :
+                                isRental ? "Search listings..." :
+                                "Search products..."
+                            }
                             placeholderTextColor="#556"
                             value={searchQuery}
                             onChangeText={setSearchQuery}
@@ -956,9 +1009,9 @@ export default function ProductCatalogModal({
                         <Text style={[styles.statNumber, maxProducts !== null && products.length >= maxProducts && { color: '#FF6B6B' }]}>
                             {products.length}{maxProducts !== null ? `/${maxProducts}` : ''}
                         </Text>
-                        <Text style={styles.statLabel}>{isCreator ? 'Packages' : 'Products'}</Text>
+                        <Text style={styles.statLabel}>{isCreator ? 'Packages' : catalogLabel.slice(0, -1) + 's'}</Text>
                     </View>
-                    {!isCreator && (
+                    {showStock && (
                         <>
                             <View style={styles.statDivider} />
                             <View style={styles.statItem}>
@@ -1022,10 +1075,14 @@ export default function ProductCatalogModal({
                         <View style={styles.emptyIcon}>
                             <Ionicons name="storefront-outline" size={64} color="#25D366" />
                         </View>
-                        <Text style={styles.emptyText}>Your {isCreator ? 'content catalog' : 'catalog'} is empty</Text>
+                        <Text style={styles.emptyText}>Your {catalogLabel.toLowerCase()} is empty</Text>
                         <Text style={styles.emptySubtext}>
                             {isCreator 
                                 ? 'Add content packages to share with brands and let AI recommend them automatically' 
+                                : isRestaurant
+                                ? 'Add menu items to share with customers and let AI recommend them automatically'
+                                : isRental
+                                ? 'Add listings to share with guests and let AI recommend them automatically'
                                 : 'Add products to share with customers and let AI recommend them automatically'
                             }
                         </Text>

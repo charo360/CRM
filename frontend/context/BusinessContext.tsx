@@ -71,7 +71,7 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
   },
   restaurant: {
     catalogLabel: 'Menu', catalogItemLabel: 'Item',
-    showDuration: false, showStock: false,
+    showDuration: false, showStock: true,
     bookingsTabVisible: false, salesTabLabel: 'Sales',
     dashboardMode: 'sales', primaryColor: '#25D366',
     bookingMode: 'none', bookingLabel: 'Order',
@@ -99,7 +99,7 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
   rental: {
     // Properties, cars, equipment — check-in/checkout date range (NOT time slots)
     catalogLabel: 'Listings', catalogItemLabel: 'Listing',
-    showDuration: false, showStock: false,
+    showDuration: false, showStock: true,
     bookingsTabVisible: true, salesTabLabel: 'Revenue',
     dashboardMode: 'bookings', primaryColor: '#25D366',
     bookingMode: 'rental', bookingLabel: 'Booking',
