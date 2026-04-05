@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
     View,
     Text,
@@ -192,6 +192,9 @@ export default function ProductCatalogModal({
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
     const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
     const [subscriptionPlan, setSubscriptionPlan] = useState('free');
+    
+    // Ref for description TextInput to control scroll position
+    const descriptionInputRef = useRef<TextInput>(null);
 
     const { config } = useBusiness();
     const catalogLabel = config.catalogLabel;
@@ -422,6 +425,12 @@ export default function ProductCatalogModal({
             
             if (result.description) {
                 setEditDescription(result.description);
+                // Scroll to top of description after setting it
+                setTimeout(() => {
+                    descriptionInputRef.current?.setNativeProps({
+                        selection: { start: 0, end: 0 }
+                    });
+                }, 100);
             } else {
                 throw new Error('No description generated');
             }
@@ -455,6 +464,12 @@ export default function ProductCatalogModal({
             
             if (result.description) {
                 setEditDescription(result.description);
+                // Scroll to top of description after setting it
+                setTimeout(() => {
+                    descriptionInputRef.current?.setNativeProps({
+                        selection: { start: 0, end: 0 }
+                    });
+                }, 100);
             } else {
                 throw new Error('No improvement generated');
             }
@@ -861,7 +876,17 @@ export default function ProductCatalogModal({
                                     </TouchableOpacity>
                                 </View>
                                 <TextInput
-                                    style={[styles.formInput, { height: 80, textAlignVertical: 'top' }]}
+                                    ref={descriptionInputRef}
+                                    style={[
+                                        styles.formInput, 
+                                        { 
+                                            minHeight: 80,
+                                            maxHeight: 200,
+                                            textAlignVertical: 'top',
+                                            fontSize: 15,
+                                            lineHeight: 22,
+                                        }
+                                    ]}
                                     value={editDescription}
                                     onChangeText={setEditDescription}
                                     placeholder={
@@ -876,7 +901,7 @@ export default function ProductCatalogModal({
                                     }
                                     placeholderTextColor="#555"
                                     multiline
-                                    numberOfLines={3}
+                                    scrollEnabled={true}
                                 />
                                 {editDescription && (
                                     <TouchableOpacity 
