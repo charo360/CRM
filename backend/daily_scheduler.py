@@ -338,44 +338,73 @@ class DailyScheduler:
                 logger.error(f"[AutoSequence] Day {sequence_day} batch failed: {e}")
 
     async def _draft_sequence_message(self, user: dict, customer: dict, day: int) -> str:
-        """Use AI to draft a natural follow-up message for the customer."""
+        """
+        Draft a follow-up message for the customer.
+        - If no business knowledge is configured, returns a safe generic template (no AI call).
+        - If business knowledge exists, uses AI but with strict no-hallucination rules.
+        """
+        customer_name = customer.get("name", "there")
+        business_name = user.get("business_name") or user.get("name") or ""
+
+        bk = user.get("business_knowledge", {})
+        business_desc = (bk.get("business_description", "") if isinstance(bk, dict) else "").strip()
+        products = (bk.get("products_services", "") if isinstance(bk, dict) else "").strip()
+        last_message = (customer.get("last_message") or "").strip()
+
+        has_business_context = bool(business_desc or products)
+
+        # No business knowledge configured — use safe generic templates, no AI
+        if not has_business_context:
+            if day == 3:
+                return (
+                    f"Hi {customer_name}! 👋 Just checking in — did you have any questions "
+                    f"from when we last spoke? Happy to help anytime!"
+                )
+            else:
+                return (
+                    f"Hi {customer_name}! 😊 Just a quick follow-up — we're still here "
+                    f"whenever you're ready. Feel free to reach out!"
+                )
+
+        # Business knowledge exists — call AI with strict constraints
         try:
-            business_name = user.get("business_name") or user.get("name") or "us"
-            customer_name = customer.get("name", "there")
-            last_message = customer.get("last_message") or ""
-
-            bk = user.get("business_knowledge", {})
-            business_desc = bk.get("business_description", "") if isinstance(bk, dict) else ""
-            products = bk.get("products_services", "") if isinstance(bk, dict) else ""
-
-            context = f"Business: {business_name}"
+            context_lines = []
+            if business_name:
+                context_lines.append(f"Business name: {business_name}")
             if business_desc:
-                context += f"\nWhat we do: {business_desc}"
+                context_lines.append(f"What we do: {business_desc}")
             if products:
-                context += f"\nProducts/Services: {products}"
+                context_lines.append(f"Products/Services: {products}")
             if last_message:
-                context += f"\nLast thing customer said: {last_message[:200]}"
+                context_lines.append(f"Customer's last message: {last_message[:200]}")
+            context = "\n".join(context_lines)
 
             if day == 3:
                 goal = (
-                    "Write a short, warm WhatsApp follow-up for a customer who contacted us 3 days ago. "
-                    "Check in, ask if they had any questions, and keep the door open. "
-                    "Casual and friendly tone. Max 2 sentences."
+                    "Write a short, warm WhatsApp check-in for a customer who contacted us 3 days ago. "
+                    "Ask if they have any questions and keep it friendly. Max 2 sentences."
                 )
-            else:  # day 7
+            else:
                 goal = (
-                    "Write a short WhatsApp nudge for a customer who contacted us 7 days ago but hasn't purchased yet. "
-                    "Gently remind them we're here, maybe mention a current offer or product if relevant. "
-                    "Friendly tone. Max 2 sentences."
+                    "Write a short, friendly WhatsApp follow-up for a customer who contacted us 7 days ago. "
+                    "Gently let them know we're still available. Max 2 sentences."
                 )
 
-            prompt = f"""{context}
+            prompt = f"""You are writing a WhatsApp follow-up message on behalf of a business.
+
+{context}
 
 Customer name: {customer_name}
 
 Task: {goal}
 
-Output only the WhatsApp message text. No explanation."""
+STRICT RULES — failure to follow these ruins the message:
+- ONLY use the business details listed above. NEVER invent products, prices, offers, or services.
+- If no products/offers are listed above, do NOT mention any products or offers.
+- Do NOT make up discounts, promotions, or deals unless explicitly listed above.
+- Keep it short, human, and WhatsApp-friendly.
+
+Output only the message text. No explanation."""
 
             from ai_service import get_drafter
             ai = get_drafter()
@@ -384,11 +413,17 @@ Output only the WhatsApp message text. No explanation."""
 
         except Exception as e:
             logger.error(f"[AutoSequence] AI draft failed: {e}")
-            # Fallback
+            # Safe fallback — no invented details
             if day == 3:
-                return f"Hi {customer.get('name', 'there')}! 👋 Just checking in — did you have any questions about what we discussed? We're happy to help!"
+                return (
+                    f"Hi {customer_name}! 👋 Just checking in — did you have any questions "
+                    f"from when we last spoke? Happy to help anytime!"
+                )
             else:
-                return f"Hi {customer.get('name', 'there')}! 😊 Just a quick nudge — we're still here if you're ready to move forward. Let us know how we can help!"
+                return (
+                    f"Hi {customer_name}! 😊 Just a quick follow-up — we're still here "
+                    f"whenever you're ready. Feel free to reach out!"
+                )
 
     async def run_scheduler(self, check_interval_minutes: int = 60):
         """
