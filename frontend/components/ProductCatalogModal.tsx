@@ -179,10 +179,12 @@ export default function ProductCatalogModal({
     const [editName, setEditName] = useState('');
     const [editPrice, setEditPrice] = useState('');
     const [editDiscountPrice, setEditDiscountPrice] = useState('');
-    const [editCategory, setEditCategory] = useState('');
     const [editDescription, setEditDescription] = useState('');
-    const [editInStock, setEditInStock] = useState(true);
+    const [editCategory, setEditCategory] = useState('');
     const [editStockQuantity, setEditStockQuantity] = useState('');
+    const [editInStock, setEditInStock] = useState(true);
+    const [editImages, setEditImages] = useState<string[]>([]);
+    const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
     const [addingPhotos, setAddingPhotos] = useState(false);
@@ -388,6 +390,157 @@ export default function ProductCatalogModal({
             }
         } catch (error) {
             Alert.alert('Error', 'Failed to update stock status');
+        }
+    };
+
+    // AI Description Generation Functions
+    const getBusinessSpecificPrompt = (productName: string, category: string, currentDescription?: string) => {
+        const baseInfo = `Product Name: ${productName}\nCategory: ${category}\n${currentDescription ? `Current Description: ${currentDescription}\n` : ''}`;
+        
+        if (isCreator) {
+            return `${baseInfo}\nAs a content creator, write a compelling description for brands looking to sponsor content. Focus on: target audience, engagement rates, content style, deliverables, and brand benefits. Make it professional and appealing to marketing managers.`;
+        }
+        
+        if (isRestaurant) {
+            return `${baseInfo}\nAs a restaurant, write an appetizing description for this menu item. Focus on: ingredients, preparation method, taste profile, presentation, and why customers will love it. Include allergen warnings if relevant.`;
+        }
+        
+        if (isRental) {
+            return `${baseInfo}\nAs a rental business, write a detailed description for this listing. Focus on: key features, amenities, location benefits, ideal use cases, rental terms, and what makes it special. Be informative and trustworthy.`;
+        }
+        
+        if (isHealthcare) {
+            return `${baseInfo}\nAs a healthcare provider, write a professional description for this service. Focus on: procedure details, benefits, duration, what patients should expect, qualifications, and reassurance. Be clear and professional.`;
+        }
+        
+        if (isFitness) {
+            return `${baseInfo}\nAs a fitness business, write an motivating description for this class. Focus on: workout intensity, equipment needed, skill level, benefits, instructor expertise, and what participants will achieve. Be inspiring and informative.`;
+        }
+        
+        if (isServices) {
+            return `${baseInfo}\nAs a service business, write a clear description for this service. Focus on: scope of work, process, timeline, qualifications, customer benefits, and what sets it apart. Be professional and trustworthy.`;
+        }
+        
+        if (isSalon) {
+            return `${baseInfo}\nAs a salon, write an appealing description for this beauty service. Focus on: treatment details, benefits, duration, products used, expertise, and results clients can expect. Be luxurious and reassuring.`;
+        }
+        
+        // Default for retail
+        return `${baseInfo}\nAs a retail business, write an engaging product description. Focus on: key features, benefits, quality, use cases, and why customers should choose this product. Be persuasive and informative.`;
+    };
+
+    const handleAIGenerateDescription = async () => {
+        if (!editName.trim()) {
+            Alert.alert('Missing Information', 'Please enter a product name first, then AI can generate a description.');
+            return;
+        }
+
+        setIsGeneratingDescription(true);
+        try {
+            const prompt = getBusinessSpecificPrompt(editName, editCategory || 'General');
+            
+            // Call AI service to generate description
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
+                },
+                body: JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: 'You are a professional marketing copywriter. Write compelling, accurate descriptions that help customers understand the value and make informed decisions. Keep descriptions under 200 words and focus on benefits.'
+                        },
+                        {
+                            role: 'user',
+                            content: prompt
+                        }
+                    ],
+                    max_tokens: 150,
+                    temperature: 0.7
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('AI service unavailable');
+            }
+
+            const data = await response.json();
+            const generatedDescription = data.choices[0]?.message?.content?.trim();
+            
+            if (generatedDescription) {
+                setEditDescription(generatedDescription);
+            } else {
+                throw new Error('No description generated');
+            }
+        } catch (error) {
+            console.error('AI generation error:', error);
+            Alert.alert(
+                'AI Generation Failed',
+                'Unable to generate description right now. Please try writing it manually or contact support.',
+                [{ text: 'OK' }]
+            );
+        } finally {
+            setIsGeneratingDescription(false);
+        }
+    };
+
+    const handleAIImproveDescription = async () => {
+        if (!editDescription.trim()) {
+            handleAIGenerateDescription();
+            return;
+        }
+
+        setIsGeneratingDescription(true);
+        try {
+            const prompt = getBusinessSpecificPrompt(editName, editCategory || 'General', editDescription);
+            
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_API_KEY}`,
+                },
+                body: JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: 'You are a professional editor. Improve the given description to be more compelling, clear, and effective. Keep the same meaning but enhance the language. Keep it under 200 words.'
+                        },
+                        {
+                            role: 'user',
+                            content: `${prompt}\n\nPlease improve this description to be more professional and appealing.`
+                        }
+                    ],
+                    max_tokens: 150,
+                    temperature: 0.7
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('AI service unavailable');
+            }
+
+            const data = await response.json();
+            const improvedDescription = data.choices[0]?.message?.content?.trim();
+            
+            if (improvedDescription) {
+                setEditDescription(improvedDescription);
+            } else {
+                throw new Error('No improvement generated');
+            }
+        } catch (error) {
+            console.error('AI improvement error:', error);
+            Alert.alert(
+                'AI Improvement Failed',
+                'Unable to improve description right now. Please try editing it manually.',
+                [{ text: 'OK' }]
+            );
+        } finally {
+            setIsGeneratingDescription(false);
         }
     };
 
@@ -764,7 +917,23 @@ export default function ProductCatalogModal({
                             </View>
 
                             <View style={styles.formGroup}>
-                                <Text style={styles.formLabel}>Description</Text>
+                                <View style={styles.formLabelRow}>
+                                    <Text style={styles.formLabel}>Description</Text>
+                                    <TouchableOpacity 
+                                        style={styles.aiGenerateBtn}
+                                        onPress={handleAIGenerateDescription}
+                                        disabled={isGeneratingDescription}
+                                    >
+                                        <Ionicons 
+                                            name={isGeneratingDescription ? "sparkles-outline" : "sparkles"} 
+                                            size={16} 
+                                            color={isGeneratingDescription ? "#8899AA" : "#25D366"} 
+                                        />
+                                        <Text style={styles.aiGenerateBtnText}>
+                                            {isGeneratingDescription ? "Generating..." : "AI Generate"}
+                                        </Text>
+                                    </TouchableOpacity>
+                                </View>
                                 <TextInput
                                     style={[styles.formInput, { height: 80, textAlignVertical: 'top' }]}
                                     value={editDescription}
@@ -783,6 +952,16 @@ export default function ProductCatalogModal({
                                     multiline
                                     numberOfLines={3}
                                 />
+                                {editDescription && (
+                                    <TouchableOpacity 
+                                        style={styles.aiImproveBtn}
+                                        onPress={handleAIImproveDescription}
+                                        disabled={isGeneratingDescription}
+                                    >
+                                        <Ionicons name="refresh-outline" size={14} color="#25D366" />
+                                        <Text style={styles.aiImproveBtnText}>Improve with AI</Text>
+                                    </TouchableOpacity>
+                                )}
                             </View>
 
                             {showStock && (
@@ -1868,6 +2047,41 @@ const styles = StyleSheet.create({
     suggestionChipText: {
         fontSize: 12,
         color: '#CCD6E0',
+        fontWeight: '500',
+    },
+    // AI Description Generator Styles
+    formLabelRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    aiGenerateBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        backgroundColor: '#1A3A2A',
+        borderRadius: 6,
+    },
+    aiGenerateBtnText: {
+        fontSize: 12,
+        color: '#25D366',
+        fontWeight: '600',
+    },
+    aiImproveBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        marginTop: 8,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        alignSelf: 'flex-start',
+    },
+    aiImproveBtnText: {
+        fontSize: 12,
+        color: '#25D366',
         fontWeight: '500',
     },
 });
