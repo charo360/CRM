@@ -121,9 +121,9 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
 const DEFAULT_CONFIG: BusinessConfig = {
   catalogLabel: 'Products', catalogItemLabel: 'Product',
   showDuration: false, showStock: true,
-  bookingsTabVisible: true, salesTabLabel: 'Sales',
-  dashboardMode: 'hybrid', primaryColor: '#25D366',
-  bookingMode: 'appointment', bookingLabel: 'Appointment',
+  bookingsTabVisible: false, salesTabLabel: 'Sales',
+  dashboardMode: 'sales', primaryColor: '#25D366',
+  bookingMode: 'none', bookingLabel: 'Appointment',
   staffLabel: '', customerLabel: 'Customer',
   showCheckinCheckout: false,
 };
