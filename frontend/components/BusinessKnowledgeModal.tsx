@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     View,
     Text,
@@ -172,6 +172,10 @@ export default function BusinessKnowledgeModal({
 }: BusinessKnowledgeModalProps) {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [isGeneratingAbout, setIsGeneratingAbout] = useState(false);
+    
+    // Ref for about TextInput to control scroll position
+    const aboutInputRef = useRef<TextInput>(null);
     const [businessType, setBusinessType] = useState('general');
     const [knowledge, setKnowledge] = useState({
         business_description: '',
@@ -337,6 +341,71 @@ export default function BusinessKnowledgeModal({
         }
     };
 
+    // AI Description Generation for Business About
+    const handleAIGenerateAbout = async () => {
+        setIsGeneratingAbout(true);
+        try {
+            const result = await settingsAPI.generateBusinessAbout({
+                business_type: businessType,
+                mode: 'generate'
+            });
+            
+            if (result.description) {
+                setKnowledge({ ...knowledge, business_description: result.description });
+                // Scroll to top of description after setting it
+                setTimeout(() => {
+                    aboutInputRef.current?.setNativeProps({
+                        selection: { start: 0, end: 0 }
+                    });
+                }, 100);
+            }
+        } catch (error: any) {
+            console.error('AI generation error:', error);
+            Alert.alert(
+                'AI Generation Failed',
+                error.response?.data?.detail || 'Unable to generate description right now. Please try writing it manually.',
+                [{ text: 'OK' }]
+            );
+        } finally {
+            setIsGeneratingAbout(false);
+        }
+    };
+
+    const handleAIImproveAbout = async () => {
+        if (!knowledge.business_description.trim()) {
+            handleAIGenerateAbout();
+            return;
+        }
+
+        setIsGeneratingAbout(true);
+        try {
+            const result = await settingsAPI.generateBusinessAbout({
+                business_type: businessType,
+                current_description: knowledge.business_description,
+                mode: 'improve'
+            });
+            
+            if (result.description) {
+                setKnowledge({ ...knowledge, business_description: result.description });
+                // Scroll to top of description after setting it
+                setTimeout(() => {
+                    aboutInputRef.current?.setNativeProps({
+                        selection: { start: 0, end: 0 }
+                    });
+                }, 100);
+            }
+        } catch (error: any) {
+            console.error('AI improvement error:', error);
+            Alert.alert(
+                'AI Improvement Failed',
+                error.response?.data?.detail || 'Unable to improve description right now. Please try editing it manually.',
+                [{ text: 'OK' }]
+            );
+        } finally {
+            setIsGeneratingAbout(false);
+        }
+    };
+
     const isCreator = businessType === 'creator';
     const typeConfig = getTypeConfig(businessType);
 
@@ -398,16 +467,51 @@ export default function BusinessKnowledgeModal({
 
                         {/* About */}
                         <View style={styles.field}>
-                            <Text style={styles.label}>{typeConfig.aboutLabel}</Text>
+                            <View style={styles.labelRow}>
+                                <Text style={styles.label}>{typeConfig.aboutLabel}</Text>
+                                <TouchableOpacity 
+                                    style={styles.aiGenerateBtn}
+                                    onPress={handleAIGenerateAbout}
+                                    disabled={isGeneratingAbout}
+                                >
+                                    <Ionicons 
+                                        name={isGeneratingAbout ? "sparkles-outline" : "sparkles"} 
+                                        size={16} 
+                                        color={isGeneratingAbout ? "#8899AA" : "#25D366"} 
+                                    />
+                                    <Text style={styles.aiGenerateBtnText}>
+                                        {isGeneratingAbout ? "Generating..." : "AI Generate"}
+                                    </Text>
+                                </TouchableOpacity>
+                            </View>
                             <TextInput
-                                style={styles.input}
+                                ref={aboutInputRef}
+                                style={[
+                                    styles.input,
+                                    {
+                                        minHeight: 80,
+                                        maxHeight: 200,
+                                        fontSize: 15,
+                                        lineHeight: 22,
+                                    }
+                                ]}
                                 placeholder={isCreator ? 'Who are you and what do you create?' : 'What does your business do?'}
                                 placeholderTextColor="#555"
                                 value={knowledge.business_description}
                                 onChangeText={(text) => setKnowledge({ ...knowledge, business_description: text })}
                                 multiline
-                                numberOfLines={3}
+                                scrollEnabled={true}
                             />
+                            {knowledge.business_description && (
+                                <TouchableOpacity 
+                                    style={styles.aiImproveBtn}
+                                    onPress={handleAIImproveAbout}
+                                    disabled={isGeneratingAbout}
+                                >
+                                    <Ionicons name="refresh-outline" size={14} color="#25D366" />
+                                    <Text style={styles.aiImproveBtnText}>Improve with AI</Text>
+                                </TouchableOpacity>
+                            )}
                         </View>
 
                         {/* ── CREATOR FIELDS ── */}
@@ -1056,11 +1160,47 @@ const styles = StyleSheet.create({
         backgroundColor: '#0F1D32',
         borderWidth: 1,
         borderColor: '#2A3952',
-        borderRadius: 9,
+        borderRadius: 8,
         paddingHorizontal: 12,
         paddingVertical: 10,
         fontSize: 14,
         color: '#FFFFFF',
+        marginBottom: 8,
+    },
+    // AI Description Generator Styles
+    labelRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    aiGenerateBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        backgroundColor: '#1A3A2A',
+        borderRadius: 6,
+    },
+    aiGenerateBtnText: {
+        fontSize: 12,
+        color: '#25D366',
+        fontWeight: '600',
+    },
+    aiImproveBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        marginTop: 8,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        alignSelf: 'flex-start',
+    },
+    aiImproveBtnText: {
+        fontSize: 12,
+        color: '#25D366',
+        fontWeight: '500',
     },
     pmCancelBtn: {
         flex: 1,

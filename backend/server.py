@@ -8443,6 +8443,66 @@ async def generate_ai_description(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to generate description: {str(e)}")
 
+class BusinessAboutRequest(BaseModel):
+    business_type: str
+    current_description: Optional[str] = None
+    mode: str = "generate"  # "generate" or "improve"
+
+@api_router.post("/settings/ai-about")
+async def generate_business_about(
+    request: BusinessAboutRequest,
+    user = Depends(get_current_user)
+):
+    """Generate or improve business About description using AI based on business type"""
+    from ai_service import get_drafter
+    
+    drafter = get_drafter()
+    business_type = request.business_type or "general"
+    
+    # Business-specific prompts for About section
+    prompts = {
+        "creator": "As a content creator, write a compelling 'About' section that introduces you to potential brand partners. Focus on: your unique style, niche expertise, audience demographics, content quality, past collaborations, and what makes you stand out. Make it professional yet authentic.",
+        "restaurant": "As a restaurant, write an engaging 'About' section that tells your story. Focus on: cuisine type, signature dishes, chef background, atmosphere, what makes your restaurant special, years in business, and commitment to quality. Make it appetizing and inviting.",
+        "rental": "As a rental business, write a trustworthy 'About' section. Focus on: types of properties/items you offer, service area, years of experience, customer satisfaction, maintenance standards, booking process, and what sets you apart. Be professional and reassuring.",
+        "healthcare": "As a healthcare provider, write a professional 'About' section. Focus on: medical specialties, qualifications, years of practice, treatment philosophy, patient care approach, facility features, and commitment to health. Be clear, professional, and reassuring.",
+        "fitness": "As a fitness business, write a motivating 'About' section. Focus on: training philosophy, instructor qualifications, class variety, equipment/facilities, success stories, community atmosphere, and fitness goals you help achieve. Be inspiring and energetic.",
+        "services": "As a service business, write a professional 'About' section. Focus on: services offered, expertise, years in business, team qualifications, work quality, customer satisfaction, and what differentiates you. Be trustworthy and competent.",
+        "salon": "As a salon/beauty business, write an appealing 'About' section. Focus on: services offered, stylist expertise, product brands used, salon atmosphere, years of experience, beauty philosophy, and client satisfaction. Be luxurious and welcoming.",
+        "retail": "As a retail business, write an engaging 'About' section. Focus on: products you sell, quality standards, sourcing, customer service, years in business, unique offerings, and shopping experience. Be inviting and trustworthy.",
+        "general": "Write a professional 'About' section for this business. Focus on: what the business does, expertise, years of experience, commitment to customers, unique value proposition, and what sets it apart. Be clear and professional."
+    }
+    
+    prompt_template = prompts.get(business_type.lower(), prompts["general"])
+    
+    if request.mode == "improve" and request.current_description:
+        user_prompt = f"Business Type: {business_type}\nCurrent About: {request.current_description}\n\n{prompt_template}\n\nPlease improve this About section to be more professional, engaging, and effective."
+        system_prompt = "You are a professional business copywriter. Improve the given About section to be more compelling and clear. Keep the same core message but enhance the language and structure. Keep it under 150 words."
+    else:
+        user_prompt = f"Business Type: {business_type}\n\n{prompt_template}"
+        system_prompt = "You are a professional business copywriter. Write compelling About sections that help businesses connect with their customers. Keep descriptions under 150 words and focus on building trust and interest."
+    
+    try:
+        # Build the prompt as a string for the AI service
+        full_prompt = f"{system_prompt}\n\n{user_prompt}"
+        
+        # Use the existing AI service with standard model
+        response = await drafter._call_llm(
+            prompt=full_prompt,
+            model_pref="standard"
+        )
+        
+        description = response.strip()
+        
+        return {
+            "status": "success",
+            "description": description
+        }
+    except Exception as e:
+        print(f"AI business about generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate About description: {str(e)}")
+
 class SendCatalogRequest(BaseModel):
     customer_id: str
     product_ids: List[str]

@@ -194,6 +194,22 @@ export const settingsAPI = {
   }) => {
     const response = await apiClient.put('/business-knowledge', knowledge);
     return response.data;
+  },
+
+  /**
+   * Generate AI description for business About section
+   */
+  generateBusinessAbout: async (params: {
+    business_type: string;
+    current_description?: string;
+    mode?: 'generate' | 'improve';
+  }) => {
+    const response = await apiClient.post('/settings/ai-about', {
+      business_type: params.business_type,
+      current_description: params.current_description,
+      mode: params.mode || 'generate',
+    });
+    return response.data;
   }
 };
 
