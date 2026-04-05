@@ -3103,6 +3103,193 @@ async def snooze_followup(followup_id: str, days: int = 1, user = Depends(get_cu
         "new_date": new_date
     }
 
+@api_router.post("/followups/{followup_id}/redraft")
+async def redraft_followup_message(
+    followup_id: str,
+    direction: str = Body(..., embed=True),
+    user = Depends(get_current_user)
+):
+    """
+    Redraft the AI message for an auto-sequence follow-up using owner-provided direction.
+    Calls the same rich-context AI logic as the auto-sequence generator but injects the
+    owner's direction as an extra instruction.
+    """
+    business_id = user.get("business_id", user["_id"])
+    followup = await db.followups.find_one({"_id": followup_id, "user_id": business_id})
+    if not followup:
+        raise HTTPException(status_code=404, detail="Follow-up not found")
+
+    customer_id = followup.get("customer_id")
+    customer = await db.customers.find_one({"_id": customer_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    sequence_day = followup.get("sequence_day", 3)
+    customer_name = customer.get("name", "there")
+    customer_phone = customer.get("phone_number", "")
+    business_name = user.get("business_name") or user.get("name") or ""
+
+    # ── Business knowledge ──────────────────────────────────────────────────
+    bk = user.get("business_knowledge", {}) if isinstance(user.get("business_knowledge"), dict) else {}
+    business_desc  = (bk.get("business_description", "") or "").strip()
+    products       = (bk.get("products_services", "") or "").strip()
+    pricing_info   = (bk.get("pricing_info", "") or "").strip()
+    special_offers = (bk.get("special_offers", "") or "").strip()
+    delivery_info  = (bk.get("delivery_info", "") or "").strip()
+    faqs           = (bk.get("faqs", "") or "").strip()
+
+    has_business_context = bool(business_desc or products)
+
+    # ── Customer signals ────────────────────────────────────────────────────
+    tags           = customer.get("tags", [])
+    purchase_count = int(customer.get("purchase_count", 0) or 0)
+    total_spent    = float(customer.get("total_spent", 0) or 0)
+    is_vip         = "VIP" in tags
+    is_returning   = purchase_count > 0 or "Returning" in tags
+    currency       = (user.get("settings") or {}).get("currency", "")
+
+    # ── Conversation state ──────────────────────────────────────────────────
+    preferred_language = ""
+    personality = ""
+    price_sensitivity = ""
+    products_viewed: list = []
+    try:
+        from agents.conversation_state import load_state
+        conv_state = await load_state(db, user["_id"], str(customer.get("_id", "")))
+        preferred_language = conv_state.get("preferred_language") or ""
+        personality        = conv_state.get("personality") or ""
+        price_sensitivity  = conv_state.get("price_sensitivity") or ""
+        products_viewed    = conv_state.get("products_viewed", [])
+    except Exception:
+        pass
+
+    if not preferred_language and customer_phone:
+        try:
+            from ai_service import detect_language_from_phone
+            lang_info = detect_language_from_phone(customer_phone)
+            langs = lang_info.get("languages", [])
+            preferred_language = langs[0] if langs else ""
+        except Exception:
+            pass
+
+    # ── Recent conversation history ─────────────────────────────────────────
+    recent_history = ""
+    try:
+        msgs = await db.messages.find({
+            "user_id": user["_id"],
+            "customer_id": str(customer.get("_id", "")),
+        }).sort("created_at", -1).limit(6).to_list(6)
+        if msgs:
+            lines = [
+                f"{'Customer' if m.get('direction') == 'incoming' else 'Business'}: {m.get('content', '')[:120]}"
+                for m in reversed(msgs)
+                if m.get("content", "").strip()
+            ]
+            recent_history = "\n".join(lines)
+    except Exception:
+        pass
+
+    # ── Build context blocks ────────────────────────────────────────────────
+    ctx = []
+    if business_name: ctx.append(f"Business: {business_name}")
+    if business_desc:  ctx.append(f"What we do: {business_desc}")
+    if products:       ctx.append(f"Products/Services: {products}")
+    if pricing_info:   ctx.append(f"Pricing: {pricing_info}")
+    if special_offers: ctx.append(f"Current offers: {special_offers}")
+    if delivery_info:  ctx.append(f"Delivery info: {delivery_info}")
+    if faqs:           ctx.append(f"FAQs: {faqs[:300]}")
+    business_context = "\n".join(ctx) if ctx else "(no business knowledge configured)"
+
+    profile = [f"Customer name: {customer_name}"]
+    if is_vip:
+        profile.append("Customer status: VIP — high-value, treat with extra warmth")
+    elif is_returning:
+        spend_str = f"{currency} {total_spent:,.0f}".strip() if total_spent else ""
+        profile.append(
+            f"Customer status: Returning customer "
+            f"({purchase_count} order{'s' if purchase_count != 1 else ''}"
+            f"{', total spent ' + spend_str if spend_str else ''})"
+        )
+    else:
+        profile.append("Customer status: New — first interaction")
+    if products_viewed:
+        profile.append(f"Products they showed interest in: {', '.join(products_viewed[:4])}")
+    if price_sensitivity == "high":
+        profile.append("Price sensitivity: high — they care about value/deals")
+    if personality == "direct":
+        profile.append("Communication style: direct and brief — skip pleasantries")
+    elif personality == "chatty":
+        profile.append("Communication style: chatty — enjoys friendly conversation")
+    elif personality == "formal":
+        profile.append("Communication style: formal — keep professional tone")
+    customer_profile = "\n".join(profile)
+
+    if sequence_day == 3:
+        base_goal = (
+            "This customer contacted us 3 days ago but hasn't purchased yet. "
+            "Write a warm, natural check-in message."
+        )
+    else:
+        base_goal = (
+            "This customer contacted us 7 days ago but hasn't purchased yet. "
+            "Write a gentle re-engagement message."
+        )
+
+    lang_instruction = f"Write in {preferred_language}." if preferred_language else "Write in English."
+
+    direction_block = f"\n## Owner Direction\n{direction.strip()}\nApply this direction to the message." if direction.strip() else ""
+
+    prompt = f"""You are writing a WhatsApp follow-up message on behalf of a business owner.
+
+## Business Context
+{business_context}
+
+## Customer Profile
+{customer_profile}
+
+## Recent Conversation
+{recent_history if recent_history else "(no prior messages on record)"}
+
+## Task
+{base_goal}
+{direction_block}
+
+## Language
+{lang_instruction}
+
+## STRICT RULES
+- ONLY reference products, prices, offers, or details explicitly listed in Business Context above.
+- NEVER invent products, prices, discounts, or promotions not listed above.
+- Max 2-3 sentences. WhatsApp-friendly tone — no formal letter style.
+- Use the customer's name naturally (once).
+- No markdown, no asterisks, no bullet points.
+
+Output only the message text. Nothing else."""
+
+    new_message = None
+    try:
+        from ai_service import get_drafter
+        ai = get_drafter()
+        new_message = (await ai._call_llm(prompt, model_pref="standard")).strip()
+    except Exception as e:
+        logger.error(f"[Redraft] AI call failed: {e}")
+
+    if not new_message:
+        # Safe fallback
+        new_message = (
+            f"Hi {customer_name}! Just checking in — we're here whenever you're ready. "
+            f"Feel free to reach out anytime!"
+        )
+
+    # Persist the new draft back to the follow-up
+    await db.followups.update_one(
+        {"_id": followup_id},
+        {"$set": {"message": new_message}}
+    )
+
+    return {"message": new_message}
+
+
 @api_router.post("/followup-events")
 async def record_followup_event(
     customer_id: str = Body(...),

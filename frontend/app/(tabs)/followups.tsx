@@ -162,6 +162,13 @@ export default function FollowupsScreen() {
   const [noteAIDirection, setNoteAIDirection] = useState('');
   const [generatingNoteAI, setGeneratingNoteAI] = useState(false);
 
+  // Auto-sequence redraft modal state
+  const [showSequenceRedraftModal, setShowSequenceRedraftModal] = useState(false);
+  const [sequenceRedraftFollowup, setSequenceRedraftFollowup] = useState<FollowUp | null>(null);
+  const [sequenceRedraftMessage, setSequenceRedraftMessage] = useState('');
+  const [sequenceRedraftDirection, setSequenceRedraftDirection] = useState('');
+  const [redraftLoading, setRedraftLoading] = useState(false);
+
   // Cold customer Done modal state
   const [coldDoneModalVisible, setColdDoneModalVisible] = useState(false);
   const [coldDoneCustomer, setColdDoneCustomer] = useState<ColdCustomer | null>(null);
@@ -533,6 +540,44 @@ export default function FollowupsScreen() {
     setDraftMessage('');
   };
 
+  const openSequenceRedraftModal = (item: FollowUp) => {
+    setSequenceRedraftFollowup(item);
+    setSequenceRedraftMessage(item.message || '');
+    setSequenceRedraftDirection('');
+    setShowSequenceRedraftModal(true);
+  };
+
+  const handleSequenceRedraft = async () => {
+    if (!sequenceRedraftFollowup) return;
+    setRedraftLoading(true);
+    try {
+      const res = await apiClient.post(`/followups/${sequenceRedraftFollowup.id}/redraft`, {
+        direction: sequenceRedraftDirection,
+      });
+      const newMsg = res.data.message || '';
+      setSequenceRedraftMessage(newMsg);
+      // Update the local list so the card shows the new draft
+      setFollowups(prev =>
+        prev.map(f => f.id === sequenceRedraftFollowup.id ? { ...f, message: newMsg } : f)
+      );
+    } catch (e) {
+      Alert.alert('Error', 'Could not regenerate draft. Try again.');
+    } finally {
+      setRedraftLoading(false);
+    }
+  };
+
+  const handleSequenceSend = () => {
+    if (!sequenceRedraftFollowup) return;
+    setShowSequenceRedraftModal(false);
+    handleSendMessage(
+      sequenceRedraftFollowup.customer_id,
+      sequenceRedraftFollowup.customer_phone,
+      sequenceRedraftFollowup.customer_name,
+      sequenceRedraftMessage
+    );
+  };
+
   const filteredCustomerList = customers.filter(c =>
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
     c.phone_number.includes(customerSearch)
@@ -597,10 +642,23 @@ export default function FollowupsScreen() {
         <View style={styles.actions}>
           <TouchableOpacity
             style={styles.actionBtn}
-            onPress={() => handleSendMessage(item.customer_id, item.customer_phone, item.customer_name, item.message)}
+            onPress={() =>
+              item.is_auto_sequence
+                ? openSequenceRedraftModal(item)
+                : handleSendMessage(item.customer_id, item.customer_phone, item.customer_name, item.message)
+            }
           >
-            <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
-            <Text style={[styles.actionBtnText, { color: '#25D366' }]}>Message</Text>
+            {item.is_auto_sequence ? (
+              <>
+                <Ionicons name="sparkles" size={16} color="#A78BFA" />
+                <Text style={[styles.actionBtnText, { color: '#A78BFA' }]}>Review & Send</Text>
+              </>
+            ) : (
+              <>
+                <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+                <Text style={[styles.actionBtnText, { color: '#25D366' }]}>Message</Text>
+              </>
+            )}
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBtn}
@@ -1720,6 +1778,97 @@ export default function FollowupsScreen() {
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      {/* ── Auto-sequence Redraft Modal ── */}
+      <Modal
+        visible={showSequenceRedraftModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowSequenceRedraftModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ width: '100%' }}
+          >
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="sparkles" size={18} color="#A78BFA" />
+                  <Text style={styles.modalTitle}>
+                    AI Draft · Day {sequenceRedraftFollowup?.sequence_day}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowSequenceRedraftModal(false)}>
+                  <Ionicons name="close" size={24} color="#666" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Customer info */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+                  <View style={styles.coldAvatar}>
+                    <Text style={styles.coldAvatarText}>
+                      {(sequenceRedraftFollowup?.customer_name || '?').charAt(0)}
+                    </Text>
+                  </View>
+                  <View>
+                    <Text style={styles.coldCustomerName}>{sequenceRedraftFollowup?.customer_name}</Text>
+                    <Text style={styles.coldCustomerPhone}>{sequenceRedraftFollowup?.customer_phone}</Text>
+                  </View>
+                </View>
+
+                {/* Editable draft */}
+                <Text style={styles.inputLabel}>Draft Message (edit freely):</Text>
+                <TextInput
+                  style={[styles.directionInput, { minHeight: 100 }]}
+                  value={sequenceRedraftMessage}
+                  onChangeText={setSequenceRedraftMessage}
+                  multiline
+                  placeholderTextColor="#666"
+                />
+
+                {/* Direction input */}
+                <Text style={[styles.inputLabel, { marginTop: 14 }]}>Direction for AI (optional):</Text>
+                <TextInput
+                  style={styles.directionInput}
+                  value={sequenceRedraftDirection}
+                  onChangeText={setSequenceRedraftDirection}
+                  placeholder="e.g., Be more formal, mention the discount, ask about their order..."
+                  placeholderTextColor="#666"
+                  multiline
+                />
+
+                {/* Redraft button */}
+                <TouchableOpacity
+                  style={[styles.regenerateButton, redraftLoading && { opacity: 0.6 }]}
+                  onPress={handleSequenceRedraft}
+                  disabled={redraftLoading}
+                >
+                  {redraftLoading ? (
+                    <ActivityIndicator size="small" color="#A78BFA" />
+                  ) : (
+                    <Ionicons name="sparkles" size={18} color="#A78BFA" />
+                  )}
+                  <Text style={[styles.regenerateButtonText, { color: '#A78BFA' }]}>
+                    {redraftLoading ? 'Redrafting...' : 'Redraft with AI'}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Send button */}
+                <TouchableOpacity
+                  style={[styles.whatsappSendButton, { marginTop: 12 }]}
+                  onPress={handleSequenceSend}
+                >
+                  <Ionicons name="logo-whatsapp" size={22} color="#FFFFFF" />
+                  <Text style={styles.whatsappSendText}>Send via WhatsApp</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
