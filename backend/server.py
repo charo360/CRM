@@ -8422,14 +8422,13 @@ async def generate_ai_description(
         system_prompt = "You are a professional marketing copywriter. Write compelling, accurate descriptions that help customers understand the value and make informed decisions. Keep descriptions under 200 words and focus on benefits."
     
     try:
+        # Build the prompt as a string for the AI service
+        full_prompt = f"{system_prompt}\n\n{user_prompt}"
+        
         # Use the existing AI service with standard model
         response = await drafter._call_llm(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            model_pref="standard",
-            max_tokens=200
+            prompt=full_prompt,
+            model_pref="standard"
         )
         
         description = response.strip()
@@ -8440,7 +8439,9 @@ async def generate_ai_description(
         }
     except Exception as e:
         print(f"AI description generation error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate description. Please try again.")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate description: {str(e)}")
 
 class SendCatalogRequest(BaseModel):
     customer_id: str
