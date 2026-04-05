@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient, bookingsAPI, productsAPI } from '../../context/api';
 import { useBusiness } from '../../context/BusinessContext';
 
@@ -42,6 +43,8 @@ interface Booking {
   checkin_date?: string;
   checkout_date?: string;
   nights?: number;
+  capacity?: number;
+  enrolled_count?: number;
   addons?: BookingAddon[];
   total_price?: number;
   status: 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'no_show';
@@ -159,6 +162,16 @@ function BookingCard({ booking, onPress }: { booking: Booking; onPress: () => vo
             </>
           )}
         </View>
+        {booking.staff_name && (
+          <Text style={styles.addonsText} numberOfLines={1}>
+            {booking.staff_name}
+          </Text>
+        )}
+        {booking.capacity != null && (
+          <Text style={styles.addonsText} numberOfLines={1}>
+            {booking.enrolled_count ?? 0}/{booking.capacity} enrolled
+          </Text>
+        )}
         {booking.addons && booking.addons.length > 0 && (
           <Text style={styles.addonsText} numberOfLines={1}>
             +{booking.addons.map(a => a.name).join(', ')}
@@ -204,9 +217,16 @@ export default function BookingsScreen() {
     checkin_date: '',
     checkout_date: '',
     time: '09:00',
+    staff_name: '',
+    capacity: '',
     notes: '',
   });
   const [saving, setSaving] = useState(false);
+
+  // Date picker state
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [activeDateField, setActiveDateField] = useState<'date' | 'checkin_date' | 'checkout_date'>('date');
+  const [tempDate, setTempDate] = useState(new Date());
 
   // Detail modal
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
@@ -299,6 +319,8 @@ export default function BookingsScreen() {
           checkin_date: newBooking.checkin_date,
           checkout_date: newBooking.checkout_date,
         }),
+        ...(newBooking.staff_name.trim() && { staff_name: newBooking.staff_name.trim() }),
+        ...(newBooking.capacity.trim() && { capacity: parseInt(newBooking.capacity, 10) }),
       };
       if (isWalkInCustomer) {
         payload.customer_name = 'Walk-in Customer';
@@ -307,7 +329,7 @@ export default function BookingsScreen() {
       }
       await bookingsAPI.createBooking(payload);
       setShowNewModal(false);
-      setNewBooking({ customer_id: '', customer_name: '', service_id: '', service_name: '', date: formatDate(new Date()), checkin_date: '', checkout_date: '', time: '09:00', notes: '' });
+      setNewBooking({ customer_id: '', customer_name: '', service_id: '', service_name: '', date: formatDate(new Date()), checkin_date: '', checkout_date: '', time: '09:00', staff_name: '', capacity: '', notes: '' });
       setSelectedCustomer(null);
       setIsWalkInCustomer(false);
       setCustomerSearchQuery('');
@@ -563,33 +585,56 @@ export default function BookingsScreen() {
               <>
                 {/* Rental: check-in / check-out date range */}
                 <Text style={styles.fieldLabel}>Check-in Date *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#475569"
-                  value={newBooking.checkin_date}
-                  onChangeText={text => setNewBooking(prev => ({ ...prev, checkin_date: text, date: text }))}
-                />
+                <TouchableOpacity
+                  style={styles.dateButton}
+                  onPress={() => {
+                    setActiveDateField('checkin_date');
+                    setTempDate(newBooking.checkin_date ? new Date(newBooking.checkin_date) : new Date());
+                    setShowDatePicker(true);
+                  }}
+                >
+                  <Ionicons name="calendar-outline" size={18} color="#25D366" />
+                  <Text style={[styles.dateButtonText, !newBooking.checkin_date && styles.dateButtonPlaceholder]}>
+                    {newBooking.checkin_date ? formatDisplayDate(newBooking.checkin_date) : 'Select check-in date'}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color="#475569" />
+                </TouchableOpacity>
+
                 <Text style={styles.fieldLabel}>Check-out Date *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#475569"
-                  value={newBooking.checkout_date}
-                  onChangeText={text => setNewBooking(prev => ({ ...prev, checkout_date: text }))}
-                />
+                <TouchableOpacity
+                  style={styles.dateButton}
+                  onPress={() => {
+                    setActiveDateField('checkout_date');
+                    setTempDate(newBooking.checkout_date ? new Date(newBooking.checkout_date) : new Date());
+                    setShowDatePicker(true);
+                  }}
+                >
+                  <Ionicons name="calendar-outline" size={18} color="#25D366" />
+                  <Text style={[styles.dateButtonText, !newBooking.checkout_date && styles.dateButtonPlaceholder]}>
+                    {newBooking.checkout_date ? formatDisplayDate(newBooking.checkout_date) : 'Select check-out date'}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color="#475569" />
+                </TouchableOpacity>
               </>
             ) : (
               <>
                 {/* Appointment / Class: date + time slots */}
                 <Text style={styles.fieldLabel}>Date *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#475569"
-                  value={newBooking.date}
-                  onChangeText={text => setNewBooking(prev => ({ ...prev, date: text }))}
-                />
+                <TouchableOpacity
+                  style={styles.dateButton}
+                  onPress={() => {
+                    setActiveDateField('date');
+                    setTempDate(newBooking.date ? new Date(newBooking.date) : new Date());
+                    setShowDatePicker(true);
+                  }}
+                >
+                  <Ionicons name="calendar-outline" size={18} color="#25D366" />
+                  <Text style={styles.dateButtonText}>
+                    {newBooking.date ? formatDisplayDate(newBooking.date) : 'Select date'}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color="#475569" />
+                </TouchableOpacity>
+
                 <Text style={styles.fieldLabel}>Time *</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
                   {['08:00','09:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00'].map(t => (
@@ -602,6 +647,35 @@ export default function BookingsScreen() {
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
+              </>
+            )}
+
+            {/* Staff picker — shown for appointment/service businesses */}
+            {config.staffLabel !== '' && (
+              <>
+                <Text style={styles.fieldLabel}>{config.staffLabel} (Optional)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder={`Enter ${config.staffLabel} name`}
+                  placeholderTextColor="#475569"
+                  value={newBooking.staff_name}
+                  onChangeText={text => setNewBooking(prev => ({ ...prev, staff_name: text }))}
+                />
+              </>
+            )}
+
+            {/* Capacity — shown for class bookings */}
+            {config.bookingMode === 'class' && (
+              <>
+                <Text style={styles.fieldLabel}>Max Capacity (Optional)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 20"
+                  placeholderTextColor="#475569"
+                  value={newBooking.capacity}
+                  onChangeText={text => setNewBooking(prev => ({ ...prev, capacity: text.replace(/[^0-9]/g, '') }))}
+                  keyboardType="number-pad"
+                />
               </>
             )}
 
@@ -618,6 +692,68 @@ export default function BookingsScreen() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      {/* ── Date Picker ──────────────────────────────────────────────── */}
+      {Platform.OS === 'android' && showDatePicker && (
+        <DateTimePicker
+          value={tempDate}
+          mode="date"
+          display="default"
+          minimumDate={activeDateField === 'checkout_date' && newBooking.checkin_date
+            ? new Date(newBooking.checkin_date)
+            : undefined}
+          onChange={(event, selected) => {
+            setShowDatePicker(false);
+            if (event.type === 'set' && selected) {
+              const str = formatDate(selected);
+              if (activeDateField === 'checkin_date') {
+                setNewBooking(prev => ({ ...prev, checkin_date: str, date: str }));
+              } else if (activeDateField === 'checkout_date') {
+                setNewBooking(prev => ({ ...prev, checkout_date: str }));
+              } else {
+                setNewBooking(prev => ({ ...prev, date: str }));
+              }
+            }
+          }}
+        />
+      )}
+      {Platform.OS === 'ios' && (
+        <Modal visible={showDatePicker} transparent animationType="slide">
+          <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+            <View style={{ backgroundColor: '#0F1E32', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+                <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                  <Text style={{ color: '#94A3B8', fontSize: 16 }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => {
+                  const str = formatDate(tempDate);
+                  if (activeDateField === 'checkin_date') {
+                    setNewBooking(prev => ({ ...prev, checkin_date: str, date: str }));
+                  } else if (activeDateField === 'checkout_date') {
+                    setNewBooking(prev => ({ ...prev, checkout_date: str }));
+                  } else {
+                    setNewBooking(prev => ({ ...prev, date: str }));
+                  }
+                  setShowDatePicker(false);
+                }}>
+                  <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '600' }}>Done</Text>
+                </TouchableOpacity>
+              </View>
+              <DateTimePicker
+                value={tempDate}
+                mode="date"
+                display="spinner"
+                minimumDate={activeDateField === 'checkout_date' && newBooking.checkin_date
+                  ? new Date(newBooking.checkin_date)
+                  : undefined}
+                onChange={(_, selected) => { if (selected) setTempDate(selected); }}
+                style={{ backgroundColor: '#0F1E32' }}
+                textColor="#E2E8F0"
+              />
+            </View>
+          </View>
+        </Modal>
+      )}
 
       {/* ── Customer Select Modal ─────────────────────────────────────── */}
       <Modal
@@ -738,6 +874,9 @@ export default function BookingsScreen() {
                 <DetailRow icon="cut-outline" label="Service" value={selectedBooking.service_name} />
                 {selectedBooking.staff_name && (
                   <DetailRow icon="people-outline" label="Staff" value={selectedBooking.staff_name} />
+                )}
+                {selectedBooking.capacity != null && (
+                  <DetailRow icon="people-circle-outline" label="Capacity" value={`${selectedBooking.enrolled_count ?? 0} / ${selectedBooking.capacity}`} />
                 )}
               </View>
 
@@ -1034,4 +1173,18 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#1A2942', backgroundColor: '#0F1E35',
   },
   payOptionText: { color: '#64748B', fontSize: 13, fontWeight: '500' },
+  dateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E2D45',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2A3F5F',
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    marginBottom: 16,
+    gap: 10,
+  },
+  dateButtonText: { flex: 1, color: '#E2E8F0', fontSize: 15 },
+  dateButtonPlaceholder: { color: '#475569' },
 });

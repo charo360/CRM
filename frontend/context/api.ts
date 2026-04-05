@@ -586,6 +586,51 @@ export const teamAPI = {
   },
 };
 
+// ============ BOOKINGS ============
+export const bookingsAPI = {
+  getBookings: async (status?: string) => {
+    const response = await apiClient.get('/bookings', { params: status ? { status } : undefined });
+    return response.data;
+  },
+
+  createBooking: async (data: {
+    customer_id?: string;
+    customer_name?: string;
+    service_id: string;
+    date: string;
+    time?: string;
+    checkin_date?: string;
+    checkout_date?: string;
+    staff_name?: string;
+    capacity?: number;
+    notes?: string;
+    price?: number;
+  }) => {
+    const response = await apiClient.post('/bookings', data);
+    return response.data;
+  },
+
+  updateBooking: async (bookingId: string, data: {
+    status?: string;
+    payment_status?: string;
+    staff_name?: string;
+    notes?: string;
+  }) => {
+    const response = await apiClient.put(`/bookings/${bookingId}`, data);
+    return response.data;
+  },
+
+  deleteBooking: async (bookingId: string) => {
+    const response = await apiClient.delete(`/bookings/${bookingId}`);
+    return response.data;
+  },
+
+  sendReminder: async (bookingId: string) => {
+    const response = await apiClient.post(`/bookings/${bookingId}/reminder`);
+    return response.data;
+  },
+};
+
 // ============ ACCOUNT MANAGEMENT ============
 export const accountAPI = {
   /**

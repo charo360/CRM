@@ -757,6 +757,61 @@ class ExpenseResponse(BaseModel):
     description: Optional[str] = None
     created_at: datetime
 
+# Booking Models
+class BookingAddon(BaseModel):
+    name: str
+    price: float = 0
+
+class BookingCreate(BaseModel):
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None  # for walk-in
+    service_id: str
+    date: str  # YYYY-MM-DD
+    time: str = "09:00"  # HH:MM
+    checkin_date: Optional[str] = None
+    checkout_date: Optional[str] = None
+    staff_name: Optional[str] = None
+    capacity: Optional[int] = None
+    notes: Optional[str] = None
+    price: float = 0
+    addons: Optional[List[BookingAddon]] = None
+
+class BookingUpdate(BaseModel):
+    status: Optional[str] = None
+    payment_status: Optional[str] = None
+    staff_name: Optional[str] = None
+    notes: Optional[str] = None
+
+class BookingResponse(BaseModel):
+    id: str
+    booking_number: str
+    user_id: str
+    customer_id: Optional[str] = None
+    customer_name: str
+    customer_phone: Optional[str] = None
+    service_id: str
+    service_name: str
+    service_category: Optional[str] = None
+    staff_name: Optional[str] = None
+    date: str
+    time: str
+    end_time: Optional[str] = None
+    duration: Optional[int] = None
+    checkin_date: Optional[str] = None
+    checkout_date: Optional[str] = None
+    nights: Optional[int] = None
+    capacity: Optional[int] = None
+    enrolled_count: Optional[int] = None
+    addons: Optional[List[BookingAddon]] = None
+    total_price: Optional[float] = None
+    status: str
+    payment_status: str
+    price: float
+    notes: Optional[str] = None
+    source: Optional[str] = None
+    last_reminder_at: Optional[str] = None
+    created_at: str
+
 # Broadcast Template Models
 class BroadcastTemplateCreate(BaseModel):
     name: str
@@ -6262,6 +6317,7 @@ async def evolution_webhook(request: Request):
                 _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
 
                 currency = _user_settings.get("currency", "USD")
+                _business_type = _user_settings.get("business_type") or user.get("business_type", "")
                 agent_context = {
                     "currency": currency,
                     "customer_id": customer_id,
@@ -6271,6 +6327,7 @@ async def evolution_webhook(request: Request):
                     "business_knowledge": _business_knowledge,
                     "business_name": user.get("business_name", ""),
                     "ai_model": _user_settings.get("ai_model", "standard"),
+                    "business_type": _business_type,
                 }
 
                 agent_result = await router.route_and_process(
@@ -8755,6 +8812,200 @@ async def startup_tasks():
         logging.error(f"Failed to start digest scheduler: {e}")
 
 logger = logging.getLogger(__name__)
+
+# ============ BOOKINGS ENDPOINTS ============
+
+def _generate_booking_number() -> str:
+    import random, string
+    return "BK-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+def _booking_to_response(doc: dict) -> dict:
+    created = doc.get("created_at", datetime.utcnow())
+    if isinstance(created, datetime):
+        created_str = created.isoformat()
+    else:
+        created_str = str(created)
+    return {
+        "id": str(doc.get("_id", "")),
+        "booking_number": doc.get("booking_number", ""),
+        "user_id": str(doc.get("user_id", "")),
+        "customer_id": doc.get("customer_id"),
+        "customer_name": doc.get("customer_name", ""),
+        "customer_phone": doc.get("customer_phone"),
+        "service_id": doc.get("service_id", ""),
+        "service_name": doc.get("service_name", ""),
+        "service_category": doc.get("service_category"),
+        "staff_name": doc.get("staff_name"),
+        "date": doc.get("date", ""),
+        "time": doc.get("time", "09:00"),
+        "end_time": doc.get("end_time"),
+        "duration": doc.get("duration"),
+        "checkin_date": doc.get("checkin_date"),
+        "checkout_date": doc.get("checkout_date"),
+        "nights": doc.get("nights"),
+        "capacity": doc.get("capacity"),
+        "enrolled_count": doc.get("enrolled_count", 0),
+        "addons": doc.get("addons", []),
+        "total_price": doc.get("total_price"),
+        "status": doc.get("status", "pending"),
+        "payment_status": doc.get("payment_status", "unpaid"),
+        "price": doc.get("price", 0),
+        "notes": doc.get("notes"),
+        "source": doc.get("source"),
+        "last_reminder_at": doc.get("last_reminder_at"),
+        "created_at": created_str,
+    }
+
+@api_router.post("/bookings", response_model=BookingResponse)
+async def create_booking(booking: BookingCreate, user=Depends(get_current_user)):
+    """Create a new booking/appointment"""
+    business_id = user.get("business_id", user["_id"])
+
+    # Resolve customer info
+    customer_name = "Walk-in Customer"
+    customer_phone = None
+    if booking.customer_id and booking.customer_id != "walk-in":
+        cust = await db.customers.find_one({"_id": booking.customer_id, "user_id": business_id})
+        if cust:
+            customer_name = cust.get("name", "Unknown")
+            customer_phone = cust.get("phone_number")
+    elif booking.customer_name:
+        customer_name = booking.customer_name
+
+    # Resolve service info
+    service_name = ""
+    service_category = None
+    duration = None
+    svc = await db.products.find_one({"_id": booking.service_id, "user_id": business_id})
+    if svc:
+        service_name = svc.get("name", "")
+        service_category = svc.get("offering_type") or svc.get("category")
+        duration = svc.get("duration")
+
+    # Calculate end time from duration
+    end_time = None
+    if duration and booking.time:
+        try:
+            h, m = map(int, booking.time.split(":"))
+            total_m = h * 60 + m + int(duration)
+            end_time = f"{total_m // 60:02d}:{total_m % 60:02d}"
+        except Exception:
+            pass
+
+    # Calculate nights for rentals
+    nights = None
+    if booking.checkin_date and booking.checkout_date:
+        try:
+            from datetime import date as _date
+            ci = _date.fromisoformat(booking.checkin_date)
+            co = _date.fromisoformat(booking.checkout_date)
+            nights = max((co - ci).days, 0)
+        except Exception:
+            pass
+
+    booking_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    doc = {
+        "_id": booking_id,
+        "booking_number": _generate_booking_number(),
+        "user_id": business_id,
+        "customer_id": booking.customer_id if booking.customer_id and booking.customer_id != "walk-in" else None,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "service_id": booking.service_id,
+        "service_name": service_name,
+        "service_category": service_category,
+        "staff_name": booking.staff_name,
+        "date": booking.date or (booking.checkin_date or ""),
+        "time": booking.time or "09:00",
+        "end_time": end_time,
+        "duration": duration,
+        "checkin_date": booking.checkin_date,
+        "checkout_date": booking.checkout_date,
+        "nights": nights,
+        "capacity": booking.capacity,
+        "enrolled_count": 1 if booking.customer_id else 0,
+        "addons": [a.dict() for a in booking.addons] if booking.addons else [],
+        "total_price": booking.price,
+        "status": "pending",
+        "payment_status": "unpaid",
+        "price": booking.price,
+        "notes": booking.notes,
+        "source": "manual",
+        "created_at": now,
+    }
+    await db.bookings.insert_one(doc)
+    return _booking_to_response(doc)
+
+@api_router.get("/bookings", response_model=List[BookingResponse])
+async def get_bookings(
+    status: Optional[str] = None,
+    limit: int = Query(200, le=500),
+    user=Depends(get_current_user)
+):
+    """Get all bookings for the authenticated business"""
+    business_id = user.get("business_id", user["_id"])
+    query: dict = {"user_id": business_id}
+    if status:
+        query["status"] = status
+    docs = await db.bookings.find(query).sort("created_at", -1).limit(limit).to_list(limit)
+    return [_booking_to_response(d) for d in docs]
+
+@api_router.put("/bookings/{booking_id}", response_model=BookingResponse)
+async def update_booking(booking_id: str, update: BookingUpdate, user=Depends(get_current_user)):
+    """Update booking status, payment status, or staff"""
+    business_id = user.get("business_id", user["_id"])
+    doc = await db.bookings.find_one({"_id": booking_id, "user_id": business_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    updates = {k: v for k, v in update.dict().items() if v is not None}
+    if updates:
+        await db.bookings.update_one({"_id": booking_id}, {"$set": updates})
+        doc.update(updates)
+    return _booking_to_response(doc)
+
+@api_router.delete("/bookings/{booking_id}")
+async def delete_booking(booking_id: str, user=Depends(get_current_user)):
+    """Delete a booking"""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.bookings.delete_one({"_id": booking_id, "user_id": business_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return {"success": True}
+
+@api_router.post("/bookings/{booking_id}/reminder")
+async def send_booking_reminder(booking_id: str, user=Depends(get_current_user)):
+    """Send WhatsApp reminder for a booking"""
+    business_id = user.get("business_id", user["_id"])
+    doc = await db.bookings.find_one({"_id": booking_id, "user_id": business_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    phone = doc.get("customer_phone")
+    if not phone:
+        raise HTTPException(status_code=400, detail="No phone number for customer")
+    # Format reminder message
+    date_str = doc.get("checkin_date") or doc.get("date", "")
+    time_str = doc.get("time", "")
+    checkout_str = doc.get("checkout_date", "")
+    if checkout_str:
+        when_str = f"Check-in: {date_str}, Check-out: {checkout_str}"
+    elif time_str:
+        when_str = f"{date_str} at {time_str}"
+    else:
+        when_str = date_str
+    message = (
+        f"Hi {doc.get('customer_name', 'there')}! "
+        f"Reminder for your {doc.get('service_name', 'appointment')}: {when_str}. "
+        f"Booking ref: {doc.get('booking_number', '')}. See you soon!"
+    )
+    try:
+        whatsapp_service = get_whatsapp_service(db)
+        await whatsapp_service.send_message(business_id, phone, message)
+        now = datetime.utcnow().isoformat()
+        await db.bookings.update_one({"_id": booking_id}, {"$set": {"last_reminder_at": now}})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send reminder: {str(e)}")
+    return {"success": True, "sent_at": datetime.utcnow().isoformat()}
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
