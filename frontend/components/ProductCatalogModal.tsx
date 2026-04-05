@@ -141,6 +141,10 @@ export default function ProductCatalogModal({
     const isCreator = config.customerLabel === 'Fan'; // Creator detection
     const isRestaurant = catalogLabel === 'Menu';
     const isRental = catalogLabel === 'Listings';
+    const isHealthcare = config.customerLabel === 'Patient';
+    const isFitness = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
+    const isServices = config.customerLabel === 'Client' && config.staffLabel === 'Technician';
+    const isSalon = config.customerLabel === 'Client' && config.staffLabel === 'Stylist';
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
@@ -628,7 +632,11 @@ export default function ProductCatalogModal({
                                     placeholder={
                                         isCreator ? "e.g. Instagram Reel Package" :
                                         isRestaurant ? "e.g. Caesar Salad" :
-                                        isRental ? "e.g. 2BR Apartment" :
+                                        isRental ? "e.g. 2BR Apartment Downtown" :
+                                        isHealthcare ? "e.g. General Consultation" :
+                                        isFitness ? "e.g. Yoga Class" :
+                                        isServices ? "e.g. Computer Repair" :
+                                        isSalon ? "e.g. Haircut & Style" :
                                         "e.g. Chocolate Cake"
                                     }
                                     placeholderTextColor="#555"
@@ -669,6 +677,10 @@ export default function ProductCatalogModal({
                                         isCreator ? "e.g. Instagram Reel, Sponsored Post" :
                                         isRestaurant ? "e.g. Main Course, Appetizers" :
                                         isRental ? "e.g. Apartment, Car, Equipment" :
+                                        isHealthcare ? "e.g. Consultation, Check-up" :
+                                        isFitness ? "e.g. Yoga, Cardio, Strength" :
+                                        isServices ? "e.g. Repair, Installation, Maintenance" :
+                                        isSalon ? "e.g. Hair, Nails, Facial" :
                                         "e.g. Cakes, Electronics, Clothing"
                                     }
                                     placeholderTextColor="#555"
@@ -702,6 +714,10 @@ export default function ProductCatalogModal({
                                         isCreator ? "Describe what brands get with this content package..." :
                                         isRestaurant ? "Describe ingredients, preparation, allergens..." :
                                         isRental ? "Describe amenities, location, terms..." :
+                                        isHealthcare ? "Describe procedure, duration, what to expect..." :
+                                        isFitness ? "Describe class format, intensity, equipment needed..." :
+                                        isServices ? "Describe service scope, timeline, requirements..." :
+                                        isSalon ? "Describe treatment, duration, aftercare..." :
                                         "Describe your product..."
                                     }
                                     placeholderTextColor="#555"
@@ -989,6 +1005,10 @@ export default function ProductCatalogModal({
                                 isCreator ? "Search content packages..." :
                                 isRestaurant ? "Search menu items..." :
                                 isRental ? "Search listings..." :
+                                isHealthcare ? "Search services..." :
+                                isFitness ? "Search classes..." :
+                                isServices ? "Search services..." :
+                                isSalon ? "Search services..." :
                                 "Search products..."
                             }
                             placeholderTextColor="#556"
@@ -1083,6 +1103,8 @@ export default function ProductCatalogModal({
                                 ? 'Add menu items to share with customers and let AI recommend them automatically'
                                 : isRental
                                 ? 'Add listings to share with guests and let AI recommend them automatically'
+                                : isHealthcare || isFitness || isServices || isSalon
+                                ? 'Add services to share with clients and let AI recommend them automatically'
                                 : 'Add products to share with customers and let AI recommend them automatically'
                             }
                         </Text>
