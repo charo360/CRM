@@ -339,21 +339,35 @@ class DailyScheduler:
 
     async def _draft_sequence_message(self, user: dict, customer: dict, day: int) -> str:
         """
-        Draft a follow-up message for the customer.
-        - If no business knowledge is configured, returns a safe generic template (no AI call).
-        - If business knowledge exists, uses AI but with strict no-hallucination rules.
+        Draft a personalised follow-up message using every signal available.
+
+        Intelligence layers (used when available):
+          - Business knowledge (description, products, pricing, offers, delivery, FAQs)
+          - Customer signals: tags (VIP/Returning/New), purchase history, total spent,
+            products viewed, conversation language, personality style, price sensitivity
+          - Conversation context: last message, recent message history
+          - Day-specific goal: day-3 = check-in, day-7 = re-engage
+
+        Falls back to safe generic templates when no business knowledge is configured.
+        Never invents details not explicitly provided.
         """
         customer_name = customer.get("name", "there")
+        customer_id = str(customer.get("_id", ""))
+        customer_phone = customer.get("phone_number", "")
         business_name = user.get("business_name") or user.get("name") or ""
 
-        bk = user.get("business_knowledge", {})
-        business_desc = (bk.get("business_description", "") if isinstance(bk, dict) else "").strip()
-        products = (bk.get("products_services", "") if isinstance(bk, dict) else "").strip()
-        last_message = (customer.get("last_message") or "").strip()
+        # ── Business knowledge ────────────────────────────────────────────
+        bk = user.get("business_knowledge", {}) if isinstance(user.get("business_knowledge"), dict) else {}
+        business_desc   = (bk.get("business_description", "") or "").strip()
+        products        = (bk.get("products_services", "") or "").strip()
+        pricing_info    = (bk.get("pricing_info", "") or "").strip()
+        special_offers  = (bk.get("special_offers", "") or "").strip()
+        delivery_info   = (bk.get("delivery_info", "") or "").strip()
+        faqs            = (bk.get("faqs", "") or "").strip()
 
         has_business_context = bool(business_desc or products)
 
-        # No business knowledge configured — use safe generic templates, no AI
+        # ── Safe generic fallback when no business knowledge is set ───────
         if not has_business_context:
             if day == 3:
                 return (
@@ -366,46 +380,147 @@ class DailyScheduler:
                     f"whenever you're ready. Feel free to reach out!"
                 )
 
-        # Business knowledge exists — call AI with strict constraints
+        # ── Customer signals ──────────────────────────────────────────────
+        tags            = customer.get("tags", [])
+        purchase_count  = int(customer.get("purchase_count", 0) or 0)
+        total_spent     = float(customer.get("total_spent", 0) or 0)
+        last_message    = (customer.get("last_message") or "").strip()
+
+        is_vip          = "VIP" in tags
+        is_returning    = purchase_count > 0 or "Returning" in tags
+        currency        = (user.get("settings") or {}).get("currency", "")
+
+        # ── Conversation state signals (language, personality, etc.) ──────
+        conv_state = {}
         try:
-            context_lines = []
-            if business_name:
-                context_lines.append(f"Business name: {business_name}")
-            if business_desc:
-                context_lines.append(f"What we do: {business_desc}")
-            if products:
-                context_lines.append(f"Products/Services: {products}")
-            if last_message:
-                context_lines.append(f"Customer's last message: {last_message[:200]}")
-            context = "\n".join(context_lines)
+            from agents.conversation_state import load_state
+            conv_state = await load_state(self.db, user["_id"], customer_id)
+        except Exception:
+            pass
 
-            if day == 3:
-                goal = (
-                    "Write a short, warm WhatsApp check-in for a customer who contacted us 3 days ago. "
-                    "Ask if they have any questions and keep it friendly. Max 2 sentences."
-                )
-            else:
-                goal = (
-                    "Write a short, friendly WhatsApp follow-up for a customer who contacted us 7 days ago. "
-                    "Gently let them know we're still available. Max 2 sentences."
-                )
+        preferred_language  = conv_state.get("preferred_language") or ""
+        personality         = conv_state.get("personality") or ""       # direct|chatty|formal
+        price_sensitivity   = conv_state.get("price_sensitivity") or "" # low|medium|high
+        products_viewed     = conv_state.get("products_viewed", [])
 
-            prompt = f"""You are writing a WhatsApp follow-up message on behalf of a business.
+        # Detect language from phone if not stored
+        if not preferred_language and customer_phone:
+            try:
+                from ai_service import detect_language_from_phone
+                lang_info = detect_language_from_phone(customer_phone)
+                langs = lang_info.get("languages", [])
+                preferred_language = langs[0] if langs else ""
+            except Exception:
+                pass
 
-{context}
+        # ── Recent conversation history (last 6 messages) ─────────────────
+        recent_history = ""
+        try:
+            msgs = await self.db.messages.find({
+                "user_id": user["_id"],
+                "customer_id": customer_id,
+            }).sort("created_at", -1).limit(6).to_list(6)
+            if msgs:
+                lines = [
+                    f"{'Customer' if m.get('direction') == 'incoming' else 'Business'}: {m.get('content', '')[:120]}"
+                    for m in reversed(msgs)
+                    if m.get("content", "").strip()
+                ]
+                recent_history = "\n".join(lines)
+        except Exception:
+            pass
 
-Customer name: {customer_name}
+        # ── Build the business context block ─────────────────────────────
+        ctx = []
+        if business_name:
+            ctx.append(f"Business: {business_name}")
+        if business_desc:
+            ctx.append(f"What we do: {business_desc}")
+        if products:
+            ctx.append(f"Products/Services: {products}")
+        if pricing_info:
+            ctx.append(f"Pricing: {pricing_info}")
+        if special_offers:
+            ctx.append(f"Current offers: {special_offers}")
+        if delivery_info:
+            ctx.append(f"Delivery info: {delivery_info}")
+        if faqs:
+            ctx.append(f"FAQs: {faqs[:300]}")
+        business_context = "\n".join(ctx)
 
-Task: {goal}
+        # ── Build the customer profile block ─────────────────────────────
+        profile = []
+        profile.append(f"Customer name: {customer_name}")
+        if is_vip:
+            profile.append("Customer status: VIP — high-value, treat with extra warmth")
+        elif is_returning:
+            spend_str = f"{currency} {total_spent:,.0f}".strip() if total_spent else ""
+            profile.append(
+                f"Customer status: Returning customer "
+                f"({purchase_count} order{'s' if purchase_count != 1 else ''}"
+                f"{', total spent ' + spend_str if spend_str else ''})"
+            )
+        else:
+            profile.append("Customer status: New — first interaction")
+        if products_viewed:
+            profile.append(f"Products they showed interest in: {', '.join(products_viewed[:4])}")
+        if price_sensitivity == "high":
+            profile.append("Price sensitivity: high — they care about value/deals")
+        if personality == "direct":
+            profile.append("Communication style: direct and brief — skip pleasantries")
+        elif personality == "chatty":
+            profile.append("Communication style: chatty — enjoys friendly conversation")
+        elif personality == "formal":
+            profile.append("Communication style: formal — keep professional tone")
+        customer_profile = "\n".join(profile)
 
-STRICT RULES — failure to follow these ruins the message:
-- ONLY use the business details listed above. NEVER invent products, prices, offers, or services.
-- If no products/offers are listed above, do NOT mention any products or offers.
-- Do NOT make up discounts, promotions, or deals unless explicitly listed above.
-- Keep it short, human, and WhatsApp-friendly.
+        # ── Day-specific goal ─────────────────────────────────────────────
+        if day == 3:
+            goal = (
+                "This customer contacted us 3 days ago but hasn't purchased yet. "
+                "Write a warm, natural check-in: acknowledge what they were interested in (if known), "
+                "ask if they have any questions, and keep the door open. "
+                "Do NOT push a hard sell."
+            )
+        else:
+            goal = (
+                "This customer contacted us 7 days ago but hasn't purchased yet. "
+                "Write a gentle re-engagement message: remind them we're available, "
+                "reference what they were interested in (if known), "
+                "and if there's a current offer listed above, you MAY mention it naturally. "
+                "Keep it short and friendly — not pushy."
+            )
 
-Output only the message text. No explanation."""
+        # ── Language instruction ──────────────────────────────────────────
+        lang_instruction = f"Write in {preferred_language}." if preferred_language else "Write in English."
 
+        prompt = f"""You are writing a WhatsApp follow-up message on behalf of a business owner.
+
+## Business Context
+{business_context}
+
+## Customer Profile
+{customer_profile}
+
+## Recent Conversation
+{recent_history if recent_history else "(no prior messages on record)"}
+
+## Task
+{goal}
+
+## Language
+{lang_instruction}
+
+## STRICT RULES
+- ONLY reference products, prices, offers, or details explicitly listed in Business Context above.
+- NEVER invent products, prices, discounts, or promotions not listed above.
+- Max 2-3 sentences. WhatsApp-friendly tone — no formal letter style.
+- Use the customer's name naturally (once).
+- No markdown, no asterisks, no bullet points.
+
+Output only the message text. Nothing else."""
+
+        try:
             from ai_service import get_drafter
             ai = get_drafter()
             reply = await ai._call_llm(prompt, model_pref="standard")
@@ -413,7 +528,6 @@ Output only the message text. No explanation."""
 
         except Exception as e:
             logger.error(f"[AutoSequence] AI draft failed: {e}")
-            # Safe fallback — no invented details
             if day == 3:
                 return (
                     f"Hi {customer_name}! 👋 Just checking in — did you have any questions "
