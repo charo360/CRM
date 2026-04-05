@@ -37,7 +37,7 @@ export default function TabsLayout() {
   const [dailyPulseEnabled, setDailyPulseEnabled] = useState(false);
 
   const { user } = useAuth();
-  const { config } = useBusiness();
+  const { config, businessType } = useBusiness();
   const notificationListener = useRef<any>(null);
   const responseListener = useRef<any>(null);
 
@@ -165,6 +165,7 @@ export default function TabsLayout() {
   return (
     <>
       <Tabs
+        key={businessType || 'default'}
         screenOptions={{
           headerShown: true,
           headerStyle: {
