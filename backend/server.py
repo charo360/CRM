@@ -1627,6 +1627,7 @@ async def get_settings(user = Depends(get_current_user)):
         "country_code": user.get("country_code", s.get("country_code", "")),
         "ai_model": s.get("ai_model", "standard"),
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
+        "business_type": s.get("business_type") or user.get("business_type", ""),
     }
 
 @api_router.put("/settings")
