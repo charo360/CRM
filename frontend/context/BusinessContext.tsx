@@ -88,12 +88,12 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     showCheckinCheckout: false,
   },
   creator: {
-    catalogLabel: 'Products', catalogItemLabel: 'Product',
+    catalogLabel: 'Content', catalogItemLabel: 'Item',
     showDuration: false, showStock: false,
     bookingsTabVisible: false, salesTabLabel: 'Sales',
     dashboardMode: 'sales', primaryColor: '#25D366',
     bookingMode: 'none', bookingLabel: 'Order',
-    staffLabel: '', customerLabel: 'Customer',
+    staffLabel: '', customerLabel: 'Fan',
     showCheckinCheckout: false,
   },
   rental: {

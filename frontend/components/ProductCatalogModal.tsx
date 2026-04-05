@@ -24,6 +24,38 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_GAP = 10;
 const CARD_WIDTH = (SCREEN_WIDTH - 48 - CARD_GAP) / 2;
 
+// Creator-specific categories for content catalog
+const CREATOR_CATEGORIES = [
+    'Sponsored Post',
+    'Instagram Reel', 
+    'Instagram Story',
+    'TikTok Video',
+    'YouTube Video',
+    'Brand Ambassador',
+    'Product Review',
+    'Shoutout',
+    'Photo Shoot',
+    'Video Testimonial',
+    'Live Stream',
+    'Podcast Mention',
+    'Blog Post',
+    'Other'
+];
+
+// Default categories for other business types
+const DEFAULT_CATEGORIES = [
+    'Electronics',
+    'Clothing', 
+    'Food & Beverages',
+    'Home & Garden',
+    'Beauty & Health',
+    'Sports & Outdoors',
+    'Books & Media',
+    'Toys & Games',
+    'Automotive',
+    'Other'
+];
+
 interface Product {
     id: string;
     name: string;
@@ -77,9 +109,16 @@ export default function ProductCatalogModal({
     const { config } = useBusiness();
     const catalogLabel = config.catalogLabel;
     const itemLabel = config.catalogItemLabel;
+    const isCreator = config.bookingMode === 'none' && config.customerLabel === 'Fan'; // Creator detection
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
+
+    // Get appropriate categories based on business type
+    const getAppropriateCategories = () => {
+        if (isCreator) return CREATOR_CATEGORIES;
+        return DEFAULT_CATEGORIES;
+    };
 
     useEffect(() => {
         const loadCurrency = async () => {
@@ -553,7 +592,7 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editName}
                                     onChangeText={setEditName}
-                                    placeholder="e.g. Chocolate Cake"
+                                    placeholder={isCreator ? "e.g. Instagram Reel Package" : "e.g. Chocolate Cake"}
                                     placeholderTextColor="#555"
                                 />
                             </View>
@@ -588,9 +627,26 @@ export default function ProductCatalogModal({
                                     style={styles.formInput}
                                     value={editCategory}
                                     onChangeText={setEditCategory}
-                                    placeholder="e.g. Cakes, Electronics, Clothing"
+                                    placeholder={isCreator ? "e.g. Instagram Reel, Sponsored Post" : "e.g. Cakes, Electronics, Clothing"}
                                     placeholderTextColor="#555"
                                 />
+                                {/* Category suggestions for creators */}
+                                {isCreator && (
+                                    <View style={styles.categorySuggestions}>
+                                        <Text style={styles.suggestionsLabel}>Popular categories:</Text>
+                                        <View style={styles.suggestionChips}>
+                                            {CREATOR_CATEGORIES.slice(0, 6).map(cat => (
+                                                <TouchableOpacity
+                                                    key={cat}
+                                                    style={styles.suggestionChip}
+                                                    onPress={() => setEditCategory(cat)}
+                                                >
+                                                    <Text style={styles.suggestionChipText}>{cat}</Text>
+                                                </TouchableOpacity>
+                                            ))}
+                                        </View>
+                                    </View>
+                                )}
                             </View>
 
                             <View style={styles.formGroup}>
@@ -599,7 +655,7 @@ export default function ProductCatalogModal({
                                     style={[styles.formInput, { height: 80, textAlignVertical: 'top' }]}
                                     value={editDescription}
                                     onChangeText={setEditDescription}
-                                    placeholder="Describe your product..."
+                                    placeholder={isCreator ? "Describe what brands get with this content package..." : "Describe your product..."}
                                     placeholderTextColor="#555"
                                     multiline
                                     numberOfLines={3}
@@ -873,7 +929,7 @@ export default function ProductCatalogModal({
                         <Ionicons name="search-outline" size={18} color="#8899AA" />
                         <TextInput
                             style={styles.searchInput}
-                            placeholder="Search products..."
+                            placeholder={isCreator ? "Search content packages..." : "Search products..."}
                             placeholderTextColor="#556"
                             value={searchQuery}
                             onChangeText={setSearchQuery}
@@ -1630,5 +1686,33 @@ const styles = StyleSheet.create({
         right: -6,
         backgroundColor: '#0D1B2A',
         borderRadius: 10,
+    },
+    // Category Suggestions for Creators
+    categorySuggestions: {
+        marginTop: 8,
+    },
+    suggestionsLabel: {
+        fontSize: 12,
+        color: '#8899AA',
+        marginBottom: 8,
+        fontWeight: '500',
+    },
+    suggestionChips: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    suggestionChip: {
+        backgroundColor: '#1A2942',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: '#334455',
+    },
+    suggestionChipText: {
+        fontSize: 12,
+        color: '#CCD6E0',
+        fontWeight: '500',
     },
 });
