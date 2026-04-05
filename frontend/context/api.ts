@@ -45,6 +45,45 @@ const uploadFetch = async (path: string, formData: FormData, timeoutMs = 30000) 
   }
 };
 
+// Human-readable description for queued mutations
+function _getQueueDescription(method: string, url: string, data?: any): string {
+  const name = data?.customer_name || data?.name || data?.product_name || data?.product || '';
+  const label = name ? ` "${name}"` : '';
+  if (url.includes('/orders')) {
+    if (method === 'post') return `New order${label} saved offline`;
+    if (method === 'delete') return `Order deletion saved offline`;
+    return `Order update saved offline`;
+  }
+  if (url.includes('/sales')) {
+    if (method === 'post') return `New sale${label} saved offline`;
+    if (method === 'delete') return `Sale deletion saved offline`;
+    return `Sale update saved offline`;
+  }
+  if (url.includes('/bookings')) {
+    if (method === 'post') return `New booking${label} saved offline`;
+    if (method === 'delete') return `Booking cancellation saved offline`;
+    return `Booking update saved offline`;
+  }
+  if (url.includes('/customers')) {
+    if (method === 'post') return `New customer${label} saved offline`;
+    if (method === 'delete') return `Customer deletion saved offline`;
+    return `Customer update${label} saved offline`;
+  }
+  if (url.includes('/expenses')) {
+    if (method === 'post') return `New expense saved offline`;
+    return `Expense update saved offline`;
+  }
+  if (url.includes('/products')) {
+    if (method === 'post') return `New product${label} saved offline`;
+    if (method === 'delete') return `Product deletion saved offline`;
+    return `Product update${label} saved offline`;
+  }
+  if (url.includes('/settings') || url.includes('/business-knowledge')) {
+    return `Settings update saved offline`;
+  }
+  return `${method.toUpperCase()} ${url} (offline)`;
+}
+
 // URL → cache key mapping for GET responses
 const URL_CACHE_MAP: Record<string, string> = {
   '/customers': 'customers',
@@ -121,19 +160,31 @@ apiClient.interceptors.response.use(
       }
     }
 
-    // On network error for mutations: enqueue for later sync
+    // On network error for mutations: enqueue for later sync + return optimistic success
     if (isNetworkError && method && ['post', 'put', 'patch', 'delete'].includes(method)) {
       // Skip auth, AI, and file-upload endpoints from queuing
       const skipPatterns = ['/auth/', '/ai/', '/analysis/', '/ai-description', '/ai-about', '/upload', '/send-', '/broadcast'];
       const shouldSkip = skipPatterns.some((p) => url.includes(p));
       if (!shouldSkip) {
+        const requestData = error.config?.data ? JSON.parse(error.config.data) : undefined;
+        const description = _getQueueDescription(method, url, requestData);
         await offlineQueue.enqueue({
           method: method.toUpperCase() as any,
           url,
-          data: error.config?.data ? JSON.parse(error.config.data) : undefined,
-          description: `${method.toUpperCase()} ${url}`,
+          data: requestData,
+          description,
         });
-        console.log(`[OfflineQueue] Enqueued mutation: ${method.toUpperCase()} ${url}`);
+        console.log(`[OfflineQueue] Queued: ${description}`);
+        // Return optimistic success so the UI updates normally instead of showing error
+        const tempId = `offline_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        return {
+          data: { ...(requestData || {}), id: tempId, _queued: true },
+          status: 200,
+          statusText: 'Queued (offline)',
+          headers: {},
+          config: error.config,
+          _offlineQueued: true,
+        };
       }
     }
 
@@ -746,6 +797,114 @@ export const bookingsAPI = {
 
   sendReminder: async (bookingId: string) => {
     const response = await apiClient.post(`/bookings/${bookingId}/reminder`);
+    return response.data;
+  },
+};
+
+// ============ ORDERS ============
+export const ordersAPI = {
+  /**
+   * Get all orders (cached offline)
+   */
+  getOrders: async (params?: { limit?: number; customer_id?: string }) => {
+    const response = await apiClient.get('/orders', { params });
+    return response.data;
+  },
+
+  /**
+   * Create a new order (works offline — will be queued)
+   */
+  createOrder: async (data: {
+    customer_id?: string;
+    customer_name?: string;
+    product: string;
+    quantity: number;
+    price: number;
+    payment_method?: string;
+    notes?: string;
+  }) => {
+    const response = await apiClient.post('/orders', data);
+    return response.data;
+  },
+
+  /**
+   * Update order payment status (works offline — will be queued)
+   */
+  updatePaymentStatus: async (orderId: string, payment_status: string) => {
+    const response = await apiClient.put(`/orders/${orderId}?payment_status=${payment_status}`);
+    return response.data;
+  },
+
+  /**
+   * Update order delivery status (works offline — will be queued)
+   */
+  updateDeliveryStatus: async (orderId: string, delivery_status: string) => {
+    const response = await apiClient.put(`/orders/${orderId}?delivery_status=${delivery_status}`);
+    return response.data;
+  },
+
+  /**
+   * Convert order to sale (requires internet — skip queue)
+   */
+  convertToSale: async (orderId: string, payment_method: string) => {
+    const response = await apiClient.post(`/orders/${orderId}/convert-to-sale?payment_method=${encodeURIComponent(payment_method)}`);
+    return response.data;
+  },
+
+  /**
+   * Delete an order (works offline — will be queued)
+   */
+  deleteOrder: async (orderId: string) => {
+    const response = await apiClient.delete(`/orders/${orderId}`);
+    return response.data;
+  },
+};
+
+// ============ SALES ============
+export const salesAPI = {
+  /**
+   * Get all sales
+   */
+  getSales: async (params?: { limit?: number; customer_id?: string }) => {
+    const response = await apiClient.get('/sales', { params });
+    return response.data;
+  },
+
+  /**
+   * Create a new sale (works offline - will be queued)
+   */
+  createSale: async (data: {
+    customer_id?: string;
+    customer_name?: string;
+    product_id?: string;
+    product_name?: string;
+    amount: number;
+    quantity?: number;
+    payment_method?: string;
+    notes?: string;
+    sale_date?: string;
+  }) => {
+    const response = await apiClient.post('/sales', data);
+    return response.data;
+  },
+
+  /**
+   * Update a sale
+   */
+  updateSale: async (saleId: string, data: {
+    amount?: number;
+    payment_method?: string;
+    notes?: string;
+  }) => {
+    const response = await apiClient.put(`/sales/${saleId}`, data);
+    return response.data;
+  },
+
+  /**
+   * Delete a sale
+   */
+  deleteSale: async (saleId: string) => {
+    const response = await apiClient.delete(`/sales/${saleId}`);
     return response.data;
   },
 };
