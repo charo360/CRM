@@ -75,17 +75,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setToken(storedToken);
         apiClient.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
 
-        // Fetch current user
+        // Try to fetch fresh user data from server
         try {
           const response = await apiClient.get('/auth/me');
           setUser(response.data);
+          // Cache user data for offline use
+          await AsyncStorage.setItem('cached_user', JSON.stringify(response.data));
           // Trigger background profile picture refresh (fire-and-forget)
           whatsappAPI.refreshProfilePictures();
-        } catch (error) {
-          // Token invalid, clear it
-          await AsyncStorage.removeItem('auth_token');
-          setToken(null);
-          delete apiClient.defaults.headers.common['Authorization'];
+        } catch (error: any) {
+          const status = error?.response?.status;
+          if (status === 401 || status === 403) {
+            // Token actually invalid/expired — force re-login
+            await AsyncStorage.removeItem('auth_token');
+            await AsyncStorage.removeItem('cached_user');
+            setToken(null);
+            delete apiClient.defaults.headers.common['Authorization'];
+          } else {
+            // Network error (offline) — use cached user data so owner stays logged in
+            const cachedUser = await AsyncStorage.getItem('cached_user');
+            if (cachedUser) {
+              setUser(JSON.parse(cachedUser));
+              console.log('[Auth] Offline: using cached user data');
+            } else {
+              // No cached user, can't proceed — clear token
+              await AsyncStorage.removeItem('auth_token');
+              setToken(null);
+              delete apiClient.defaults.headers.common['Authorization'];
+            }
+          }
         }
       }
     } catch (error) {
@@ -213,6 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setToken(null);
     await AsyncStorage.removeItem('auth_token');
+    await AsyncStorage.removeItem('cached_user');
     delete apiClient.defaults.headers.common['Authorization'];
   };
 
@@ -220,6 +239,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const response = await apiClient.get('/auth/me');
       setUser(response.data);
+      await AsyncStorage.setItem('cached_user', JSON.stringify(response.data));
     } catch (error) {
       console.error('Error refreshing user:', error);
     }
