@@ -1,4 +1,6 @@
 import axios from 'axios';
+import { offlineCache } from '../utils/offlineCache';
+import { offlineQueue } from '../utils/offlineQueue';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://crm-1-pnfo.onrender.com';
 
@@ -43,13 +45,34 @@ const uploadFetch = async (path: string, formData: FormData, timeoutMs = 30000) 
   }
 };
 
+// URL → cache key mapping for GET responses
+const URL_CACHE_MAP: Record<string, string> = {
+  '/customers': 'customers',
+  '/customers?sort_by=recently_contacted': 'customers_recent',
+  '/products': 'products',
+  '/dashboard/summary': 'dashboard',
+  '/bookings': 'bookings',
+  '/orders': 'orders',
+  '/sales': 'sales',
+  '/expenses': 'expenses',
+  '/settings': 'settings',
+  '/business-knowledge': 'business_knowledge',
+  '/contacts': 'contacts',
+};
+
+function getCacheKey(url: string): string | null {
+  if (!url) return null;
+  // Strip query string for matching, but keep full url for unique storage
+  const base = url.split('?')[0];
+  // Try full url first, then base
+  return URL_CACHE_MAP[url] || URL_CACHE_MAP[base] || null;
+}
+
 // Request interceptor for logging
 apiClient.interceptors.request.use(
   (config) => {
-    // Force ngrok bypass headers on every request to avoid 503 interstitial page
     config.headers['ngrok-skip-browser-warning'] = 'true';
     config.headers['Bypass-Tunnel-Reminder'] = 'true';
-
     console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
     return config;
   },
@@ -59,22 +82,82 @@ apiClient.interceptors.request.use(
   }
 );
 
-// Response interceptor for error handling
+// Response interceptor — caches GET responses, serves stale cache when offline
 apiClient.interceptors.response.use(
   (response) => {
     console.log(`API Response Success: ${response.status}`);
+    // Cache successful GET responses
+    const method = response.config?.method?.toLowerCase();
+    const url = response.config?.url || '';
+    if (method === 'get' && response.data) {
+      const cacheKey = getCacheKey(url);
+      if (cacheKey) {
+        offlineCache.set(cacheKey, response.data);
+      }
+    }
     return response;
   },
-  (error) => {
-    console.error('=== API ERROR DETAILS ===');
-    console.error('Error message:', error.message);
-    console.error('Error config:', error.config?.url);
-    console.error('Error response:', error.response?.data);
-    console.error('Error status:', error.response?.status);
-    console.error('Full error:', JSON.stringify(error, null, 2));
+  async (error) => {
+    const isNetworkError = !error.response; // No response = no internet
+    const method = error.config?.method?.toLowerCase();
+    const url = error.config?.url || '';
+
+    // On network error for GET: serve stale cache
+    if (isNetworkError && method === 'get') {
+      const cacheKey = getCacheKey(url);
+      if (cacheKey) {
+        const cached = await offlineCache.getStale(cacheKey);
+        if (cached) {
+          console.log(`[OfflineCache] Serving stale cache for: ${url}`);
+          return {
+            data: cached,
+            status: 200,
+            statusText: 'OK (cached)',
+            headers: {},
+            config: error.config,
+            cached: true,
+          };
+        }
+      }
+    }
+
+    // On network error for mutations: enqueue for later sync
+    if (isNetworkError && method && ['post', 'put', 'patch', 'delete'].includes(method)) {
+      // Skip auth, AI, and file-upload endpoints from queuing
+      const skipPatterns = ['/auth/', '/ai/', '/analysis/', '/ai-description', '/ai-about', '/upload', '/send-', '/broadcast'];
+      const shouldSkip = skipPatterns.some((p) => url.includes(p));
+      if (!shouldSkip) {
+        await offlineQueue.enqueue({
+          method: method.toUpperCase() as any,
+          url,
+          data: error.config?.data ? JSON.parse(error.config.data) : undefined,
+          description: `${method.toUpperCase()} ${url}`,
+        });
+        console.log(`[OfflineQueue] Enqueued mutation: ${method.toUpperCase()} ${url}`);
+      }
+    }
+
+    if (error.response) {
+      console.error('=== API ERROR DETAILS ===');
+      console.error('Error message:', error.message);
+      console.error('Error config:', error.config?.url);
+      console.error('Error response:', JSON.stringify(error.response?.data));
+      console.error('Error status:', error.response?.status);
+    } else {
+      console.warn(`[Offline] Network error on ${method?.toUpperCase()} ${url}`);
+    }
     return Promise.reject(error);
   }
 );
+
+// Register queue sync handler — replays mutations using apiClient
+offlineQueue.registerSyncHandler(async (mutation) => {
+  await apiClient.request({
+    method: mutation.method,
+    url: mutation.url,
+    data: mutation.data,
+  });
+});
 
 // ============ AI API Methods ============
 
