@@ -37,7 +37,7 @@ export default function TabsLayout() {
   const [dailyPulseEnabled, setDailyPulseEnabled] = useState(false);
 
   const { user } = useAuth();
-  const { config, isRetailBusiness } = useBusiness();
+  const { config } = useBusiness();
   const notificationListener = useRef<any>(null);
   const responseListener = useRef<any>(null);
 
@@ -197,7 +197,7 @@ export default function TabsLayout() {
                     onPress: () => router.push('../team-analytics' as any),
                     color: '#4A90E2'
                   }] : []),
-                  ...(!isRetailBusiness ? [{
+                  ...(config.bookingsTabVisible ? [{
                     icon: 'megaphone-outline' as const,
                     label: 'Broadcast',
                     onPress: () => router.push('/(tabs)/broadcast' as any),
@@ -290,7 +290,8 @@ export default function TabsLayout() {
           name="broadcast"
           options={{
             title: 'Broadcast',
-            href: isRetailBusiness ? undefined : null,
+            // Show broadcast for retail + unset types; hide only when bookings is active (service businesses)
+            href: !config.bookingsTabVisible ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
             ),
