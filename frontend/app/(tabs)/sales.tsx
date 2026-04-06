@@ -711,7 +711,7 @@ export default function SalesScreen() {
       <View style={styles.saleHeader}>
         <View style={styles.saleCustomer}>
           <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{sale.customer_name.charAt(0)}</Text>
+            <Text style={styles.avatarText}>{(sale.customer_name || 'S').charAt(0)}</Text>
           </View>
           <View>
             <Text style={styles.customerName}>{sale.customer_name}</Text>
@@ -726,7 +726,7 @@ export default function SalesScreen() {
           </View>
         </View>
         <View style={styles.amountContainer}>
-          <Text style={styles.amount}>{currency} {sale.amount.toLocaleString()}</Text>
+          <Text style={styles.amount}>{currency} {(sale.amount || 0).toLocaleString()}</Text>
           <View style={[
             styles.paymentBadge,
             sale.payment_method === 'M-Pesa' && styles.mpesaBadge,
@@ -776,7 +776,7 @@ export default function SalesScreen() {
           </View>
         </View>
         <View style={styles.amountContainer}>
-          <Text style={[styles.amount, { color: '#FF6B6B' }]}>{currency} {expense.amount.toLocaleString()}</Text>
+          <Text style={[styles.amount, { color: '#FF6B6B' }]}>{currency} {(expense.amount || 0).toLocaleString()}</Text>
           <TouchableOpacity onPress={() => handleDeleteExpense(expense.id)}>
             <Ionicons name="trash-outline" size={16} color="#FF6B6B" />
           </TouchableOpacity>
@@ -819,10 +819,10 @@ export default function SalesScreen() {
         <View style={styles.saleHeader}>
           <View style={styles.saleCustomer}>
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{order.customer_name.charAt(0)}</Text>
+              <Text style={styles.avatarText}>{(order.customer_name || 'O').charAt(0)}</Text>
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.customerName} numberOfLines={1}>{order.customer_name}</Text>
+              <Text style={styles.customerName} numberOfLines={1}>{order.customer_name || 'Unknown'}</Text>
               <Text style={styles.saleDate}>
                 {new Date(order.created_at).toLocaleDateString('en-KE', {
                   month: 'short',
@@ -833,7 +833,7 @@ export default function SalesScreen() {
               </Text>
             </View>
           </View>
-          <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {order.total_amount.toLocaleString()}</Text>
+          <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {(order.total_amount || 0).toLocaleString()}</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
           <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
@@ -844,8 +844,8 @@ export default function SalesScreen() {
           </View>
         </View>
         <View style={styles.saleDetails}>
-          <Text style={styles.itemText}>{order.product} (x{order.quantity})</Text>
-          <Text style={styles.paymentText}>@ {currency} {order.price.toLocaleString()} each</Text>
+          <Text style={styles.itemText}>{order.product || 'Item'} (x{order.quantity || 0})</Text>
+          <Text style={styles.paymentText}>@ {currency} {(order.price || 0).toLocaleString()} each</Text>
         </View>
         {order.payment_status === 'Paid' && (
           <View style={{ backgroundColor: '#1A3A2A', borderRadius: 8, padding: 8, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
@@ -1639,7 +1639,7 @@ export default function SalesScreen() {
               <View style={styles.detailsCard}>
                 <View style={styles.detailsHeader}>
                   <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>{selectedSale.customer_name.charAt(0)}</Text>
+                    <Text style={styles.avatarText}>{(selectedSale.customer_name || 'S').charAt(0)}</Text>
                   </View>
                   <View style={styles.detailsHeaderInfo}>
                     <Text style={styles.detailsCustomerName}>{selectedSale.customer_name}</Text>
@@ -1657,7 +1657,7 @@ export default function SalesScreen() {
                 <View style={styles.detailsRow}>
                   <Text style={styles.detailsLabel}>Amount</Text>
                   <Text style={[styles.detailsValue, styles.detailsAmount]}>
-                    {currency} {selectedSale.amount.toLocaleString()}
+                    {currency} {(selectedSale.amount || 0).toLocaleString()}
                   </Text>
                 </View>
 
@@ -1829,7 +1829,7 @@ export default function SalesScreen() {
               <View style={styles.detailsCard}>
                 <View style={styles.detailsHeader}>
                   <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>{selectedOrder.customer_name.charAt(0)}</Text>
+                    <Text style={styles.avatarText}>{(selectedOrder.customer_name || 'O').charAt(0)}</Text>
                   </View>
                   <View style={styles.detailsHeaderInfo}>
                     <Text style={styles.detailsCustomerName}>{selectedOrder.customer_name}</Text>
@@ -1851,13 +1851,13 @@ export default function SalesScreen() {
 
                 <View style={styles.detailsRow}>
                   <Text style={styles.detailsLabel}>Price per unit</Text>
-                  <Text style={styles.detailsValue}>{currency} {selectedOrder.price.toLocaleString()}</Text>
+                  <Text style={styles.detailsValue}>{currency} {(selectedOrder.price || 0).toLocaleString()}</Text>
                 </View>
 
                 <View style={styles.detailsRow}>
                   <Text style={styles.detailsLabel}>Total Amount</Text>
                   <Text style={[styles.detailsValue, { fontSize: 18, fontWeight: 'bold', color: '#25D366' }]}>
-                    {currency} {selectedOrder.total_amount.toLocaleString()}
+                    {currency} {(selectedOrder.total_amount || 0).toLocaleString()}
                   </Text>
                 </View>
 
