@@ -25,7 +25,8 @@
                 "buildType": "app-bundle"
             },
             "env": {
-                "EXPO_PUBLIC_BACKEND_URL": "https://crm-1-pnfo.onrender.com"
+                "EXPO_PUBLIC_BACKEND_URL": "https://crm-1-pnfo.onrender.com",
+                "EXPO_PUBLIC_RC_ANDROID_KEY": "goog_QgGKlpHwtYdpJXDHLTdCuGHqkmC"
             }
         }
     },
