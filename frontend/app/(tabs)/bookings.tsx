@@ -238,27 +238,27 @@ export default function BookingsScreen() {
   // ── Data ────────────────────────────────────────────────────────────────────
 
   const loadData = useCallback(async () => {
-    // Show cached data immediately so the screen is not blank while offline
-    const [cachedBookings, cachedCustomers] = await Promise.all([
-      offlineCache.getStale<Booking[]>(CACHE_KEYS.BOOKINGS),
-      offlineCache.getStale<Customer[]>(CACHE_KEYS.CUSTOMERS),
-    ]);
-    if (cachedBookings) { setBookings(cachedBookings); setLoading(false); }
-    if (cachedCustomers) setCustomers(cachedCustomers);
-
     try {
+      // Load from cache first so screen is not blank while offline
+      const [cachedBookings, cachedCustomers] = await Promise.all([
+        offlineCache.getStale<Booking[]>(CACHE_KEYS.BOOKINGS),
+        offlineCache.getStale<Customer[]>(CACHE_KEYS.CUSTOMERS),
+      ]);
+      if (Array.isArray(cachedBookings)) setBookings(cachedBookings);
+      if (Array.isArray(cachedCustomers)) setCustomers(cachedCustomers);
+
       const [bookingsData, productsData, customersRes] = await Promise.all([
         bookingsAPI.getBookings(),
         productsAPI.getProducts(),
         apiClient.get('/customers'),
       ]);
-      setBookings(bookingsData || []);
-      const all = productsData || [];
+      setBookings(Array.isArray(bookingsData) ? bookingsData : []);
+      const all = Array.isArray(productsData) ? productsData : [];
       const svcList = all.filter((p: Service) =>
         ['service', 'class', 'appointment', 'consultation'].includes(p.offering_type || '')
       );
       setServices(svcList.length > 0 ? svcList : all);
-      setCustomers(customersRes.data || []);
+      setCustomers(Array.isArray(customersRes.data) ? customersRes.data : []);
     } catch (err) {
       console.error('Bookings load error:', err);
     } finally {

@@ -145,20 +145,19 @@ export default function SalesScreen() {
   }, []);
 
   const fetchData = useCallback(async () => {
-    // Show cached data immediately so the screen is not blank while offline
-    const [cachedSales, cachedExpenses, cachedOrders, cachedCustomers] = await Promise.all([
-      offlineCache.getStale<Sale[]>(CACHE_KEYS.SALES),
-      offlineCache.getStale<Expense[]>(CACHE_KEYS.EXPENSES),
-      offlineCache.getStale<Order[]>(CACHE_KEYS.ORDERS),
-      offlineCache.getStale<Customer[]>(CACHE_KEYS.CUSTOMERS),
-    ]);
-    if (cachedSales) setSales(cachedSales);
-    if (cachedExpenses) setExpenses(cachedExpenses);
-    if (cachedOrders) setOrders(cachedOrders);
-    if (cachedCustomers) setCustomers(cachedCustomers);
-    if (cachedSales || cachedExpenses || cachedOrders) setLoading(false);
-
     try {
+      // Load from cache first so screen is not blank while offline
+      const [cachedSales, cachedExpenses, cachedOrders, cachedCustomers] = await Promise.all([
+        offlineCache.getStale<Sale[]>(CACHE_KEYS.SALES),
+        offlineCache.getStale<Expense[]>(CACHE_KEYS.EXPENSES),
+        offlineCache.getStale<Order[]>(CACHE_KEYS.ORDERS),
+        offlineCache.getStale<Customer[]>(CACHE_KEYS.CUSTOMERS),
+      ]);
+      if (Array.isArray(cachedSales)) setSales(cachedSales);
+      if (Array.isArray(cachedExpenses)) setExpenses(cachedExpenses);
+      if (Array.isArray(cachedOrders)) setOrders(cachedOrders);
+      if (Array.isArray(cachedCustomers)) setCustomers(cachedCustomers);
+
       const [salesRes, expensesRes, ordersRes, customersRes, userRes] = await Promise.all([
         apiClient.get('/sales'),
         apiClient.get('/expenses'),
