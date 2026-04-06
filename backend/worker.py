@@ -205,5 +205,31 @@ async def main():
     logging.info("[Worker] Stopped cleanly")
 
 
+async def health_server():
+    """
+    Minimal HTTP server so Render's Web Service port scan passes.
+    Responds 200 OK to GET / — worker jobs run in parallel on the same event loop.
+    """
+    from aiohttp import web
+
+    async def handle(request):
+        return web.Response(text="worker ok")
+
+    app = web.Application()
+    app.router.add_get("/", handle)
+    app.router.add_get("/health", handle)
+    port = int(os.environ.get("PORT", 8001))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"[Worker] Health server listening on port {port}")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    async def run_all():
+        await asyncio.gather(
+            health_server(),
+            main(),
+        )
+    asyncio.run(run_all())

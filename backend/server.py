@@ -3765,24 +3765,36 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
         update_ops
     )
     
-    # Send receipt via WhatsApp (background task)
+    # Send receipt via WhatsApp — try Redis queue first, fall back to background_tasks
     # Use business_id (owner) for WhatsApp instance, since team members don't have their own instance
     if sale.send_receipt:
         owner = await db.users.find_one({"_id": business_id}) if business_id != user["_id"] else user
         currency = (owner or user).get("currency", "USD")
         business_name = (owner or user).get("business_name", user.get("business_name", "Your Shop"))
-        background_tasks.add_task(
-            send_receipt_message,
-            customer["phone_number"],
-            customer["name"],
-            sale.item,
-            sale.amount,
-            business_name,
-            sale_id,
-            sale.receipt_message,
-            currency,
-            business_id
-        )
+        receipt_job = {
+            "type": "receipt",
+            "user_id": business_id,
+            "sale_id": sale_id,
+            "phone": customer["phone_number"],
+            "customer_name": customer["name"],
+            "message": sale.receipt_message or (
+                f"✅ Payment received\nItem: {sale.item}\nAmount: {currency} {sale.amount:,.0f}\nThank you for shopping with us 🙏"
+            ),
+        }
+        queued = await enqueue_job(QUEUE_RECEIPT, receipt_job)
+        if not queued:
+            background_tasks.add_task(
+                send_receipt_message,
+                customer["phone_number"],
+                customer["name"],
+                sale.item,
+                sale.amount,
+                business_name,
+                sale_id,
+                sale.receipt_message,
+                currency,
+                business_id,
+            )
     
     return SaleResponse(
         id=sale_id,
