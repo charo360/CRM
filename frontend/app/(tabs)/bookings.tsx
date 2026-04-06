@@ -310,7 +310,8 @@ export default function BookingsScreen() {
     try {
       const svc = services.find(s => s.id === newBooking.service_id);
       const payload: any = {
-        service_id: newBooking.service_id,
+        service_id: newBooking.service_id === 'manual' ? undefined : newBooking.service_id,
+        service_name: newBooking.service_name || svc?.name,
         date: newBooking.date,
         time: config.showCheckinCheckout ? '00:00' : newBooking.time,
         notes: newBooking.notes,
@@ -562,24 +563,34 @@ export default function BookingsScreen() {
 
             {/* Service / Listing selection */}
             <Text style={styles.fieldLabel}>{config.catalogItemLabel} *</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-              {services.map(s => (
-                <TouchableOpacity
-                  key={s.id}
-                  style={[styles.serviceChip, newBooking.service_id === s.id && styles.serviceChipActive]}
-                  onPress={() => setNewBooking(prev => ({ ...prev, service_id: s.id, service_name: s.name }))}
-                >
-                  <Text style={[styles.serviceChipText, newBooking.service_id === s.id && styles.serviceChipTextActive]}>
-                    {s.name}
-                  </Text>
-                  {s.duration && (
-                    <Text style={[styles.serviceChipSub, newBooking.service_id === s.id && { color: '#25D366' }]}>
-                      {s.duration}min
+            {services.length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
+                {services.map(s => (
+                  <TouchableOpacity
+                    key={s.id}
+                    style={[styles.serviceChip, newBooking.service_id === s.id && styles.serviceChipActive]}
+                    onPress={() => setNewBooking(prev => ({ ...prev, service_id: s.id, service_name: s.name }))}
+                  >
+                    <Text style={[styles.serviceChipText, newBooking.service_id === s.id && styles.serviceChipTextActive]}>
+                      {s.name}
                     </Text>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+                    {s.duration && (
+                      <Text style={[styles.serviceChipSub, newBooking.service_id === s.id && { color: '#25D366' }]}>
+                        {s.duration}min
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : (
+              <TextInput
+                style={[styles.input, { marginBottom: 16 }]}
+                placeholder={`Enter ${config.catalogItemLabel.toLowerCase()} name`}
+                placeholderTextColor="#8696A0"
+                value={newBooking.service_name}
+                onChangeText={text => setNewBooking(prev => ({ ...prev, service_id: 'manual', service_name: text }))}
+              />
+            )}
 
             {config.showCheckinCheckout ? (
               <>

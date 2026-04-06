@@ -152,10 +152,10 @@ export default function SalesScreen() {
         apiClient.get('/customers'),
         apiClient.get('/auth/me'),
       ]);
-      setSales(salesRes.data);
-      setExpenses(expensesRes.data);
-      setOrders(ordersRes.data);
-      setCustomers(customersRes.data);
+      setSales(Array.isArray(salesRes.data) ? salesRes.data : []);
+      setExpenses(Array.isArray(expensesRes.data) ? expensesRes.data : []);
+      setOrders(Array.isArray(ordersRes.data) ? ordersRes.data : []);
+      setCustomers(Array.isArray(customersRes.data) ? customersRes.data : []);
       if (userRes.data.payment_methods && userRes.data.payment_methods.length > 0) {
         // Normalize: legacy data may be plain strings, new format is {name, details}
         const normalized = userRes.data.payment_methods.map((m: any) =>
