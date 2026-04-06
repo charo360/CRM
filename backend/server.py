@@ -8764,6 +8764,9 @@ app.include_router(api_router)
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
 
+# Serve static pages (privacy policy, account deletion, etc.)
+app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="static")
+
 # Startup event
 @app.on_event("startup")
 async def startup_tasks():
