@@ -19,4 +19,8 @@ RUN mkdir -p uploads
 
 EXPOSE 8000
 
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# WEB_CONCURRENCY controls worker count — set via env var on your hosting platform
+# Recommended: 2 workers per CPU core (e.g. 4 for a 2-core server)
+ENV WEB_CONCURRENCY=2
+
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY}"]

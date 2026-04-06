@@ -104,6 +104,13 @@ from mongo_http_client import AsyncMongoHTTPClient
 
 
 from bson import ObjectId as _ObjectId
+from redis_client import (
+    cache_get, cache_set, cache_delete, cache_delete_pattern,
+    enqueue_job,
+    key_tenant_settings, key_plan_limits, key_dashboard, key_products,
+    QUEUE_BROADCAST, QUEUE_RECEIPT,
+    TTL_TENANT_SETTINGS, TTL_PLAN_LIMITS, TTL_DASHBOARD, TTL_PRODUCTS,
+)
 
 # Anti-duplicate auto-reply guard: tracks evo_message_id to prevent double replies
 # Evolution API often fires messages.upsert webhook multiple times for the same message
@@ -905,17 +912,27 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
     }
     
     await db.broadcasts.insert_one(broadcast_doc)
-    
+
     # Send messages in background (only if not scheduled)
     if not broadcast.scheduled_at:
-        background_tasks.add_task(
-            send_broadcast_messages,
-            broadcast_id,
-            business_id,
-            broadcast.message,
-            customers,
-            image_urls
-        )
+        # Try Redis queue first (worker process handles it); fall back to in-process task
+        queued = await enqueue_job(QUEUE_BROADCAST, {
+            "type": "broadcast",
+            "broadcast_id": broadcast_id,
+            "user_id": business_id,
+            "message": broadcast.message,
+            "customers": customers,
+            "image_urls": image_urls,
+        })
+        if not queued:
+            background_tasks.add_task(
+                send_broadcast_messages,
+                broadcast_id,
+                business_id,
+                broadcast.message,
+                customers,
+                image_urls,
+            )
     
     return BroadcastResponse(
         id=broadcast_id,
@@ -1667,9 +1684,16 @@ async def get_me(user = Depends(get_current_user)):
 
 @api_router.get("/settings")
 async def get_settings(user = Depends(get_current_user)):
-    """Get current user settings"""
+    """Get current user settings — served from Redis cache when available."""
+    user_id = user["_id"]
+    cache_key = key_tenant_settings(user_id)
+
+    cached = await cache_get(cache_key)
+    if cached:
+        return cached
+
     s = user.get("settings", {})
-    return {
+    result = {
         "auto_reply_enabled": s.get("auto_reply_enabled", False),
         "notification_enabled": s.get("notification_enabled", True),
         "notification_time": s.get("notification_time", "09:00"),
@@ -1684,10 +1708,12 @@ async def get_settings(user = Depends(get_current_user)):
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
         "business_type": s.get("business_type") or user.get("business_type", ""),
     }
+    await cache_set(cache_key, result, TTL_TENANT_SETTINGS)
+    return result
 
 @api_router.put("/settings")
 async def update_settings(request: Request, user = Depends(get_current_user)):
-    """Update user settings"""
+    """Update user settings and invalidate cache."""
     body = await request.json()
     # Top-level fields (currency, country_code) live directly on the user doc
     top_level_fields = {}
@@ -1704,6 +1730,7 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
         update_doc.update(settings_fields)
     if update_doc:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    await cache_delete(key_tenant_settings(user["_id"]))
     return {"status": "ok"}
 
 # ============ CONTACT CLASSIFICATION ============
