@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient, bookingsAPI, productsAPI } from '../../context/api';
 import { useBusiness } from '../../context/BusinessContext';
+import { offlineCache, CACHE_KEYS } from '../../utils/offlineCache';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -237,6 +238,14 @@ export default function BookingsScreen() {
   // ── Data ────────────────────────────────────────────────────────────────────
 
   const loadData = useCallback(async () => {
+    // Show cached data immediately so the screen is not blank while offline
+    const [cachedBookings, cachedCustomers] = await Promise.all([
+      offlineCache.getStale<Booking[]>(CACHE_KEYS.BOOKINGS),
+      offlineCache.getStale<Customer[]>(CACHE_KEYS.CUSTOMERS),
+    ]);
+    if (cachedBookings) { setBookings(cachedBookings); setLoading(false); }
+    if (cachedCustomers) setCustomers(cachedCustomers);
+
     try {
       const [bookingsData, productsData, customersRes] = await Promise.all([
         bookingsAPI.getBookings(),
@@ -328,7 +337,30 @@ export default function BookingsScreen() {
       } else {
         payload.customer_id = selectedCustomer!.id;
       }
-      await bookingsAPI.createBooking(payload);
+      const bookingResponse = await bookingsAPI.createBooking(payload);
+
+      // Optimistically add to local state immediately (works online and offline)
+      const newBookingItem: Booking = {
+        id: bookingResponse?.id || `temp_${Date.now()}`,
+        booking_number: bookingResponse?.booking_number || `#${Date.now()}`,
+        customer_id: isWalkInCustomer ? '' : (selectedCustomer!.id),
+        customer_name: isWalkInCustomer ? 'Walk-in Customer' : selectedCustomer!.name,
+        customer_phone: isWalkInCustomer ? '' : (selectedCustomer?.phone_number || ''),
+        service_id: newBooking.service_id,
+        service_name: payload.service_name || svc?.name || '',
+        staff_name: newBooking.staff_name.trim() || undefined,
+        date: newBooking.date || '',
+        time: config.showCheckinCheckout ? '00:00' : newBooking.time,
+        checkin_date: newBooking.checkin_date || undefined,
+        checkout_date: newBooking.checkout_date || undefined,
+        status: 'pending',
+        payment_status: 'unpaid',
+        price: svc?.price || 0,
+        notes: newBooking.notes || undefined,
+        created_at: new Date().toISOString(),
+      };
+      setBookings(prev => [newBookingItem, ...prev]);
+
       setShowNewModal(false);
       setNewBooking({ customer_id: '', customer_name: '', service_id: '', service_name: '', date: formatDate(new Date()), checkin_date: '', checkout_date: '', time: '09:00', staff_name: '', capacity: '', notes: '' });
       setSelectedCustomer(null);

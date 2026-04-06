@@ -20,6 +20,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { apiClient, settingsAPI } from '../../context/api';
 import { useBusiness } from '../../context/BusinessContext';
 import { useRouter } from 'expo-router';
+import { offlineCache, CACHE_KEYS } from '../../utils/offlineCache';
 
 interface Customer {
   id: string;
@@ -144,6 +145,19 @@ export default function SalesScreen() {
   }, []);
 
   const fetchData = useCallback(async () => {
+    // Show cached data immediately so the screen is not blank while offline
+    const [cachedSales, cachedExpenses, cachedOrders, cachedCustomers] = await Promise.all([
+      offlineCache.getStale<Sale[]>(CACHE_KEYS.SALES),
+      offlineCache.getStale<Expense[]>(CACHE_KEYS.EXPENSES),
+      offlineCache.getStale<Order[]>(CACHE_KEYS.ORDERS),
+      offlineCache.getStale<Customer[]>(CACHE_KEYS.CUSTOMERS),
+    ]);
+    if (cachedSales) setSales(cachedSales);
+    if (cachedExpenses) setExpenses(cachedExpenses);
+    if (cachedOrders) setOrders(cachedOrders);
+    if (cachedCustomers) setCustomers(cachedCustomers);
+    if (cachedSales || cachedExpenses || cachedOrders) setLoading(false);
+
     try {
       const [salesRes, expensesRes, ordersRes, customersRes, userRes] = await Promise.all([
         apiClient.get('/sales'),
@@ -207,6 +221,22 @@ export default function SalesScreen() {
         is_credit: isCreditSale,
         due_date: isCreditSale && dueDate ? dueDate : undefined,
       });
+
+      // Optimistically add to local state immediately (works online and offline)
+      const newSale: Sale = {
+        id: response.data?.id || `temp_${Date.now()}`,
+        customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
+        customer_name: isWalkInCustomer ? 'Walk-in Customer' : selectedCustomer!.name,
+        customer_phone: isWalkInCustomer ? '' : (selectedCustomer?.phone_number || ''),
+        item: item.trim(),
+        amount: parseFloat(amount),
+        payment_method: isCreditSale ? '' : paymentMethod,
+        receipt_sent: false,
+        is_credit: isCreditSale,
+        due_date: isCreditSale && dueDate ? dueDate : undefined,
+        created_at: new Date().toISOString(),
+      };
+      setSales(prev => [newSale, ...prev]);
 
       setModalVisible(false);
       resetForm();
@@ -327,6 +357,24 @@ export default function SalesScreen() {
         notes: orderNotes.trim() || undefined,
         due_date: orderDueDate || undefined,
       });
+
+      // Optimistically add to local state immediately (works online and offline)
+      const newOrder: Order = {
+        id: response.data?.id || `temp_${Date.now()}`,
+        customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
+        customer_name: isWalkInCustomer ? 'Walk-in Customer' : selectedCustomer!.name,
+        customer_phone: isWalkInCustomer ? '' : (selectedCustomer?.phone_number || ''),
+        product: orderProduct.trim(),
+        quantity: parseInt(orderQuantity),
+        price: parseFloat(orderPrice),
+        total_amount: totalAmount,
+        payment_status: 'Pending',
+        delivery_status: 'Processing',
+        notes: orderNotes.trim() || undefined,
+        due_date: orderDueDate || undefined,
+        created_at: new Date().toISOString(),
+      };
+      setOrders(prev => [newOrder, ...prev]);
 
       setModalVisible(false);
       Alert.alert('Success', 'Order created successfully!');
