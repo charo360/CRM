@@ -1108,7 +1108,16 @@ async def resend_broadcast(broadcast_id: str, background_tasks: BackgroundTasks,
         "created_at": datetime.utcnow()
     }
     await db.broadcasts.insert_one(new_doc)
-    background_tasks.add_task(send_broadcast_messages, new_id, business_id, original["message"], customers, image_urls)
+    queued = await enqueue_job(QUEUE_BROADCAST, {
+        "type": "broadcast",
+        "broadcast_id": new_id,
+        "user_id": business_id,
+        "message": original["message"],
+        "customers": customers,
+        "image_urls": image_urls,
+    })
+    if not queued:
+        background_tasks.add_task(send_broadcast_messages, new_id, business_id, original["message"], customers, image_urls)
     return {"status": "resending", "broadcast_id": new_id, "recipients_count": len(customers)}
 
 @api_router.get("/broadcasts/{broadcast_id}/performance")
@@ -3938,17 +3947,27 @@ async def resend_receipt(sale_id: str, background_tasks: BackgroundTasks, user =
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    # Send receipt via WhatsApp (background task)
-    background_tasks.add_task(
-        send_receipt_message,
-        customer["phone_number"],
-        customer["name"],
-        sale["item"],
-        sale["amount"],
-        user.get("business_name", "Your Shop"),
-        sale_id
-    )
-    
+    # Send receipt via WhatsApp — queue first, fall back to background_tasks
+    currency = user.get("currency", "USD")
+    queued = await enqueue_job(QUEUE_RECEIPT, {
+        "type": "receipt",
+        "user_id": business_id,
+        "sale_id": sale_id,
+        "phone": customer["phone_number"],
+        "customer_name": customer["name"],
+        "message": f"✅ Payment received\nItem: {sale['item']}\nAmount: {currency} {sale['amount']:,.0f}\nThank you for shopping with us 🙏",
+    })
+    if not queued:
+        background_tasks.add_task(
+            send_receipt_message,
+            customer["phone_number"],
+            customer["name"],
+            sale["item"],
+            sale["amount"],
+            user.get("business_name", "Your Shop"),
+            sale_id,
+        )
+
     return {"status": "success", "message": "Receipt sent"}
 
 # ============ ORDER ENDPOINTS ============
