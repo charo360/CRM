@@ -432,8 +432,8 @@ export default function SalesScreen() {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(
         (s) =>
-          s.customer_name.toLowerCase().includes(query) ||
-          s.item.toLowerCase().includes(query)
+          (s.customer_name || '').toLowerCase().includes(query) ||
+          (s.item || '').toLowerCase().includes(query)
       );
     }
     return filtered.filter((s) => passesDateFilter(s.created_at));
@@ -1229,7 +1229,7 @@ export default function SalesScreen() {
                           onPress={() => setPaymentMethod(method.name)}
                         >
                           <Ionicons
-                            name={method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') || method.name.toLowerCase().includes('stripe') ? 'logo-paypal' : 'cash'}
+                            name={(method.name || '').toLowerCase().includes('mpesa') || (method.name || '').toLowerCase().includes('m-pesa') || (method.name || '').toLowerCase().includes('mobile') ? 'phone-portrait' : (method.name || '').toLowerCase().includes('card') || (method.name || '').toLowerCase().includes('visa') ? 'card' : (method.name || '').toLowerCase().includes('bank') ? 'business' : (method.name || '').toLowerCase().includes('paypal') || (method.name || '').toLowerCase().includes('stripe') ? 'logo-paypal' : 'cash'}
                             size={18}
                             color={paymentMethod === method.name ? '#FFFFFF' : '#666'}
                           />
@@ -1579,8 +1579,8 @@ export default function SalesScreen() {
               if (!customerSearchQuery.trim()) return true;
               const query = customerSearchQuery.toLowerCase();
               return (
-                c.name.toLowerCase().includes(query) ||
-                c.phone_number.toLowerCase().includes(query)
+                (c.name || '').toLowerCase().includes(query) ||
+                (c.phone_number || '').toLowerCase().includes(query)
               );
             })}
             renderItem={({ item: customer }) => (
@@ -2025,7 +2025,7 @@ export default function SalesScreen() {
 
             {/* Existing methods */}
             {paymentMethods.map((method, index) => {
-              const iconName = method.name.toLowerCase().includes('mpesa') || method.name.toLowerCase().includes('m-pesa') || method.name.toLowerCase().includes('mobile') ? 'phone-portrait' : method.name.toLowerCase().includes('card') || method.name.toLowerCase().includes('visa') || method.name.toLowerCase().includes('mastercard') ? 'card' : method.name.toLowerCase().includes('bank') ? 'business' : method.name.toLowerCase().includes('paypal') ? 'logo-paypal' : method.name.toLowerCase().includes('stripe') ? 'card' : method.name.toLowerCase().includes('bitcoin') || method.name.toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
+              const iconName = (method.name || '').toLowerCase().includes('mpesa') || (method.name || '').toLowerCase().includes('m-pesa') || (method.name || '').toLowerCase().includes('mobile') ? 'phone-portrait' : (method.name || '').toLowerCase().includes('card') || (method.name || '').toLowerCase().includes('visa') || (method.name || '').toLowerCase().includes('mastercard') ? 'card' : (method.name || '').toLowerCase().includes('bank') ? 'business' : (method.name || '').toLowerCase().includes('paypal') ? 'logo-paypal' : (method.name || '').toLowerCase().includes('stripe') ? 'card' : (method.name || '').toLowerCase().includes('bitcoin') || (method.name || '').toLowerCase().includes('crypto') ? 'logo-bitcoin' : 'cash';
               return (
                 <View key={index} style={styles.pmCard}>
                   <View style={styles.pmCardIcon}>
@@ -2139,7 +2139,7 @@ export default function SalesScreen() {
                     onPress={async () => {
                       const finalName = (newMethodName || customMethodName).trim();
                       if (!finalName) { Alert.alert('Error', 'Please select or enter a payment method name'); return; }
-                      if (paymentMethods.find(m => m.name.toLowerCase() === finalName.toLowerCase())) {
+                      if (paymentMethods.find(m => (m.name || '').toLowerCase() === finalName.toLowerCase())) {
                         Alert.alert('Error', 'This payment method already exists'); return;
                       }
                       const newEntry = { name: finalName, details: newMethodDetails.trim() };
