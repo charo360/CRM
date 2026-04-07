@@ -7813,7 +7813,7 @@ async def generate_daily_pulse_message(user_id: str) -> str:
     if tip:
         lines.append(f"\n🤖 *AI Tip:* _{tip}_")
     
-    lines.append("\n_Sent by Charo360 CRM_")
+    lines.append("\n_Sent by Zilo CRM_")
     
     return "\n".join(lines)
 
