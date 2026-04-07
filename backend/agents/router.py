@@ -892,6 +892,22 @@ class Router:
         )
         session_summary_text = format_summary_for_prompt(session_summary)
 
+        # Owner-was-handling instruction: owner replied but stepped away >15 min ago
+        owner_was_handling = context.get("owner_was_handling", False)
+        owner_handling_instruction = ""
+        if owner_was_handling:
+            owner_handling_instruction = (
+                "NOTE: A staff member was handling this conversation earlier but has not responded "
+                "in the last 15 minutes. The customer may still have an unresolved issue. "
+                "Acknowledge warmly, let them know you are picking this up, and if the issue "
+                "is unclear say something like: 'Let me check on that and get back to you shortly.' "
+                "Do NOT pretend the previous staff reply did not happen."
+            )
+
+        # Append owner-handling note into careful_instruction so all agents pick it up
+        if owner_handling_instruction:
+            careful_instruction = (careful_instruction + "\n" + owner_handling_instruction).strip()
+
         # Enrich context with classification results
         context.update({
             "intent": intent,

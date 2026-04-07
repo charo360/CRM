@@ -123,6 +123,10 @@ _AUTO_REPLY_DEDUP_TTL = 120  # seconds
 # key: "user_id:phone" -> timestamp of last auto-reply sent
 _last_auto_reply_sent: dict = {}
 _PING_PONG_TTL = 30  # seconds — if we sent an auto-reply within this window, skip the next one
+_owner_last_manual_reply: dict = {}  # key: "user_id:phone" -> timestamp of last manual owner reply
+_OWNER_ATTENTION_TTL = 900  # 15 minutes — pause auto-reply after owner manually replies
+_owner_last_manual_reply: dict = {}  # key: "user_id:phone" -> timestamp of last manual owner reply
+_OWNER_ATTENTION_TTL = 900  # 15 minutes — pause auto-reply after owner manually replies
 
 def serialize_doc(doc):
     """Recursively convert MongoDB ObjectId fields to strings for JSON serialization."""
@@ -6165,6 +6169,10 @@ async def evolution_webhook(request: Request):
                     })
                     if existing:
                         print(f"DEBUG: Outgoing message already exists, skipping AI")
+                        # Track manual owner reply — pause auto-reply for this contact for 15 min
+                        import time as _t_owner
+                        _owner_last_manual_reply[f"{user['_id']}:{from_number}"] = _t_owner.time()
+                        logging.info(f"Owner manually replied to {from_number} — auto-reply paused 15 min")
                         return {"status": "ok"}
                 
                 message_id = str(uuid.uuid4())
@@ -6303,6 +6311,22 @@ async def evolution_webhook(request: Request):
                     return {"status": "ok", "message": "loop guard: recent auto-reply detected"}
 
                 # ============================================================
+                # OWNER ATTENTION COOLDOWN
+                # If owner manually replied to this contact within last 15 min,
+                # block AI — owner is handling it.
+                # After 15 min with no new owner reply, AI resumes automatically.
+                # ============================================================
+                _owner_reply_ts = _owner_last_manual_reply.get(_loop_key, 0)
+                _time_since_owner = _now_loop - _owner_reply_ts
+                _owner_handling = _owner_reply_ts > 0 and _time_since_owner < _OWNER_ATTENTION_TTL
+                if _owner_handling:
+                    _mins_left = int((_OWNER_ATTENTION_TTL - _time_since_owner) / 60) + 1
+                    logging.info(f"Auto-reply PAUSED for {from_number} — owner replied {int(_time_since_owner/60)}m ago, {_mins_left}m left")
+                    return {"status": "ok", "message": "owner attention: auto-reply paused"}
+                # If owner replied but 15 min passed — flag it so AI knows to handle carefully
+                _owner_was_handling = _owner_reply_ts > 0 and _time_since_owner >= _OWNER_ATTENTION_TTL
+
+                # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
                 # Rules:
                 #   1. Global OFF + customer individual ON  → SEND (individual overrides)
@@ -6402,6 +6426,7 @@ async def evolution_webhook(request: Request):
                     "business_name": user.get("business_name", ""),
                     "ai_model": _user_settings.get("ai_model", "standard"),
                     "business_type": _business_type,
+                    "owner_was_handling": _owner_was_handling,  # owner replied but stepped away >15min ago
                 }
 
                 agent_result = await router.route_and_process(
