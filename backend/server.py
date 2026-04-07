@@ -2580,7 +2580,24 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "is_customer": True,
     }
     
-    await db.customers.insert_one(customer_doc)
+    try:
+        await db.customers.insert_one(customer_doc)
+    except Exception as e:
+        if "duplicate" in str(e).lower() or "E11000" in str(e):
+            existing = await db.customers.find_one({"user_id": business_id, "phone_number": clean_phone})
+            if existing:
+                # Promote to customer if not already
+                if not existing.get("is_customer"):
+                    await db.customers.update_one({"_id": existing["_id"]}, {"$set": {"is_customer": True}})
+                    existing["is_customer"] = True
+                return CustomerResponse(
+                    id=existing["_id"], user_id=business_id, name=existing.get("name", clean_name),
+                    phone_number=existing.get("phone_number", clean_phone), notes=existing.get("notes"),
+                    tags=existing.get("tags", ["New"]), purchase_count=existing.get("purchase_count", 0),
+                    total_spent=existing.get("total_spent", 0.0), last_message=existing.get("last_message"),
+                    last_contacted=existing.get("last_contacted"), created_at=existing.get("created_at", datetime.utcnow())
+                )
+        raise
 
     # Fetch WhatsApp profile picture in background (same as webhook auto-create)
     async def _fetch_pic(uid, cid, phone):
@@ -2660,7 +2677,6 @@ async def get_contacts(search: str = "", user = Depends(get_current_user)):
     query = {
         "user_id": business_id,
         "is_customer": False,
-        "auto_created": True,
     }
     contacts = await db.customers.find(query).to_list(2000)
     if search:
