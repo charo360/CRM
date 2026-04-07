@@ -7705,7 +7705,7 @@ async def generate_daily_pulse_message(user_id: str) -> str:
     # Get user info
     user = await db.users.find_one({"_id": user_id})
     business_name = user.get("business_name", "Your Business") if user else "Your Business"
-    currency = user.get("settings", {}).get("currency", "USD") if user else "USD"
+    currency = (user.get("currency") or user.get("settings", {}).get("currency") or "USD") if user else "USD"
     
     # Today's sales
     today_sales = await db.sales.find({
