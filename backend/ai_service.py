@@ -567,6 +567,17 @@ Output ONLY the reply. Nothing else."""
             lang_hint += "\nUse this to inform your language choice if the conversation history above has no clear language signal."
             base_prompt = base_prompt + lang_hint
 
+        # Language accuracy rule — applies to ALL replies using non-English languages
+        base_prompt = base_prompt + (
+            "\n\nLANGUAGE ACCURACY RULE (applies to Swahili, Sheng, and any local language):\n"
+            "- Only use words and grammar constructs you are 100% confident are correct.\n"
+            "- Pay special attention to TENSE: future tense (nita-) vs present (na-) vs past (ali-/ni-) must be correct.\n"
+            "  Example: 'nitakutafuta' (I will look for you) NOT 'nakutafuta' (I am looking for you).\n"
+            "- If you are unsure about the exact correct form of a word or phrase, use a simpler alternative or switch that phrase to English.\n"
+            "- A grammatically correct simple sentence is always better than a complex sentence with grammar errors.\n"
+            "- NEVER guess at grammar — only write what you are certain is correct."
+        )
+
         # Past business patterns (prices, reply style from this owner's own history)
         if past_answers_context:
             base_prompt = base_prompt + f"\n\n{past_answers_context}"
