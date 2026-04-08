@@ -115,18 +115,67 @@ from redis_client import (
 # Anti-duplicate auto-reply guard: tracks evo_message_id to prevent double replies
 # Evolution API often fires messages.upsert webhook multiple times for the same message
 import asyncio as _aio
-_auto_reply_dedup = {}  # key: evo_message_id -> timestamp
-_auto_reply_lock = _aio.Lock()
 _AUTO_REPLY_DEDUP_TTL = 120  # seconds
+_PING_PONG_TTL = 30          # seconds
+_OWNER_ATTENTION_TTL = 900   # 15 minutes
 
-# Ping-pong loop guard: tracks last auto-reply sent time per (user_id, phone)
-# key: "user_id:phone" -> timestamp of last auto-reply sent
+# In-memory fallbacks (used when Redis is unavailable / single-instance mode)
+_auto_reply_dedup: dict = {}
+_auto_reply_lock = _aio.Lock()
 _last_auto_reply_sent: dict = {}
-_PING_PONG_TTL = 30  # seconds — if we sent an auto-reply within this window, skip the next one
-_owner_last_manual_reply: dict = {}  # key: "user_id:phone" -> timestamp of last manual owner reply
-_OWNER_ATTENTION_TTL = 900  # 15 minutes — pause auto-reply after owner manually replies
-_owner_last_manual_reply: dict = {}  # key: "user_id:phone" -> timestamp of last manual owner reply
-_OWNER_ATTENTION_TTL = 900  # 15 minutes — pause auto-reply after owner manually replies
+_owner_last_manual_reply: dict = {}
+
+# ── Redis-backed helpers (cross-instance safe) ────────────────────────────────
+
+async def _dedup_check_and_set(key: str, ttl: int = _AUTO_REPLY_DEDUP_TTL) -> bool:
+    """Return True if this is a NEW key (not a duplicate). False = already seen."""
+    from redis_client import get_redis
+    r = await get_redis()
+    if r:
+        try:
+            # SET NX EX is atomic — returns True if key was newly set
+            return bool(await r.set(f"dedup:{key}", "1", nx=True, ex=ttl))
+        except Exception as e:
+            logging.warning(f"[Redis] dedup_check_and_set error: {e}")
+    # Fallback: in-memory (single-instance only)
+    global _auto_reply_dedup
+    import time as _t
+    now = _t.time()
+    async with _auto_reply_lock:
+        _auto_reply_dedup = {k: v for k, v in _auto_reply_dedup.items() if now - v <= ttl}
+        if key in _auto_reply_dedup:
+            return False
+        _auto_reply_dedup[key] = now
+    return True
+
+_ts_fallback: dict = {}  # in-memory fallback for _redis_set_ts / _redis_get_ts
+
+async def _redis_set_ts(key: str, ttl: int) -> None:
+    """Store current timestamp under key with TTL. Used for cooldown tracking."""
+    from redis_client import get_redis
+    import time as _t
+    r = await get_redis()
+    if r:
+        try:
+            await r.setex(f"ts:{key}", ttl, str(_t.time()))
+            return
+        except Exception as e:
+            logging.warning(f"[Redis] _redis_set_ts error: {e}")
+    # Fallback: in-memory (single-instance only)
+    import time as _t2
+    _ts_fallback[key] = _t2.time()
+
+async def _redis_get_ts(key: str) -> float:
+    """Return stored timestamp for key, or 0.0 if not found."""
+    from redis_client import get_redis
+    r = await get_redis()
+    if r:
+        try:
+            val = await r.get(f"ts:{key}")
+            return float(val) if val else 0.0
+        except Exception as e:
+            logging.warning(f"[Redis] _redis_get_ts error: {e}")
+    return _ts_fallback.get(key, 0.0)
 
 def serialize_doc(doc):
     """Recursively convert MongoDB ObjectId fields to strings for JSON serialization."""
@@ -6141,31 +6190,20 @@ async def evolution_webhook(request: Request):
                 return {"status": "ok"}
             
             # === DEDUPLICATION GUARD ===
-            # We must check this BEFORE any processing (including dynamic matching)
-            import time as _time
+            # Redis SET NX is atomic — safe across multiple server instances.
+            # Falls back to asyncio lock + in-memory dict when Redis is unavailable.
             import hashlib as _hl
-            
+
             _evo_id = parsed.get("evo_message_id", "")
             _body_content = parsed.get("body", "") or ""
             _u_id = parsed.get("user", {}).get("_id", "unknown")
             _cust_id_dedup = parsed.get("from_number", "unknown")
-            
-            # Dedup guard: Evolution API fires messages.upsert multiple times per message
+
             _dedup_key = _evo_id if _evo_id else f"{_u_id}:{_cust_id_dedup}:{_hl.md5(_body_content.encode()).hexdigest()[:16]}"
-            
-            async with _auto_reply_lock:
-                _now = _time.time()
-                # Clean old entries
-                _expired = [k for k, v in _auto_reply_dedup.items() if _now - v > _AUTO_REPLY_DEDUP_TTL]
-                for k in _expired:
-                    del _auto_reply_dedup[k]
-                
-                if _dedup_key in _auto_reply_dedup:
-                    logging.info(f"Webhook dedup: skipping duplicate key={_dedup_key[:30]}")
-                    return {"status": "ok"}
-                
-                # Mark as seen
-                _auto_reply_dedup[_dedup_key] = _now
+
+            if not await _dedup_check_and_set(_dedup_key, _AUTO_REPLY_DEDUP_TTL):
+                logging.info(f"Webhook dedup: skipping duplicate key={_dedup_key[:30]}")
+                return {"status": "ok"}
             # === END DEDUPLICATION GUARD ===
 
             log_trace(f"Parsed body: {parsed.get('body')}")
@@ -6324,8 +6362,7 @@ async def evolution_webhook(request: Request):
                     if existing:
                         print(f"DEBUG: Outgoing message already exists, skipping AI")
                         # Track manual owner reply — pause auto-reply for this contact for 15 min
-                        import time as _t_owner
-                        _owner_last_manual_reply[f"{user['_id']}:{from_number}"] = _t_owner.time()
+                        await _redis_set_ts(f"{user['_id']}:{from_number}:owner_reply", _OWNER_ATTENTION_TTL)
                         logging.info(f"Owner manually replied to {from_number} — auto-reply paused 15 min")
                         return {"status": "ok"}
                 
@@ -6484,7 +6521,7 @@ async def evolution_webhook(request: Request):
                 import time as _t_loop
                 _loop_key = f"{user['_id']}:{from_number}"
                 _now_loop = _t_loop.time()
-                _last_sent = _last_auto_reply_sent.get(_loop_key, 0)
+                _last_sent = await _redis_get_ts(f"{_loop_key}:auto_sent")
                 if _now_loop - _last_sent < _PING_PONG_TTL:
                     logging.info(f"Auto-reply BLOCKED: ping-pong loop detected for {from_number} (last reply {_now_loop - _last_sent:.1f}s ago)")
                     return {"status": "ok", "message": "loop guard: recent auto-reply detected"}
@@ -6495,7 +6532,7 @@ async def evolution_webhook(request: Request):
                 # block AI — owner is handling it.
                 # After 15 min with no new owner reply, AI resumes automatically.
                 # ============================================================
-                _owner_reply_ts = _owner_last_manual_reply.get(_loop_key, 0)
+                _owner_reply_ts = await _redis_get_ts(f"{_loop_key}:owner_reply")
                 _time_since_owner = _now_loop - _owner_reply_ts
                 _owner_handling = _owner_reply_ts > 0 and _time_since_owner < _OWNER_ATTENTION_TTL
                 if _owner_handling:
@@ -6638,8 +6675,7 @@ async def evolution_webhook(request: Request):
                             send_context="auto_reply"
                         )
 
-                    import time as _t_stamp
-                    _last_auto_reply_sent[f"{user['_id']}:{from_number}"] = _t_stamp.time()
+                    await _redis_set_ts(f"{user['_id']}:{from_number}:auto_sent", _PING_PONG_TTL)
                     return {"status": "ok", "handled_by": "agent"}
 
                 # Handle order button taps: "order_<product_id>"
@@ -7031,8 +7067,7 @@ async def evolution_webhook(request: Request):
                                     except Exception as img_err:
                                         logging.error(f"Failed to send product button/image {pid}: {img_err}")
                             
-                            import time as _t_stamp2
-                            _last_auto_reply_sent[f"{user['_id']}:{from_number}"] = _t_stamp2.time()
+                            await _redis_set_ts(f"{user['_id']}:{from_number}:auto_sent", _PING_PONG_TTL)
                             logging.info(f"Auto-replied to {c_name} ({from_number}), images_sent={len(images_sent)}")
                         
                     except Exception as e:
