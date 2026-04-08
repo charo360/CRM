@@ -380,6 +380,8 @@ export default function FollowupsScreen() {
   };
 
   const handleSendMessage = (customerId: string, phone: string, name: string, message?: string | null) => {
+    // Optimistically remove from Needs Attention — owner is now engaging
+    setColdCustomers(prev => prev.filter(c => c.id !== customerId));
     const text = message || `Hi ${name}, just checking in!`;
     router.push({
       pathname: '/chat',

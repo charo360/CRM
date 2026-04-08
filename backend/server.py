@@ -2739,6 +2739,21 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
             logging.warning(f"[HistorySync] create_customer failed for {phone}: {e}")
     asyncio.create_task(_pull_history(business_id, customer_id, clean_phone))
 
+    # Trigger immediate analysis so new customer appears in Needs Attention right away
+    async def _analyze_new_customer(uid, cid):
+        try:
+            from daily_analyzer import DailyCustomerAnalyzer
+            analyzer = DailyCustomerAnalyzer(db)
+            analysis = await analyzer.analyze_single_customer(cid, uid)
+            if analysis:
+                today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                analysis["show_date"] = today
+                analysis["analysis_date"] = datetime.utcnow()
+                await db.customer_analysis.insert_one(analysis)
+        except Exception as e:
+            logging.debug(f"New customer analysis failed: {e}")
+    asyncio.create_task(_analyze_new_customer(business_id, customer_id))
+
     return CustomerResponse(
         id=customer_id,
         user_id=business_id,
@@ -6347,6 +6362,28 @@ async def evolution_webhook(request: Request):
                     {"_id": customer_id},
                     {"$set": native_update}
                 )
+
+                # Real-time: re-analyse this customer immediately on incoming message
+                if not from_me and customer_id:
+                    async def _realtime_analyze(uid, cid):
+                        try:
+                            from daily_analyzer import DailyCustomerAnalyzer
+                            analyzer = DailyCustomerAnalyzer(db)
+                            analysis = await analyzer.analyze_single_customer(cid, uid)
+                            if analysis:
+                                today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                                analysis["show_date"] = today
+                                analysis["analysis_date"] = datetime.utcnow()
+                                # Upsert — replace today's analysis for this customer
+                                await db.customer_analysis.delete_one({
+                                    "user_id": uid,
+                                    "customer_id": cid,
+                                    "show_date": {"$gte": today},
+                                })
+                                await db.customer_analysis.insert_one(analysis)
+                        except Exception as e:
+                            logging.debug(f"Real-time analysis failed for {cid}: {e}")
+                    asyncio.create_task(_realtime_analyze(user["_id"], customer_id))
 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:

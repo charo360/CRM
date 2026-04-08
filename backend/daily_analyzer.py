@@ -49,7 +49,7 @@ class DailyCustomerAnalyzer:
                     {"is_customer": True},
                     {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}
                 ],
-            }).to_list(500)
+            }).sort("last_owner_reply", 1).to_list(500)
 
             if not customers:
                 return []
@@ -208,25 +208,25 @@ class DailyCustomerAnalyzer:
         else:
             score += 5    # Old import, never engaged
 
-        # --- Factor 2: Time since OWNER last replied ---
-        days_since = self._get_days_since_owner_reply(customer)
+        # --- Factor 2: Time since OWNER last replied (uses hours for sub-day precision) ---
+        hours_since = self._get_hours_since_owner_reply(customer)
 
         if has_conversation:
-            if days_since is not None and days_since <= 1:
-                score += 45   # 24h — critical window
-            elif days_since is not None and days_since <= 3:
+            if hours_since is None:
+                score += 35   # Never replied to this customer
+            elif hours_since <= 24:
+                score += 45   # Within 24h — critical window
+            elif hours_since <= 72:
                 score += 35   # 3 days — important
-            elif days_since is not None and days_since <= 7:
+            elif hours_since <= 168:
                 score += 20   # 1 week
-            elif days_since is not None and days_since <= 14:
-                score += 12
-            elif days_since is not None and days_since <= 30:
-                score += 7
-            elif days_since is None:
-                score += 30   # Never replied — owner has never sent a message
+            elif hours_since <= 336:
+                score += 12   # 2 weeks
+            elif hours_since <= 720:
+                score += 7    # 30 days
         else:
             if days_since_created is not None and days_since_created <= 7:
-                score += 15   # New, no conversation yet
+                score += 15
             else:
                 score += 3
 
@@ -259,6 +259,20 @@ class DailyCustomerAnalyzer:
         if has_pending_followup:
             score -= 30
 
+        # --- Factor 6: Hot lead — multiple unanswered incoming messages ---
+        if messages:
+            # Count consecutive incoming messages at the end (unanswered streak)
+            unanswered_streak = 0
+            for msg in reversed(messages):
+                if msg.get("direction") == "incoming":
+                    unanswered_streak += 1
+                else:
+                    break
+            if unanswered_streak >= 3:
+                score += 25   # Hot lead — messaged 3+ times with no reply
+            elif unanswered_streak == 2:
+                score += 10
+
         return max(0, min(100, score))
 
     def _get_days_since_owner_reply(self, customer: Dict) -> Optional[int]:
@@ -269,6 +283,16 @@ class DailyCustomerAnalyzer:
         if isinstance(last_reply, str):
             last_reply = datetime.fromisoformat(last_reply.replace("Z", "+00:00"))
         return (datetime.utcnow() - last_reply).days
+
+    def _get_hours_since_owner_reply(self, customer: Dict) -> Optional[float]:
+        """Hours since the owner last sent a message."""
+        last_reply = customer.get("last_owner_reply")
+        if not last_reply:
+            return None
+        if isinstance(last_reply, str):
+            last_reply = datetime.fromisoformat(last_reply.replace("Z", "+00:00"))
+        delta = datetime.utcnow() - last_reply
+        return delta.total_seconds() / 3600
 
     def _get_urgency_level(self, score: int) -> str:
         if score >= 80:
