@@ -264,6 +264,17 @@ async def fix_team_members_index():
         logging.info(f"[Migration] is_customer backfill: {r1.modified_count} contacts, {r2.modified_count} customers")
     except Exception as e:
         logging.warning(f"[Migration] is_customer backfill failed: {e}")
+    # Promote contacts that already have reminders to is_customer=True
+    try:
+        contacts_with_reminders = await db.followups.distinct("customer_id")
+        if contacts_with_reminders:
+            r3 = await db.customers.update_many(
+                {"_id": {"$in": contacts_with_reminders}, "is_customer": {"$ne": True}},
+                {"$set": {"is_customer": True}}
+            )
+            logging.info(f"[Migration] Promoted {r3.modified_count} contacts with reminders to customers")
+    except Exception as e:
+        logging.warning(f"[Migration] Reminder-based promotion failed: {e}")
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
@@ -3168,6 +3179,13 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
+    # Promote to customer if they were auto-created (contact pool) — creating a reminder signals intent
+    if not customer.get("is_customer"):
+        await db.customers.update_one(
+            {"_id": followup.customer_id},
+            {"$set": {"is_customer": True}}
+        )
+
     followup_id = str(uuid.uuid4())
     followup_doc = {
         "_id": followup_id,
@@ -3179,7 +3197,7 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         "type": followup.type,
         "created_at": datetime.utcnow()
     }
-    
+
     await db.followups.insert_one(followup_doc)
     
     return FollowUpResponse(
