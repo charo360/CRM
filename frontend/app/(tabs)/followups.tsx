@@ -99,6 +99,13 @@ interface FollowUpAnalytics {
 
 type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week' | 'later';
 
+const getDisplayName = (name: string, phone: string): string => {
+  if (!name) return phone || 'Unknown';
+  if (name === phone) return phone || 'Unknown';
+  if (/^(Customer|Contact)\s+\d{4}$/.test(name.trim())) return phone || name;
+  return name;
+};
+
 export default function FollowupsScreen() {
   const router = useRouter();
   const [followups, setFollowups] = useState<FollowUp[]>([]);
@@ -618,7 +625,7 @@ export default function FollowupsScreen() {
             color={isOverdue ? '#FF4444' : (typeColors[item.type] || '#25D366')}
           />
           <View style={styles.followupInfo}>
-            <Text style={styles.customerName} numberOfLines={1}>{item.customer_name}</Text>
+            <Text style={styles.customerName} numberOfLines={1}>{getDisplayName(item.customer_name, item.customer_phone)}</Text>
             <Text style={styles.customerPhone}>{item.customer_phone}</Text>
           </View>
           <View style={styles.followupDateBadge}>
@@ -727,7 +734,7 @@ export default function FollowupsScreen() {
           <Text style={styles.coldAvatarText}>{customer.name.charAt(0)}</Text>
         </View>
         <View style={styles.coldCustomerDetails}>
-          <Text style={styles.coldCustomerName} numberOfLines={1}>{customer.name}</Text>
+          <Text style={styles.coldCustomerName} numberOfLines={1}>{getDisplayName(customer.name, customer.phone_number)}</Text>
           <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
         </View>
         <View style={styles.coldMetaRight}>

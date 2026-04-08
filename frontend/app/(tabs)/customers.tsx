@@ -114,6 +114,13 @@ interface Message {
 }
 
 export default function CustomersScreen() {
+  const getDisplayName = (name: string, phone: string): string => {
+    if (!name) return phone || 'Unknown';
+    if (name === phone) return phone || 'Unknown';
+    if (/^(Customer|Contact)\s+\d{4}$/.test(name.trim())) return phone || name;
+    return name;
+  };
+
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -1045,7 +1052,7 @@ export default function CustomersScreen() {
                 backgroundColor: STAGE_COLORS[item.stage] || '#8696A0',
               }} />
             )}
-            <Text style={[styles.chatRowName, { flex: 1 }]} numberOfLines={1}>{item.name}</Text>
+            <Text style={[styles.chatRowName, { flex: 1 }]} numberOfLines={1}>{getDisplayName(item.name, item.phone_number)}</Text>
           </View>
           <Text style={styles.chatRowTime}>{formatLastContact(item.last_contacted)}</Text>
         </View>

@@ -6069,12 +6069,24 @@ async def evolution_webhook(request: Request):
                 lid_update = {}
                 if remote_jid_val and "@lid" in remote_jid_val and not customer.get("lid_jid"):
                     lid_update["lid_jid"] = remote_jid_val
+                # Auto-update fallback names when WhatsApp push_name is available
+                existing_name = customer.get("name", "")
+                import re as _re
+                is_fallback = (
+                    existing_name == from_number or
+                    _re.match(r'^(Customer|Contact)\s+\d+$', existing_name) is not None
+                )
+                name_update = {}
+                if push_name and is_fallback:
+                    name_update["name"] = push_name
+                    customer_name = push_name
                 await db.customers.update_one(
                     {"_id": customer["_id"]},
                     {"$set": {
                         "last_message": body[:200] if body else None,
                         "last_contacted": datetime.utcnow(),
                         **lid_update,
+                        **name_update,
                     }}
                 )
             else:
