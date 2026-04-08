@@ -267,17 +267,96 @@ async def fix_team_members_index():
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
+    # Fix fallback names on startup (runs once after a short delay)
+    async def _startup_name_fix():
+        await asyncio.sleep(30)
+        await _backfill_all_users_names()
+    asyncio.create_task(_startup_name_fix())
 
 async def run_automation_scheduler():
     """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
     import asyncio
     await asyncio.sleep(10)  # brief delay to let server finish starting
+    run_count = 0
     while True:
         try:
             await execute_broadcast_automations()
         except Exception as e:
             logging.error(f"Automation scheduler error: {e}")
+        # Run name backfill every 6 hours to fix Customer/Contact XXXX names
+        if run_count % 6 == 0:
+            try:
+                await _backfill_all_users_names()
+            except Exception as e:
+                logging.error(f"Name backfill scheduler error: {e}")
+        run_count += 1
         await asyncio.sleep(3600)  # check every hour
+
+async def _backfill_all_users_names():
+    """Fix fallback names (Customer XXXX / Contact XXXX / raw phone) for all users"""
+    from whatsapp_service import get_whatsapp_service, EVOLUTION_API_URL, EVOLUTION_API_KEY
+    import httpx as _httpx, re as _re
+    users = await db.users.find(
+        {"whatsapp.instance_name": {"$exists": True, "$ne": ""}},
+        {"_id": 1, "whatsapp": 1}
+    ).to_list(None)
+    for u in users:
+        try:
+            uid = u["_id"]
+            instance_name = u.get("whatsapp", {}).get("instance_name")
+            if not instance_name:
+                continue
+            base_url = EVOLUTION_API_URL.rstrip("/")
+            headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
+            evo_names = {}
+            async with _httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    f"{base_url}/chat/findContacts/{instance_name}",
+                    headers=headers, json={"where": {}},
+                )
+                if resp.status_code == 200:
+                    contacts = resp.json()
+                    if not isinstance(contacts, list):
+                        contacts = contacts.get("contacts", contacts.get("data", []))
+                    for c in contacts:
+                        jid = c.get("remoteJid", "")
+                        name = c.get("pushName") or c.get("name") or c.get("notify") or ""
+                        if "@s.whatsapp.net" in jid and name:
+                            digits = jid.replace("@s.whatsapp.net", "").strip()
+                            evo_names[digits] = name
+            if not evo_names:
+                continue
+            fallback_customers = await db.customers.find({
+                "user_id": uid,
+                "$or": [
+                    {"name": {"$regex": "^(Contact|Customer)\\s+[0-9]"}},
+                    {"name": {"$regex": "^[+]?[0-9]"}},
+                    {"name": ""},
+                    {"name": None},
+                ]
+            }, {"_id": 1, "phone_number": 1, "name": 1}).to_list(None)
+            updated = 0
+            for cust in fallback_customers:
+                raw_phone = cust.get("phone_number", "")
+                digits = raw_phone.lstrip("+").replace(" ", "").replace("-", "")
+                new_name = evo_names.get(digits, "")
+                if not new_name:
+                    msg = await db.messages.find_one(
+                        {"customer_id": cust["_id"], "user_id": uid,
+                         "push_name": {"$exists": True, "$ne": ""}},
+                        sort=[("created_at", -1)]
+                    )
+                    if msg:
+                        new_name = msg.get("push_name", "")
+                if new_name and not _re.match(r'^(Contact|Customer)\s+\d+$', new_name):
+                    await db.customers.update_one(
+                        {"_id": cust["_id"]}, {"$set": {"name": new_name}}
+                    )
+                    updated += 1
+            if updated:
+                logging.info(f"[NameBackfill] Updated {updated} names for user {uid}")
+        except Exception as e:
+            logging.warning(f"[NameBackfill] Error for user {u.get('_id')}: {e}")
 
 async def execute_broadcast_automations():
     """Find and execute all due broadcast automations"""

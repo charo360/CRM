@@ -242,15 +242,6 @@ export default function CustomersScreen() {
     }
   };
 
-  const handleFixNames = async () => {
-    try {
-      await apiClient.post('/customers/backfill-names');
-      Alert.alert('Fixing Names', 'Fetching real names from WhatsApp in the background. Pull to refresh in a moment.');
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.detail || 'Could not fix names. Make sure WhatsApp is connected.');
-    }
-  };
-
   React.useLayoutEffect(() => {
     navigation.setOptions({
       headerTitle: () => (
@@ -274,15 +265,6 @@ export default function CustomersScreen() {
             </Text>
           </TouchableOpacity>
         </View>
-      ),
-      headerRight: () => (
-        <TouchableOpacity
-          onPress={handleFixNames}
-          style={{ marginRight: 16, flexDirection: 'row', alignItems: 'center', gap: 4 }}
-        >
-          <Ionicons name="person-circle-outline" size={20} color="#25D366" />
-          <Text style={{ color: '#25D366', fontSize: 12, fontWeight: '600' }}>Fix Names</Text>
-        </TouchableOpacity>
       ),
     });
   }, [navigation, aiModel]);
