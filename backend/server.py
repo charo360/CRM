@@ -278,11 +278,33 @@ async def fix_team_members_index():
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
-    # Fix fallback names on startup (runs once after a short delay)
-    async def _startup_name_fix():
+    # Fix fallback names + backfill last_owner_reply on startup
+    async def _startup_tasks():
         await asyncio.sleep(30)
         await _backfill_all_users_names()
-    asyncio.create_task(_startup_name_fix())
+        await _backfill_last_owner_reply()
+    asyncio.create_task(_startup_tasks())
+
+async def _backfill_last_owner_reply():
+    """Populate last_owner_reply from outgoing messages for all customers that don't have it yet."""
+    try:
+        customers = await db.customers.find(
+            {"last_owner_reply": {"$exists": False}}
+        ).to_list(None)
+        updated = 0
+        for c in customers:
+            last_out = await db.messages.find_one(
+                {"customer_id": c["_id"], "direction": "outgoing"},
+                sort=[("created_at", -1)]
+            )
+            await db.customers.update_one(
+                {"_id": c["_id"]},
+                {"$set": {"last_owner_reply": last_out["created_at"] if last_out else None}}
+            )
+            updated += 1
+        logging.info(f"[Migration] last_owner_reply backfilled for {updated} customers")
+    except Exception as e:
+        logging.warning(f"[Migration] last_owner_reply backfill failed: {e}")
 
 async def run_automation_scheduler():
     """Runs every hour — executes due broadcast automations (auto follow-up & recurring)"""
@@ -3023,10 +3045,10 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
             if not c.get("is_customer", True) and c.get("auto_created"):
                 continue
             
-            # CRITICAL: Only include if they actually need attention (>7 days or never contacted)
-            last_contacted = c.get("last_contacted")
-            if last_contacted and last_contacted >= cutoff_date:
-                continue  # Skip - contacted recently
+            # Only include if owner has NOT replied recently (use last_owner_reply, not last_contacted)
+            last_owner_reply = c.get("last_owner_reply")
+            if last_owner_reply and last_owner_reply >= cutoff_date:
+                continue  # Skip - owner replied recently
             
             analyzed_customer_ids.add(c["_id"])
             auto_seq = await db.followups.find_one({"customer_id": c["_id"], "status": "pending", "is_auto_sequence": True})
@@ -3045,22 +3067,23 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
             })
     
     # Then, add customers that need attention but don't have analysis yet
+    # Use last_owner_reply — only counts when the owner actually sent a message
     customers_without_analysis = await db.customers.find({
         "user_id": business_id,
         "$and": [
             {"$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}]},
-            {"$or": [{"last_contacted": {"$lt": cutoff_date}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]},
+            {"$or": [{"last_owner_reply": {"$lt": cutoff_date}}, {"last_owner_reply": None}, {"last_owner_reply": {"$exists": False}}]},
         ],
-    }).sort("last_contacted", 1).to_list(100)
-    
+    }).sort("last_owner_reply", 1).to_list(100)
+
     for c in customers_without_analysis:
-        # Skip if already added from analysis
         if c["_id"] in analyzed_customer_ids:
             continue
-            
+
         pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending", "is_auto_sequence": {"$ne": True}})
         auto_seq = await db.followups.find_one({"customer_id": c["_id"], "status": "pending", "is_auto_sequence": True})
-        days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
+        last_owner_reply = c.get("last_owner_reply")
+        days_since_contact = (datetime.utcnow() - last_owner_reply).days if last_owner_reply else None
 
         # Use simple rule-based reason to avoid timeout
         ai_reason = generate_simple_reason(c, days_since_contact)
@@ -3542,10 +3565,9 @@ async def record_followup_event(
     }
     await db.followup_events.insert_one(event)
 
-    # Update last_contacted so they drop off Needs Attention
     await db.customers.update_one(
         {"_id": customer_id},
-        {"$set": {"last_contacted": datetime.utcnow()}}
+        {"$set": {"last_contacted": datetime.utcnow(), "last_owner_reply": datetime.utcnow()}}
     )
     return {"status": "ok", "id": event["_id"]}
 
@@ -3608,30 +3630,29 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
     cutoff_month = now - timedelta(days=30)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Real customers only — use $and to safely combine two $or conditions
+    # Use last_owner_reply — only counts when owner actually sent a message
     _is_customer = {"$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}]}
-    _no_contact_week = {"$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]}
-    _no_contact_month = {"$or": [{"last_contacted": {"$lt": cutoff_month}}, {"last_contacted": None}, {"last_contacted": {"$exists": False}}]}
-    
-    # Count today's analyzed customers that need attention (respects random daily quota)
+    _no_reply_week = {"$or": [{"last_owner_reply": {"$lt": cutoff_week}}, {"last_owner_reply": None}, {"last_owner_reply": {"$exists": False}}]}
+    _no_reply_month = {"$or": [{"last_owner_reply": {"$lt": cutoff_month}}, {"last_owner_reply": None}, {"last_owner_reply": {"$exists": False}}]}
+
+    # Count today's analyzed customers that need attention
     analyzed_count = 0
     smart_insights = await db.customer_analysis.find({
         "user_id": business_id,
         "analysis_date": {"$gte": today}
     }).to_list(100)
-    
+
     for analysis in smart_insights:
         c = await db.customers.find_one({"_id": analysis["customer_id"]})
         if c:
-            last_contacted = c.get("last_contacted")
-            # Only count if they actually need attention (>7 days or never)
-            if not last_contacted or last_contacted < cutoff_week:
+            last_owner_reply = c.get("last_owner_reply")
+            if not last_owner_reply or last_owner_reply < cutoff_week:
                 analyzed_count += 1
-    
+
     # Count non-analyzed customers that still need attention
     non_analyzed_customers = await db.customers.find({
         "user_id": business_id,
-        "$and": [_is_customer, _no_contact_week]
+        "$and": [_is_customer, _no_reply_week]
     }).to_list(100)
     
     analyzed_ids = {a["customer_id"] for a in smart_insights}
@@ -3640,10 +3661,9 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
     # Total shown in Needs Attention list = analyzed + non-analyzed (up to 30 max per endpoint)
     neglected_week = min(analyzed_count + non_analyzed_count, 30)
     
-    # Customers not contacted in 30+ days (or never) - keep original logic
     neglected_month = await db.customers.count_documents({
         "user_id": business_id,
-        "$and": [_is_customer, _no_contact_month]
+        "$and": [_is_customer, _no_reply_month]
     })
     # New customers (created in last 7 days) with no follow-up
     new_cutoff = now - timedelta(days=7)
@@ -6194,10 +6214,9 @@ async def evolution_webhook(request: Request):
                     **lid_update,
                     **name_update,
                 }
-                # Only update last_contacted when the OWNER sends a message
-                # Incoming messages from customer should NOT reset the "not contacted" timer
                 if from_me:
                     contact_update["last_contacted"] = datetime.utcnow()
+                    contact_update["last_owner_reply"] = datetime.utcnow()
                 await db.customers.update_one(
                     {"_id": customer["_id"]},
                     {"$set": contact_update}
@@ -6325,10 +6344,10 @@ async def evolution_webhook(request: Request):
                     msg_doc["remote_jid"] = remote_jid
                 await db.messages.insert_one(msg_doc)
 
-                # Only update last_contacted when OWNER sends — keeps Needs Attention accurate
                 native_update = {"last_message": body[:200] if body else ""}
                 if from_me:
                     native_update["last_contacted"] = datetime.utcnow()
+                    native_update["last_owner_reply"] = datetime.utcnow()
                 await db.customers.update_one(
                     {"_id": customer_id},
                     {"$set": native_update}
@@ -7293,10 +7312,8 @@ async def add_customer_message(customer_id: str, message: MessageCreate, user = 
     
     await db.messages.insert_one(message_doc)
     
-    # Update customer's last message and contacted time
-    update_data = {"last_contacted": datetime.utcnow()}
+    update_data = {"last_contacted": datetime.utcnow(), "last_owner_reply": datetime.utcnow()}
     update_data["last_message"] = message.content[:200]
-    
     await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
     
     return {"id": message_id, "status": "success"}
@@ -7637,10 +7654,9 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
     }
     await db.messages.insert_one(message_doc)
     
-    # Update customer's last contacted time
     await db.customers.update_one(
         {"_id": request.customer_id},
-        {"$set": {"last_contacted": datetime.utcnow()}}
+        {"$set": {"last_contacted": datetime.utcnow(), "last_owner_reply": datetime.utcnow()}}
     )
     
     # Send via WhatsApp
