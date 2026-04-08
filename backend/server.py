@@ -6340,7 +6340,11 @@ async def evolution_webhook(request: Request):
                     "from_number": from_number,
                     "created_at": datetime.utcnow(),
                 }
-                
+
+                # Store push_name on incoming messages so name backfill can use it
+                if not from_me and push_name:
+                    msg_doc["push_name"] = push_name
+
                 # Add image URL if present
                 if parsed.get("image_url"):
                     msg_doc["image_url"] = parsed["image_url"]
