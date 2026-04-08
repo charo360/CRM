@@ -117,7 +117,7 @@ export default function CustomersScreen() {
   const getDisplayName = (name: string, phone: string): string => {
     if (!name) return phone || 'Unknown';
     if (name === phone) return phone || 'Unknown';
-    if (/^(Customer|Contact)\s+\d{4}$/.test(name.trim())) return phone || name;
+    if (/^(Customer|Contact)\s+\d+$/.test(name.trim())) return phone || name;
     return name;
   };
 
@@ -1433,14 +1433,14 @@ export default function CustomersScreen() {
                 <View style={[styles.contactRow, item.suggested_type && { borderLeftWidth: 3, borderLeftColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366' }]}>
                   <TouchableOpacity
                     style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
-                    onPress={() => router.push({ pathname: '/chat', params: { customerId: item.id, customerName: item.name, customerPhone: item.phone_number } })}
+                    onPress={() => router.push({ pathname: '/chat', params: { customerId: item.id, customerName: getDisplayName(item.name, item.phone_number), customerPhone: item.phone_number } })}
                   >
                     <View style={styles.contactAvatar}>
-                      <Text style={styles.contactAvatarText}>{item.name?.charAt(0)?.toUpperCase() || '?'}</Text>
+                      <Text style={styles.contactAvatarText}>{getDisplayName(item.name, item.phone_number)?.charAt(0)?.toUpperCase() || '?'}</Text>
                     </View>
                     <View style={styles.contactInfo}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                        <Text style={styles.contactName} numberOfLines={1}>{item.name}</Text>
+                        <Text style={styles.contactName} numberOfLines={1}>{getDisplayName(item.name, item.phone_number)}</Text>
                         {item.suggested_type === 'customer' && (
                           <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A3B2A', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2, gap: 3 }}>
                             <Ionicons name="sparkles" size={9} color="#25D366" />

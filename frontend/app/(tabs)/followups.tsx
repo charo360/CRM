@@ -105,7 +105,7 @@ type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week' | 'late
 const getDisplayName = (name: string, phone: string): string => {
   if (!name) return phone || 'Unknown';
   if (name === phone) return phone || 'Unknown';
-  if (/^(Customer|Contact)\s+\d{4}$/.test(name.trim())) return phone || name;
+  if (/^(Customer|Contact)\s+\d+$/.test(name.trim())) return phone || name;
   return name;
 };
 
