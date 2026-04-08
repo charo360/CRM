@@ -5539,7 +5539,9 @@ async def backfill_contact_names(user = Depends(get_current_user)):
                 "user_id": uid,
                 "$or": [
                     {"name": {"$regex": "^Contact [0-9]"}},
+                    {"name": {"$regex": "^Customer [0-9]"}},
                     {"name": {"$regex": "^[+][0-9]"}},
+                    {"name": {"$regex": "^[0-9]"}},
                     {"name": ""},
                     {"name": None},
                 ]
@@ -5563,7 +5565,9 @@ async def backfill_contact_names(user = Depends(get_current_user)):
                     if msg:
                         new_name = msg.get("push_name", "")
 
-                if new_name and not new_name.startswith("Contact "):
+                import re as _re2
+                is_still_fallback = bool(_re2.match(r'^(Contact|Customer)\s+\d+$', new_name))
+                if new_name and not is_still_fallback:
                     await db.customers.update_one(
                         {"_id": cust["_id"]},
                         {"$set": {"name": new_name}}
