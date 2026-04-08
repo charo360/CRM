@@ -3026,11 +3026,11 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
     # Get today's analysis date
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     
-    # Try to get Smart Insights first (AI Daily Analysis)
-    # This respects the "Smart Tiers" (limit 10/20/30) and "Smart Cadence" (24h/3d)
+    # Get today's scheduled insights (respects daily cap + queuing)
+    tomorrow = today + timedelta(days=1)
     smart_insights = await db.customer_analysis.find({
         "user_id": business_id,
-        "analysis_date": {"$gte": today}
+        "show_date": {"$gte": today, "$lt": tomorrow},
     }).sort("urgency_score", -1).to_list(100)
     
     result = []
@@ -3635,19 +3635,14 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
     _no_reply_week = {"$or": [{"last_owner_reply": {"$lt": cutoff_week}}, {"last_owner_reply": None}, {"last_owner_reply": {"$exists": False}}]}
     _no_reply_month = {"$or": [{"last_owner_reply": {"$lt": cutoff_month}}, {"last_owner_reply": None}, {"last_owner_reply": {"$exists": False}}]}
 
-    # Count today's analyzed customers that need attention
+    # Count today's scheduled insights
     analyzed_count = 0
+    tomorrow = today + timedelta(days=1)
     smart_insights = await db.customer_analysis.find({
         "user_id": business_id,
-        "analysis_date": {"$gte": today}
+        "show_date": {"$gte": today, "$lt": tomorrow},
     }).to_list(100)
-
-    for analysis in smart_insights:
-        c = await db.customers.find_one({"_id": analysis["customer_id"]})
-        if c:
-            last_owner_reply = c.get("last_owner_reply")
-            if not last_owner_reply or last_owner_reply < cutoff_week:
-                analyzed_count += 1
+    analyzed_count = len(smart_insights)
 
     # Count non-analyzed customers that still need attention
     non_analyzed_customers = await db.customers.find({

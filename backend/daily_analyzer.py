@@ -1,12 +1,24 @@
 """
 Daily Customer Analyzer
-Analyzes all customers daily and identifies who needs attention
+Analyzes all customers daily and identifies who needs attention.
+
+Urgency tiers:
+  critical  (score 80-100) — unanswered message, asked a question, 24h-3d window
+  high      (score 50-79)  — VIP/Returning going cold, 3-14 days no reply
+  normal    (score 20-49)  — new customer never contacted, 14-30 days no reply
+  low       (<20)          — old import, no conversation, skip
+
+Daily cap (to avoid overwhelming the user):
+  - ALL critical shown (never hide an unanswered message)
+  - Up to 10 high shown today, rest queued for tomorrow
+  - Up to 5 normal shown today, rest spread over next 3 days
+  => Max ~20 per day for large accounts
 """
 import asyncio
+import math
 from datetime import datetime, timedelta
-from typing import List, Dict
+from typing import List, Dict, Optional
 import logging
-from motor.motor_asyncio import AsyncIOMotorClient
 from ai_service import get_drafter
 
 logger = logging.getLogger(__name__)
@@ -14,383 +26,325 @@ logger = logging.getLogger(__name__)
 
 class DailyCustomerAnalyzer:
     """Analyzes customers daily and generates insights"""
-    
+
     def __init__(self, db):
         self.db = db
         self.drafter = get_drafter()
-    
+
+    # ------------------------------------------------------------------ #
+    #  Public API
+    # ------------------------------------------------------------------ #
+
     async def analyze_all_customers(self, user_id: str) -> List[Dict]:
         """
-        Analyze all customers for a user and generate insights
-        
-        Returns:
-            List of customer analyses sorted by urgency (highest first)
+        Analyse all customers, score them, apply daily caps, queue overflow.
+        Returns today's visible list sorted by urgency.
         """
         try:
-            logger.info(f"Starting optimized daily analysis for user {user_id}")
-            
-            # Optimization: Only analyze customers who might actually need a follow-up
-            # (e.g., haven't been contacted in 3+ days or have no contact history)
-            three_days_ago = datetime.utcnow() - timedelta(days=3)
+            logger.info(f"[Analyzer] Starting analysis for user {user_id}")
+
             customers = await self.db.customers.find({
                 "user_id": user_id,
-                "$or": [{"is_customer": True}, {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}],
-            }).sort("last_contacted", 1).to_list(100) # Limit candidates to top 100 cold ones
-            
+                "$or": [
+                    {"is_customer": True},
+                    {"is_customer": {"$exists": False}, "auto_created": {"$ne": True}}
+                ],
+            }).to_list(500)
+
             if not customers:
-                logger.info(f"No candidates for follow-up found for user {user_id}")
                 return []
-            
-            # Get user info for business name
+
             user = await self.db.users.find_one({"_id": user_id})
-            business_name = user.get('business_name', 'Your Business') if user else 'Your Business'
-            
-            analyses = []
-            
-            # Process in small chunks to avoid overwhelming the system
+            business_name = user.get("business_name", "Your Business") if user else "Your Business"
+
+            # Score every customer
+            all_analyses = []
             for customer in customers:
                 try:
                     analysis = await self._analyze_customer(customer, business_name)
                     if analysis:
-                        analyses.append(analysis)
-                    
-                    # Optional: Add a small delay if needed to respect AI rate limits
-                    # await asyncio.sleep(0.1) 
+                        all_analyses.append(analysis)
                 except Exception as e:
-                    logger.error(f"Error analyzing customer {customer['_id']}: {e}")
-                    continue
-            
-            # Sort by urgency score (highest first)
-            analyses.sort(key=lambda x: x['urgency_score'], reverse=True)
-            
-            # Apply Daily Quota (Small/Medium/Power tiers)
-            daily_quota = self._get_daily_quota(len(customers))
-            analyses = analyses[:daily_quota]
-            
-            # Store analyses in database
-            if analyses:
-                await self._store_analyses(analyses)
-            
-            logger.info(f"Completed analysis for {len(analyses)} customers")
-            return analyses
+                    logger.error(f"[Analyzer] Error on customer {customer['_id']}: {e}")
+
+            all_analyses.sort(key=lambda x: x["urgency_score"], reverse=True)
+
+            # Split into tiers
+            critical = [a for a in all_analyses if a["urgency_score"] >= 80]
+            high     = [a for a in all_analyses if 50 <= a["urgency_score"] < 80]
+            normal   = [a for a in all_analyses if 20 <= a["urgency_score"] < 50]
+
+            today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Assign show_date — critical always today, others capped and queued
+            MAX_HIGH   = 10
+            MAX_NORMAL = 5
+
+            to_store = []
+
+            # All critical → today
+            for a in critical:
+                a["show_date"] = today
+                to_store.append(a)
+
+            # High — today's batch + queue overflow across next days
+            for i, a in enumerate(high):
+                day_offset = i // MAX_HIGH  # 0 today, 1 tomorrow, etc.
+                a["show_date"] = today + timedelta(days=day_offset)
+                to_store.append(a)
+
+            # Normal — spread across days after high overflow
+            high_days = math.ceil(len(high) / MAX_HIGH) if high else 0
+            for i, a in enumerate(normal):
+                day_offset = high_days + (i // MAX_NORMAL)
+                a["show_date"] = today + timedelta(days=day_offset)
+                to_store.append(a)
+
+            if to_store:
+                await self._store_analyses(user_id, to_store)
+
+            today_visible = [a for a in to_store if a["show_date"] <= today]
+            logger.info(
+                f"[Analyzer] {user_id}: {len(critical)} critical, "
+                f"{len(high)} high, {len(normal)} normal. "
+                f"Showing {len(today_visible)} today."
+            )
+            return today_visible
+
         except Exception as e:
-            logger.error(f"Failed to run all-customer analysis: {e}")
+            logger.error(f"[Analyzer] Failed for user {user_id}: {e}")
             return []
-    
-    def _get_daily_quota(self, total_customers: int) -> int:
-        """Get daily suggestion limit based on business size - randomized for natural feel"""
-        import random
-        
-        if total_customers < 100:
-            return random.randint(6, 10)  # Small Shop: 6-10 suggestions
-        elif total_customers < 500:
-            return random.randint(8, 15)  # Medium Shop: 8-15 suggestions
-        else:
-            return random.randint(10, 20)  # Power User: 10-20 suggestions (never overwhelming)
 
     async def analyze_single_customer(self, customer_id: str, user_id: str) -> Dict:
-        """Analyze a single customer on demand"""
         customer = await self.db.customers.find_one({"_id": customer_id, "user_id": user_id})
         if not customer:
             return None
-            
-        # Get business name
         user = await self.db.users.find_one({"_id": user_id})
-        business_name = user.get('business_name', 'Your Business') if user else 'Your Business'
-        
+        business_name = user.get("business_name", "Your Business") if user else "Your Business"
         return await self._analyze_customer(customer, business_name)
 
-    async def _analyze_customer(self, customer: Dict, business_name: str) -> Dict:
-        """Analyze a single customer and generate urgency score"""
-        
-        customer_id = customer['_id']
-        
-        # Get message history for this customer
+    async def get_todays_insights(self, user_id: str, limit: int = 10) -> List[Dict]:
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow = today + timedelta(days=1)
+        analyses = await self.db.customer_analysis.find({
+            "user_id": user_id,
+            "show_date": {"$gte": today, "$lt": tomorrow},
+        }).sort("urgency_score", -1).limit(limit).to_list(limit)
+        return analyses
+
+    # ------------------------------------------------------------------ #
+    #  Scoring
+    # ------------------------------------------------------------------ #
+
+    async def _analyze_customer(self, customer: Dict, business_name: str) -> Optional[Dict]:
+        customer_id = customer["_id"]
+
         messages = await self.db.messages.find({
             "customer_id": customer_id,
-            "user_id": customer.get("user_id")
-        }).sort("timestamp", -1).limit(10).to_list(10)
-        
-        # Reverse to get chronological order
+            "user_id": customer.get("user_id"),
+        }).sort("created_at", -1).limit(10).to_list(10)
         messages = list(reversed(messages))
-        
-        # Check if customer already has a pending follow-up
+
         has_pending_followup = await self.db.followups.find_one({
             "customer_id": customer_id,
-            "status": "pending"
+            "status": "pending",
+            "is_auto_sequence": {"$ne": True},
         }) is not None
-        
-        # Calculate urgency score
+
         urgency_score = self._calculate_urgency_score(customer, messages, has_pending_followup)
-        
-        # Skip if urgency is too low (less than 30)
-        if urgency_score < 30:
+
+        if urgency_score < 20:
             return None
-        
-        # Generate AI reason and draft message
+
         ai_result = await self.drafter.draft_followup_message(
-            customer_name=customer['name'],
+            customer_name=customer["name"],
             customer_data=customer,
             messages=messages,
             business_name=business_name,
-            tone='friendly'
+            tone="friendly",
         )
-        
-        # Create analysis record
-        analysis = {
-            "user_id": customer['user_id'],
+
+        return {
+            "user_id": customer["user_id"],
             "customer_id": customer_id,
-            "customer_name": customer['name'],
-            "customer_phone": customer['phone_number'],
+            "customer_name": customer["name"],
+            "customer_phone": customer["phone_number"],
             "analysis_date": datetime.utcnow(),
+            "show_date": None,  # filled by caller
             "urgency_score": urgency_score,
             "urgency_level": self._get_urgency_level(urgency_score),
-            "ai_reason": ai_result['ai_reason'],
+            "ai_reason": ai_result["ai_reason"],
             "suggested_action": self._get_suggested_action(customer, messages),
-            "drafted_message": ai_result['drafted_message'],
+            "drafted_message": ai_result["drafted_message"],
             "conversation_summary": self._summarize_conversation(messages),
             "last_topic": self._get_last_topic(messages),
             "has_pending_followup": has_pending_followup,
             "notification_sent": False,
-            "days_since_contact": self._get_days_since_contact(customer)
+            "days_since_contact": self._get_days_since_owner_reply(customer),
         }
-        
-        return analysis
-    
-    def _calculate_urgency_score(
-        self,
-        customer: Dict,
-        messages: List[Dict],
-        has_pending_followup: bool
-    ) -> int:
-        """
-        Calculate urgency score (0-100) for a customer
-        Higher score = more urgent to follow up
-        
-        PRIORITY LOGIC:
-        1. Customers who messaged YOU (they initiated contact)
-        2. Customers with active conversations (24h, 3-day windows)
-        3. VIP/Returning customers going cold
-        4. New customers with no conversation (lowest priority - likely imports)
-        """
+
+    def _calculate_urgency_score(self, customer: Dict, messages: List[Dict], has_pending_followup: bool) -> int:
         score = 0
-        
-        # Check if this is a real customer (has messages) or just an import
         has_conversation = len(messages) > 0
-        customer_initiated = any(m.get('direction') == 'incoming' for m in messages)
-        auto_created = customer.get('auto_created', False)
-        
-        # Check if this is a recently added contact (within 7 days)
-        from datetime import datetime as dt
-        created_at = customer.get('created_at')
+        customer_initiated = any(m.get("direction") == "incoming" for m in messages)
+        auto_created = customer.get("auto_created", False)
+
+        created_at = customer.get("created_at")
         days_since_created = None
         if created_at:
             if isinstance(created_at, str):
-                created_at = dt.fromisoformat(created_at.replace('Z', '+00:00'))
-            days_since_created = (dt.utcnow() - created_at).days
-        
-        # Factor 1: Conversation Quality (MOST IMPORTANT)
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            days_since_created = (datetime.utcnow() - created_at).days
+
+        # --- Factor 1: Conversation quality ---
         if customer_initiated:
-            # Customer reached out to YOU - highest priority
-            score += 50
+            score += 50   # They reached out — highest priority
         elif has_conversation:
-            # You initiated but there's a conversation
             score += 30
         elif auto_created:
-            # Auto-created from WhatsApp (real customer)
-            score += 25
+            score += 20
         elif days_since_created is not None and days_since_created <= 7:
-            # Recently added manually (within 7 days) - reminder to reach out
-            score += 35
+            score += 35   # Newly added, reach out soon
         else:
-            # Old imported contact, never engaged - LOWEST priority
-            score += 5
-        
-        # Factor 2: Smart Cadence (24h & 3 Days) - Only if there's a conversation
-        days_since = self._get_days_since_contact(customer)
-        
+            score += 5    # Old import, never engaged
+
+        # --- Factor 2: Time since OWNER last replied ---
+        days_since = self._get_days_since_owner_reply(customer)
+
         if has_conversation:
-            if days_since == 1:
-                score += 40  # 24-hour follow-up - Critical
-            elif days_since == 3:
-                score += 30  # 3-day follow-up - Important
-            elif days_since > 30:
-                score += 20  # Re-engagement needed
-            elif days_since > 14:
-                score += 15
-            elif days_since > 7:
-                score += 10
+            if days_since is not None and days_since <= 1:
+                score += 45   # 24h — critical window
+            elif days_since is not None and days_since <= 3:
+                score += 35   # 3 days — important
+            elif days_since is not None and days_since <= 7:
+                score += 20   # 1 week
+            elif days_since is not None and days_since <= 14:
+                score += 12
+            elif days_since is not None and days_since <= 30:
+                score += 7
+            elif days_since is None:
+                score += 30   # Never replied — owner has never sent a message
         else:
-            # No conversation yet
             if days_since_created is not None and days_since_created <= 7:
-                # Recently added, no contact yet - reminder to reach out
-                score += 15
-            elif days_since is None or days_since > 30:
-                score += 5  # Old import, very low priority
-        
-        # Factor 3: Customer Value
-        tags = customer.get('tags', [])
-        if 'VIP' in tags:
+                score += 15   # New, no conversation yet
+            else:
+                score += 3
+
+        # --- Factor 3: Customer value ---
+        tags = customer.get("tags", [])
+        if "VIP" in tags:
             score += 25
-        elif 'Returning' in tags:
+        elif "Returning" in tags:
             score += 15
-        elif 'New' in tags and has_conversation:
-            score += 15  # New with conversation = good
-        
-        purchase_count = customer.get('purchase_count', 0)
+        elif "New" in tags and has_conversation:
+            score += 10
+
+        purchase_count = customer.get("purchase_count", 0)
         if purchase_count > 10:
             score += 10
         elif purchase_count > 5:
             score += 5
-        
-        # Factor 4: Unanswered Questions (URGENT)
+
+        # --- Factor 4: Unanswered message / question ---
         if messages:
-            last_message = messages[-1]
-            if last_message.get('direction') == 'incoming':
-                score += 20  # They messaged us last!
-            
-            # Check for question words
-            content = last_message.get('content', '').lower()
-            question_words = ['?', 'how much', 'price', 'cost', 'when', 'where', 'can you', 'bei', 'available']
-            if any(word in content for word in question_words):
-                score += 20  # Unanswered question = very urgent
-        
-        # Factor 5: Pending follow-up (Downgrade if exists)
+            last_msg = messages[-1]
+            if last_msg.get("direction") == "incoming":
+                score += 20   # They messaged last — needs reply
+            content = last_msg.get("content", "").lower()
+            question_words = ["?", "how much", "price", "cost", "when", "where", "can you", "bei", "available"]
+            if any(w in content for w in question_words):
+                score += 20   # Unanswered question
+
+        # --- Factor 5: Already has reminder — de-prioritise ---
         if has_pending_followup:
-            score -= 50  # Already handled
-        
-        # Ensure score is between 0 and 100
+            score -= 30
+
         return max(0, min(100, score))
-    
-    def _get_urgency_level(self, score: int) -> str:
-        """Convert urgency score to level"""
-        if score >= 80:
-            return "high"
-        elif score >= 50:
-            return "medium"
-        else:
-            return "low"
-    
-    def _get_days_since_contact(self, customer: Dict) -> int:
-        """Get days since last contact"""
-        last_contacted = customer.get('last_contacted')
-        if not last_contacted:
+
+    def _get_days_since_owner_reply(self, customer: Dict) -> Optional[int]:
+        """Days since the owner last sent a message. Uses last_owner_reply."""
+        last_reply = customer.get("last_owner_reply")
+        if not last_reply:
             return None
-        
-        if isinstance(last_contacted, str):
-            last_contacted = datetime.fromisoformat(last_contacted.replace('Z', '+00:00'))
-        
-        # Return exact days (0 for today, 1 for yesterday)
-        delta = datetime.utcnow() - last_contacted
-        return delta.days
-    
+        if isinstance(last_reply, str):
+            last_reply = datetime.fromisoformat(last_reply.replace("Z", "+00:00"))
+        return (datetime.utcnow() - last_reply).days
+
+    def _get_urgency_level(self, score: int) -> str:
+        if score >= 80:
+            return "critical"
+        elif score >= 50:
+            return "high"
+        elif score >= 20:
+            return "normal"
+        return "low"
+
     def _get_suggested_action(self, customer: Dict, messages: List[Dict]) -> str:
-        """Get suggested action for this customer"""
-        
-        days_since = self._get_days_since_contact(customer)
-        
+        days_since = self._get_days_since_owner_reply(customer)
+        if messages and messages[-1].get("direction") == "incoming":
+            return "Reply to their message"
         if days_since is None:
-            return "Send welcome message"
-        
-        if days_since == 1:
+            return "Send first message"
+        if days_since <= 1:
             return "24h check-in"
-        
-        if days_since == 3:
+        if days_since <= 3:
             return "3-day follow-up"
-        
         if days_since > 30:
             return "Re-engage with special offer"
-        
-        if messages and messages[-1].get('direction') == 'incoming':
-            return "Respond to their message"
-        
-        tags = customer.get('tags', [])
-        if 'VIP' in tags:
+        tags = customer.get("tags", [])
+        if "VIP" in tags:
             return "Check in and maintain relationship"
-        
         return "Send follow-up message"
-    
+
     def _summarize_conversation(self, messages: List[Dict]) -> str:
-        """Create a brief summary of the conversation"""
         if not messages:
             return "No previous conversation"
-        
-        message_count = len(messages)
-        last_message = messages[-1]
-        
-        direction = "They" if last_message.get('direction') == 'incoming' else "You"
-        last_content = last_message.get('content', '')[:50]
-        
-        return f"{message_count} messages. Last: {direction} said \"{last_content}...\""
-    
+        last = messages[-1]
+        direction = "They" if last.get("direction") == "incoming" else "You"
+        content = last.get("content", "")[:50]
+        return f"{len(messages)} messages. Last: {direction} said \"{content}...\""
+
     def _get_last_topic(self, messages: List[Dict]) -> str:
-        """Extract the last topic discussed"""
         if not messages:
             return "No conversation"
-        
-        # Check last few messages for topics
-        recent_messages = messages[-3:] if len(messages) > 3 else messages
-        
+        recent = messages[-3:] if len(messages) > 3 else messages
         topics = {
-            'pricing': ['price', 'cost', 'how much', 'bei'],
-            'product': ['product', 'item', 'stock'],
-            'delivery': ['deliver', 'shipping', 'send'],
-            'complaint': ['problem', 'issue', 'not working']
+            "pricing": ["price", "cost", "how much", "bei"],
+            "product": ["product", "item", "stock"],
+            "delivery": ["deliver", "shipping", "send"],
+            "complaint": ["problem", "issue", "not working"],
         }
-        
-        for msg in reversed(recent_messages):
-            content = msg.get('content', '').lower()
+        for msg in reversed(recent):
+            content = msg.get("content", "").lower()
             for topic, keywords in topics.items():
                 if any(kw in content for kw in keywords):
                     return topic.capitalize()
-        
         return "General inquiry"
-    
-    async def _store_analyses(self, analyses: List[Dict]):
-        """Store analyses in database"""
+
+    # ------------------------------------------------------------------ #
+    #  Storage
+    # ------------------------------------------------------------------ #
+
+    async def _store_analyses(self, user_id: str, analyses: List[Dict]):
         if not analyses:
             return
-        
-        # Get today's date (start of day)
         today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Delete old analyses for today
-        user_id = analyses[0]['user_id']
+        # Delete only today's existing analyses — keep future queued ones
         await self.db.customer_analysis.delete_many({
             "user_id": user_id,
-            "analysis_date": {"$gte": today}
+            "analysis_date": {"$gte": today},
+            "show_date": {"$lte": today},  # only wipe today's batch
         })
-        
-        # Insert new analyses
         await self.db.customer_analysis.insert_many(analyses)
-    
-    async def get_todays_insights(self, user_id: str, limit: int = 10) -> List[Dict]:
-        """Get today's customer insights for a user"""
-        
-        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        analyses = await self.db.customer_analysis.find({
-            "user_id": user_id,
-            "analysis_date": {"$gte": today}
-        }).sort("urgency_score", -1).limit(limit).to_list(limit)
-        
-        return analyses
 
 
 async def run_daily_analysis_for_all_users(db):
-    """Run daily analysis for all users (called by scheduler)"""
-    logger.info("Starting daily analysis for all users")
-    
+    logger.info("[Analyzer] Running daily analysis for all users")
     users = await db.users.find({}).to_list(1000)
     analyzer = DailyCustomerAnalyzer(db)
-    
     for user in users:
         try:
-            user_id = user['_id']
-            logger.info(f"Analyzing customers for user {user_id}")
-            await analyzer.analyze_all_customers(user_id)
+            await analyzer.analyze_all_customers(user["_id"])
         except Exception as e:
-            logger.error(f"Error analyzing user {user['_id']}: {e}")
-            continue
-    
-    logger.info("Completed daily analysis for all users")
+            logger.error(f"[Analyzer] Error for user {user['_id']}: {e}")
+    logger.info("[Analyzer] Completed daily analysis for all users")

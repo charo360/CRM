@@ -48,7 +48,7 @@ interface ColdCustomer {
   has_pending_followup: boolean;
   ai_reason?: string;
   urgency_score?: number;
-  urgency_level?: 'high' | 'medium' | 'low';
+  urgency_level?: 'critical' | 'high' | 'normal' | 'low';
   ai_draft_message?: string | null;
   ai_draft_followup_id?: string | null;
   ai_draft_day?: number | null;
@@ -730,10 +730,19 @@ export default function FollowupsScreen() {
     );
   };
 
-  const renderColdCustomer = (customer: ColdCustomer) => (
-    <View key={customer.id} style={styles.coldCustomerCard}>
+  const urgencyConfig = {
+    critical: { color: '#FF4444', bg: '#2A0A0A', label: '🔴 Critical' },
+    high:     { color: '#FF9800', bg: '#2A1A00', label: '🟠 High' },
+    normal:   { color: '#4A90D9', bg: '#0A1A2A', label: '🔵 Normal' },
+    low:      { color: '#666',    bg: '#1A1A1A', label: 'Low' },
+  };
+
+  const renderColdCustomer = (customer: ColdCustomer) => {
+    const urgency = urgencyConfig[customer.urgency_level || 'normal'];
+    return (
+    <View key={customer.id} style={[styles.coldCustomerCard, { borderLeftWidth: 3, borderLeftColor: urgency.color }]}>
       <View style={styles.coldCustomerHeader}>
-        <View style={styles.coldAvatar}>
+        <View style={[styles.coldAvatar, { backgroundColor: urgency.bg }]}>
           <Text style={styles.coldAvatarText}>{customer.name.charAt(0)}</Text>
         </View>
         <View style={styles.coldCustomerDetails}>
@@ -741,11 +750,13 @@ export default function FollowupsScreen() {
           <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
         </View>
         <View style={styles.coldMetaRight}>
-          <Ionicons name="time-outline" size={12} color="#FF6B6B" />
+          <View style={{ backgroundColor: urgency.bg, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginBottom: 2 }}>
+            <Text style={{ color: urgency.color, fontSize: 10, fontWeight: '700' }}>{urgency.label}</Text>
+          </View>
           <Text style={styles.coldDaysText}>
             {customer.days_since_contact !== null
               ? `${customer.days_since_contact}d ago`
-              : 'Never'}
+              : 'Never replied'}
           </Text>
         </View>
       </View>
@@ -856,6 +867,7 @@ export default function FollowupsScreen() {
       </View>
     </View>
   );
+  };
 
   const filters: { key: FilterType; label: string }[] = [
     { key: 'all', label: 'All' },
