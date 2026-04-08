@@ -4,6 +4,15 @@ export default {
     slug: "zilo",
     version: "1.0.0",
     orientation: "portrait",
+    runtimeVersion: {
+      policy: "appVersion"
+    },
+    updates: {
+      url: "https://u.expo.dev/a548a1a8-7dac-4a37-9a14-9b7667ccd1dc",
+      enabled: true,
+      checkAutomatically: "ON_LOAD",
+      fallbackToCacheTimeout: 0
+    },
     icon: "./assets/images/icon.png",
     scheme: "zilo",
     userInterfaceStyle: "automatic",
