@@ -3029,15 +3029,19 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
                 continue  # Skip - contacted recently
             
             analyzed_customer_ids.add(c["_id"])
+            auto_seq = await db.followups.find_one({"customer_id": c["_id"], "status": "pending", "is_auto_sequence": True})
             result.append({
                 "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
                 "notes": c.get("notes"), "tags": c.get("tags", []),
                 "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
-                "days_since_contact": analysis.get("days_since_contact"), 
+                "days_since_contact": analysis.get("days_since_contact"),
                 "has_pending_followup": analysis.get("has_pending_followup", False),
                 "ai_reason": analysis.get("ai_reason") if analysis.get("ai_reason") else "Smart Follow-up",
                 "urgency_score": analysis.get("urgency_score", 0),
-                "created_at": c["created_at"]
+                "created_at": c["created_at"],
+                "ai_draft_message": auto_seq.get("message") if auto_seq else None,
+                "ai_draft_followup_id": auto_seq["_id"] if auto_seq else None,
+                "ai_draft_day": auto_seq.get("sequence_day") if auto_seq else None,
             })
     
     # Then, add customers that need attention but don't have analysis yet
@@ -3054,18 +3058,22 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
         if c["_id"] in analyzed_customer_ids:
             continue
             
-        pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending"})
+        pending_followup = await db.followups.find_one({"customer_id": c["_id"], "status": "pending", "is_auto_sequence": {"$ne": True}})
+        auto_seq = await db.followups.find_one({"customer_id": c["_id"], "status": "pending", "is_auto_sequence": True})
         days_since_contact = (datetime.utcnow() - c["last_contacted"]).days if c.get("last_contacted") else None
-        
+
         # Use simple rule-based reason to avoid timeout
         ai_reason = generate_simple_reason(c, days_since_contact)
-            
+
         result.append({
             "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
             "notes": c.get("notes"), "tags": c.get("tags", []),
             "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
             "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
-            "ai_reason": ai_reason, "created_at": c["created_at"]
+            "ai_reason": ai_reason, "created_at": c["created_at"],
+            "ai_draft_message": auto_seq.get("message") if auto_seq else None,
+            "ai_draft_followup_id": auto_seq["_id"] if auto_seq else None,
+            "ai_draft_day": auto_seq.get("sequence_day") if auto_seq else None,
         })
             
     # Sort by urgency/days and limit to top 30 most urgent
@@ -3217,9 +3225,9 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
 
 @api_router.get("/followups", response_model=List[FollowUpResponse])
 async def get_followups(status: Optional[str] = None, user = Depends(get_current_user)):
-    """Get all follow-ups for current user"""
+    """Get all follow-ups for current user — excludes auto-sequence (AI Draft) items"""
     business_id = user.get("business_id", user["_id"])
-    query = {"user_id": business_id}
+    query = {"user_id": business_id, "is_auto_sequence": {"$ne": True}}
     if status:
         query["status"] = status
     
@@ -6181,14 +6189,18 @@ async def evolution_webhook(request: Request):
                 if push_name and is_fallback:
                     name_update["name"] = push_name
                     customer_name = push_name
+                contact_update = {
+                    "last_message": body[:200] if body else None,
+                    **lid_update,
+                    **name_update,
+                }
+                # Only update last_contacted when the OWNER sends a message
+                # Incoming messages from customer should NOT reset the "not contacted" timer
+                if from_me:
+                    contact_update["last_contacted"] = datetime.utcnow()
                 await db.customers.update_one(
                     {"_id": customer["_id"]},
-                    {"$set": {
-                        "last_message": body[:200] if body else None,
-                        "last_contacted": datetime.utcnow(),
-                        **lid_update,
-                        **name_update,
-                    }}
+                    {"$set": contact_update}
                 )
             else:
                 print(f"DEBUG: New customer auto-created")
@@ -6313,14 +6325,13 @@ async def evolution_webhook(request: Request):
                     msg_doc["remote_jid"] = remote_jid
                 await db.messages.insert_one(msg_doc)
 
-                # Always update last_contacted + last_message regardless of direction
-                # This ensures native WhatsApp conversations keep the customer active
+                # Only update last_contacted when OWNER sends — keeps Needs Attention accurate
+                native_update = {"last_message": body[:200] if body else ""}
+                if from_me:
+                    native_update["last_contacted"] = datetime.utcnow()
                 await db.customers.update_one(
                     {"_id": customer_id},
-                    {"$set": {
-                        "last_contacted": datetime.utcnow(),
-                        "last_message": body[:200] if body else "",
-                    }}
+                    {"$set": native_update}
                 )
 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed

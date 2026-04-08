@@ -49,6 +49,9 @@ interface ColdCustomer {
   ai_reason?: string;
   urgency_score?: number;
   urgency_level?: 'high' | 'medium' | 'low';
+  ai_draft_message?: string | null;
+  ai_draft_followup_id?: string | null;
+  ai_draft_day?: number | null;
 }
 
 interface Customer {
@@ -755,7 +758,13 @@ export default function FollowupsScreen() {
             ? `No contact in ${customer.days_since_contact} days`
             : 'New customer - never contacted')}
         </Text>
-        {customer.has_pending_followup && (
+        {customer.ai_draft_message && (
+          <View style={[styles.hasFollowupBadge, { backgroundColor: '#2D1F5E' }]}>
+            <Ionicons name="sparkles" size={10} color="#A78BFA" />
+            <Text style={[styles.hasFollowupText, { color: '#A78BFA' }]}>AI Draft · Day {customer.ai_draft_day}</Text>
+          </View>
+        )}
+        {!customer.ai_draft_message && customer.has_pending_followup && (
           <View style={styles.hasFollowupBadge}>
             <Text style={styles.hasFollowupText}>Reminder</Text>
           </View>
@@ -773,10 +782,24 @@ export default function FollowupsScreen() {
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.coldActionBtn}
-          onPress={() => handleShowDraftMessage(customer)}
+          onPress={() => {
+            if (customer.ai_draft_message) {
+              router.push({
+                pathname: '/chat',
+                params: {
+                  customerId: customer.id,
+                  customerName: getDisplayName(customer.name, customer.phone_number),
+                  customerPhone: customer.phone_number,
+                  prefill: customer.ai_draft_message,
+                },
+              });
+            } else {
+              handleShowDraftMessage(customer);
+            }
+          }}
         >
           <Ionicons name="sparkles" size={16} color="#FFD700" />
-          <Text style={[styles.coldActionText, { color: '#FFD700' }]}>AI Draft</Text>
+          <Text style={[styles.coldActionText, { color: '#FFD700' }]}>{customer.ai_draft_message ? 'Review & Send' : 'AI Draft'}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.coldActionBtn}
