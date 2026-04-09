@@ -36,11 +36,6 @@ async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "mornin
         digest_service = get_digest_service(db)
         notification_service = get_notification_service()
         
-        # Get Evolution API config from env
-        import os
-        evo_base_url = os.environ.get('EVOLUTION_API_URL', 'http://localhost:8080')
-        evo_api_key = os.environ.get('EVOLUTION_API_KEY', '')
-        
         sent_count = 0
         failed_count = 0
         
@@ -59,22 +54,18 @@ async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "mornin
                 
                 # Send via WhatsApp
                 wa_sent = False
-                if user.get("phone_number") and evo_api_key:
+                if user.get("phone_number") and user.get("whatsapp", {}).get("instance_name"):
                     try:
-                        import httpx
+                        from whatsapp_service import get_whatsapp_service
+                        ws = get_whatsapp_service(db)
                         message = digest_service.format_whatsapp_message(digest)
-                        # Use Evolution API directly to send message
-                        evo_url = f"{evo_base_url}/message/sendText/{user_id}"
-                        async with httpx.AsyncClient(timeout=30.0) as client:
-                            response = await client.post(
-                                evo_url,
-                                json={
-                                    "number": user["phone_number"],
-                                    "text": message
-                                },
-                                headers={"apikey": evo_api_key}
-                            )
-                            wa_sent = response.status_code == 200 or response.status_code == 201
+                        result = await ws.send_message(
+                            user_id=user_id,
+                            to_number=user["phone_number"],
+                            message=message,
+                            send_context="digest"
+                        )
+                        wa_sent = result.get("status") not in ("error", "limit_reached", None)
                         if wa_sent:
                             logger.info(f"WhatsApp digest sent to {user['phone_number']}")
                     except Exception as e:
@@ -131,11 +122,6 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
         
         motivation_service = get_motivation_service(db)
         
-        # Get Evolution API config
-        import os
-        evo_base_url = os.environ.get('EVOLUTION_API_URL', 'http://localhost:8080')
-        evo_api_key = os.environ.get('EVOLUTION_API_KEY', '')
-        
         sent_count = 0
         failed_count = 0
         
@@ -150,24 +136,21 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
                     motivation = await motivation_service.get_midweek_motivation(user_id)
                 
                 # Send via WhatsApp
-                if user.get("phone_number") and evo_api_key:
+                if user.get("phone_number") and user.get("whatsapp", {}).get("instance_name"):
                     try:
-                        import httpx
-                        evo_url = f"{evo_base_url}/message/sendText/{user_id}"
-                        async with httpx.AsyncClient(timeout=30.0) as client:
-                            response = await client.post(
-                                evo_url,
-                                json={
-                                    "number": user["phone_number"],
-                                    "text": motivation["message"]
-                                },
-                                headers={"apikey": evo_api_key}
-                            )
-                            if response.status_code in [200, 201]:
-                                sent_count += 1
-                                logger.info(f"Motivation sent to {user['phone_number']}")
-                            else:
-                                failed_count += 1
+                        from whatsapp_service import get_whatsapp_service
+                        ws = get_whatsapp_service(db)
+                        result = await ws.send_message(
+                            user_id=user_id,
+                            to_number=user["phone_number"],
+                            message=motivation["message"],
+                            send_context="motivation"
+                        )
+                        if result.get("status") not in ("error", "limit_reached", None):
+                            sent_count += 1
+                            logger.info(f"Motivation sent to {user['phone_number']}")
+                        else:
+                            failed_count += 1
                     except Exception as e:
                         logger.error(f"WhatsApp delivery failed for {user_id}: {e}")
                         failed_count += 1
