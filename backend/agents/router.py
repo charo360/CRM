@@ -548,11 +548,67 @@ class Router:
                             "messages": [{"text": _order_reply}],
                         }
                 else:
-                    # catalog_selection or product_selection → showcase with full images + action buttons
+                    # catalog_selection or product_selection → showcase product with image + action menu
+                    _lang2 = conv_state.get("preferred_language", "English") or "English"
+                    _currency2 = context.get("currency", "KES")
+                    _showcase_msgs = []
+                    try:
+                        from bson import ObjectId as _ObjId2
+                        _prod_doc = await self.db.products.find_one({"_id": _ObjId2(_product_id)}) if _product_id else None
+                        if not _prod_doc:
+                            _prod_doc = await self.db.products.find_one({"_id": _product_id}) if _product_id else None
+                        if _prod_doc:
+                            # Build image URL
+                            _prod_imgs = []
+                            if _prod_doc.get("image_url"):
+                                _prod_imgs.append(_prod_doc["image_url"])
+                            for _img in _prod_doc.get("images", []):
+                                if _img and _img not in _prod_imgs:
+                                    _prod_imgs.append(_img)
+                            _prod_price = _prod_doc.get("price", 0)
+                            _price_str = f"{_currency2} {_prod_price:,.0f}" if _prod_price else "POA"
+                            _caption = f"*{_prod_doc['name']}*\n💰 {_price_str}"
+                            if _prod_doc.get("description"):
+                                _caption += f"\n_{_prod_doc['description']}_"
+                            # Send product image (with caption)
+                            if _prod_imgs:
+                                from .tools import normalize_url as _nu
+                                _showcase_msgs.append({"text": _caption, "media_url": _nu(_prod_imgs[0])})
+                            else:
+                                _showcase_msgs.append({"text": _caption})
+                            # Action menu
+                            _action_menu = (
+                                f"*What would you like to do?*\n\n"
+                                f"1️⃣  Order Now\n"
+                                f"2️⃣  Add to Cart\n"
+                                f"3️⃣  See Similar Products\n"
+                                f"0️⃣  🖼️ View Gallery\n\n"
+                                f"_Reply with a number to select_"
+                            )
+                            _showcase_msgs.append({"text": _action_menu})
+                            # Save single_product_actions menu state
+                            _action_menu_items = {
+                                "1": {"name": "Order Now", "price": _prod_price, "id": str(_prod_doc["_id"]), "type": "product_action", "action": "order"},
+                                "2": {"name": "Add to Cart", "price": _prod_price, "id": str(_prod_doc["_id"]), "type": "product_action", "action": "add_cart"},
+                                "3": {"name": "See Similar", "price": _prod_price, "id": str(_prod_doc["_id"]), "type": "product_action", "action": "similar"},
+                            }
+                            if customer_id:
+                                await save_state(self.db, user_id, str(customer_id), {
+                                    "active_menu": True,
+                                    "waiting_for_selection": True,
+                                    "menu_type": "single_product_actions",
+                                    "menu_items": _action_menu_items,
+                                    "last_discussed_product": _prod_doc["name"],
+                                    "last_discussed_product_id": str(_prod_doc["_id"]),
+                                    "last_price_offered": _prod_price,
+                                })
+                    except Exception as _se:
+                        logger.error(f"[Router] Product showcase error: {_se}")
+                    if not _showcase_msgs:
+                        _showcase_msgs = [{"text": f"*{_name}* — {_currency2} {_price:,.0f}\n\nReply *1* to order or *0* to view gallery."}]
                     return {
                         "handled": True, "escalated": False,
-                        "messages": [],  # server.py sends product showcase
-                        "showcase_product_id": _product_id,
+                        "messages": _showcase_msgs,
                     }
             elif _sel is None:
                 # Unrelated text reply — clear menu state, continue to intent analyzer
