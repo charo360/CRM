@@ -6669,6 +6669,57 @@ async def evolution_webhook(request: Request):
 
                     ws = get_whatsapp_service(db)
 
+                    # "0" = View Gallery — send all product images
+                    if agent_result.get("show_gallery"):
+                        _gallery_prods = await db.products.find(
+                            {"user_id": user["_id"], "in_stock": {"$ne": False}}
+                        ).to_list(20)
+                        _gallery_currency = (
+                            _user_settings.get("currency")
+                            or user.get("currency")
+                            or "KES"
+                        )
+                        if not _gallery_prods:
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="No products available right now. 😊",
+                                customer_name=customer_name, send_context="auto_reply"
+                            )
+                        else:
+                            for _gp in _gallery_prods:
+                                _imgs = []
+                                if _gp.get("image_url"):
+                                    _imgs.append(_gp["image_url"])
+                                for _gi in _gp.get("images", []):
+                                    if _gi and _gi not in _imgs:
+                                        _imgs.append(_gi)
+                                _imgs = [normalize_url(u) for u in _imgs if u]
+                                _price_s = f"{_gallery_currency} {_gp['price']:,.0f}" if _gp.get("price") else "POA"
+                                _caption = f"*{_gp['name']}*\n💰 {_price_s}"
+                                if _gp.get("description"):
+                                    _caption += f"\n{_gp['description']}"
+                                if _imgs:
+                                    # Extra images first (no caption), then main with caption
+                                    for _ei in _imgs[1:]:
+                                        await ws.send_message(
+                                            user_id=user["_id"], to_number=from_number,
+                                            message="", customer_name=customer_name,
+                                            send_context="auto_reply", media_url=normalize_url(_ei)
+                                        )
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_caption, customer_name=customer_name,
+                                        send_context="auto_reply", media_url=normalize_url(_imgs[0])
+                                    )
+                                else:
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_caption, customer_name=customer_name,
+                                        send_context="auto_reply"
+                                    )
+                        await _redis_set_ts(f"{user['_id']}:{from_number}:auto_sent", _PING_PONG_TTL)
+                        return {"status": "ok", "handled_by": "gallery"}
+
                     # Send all messages returned by agent
                     for msg in agent_result.get("messages", []):
                         if not msg.get("text"):

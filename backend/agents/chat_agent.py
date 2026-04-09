@@ -157,7 +157,8 @@ class ChatAgent(BaseAgent):
                 instructions = (
                     f"The customer just said: \"{message}\"\n"
                     f"Reply with a natural, warm greeting back to {customer_name}. "
-                    "MATCH THEIR LANGUAGE AND ENERGY exactly. "
+                    f"IMPORTANT: Reply in {language} only — that is the language the customer used. "
+                    "Do NOT switch to another language even if the business name sounds local. "
                     "Just greet them back — 1 short sentence. "
                     "Do NOT mention any past conversations, products, orders, or topics. "
                     "Do NOT ask multiple questions. Just say hello back naturally. "
