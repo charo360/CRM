@@ -116,8 +116,13 @@ from redis_client import (
 # Evolution API often fires messages.upsert webhook multiple times for the same message
 import asyncio as _aio
 _AUTO_REPLY_DEDUP_TTL = 120  # seconds
-_PING_PONG_TTL = 30          # seconds
+_PING_PONG_TTL = 90          # seconds — increased from 30s; prevents rapid loops
 _OWNER_ATTENTION_TTL = 900   # 15 minutes
+
+# WhatsApp safe send delays (seconds) — avoids spam detection + rate limits
+_WA_DELAY_BETWEEN_MSGS  = 1.2   # between text messages in same reply
+_WA_DELAY_BETWEEN_IMGS  = 1.5   # between images (heavier, more suspicious)
+_WA_GALLERY_MAX         = 8     # max products in gallery before capping
 
 # In-memory fallbacks (used when Redis is unavailable / single-instance mode)
 _auto_reply_dedup: dict = {}
@@ -6428,12 +6433,24 @@ async def evolution_webhook(request: Request):
 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
-                    # Mark all unread incoming messages from this customer as read,
-                    # since replying means you've already read them on native WhatsApp
+                    # Mark all unread incoming messages from this customer as read
                     await db.messages.update_many(
                         {"user_id": user["_id"], "customer_id": customer_id, "direction": "incoming", "read": {"$ne": True}},
                         {"$set": {"read": True}}
                     )
+                    # Clear any active menu state so the next customer message isn't
+                    # misinterpreted as a menu number selection after owner replied
+                    if customer_id:
+                        try:
+                            from agents.conversation_state import save_state as _save_state
+                            await _save_state(db, user["_id"], customer_id, {
+                                "active_menu": False,
+                                "waiting_for_selection": False,
+                                "menu_items": {},
+                                "menu_type": None,
+                            })
+                        except Exception:
+                            pass
                     return {"status": "ok"}
 
                 # ── PAYMENT SCREENSHOT AUTO-VERIFICATION ──────────────────
@@ -6541,6 +6558,37 @@ async def evolution_webhook(request: Request):
                     return {"status": "ok", "message": "owner attention: auto-reply paused"}
                 # If owner replied but 15 min passed — flag it so AI knows to handle carefully
                 _owner_was_handling = _owner_reply_ts > 0 and _time_since_owner >= _OWNER_ATTENTION_TTL
+
+                # ============================================================
+                # STOP / START opt-out (must be checked before auto-reply gate)
+                # ============================================================
+                _body_opt = body.strip().lower()
+                if _body_opt == "stop":
+                    if customer_id:
+                        await db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$set": {"auto_reply": False, "unsubscribed_at": datetime.utcnow()}}
+                        )
+                    ws_opt = get_whatsapp_service(db)
+                    await ws_opt.send_message(
+                        user_id=user["_id"], to_number=from_number,
+                        message="You've been unsubscribed from automated replies. Reply *START* to re-enable anytime.",
+                        send_context="opt_out"
+                    )
+                    return {"status": "ok", "handled_by": "stop"}
+                if _body_opt == "start":
+                    if customer_id:
+                        await db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$set": {"auto_reply": True}, "$unset": {"unsubscribed_at": ""}}
+                        )
+                    ws_opt = get_whatsapp_service(db)
+                    await ws_opt.send_message(
+                        user_id=user["_id"], to_number=from_number,
+                        message="You're back! Automated replies are now enabled. 👋",
+                        send_context="opt_in"
+                    )
+                    return {"status": "ok", "handled_by": "start"}
 
                 # ============================================================
                 # AUTO-REPLY GATE — check before agent/catalog/keyword handlers
@@ -6669,16 +6717,20 @@ async def evolution_webhook(request: Request):
 
                     ws = get_whatsapp_service(db)
 
-                    # "0" = View Gallery — send all product images
+                    # "0" = View Gallery — send product images with safe delays
                     if agent_result.get("show_gallery"):
+                        import asyncio as _aio_gallery
                         _gallery_prods = await db.products.find(
                             {"user_id": user["_id"], "in_stock": {"$ne": False}}
-                        ).to_list(20)
+                        ).to_list(_WA_GALLERY_MAX + 1)  # fetch one extra to detect overflow
                         _gallery_currency = (
                             _user_settings.get("currency")
                             or user.get("currency")
                             or "KES"
                         )
+                        _has_more_gallery = len(_gallery_prods) > _WA_GALLERY_MAX
+                        _gallery_prods = _gallery_prods[:_WA_GALLERY_MAX]
+
                         if not _gallery_prods:
                             await ws.send_message(
                                 user_id=user["_id"], to_number=from_number,
@@ -6699,13 +6751,15 @@ async def evolution_webhook(request: Request):
                                 if _gp.get("description"):
                                     _caption += f"\n{_gp['description']}"
                                 if _imgs:
-                                    # Extra images first (no caption), then main with caption
-                                    for _ei in _imgs[1:]:
+                                    # Extra angles first (no caption)
+                                    for _ei in _imgs[1:3]:  # max 2 extra angles
                                         await ws.send_message(
                                             user_id=user["_id"], to_number=from_number,
                                             message="", customer_name=customer_name,
                                             send_context="auto_reply", media_url=normalize_url(_ei)
                                         )
+                                        await _aio_gallery.sleep(_WA_DELAY_BETWEEN_IMGS)
+                                    # Main image with caption last
                                     await ws.send_message(
                                         user_id=user["_id"], to_number=from_number,
                                         message=_caption, customer_name=customer_name,
@@ -6717,13 +6771,25 @@ async def evolution_webhook(request: Request):
                                         message=_caption, customer_name=customer_name,
                                         send_context="auto_reply"
                                     )
+                                await _aio_gallery.sleep(_WA_DELAY_BETWEEN_IMGS)
+                            if _has_more_gallery:
+                                await _aio_gallery.sleep(_WA_DELAY_BETWEEN_MSGS)
+                                await ws.send_message(
+                                    user_id=user["_id"], to_number=from_number,
+                                    message="📌 That's our top picks! Type *catalog* to see the full numbered list.",
+                                    customer_name=customer_name, send_context="auto_reply"
+                                )
                         await _redis_set_ts(f"{user['_id']}:{from_number}:auto_sent", _PING_PONG_TTL)
                         return {"status": "ok", "handled_by": "gallery"}
 
-                    # Send all messages returned by agent
-                    for msg in agent_result.get("messages", []):
-                        if not msg.get("text"):
-                            continue
+                    # Send all messages returned by agent — with safe delays between
+                    import asyncio as _aio_send
+                    _msgs_to_send = [m for m in agent_result.get("messages", []) if m.get("text")]
+                    for _mi, msg in enumerate(_msgs_to_send):
+                        if _mi > 0:
+                            # Delay between messages — images need more time
+                            _delay = _WA_DELAY_BETWEEN_IMGS if msg.get("media_url") else _WA_DELAY_BETWEEN_MSGS
+                            await _aio_send.sleep(_delay)
                         await ws.send_message(
                             user_id=user["_id"],
                             to_number=from_number,
