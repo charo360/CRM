@@ -6630,7 +6630,14 @@ async def evolution_webhook(request: Request):
                         _bk_parts.append("Payment methods accepted:\n" + "\n".join(_pm_lines))
                 _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
 
-                currency = _user_settings.get("currency", "USD")
+                # Currency: settings sub-doc → top-level user doc → phone-number detection → USD
+                currency = (
+                    _user_settings.get("currency")
+                    or user.get("currency")
+                    or __import__("country_utils").get_payment_methods_for_country(
+                        __import__("country_utils").detect_country_from_phone(user.get("phone_number", ""))
+                    )["currency"]
+                )
                 _business_type = _user_settings.get("business_type") or user.get("business_type", "")
                 agent_context = {
                     "currency": currency,
@@ -6840,7 +6847,13 @@ async def evolution_webhook(request: Request):
                         product_catalog_map = {}  # product_id -> image_url
                         product_name_map = {}     # lowercase product name -> {id, image_url, name}
                         if user_products:
-                            currency = user_settings.get("currency", "USD")
+                            currency = (
+                                user_settings.get("currency")
+                                or user.get("currency")
+                                or __import__("country_utils").get_payment_methods_for_country(
+                                    __import__("country_utils").detect_country_from_phone(user.get("phone_number", ""))
+                                )["currency"]
+                            )
                             catalog_lines = ["\nPRODUCT CATALOG (real products with actual prices):"]
                             for p in user_products:
                                 stock = "IN STOCK" if p.get("in_stock", True) else "OUT OF STOCK"
