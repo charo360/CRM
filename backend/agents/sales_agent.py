@@ -51,14 +51,14 @@ class SalesAgent(BaseAgent):
             try:
                 from ai_service import get_drafter
                 ai = get_drafter()
-                prompt = f"""You are a business owner on WhatsApp. A customer selected "{product_name}" (price: {currency} {product_price:,.0f}) and has now replied with delivery details or questions.
+                prompt = f"""You are a business owner on WhatsApp. A customer selected "{product_name}" (price: {currency} {product_price:,.0f}) and has now replied with quantity or a short order clarification.
 
 Customer message: "{message}"
 Customer name: {customer_name}
 Language: {language}
 
 Write a warm, natural {language} reply that:
-1. Acknowledges what they shared (address, qty, pickup preference)
+1. Acknowledges what they shared (especially quantity)
 2. Confirms you've received their request and will be in touch shortly to finalise the order
 3. NEVER confirm the order is placed — just say you'll confirm soon
 4. 2 sentences max. WhatsApp tone.
@@ -73,7 +73,7 @@ Output only the customer-facing message."""
                 "messages": [{"text": reply}],
                 "escalate": False,
                 "flag_for_human": True,
-                "flag_reason": f"Customer provided delivery details for order: {product_name} — needs owner confirmation",
+                "flag_reason": f"Customer provided order quantity for: {product_name} — needs owner confirmation",
                 "context_update": {
                     "pending_order_creation": False,  # clear after acknowledging
                     "state": "ongoing",

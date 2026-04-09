@@ -522,8 +522,7 @@ class Router:
                         # Order Now or Add to Cart — collect delivery details
                         _order_reply = (
                             f"*{_name}* — {_currency} {_price:,.0f} 🛒\n\n"
-                            f"How many would you like, and what's your *delivery address*? "
-                            f"(Or let me know if you prefer *pickup*.) 📦"
+                            f"How many would you like? 🔢"
                         )
                         if customer_id:
                             await save_state(self.db, user_id, str(customer_id), {

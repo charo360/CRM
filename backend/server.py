@@ -6763,8 +6763,7 @@ async def evolution_webhook(request: Request):
                                     # Order Now or Add to Cart → collect delivery details
                                     _order_reply = (
                                         f"*{_pname}* — {currency} {_pprice:,.0f} 🛒\n\n"
-                                        f"How many would you like, and what's your *delivery address*? "
-                                        f"(Or let me know if you prefer *pickup*.) 📦"
+                                        f"How many would you like? 🔢"
                                     )
                                     await _save_pre(db, user["_id"], str(customer_id), {
                                         "pending_order_creation": True,
@@ -6810,8 +6809,8 @@ async def evolution_webhook(request: Request):
                                 # Fall through to router which has gallery logic
                                 pass
                 # ── PRE-ROUTER: Pending order creation ─────────────────────
-                # After "How many + delivery address?" prompt, customer replies
-                # with qty/address. Short numeric replies like "1" get misclassified
+                # After the "How many would you like?" prompt, customer replies
+                # with quantity. Short numeric replies like "1" get misclassified
                 # by the intent analyzer. Handle directly via SalesAgent.
                 if customer_id:
                     from agents.conversation_state import load_state as _load_po, save_state as _save_po
@@ -6824,14 +6823,14 @@ async def evolution_webhook(request: Request):
                         try:
                             from ai_service import get_drafter
                             _po_ai = get_drafter()
-                            _po_prompt = f"""You are a business owner on WhatsApp. A customer selected "{_po_product}" (price: {currency} {_po_price:,.0f}) and has now replied with delivery details or questions.
+                            _po_prompt = f"""You are a business owner on WhatsApp. A customer selected "{_po_product}" (price: {currency} {_po_price:,.0f}) and has now replied with quantity or a short order clarification.
 
 Customer message: "{body}"
 Customer name: {customer_name}
 Language: auto-detect from message
 
 Write a warm, natural reply that:
-1. Acknowledges what they shared (address, qty, pickup preference)
+1. Acknowledges what they shared (especially quantity)
 2. Confirms you've received their request and will be in touch shortly to finalise the order
 3. NEVER confirm the order is placed — just say you'll confirm soon
 4. 2 sentences max. WhatsApp tone.
@@ -6852,7 +6851,7 @@ Output only the customer-facing message."""
                                 {"_id": customer_id},
                                 {"$set": {
                                     "needs_human": True,
-                                    "needs_human_reason": f"Customer provided delivery details for: {_po_product} ({currency} {_po_price:,.0f})",
+                                        "needs_human_reason": f"Customer provided order quantity for: {_po_product} ({currency} {_po_price:,.0f})",
                                     "needs_human_at": datetime.utcnow(),
                                 }}
                             )
