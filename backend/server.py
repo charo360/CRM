@@ -6807,6 +6807,62 @@ async def evolution_webhook(request: Request):
                                 })
                                 # Fall through to router which has gallery logic
                                 pass
+                # ── PRE-ROUTER: Pending order creation ─────────────────────
+                # After "How many + delivery address?" prompt, customer replies
+                # with qty/address. Short numeric replies like "1" get misclassified
+                # by the intent analyzer. Handle directly via SalesAgent.
+                if customer_id:
+                    from agents.conversation_state import load_state as _load_po, save_state as _save_po
+                    _po_state = await _load_po(db, user["_id"], str(customer_id))
+                    if _po_state.get("pending_order_creation"):
+                        _po_product = _po_state.get("pending_order_product_name", "your item")
+                        _po_price = _po_state.get("pending_order_price", 0)
+                        logging.info(f"[PreRouter] pending_order_creation intercepted: msg='{body}', product={_po_product}")
+                        # Use AI to craft a warm acknowledgment
+                        try:
+                            from ai_service import get_drafter
+                            _po_ai = get_drafter()
+                            _po_prompt = f"""You are a business owner on WhatsApp. A customer selected "{_po_product}" (price: {currency} {_po_price:,.0f}) and has now replied with delivery details or questions.
+
+Customer message: "{body}"
+Customer name: {customer_name}
+Language: auto-detect from message
+
+Write a warm, natural reply that:
+1. Acknowledges what they shared (address, qty, pickup preference)
+2. Confirms you've received their request and will be in touch shortly to finalise the order
+3. NEVER confirm the order is placed — just say you'll confirm soon
+4. 2 sentences max. WhatsApp tone.
+
+Output only the customer-facing message."""
+                            _po_reply = await _po_ai._call_llm(_po_prompt, model_pref="standard")
+                        except Exception as _po_err:
+                            logging.error(f"[PreRouter] pending order AI error: {_po_err}")
+                            _po_reply = f"Got it {customer_name}! I've noted your details for *{_po_product}* and will confirm your order shortly. 📦"
+                        # Clear pending state
+                        await _save_po(db, user["_id"], str(customer_id), {
+                            "pending_order_creation": False,
+                            "state": "ongoing",
+                        })
+                        # Flag for human
+                        try:
+                            await db.customers.update_one(
+                                {"_id": customer_id},
+                                {"$set": {
+                                    "needs_human": True,
+                                    "needs_human_reason": f"Customer provided delivery details for: {_po_product} ({currency} {_po_price:,.0f})",
+                                    "needs_human_at": datetime.utcnow(),
+                                }}
+                            )
+                        except Exception:
+                            pass
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=user["_id"], to_number=from_number,
+                            message=_po_reply, customer_name=customer_name,
+                            send_context="auto_reply"
+                        )
+                        return {"status": "ok", "handled_by": "pre_router_pending_order"}
                 # ── END PRE-ROUTER ─────────────────────────────────────────
 
                 agent_result = await router.route_and_process(
