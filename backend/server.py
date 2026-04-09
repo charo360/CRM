@@ -3194,7 +3194,8 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         last_message=customer.get("last_message"),
         last_contacted=customer.get("last_contacted"),
         profile_picture=customer.get("profile_picture"),
-        auto_reply=customer.get("auto_reply", True),
+        # None means "inherit global auto-reply settings"
+        auto_reply=customer.get("auto_reply"),
         is_personal=customer.get("is_personal", False),
         created_at=customer["created_at"]
     )
@@ -3249,7 +3250,8 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         phone_number=updated["phone_number"],
         notes=updated.get("notes"),
         tags=updated.get("tags", []),
-        auto_reply=updated.get("auto_reply", True),
+        # None means "inherit global auto-reply settings"
+        auto_reply=updated.get("auto_reply"),
         is_personal=updated.get("is_personal", False),
         stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
@@ -8540,6 +8542,7 @@ async def get_user_settings(user = Depends(get_current_user)):
     # Return with defaults
     return {
         "auto_reply_enabled": settings.get('auto_reply_enabled', False),
+        "auto_reply_audience": settings.get('auto_reply_audience', 'everyone'),
         "notification_enabled": settings.get('notification_enabled', True),
         "notification_time": settings.get('notification_time', '08:00'),
         "daily_alert_count": settings.get('daily_alert_count', 5),
@@ -8562,6 +8565,12 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
     
     if settings.auto_reply_enabled is not None:
         update_data['settings.auto_reply_enabled'] = settings.auto_reply_enabled
+
+    if settings.auto_reply_audience is not None:
+        _aud = settings.auto_reply_audience
+        if _aud not in ("everyone", "customers_only", "new_contacts_only"):
+            raise HTTPException(status_code=400, detail="Invalid auto_reply_audience")
+        update_data['settings.auto_reply_audience'] = _aud
     
     if settings.notification_enabled is not None:
         update_data['settings.notification_enabled'] = settings.notification_enabled

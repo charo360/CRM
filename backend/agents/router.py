@@ -552,11 +552,17 @@ class Router:
                     _lang2 = conv_state.get("preferred_language", "English") or "English"
                     _currency2 = context.get("currency", "KES")
                     _showcase_msgs = []
+                    _selected_name = _name or "Product"
+                    _selected_price = _price or 0
                     try:
-                        from bson import ObjectId as _ObjId2
-                        _prod_doc = await self.db.products.find_one({"_id": _ObjId2(_product_id)}) if _product_id else None
-                        if not _prod_doc:
-                            _prod_doc = await self.db.products.find_one({"_id": _product_id}) if _product_id else None
+                        _prod_doc = None
+                        if _product_id:
+                            # Support both BSON ObjectId and UUID/string product IDs.
+                            try:
+                                from bson import ObjectId as _ObjId2
+                                _prod_doc = await self.db.products.find_one({"_id": _ObjId2(_product_id)})
+                            except Exception:
+                                _prod_doc = await self.db.products.find_one({"_id": _product_id})
                         if _prod_doc:
                             # Build image URL
                             _prod_imgs = []
@@ -566,6 +572,8 @@ class Router:
                                 if _img and _img not in _prod_imgs:
                                     _prod_imgs.append(_img)
                             _prod_price = _prod_doc.get("price", 0)
+                            _selected_name = _prod_doc.get("name", _selected_name)
+                            _selected_price = _prod_price
                             _price_str = f"{_currency2} {_prod_price:,.0f}" if _prod_price else "POA"
                             _caption = f"*{_prod_doc['name']}*\n💰 {_price_str}"
                             if _prod_doc.get("description"):
@@ -605,7 +613,25 @@ class Router:
                     except Exception as _se:
                         logger.error(f"[Router] Product showcase error: {_se}")
                     if not _showcase_msgs:
-                        _showcase_msgs = [{"text": f"*{_name}* — {_currency2} {_price:,.0f}\n\nReply *1* to order or *0* to view gallery."}]
+                        # Keep order journey usable even if product lookup/showcase fails.
+                        if customer_id:
+                            try:
+                                await save_state(self.db, user_id, str(customer_id), {
+                                    "active_menu": True,
+                                    "waiting_for_selection": True,
+                                    "menu_type": "single_product_actions",
+                                    "menu_items": {
+                                        "1": {"name": "Order Now", "price": _selected_price, "id": _product_id, "type": "product_action", "action": "order"},
+                                        "2": {"name": "Add to Cart", "price": _selected_price, "id": _product_id, "type": "product_action", "action": "add_cart"},
+                                        "3": {"name": "See Similar", "price": _selected_price, "id": _product_id, "type": "product_action", "action": "similar"},
+                                    },
+                                    "last_discussed_product": _selected_name,
+                                    "last_discussed_product_id": _product_id,
+                                    "last_price_offered": _selected_price,
+                                })
+                            except Exception as _fallback_state_err:
+                                logger.error(f"[Router] Fallback action menu state save error: {_fallback_state_err}")
+                        _showcase_msgs = [{"text": f"*{_selected_name}* — {_currency2} {_selected_price:,.0f}\n\nReply *1* to order or *0* to view gallery."}]
                     return {
                         "handled": True, "escalated": False,
                         "messages": _showcase_msgs,
