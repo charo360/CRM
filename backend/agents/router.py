@@ -296,6 +296,7 @@ class Router:
 
         # ── 2.5: Menu selection gate (17) ─────────────────────────────────
         # Check BEFORE intent analyzer — intercepts "One", "moja", "first", "ya kwanza" etc.
+        logger.info(f"[Router] Menu gate check: waiting={conv_state.get('waiting_for_selection')}, items_count={len(conv_state.get('menu_items', {}))}, type={conv_state.get('menu_type')}, msg='{message[:30]}'")
         if conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
             _sel = _normalize_selection(message)
             _menu_items = conv_state.get("menu_items", {})

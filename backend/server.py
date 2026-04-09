@@ -6358,13 +6358,34 @@ async def evolution_webhook(request: Request):
                 
                 # For outgoing messages, check if already stored by send_message()
                 # (auto-replies and manual sends store the message before the webhook arrives)
-                if from_me and evo_msg_id:
-                    existing = await db.messages.find_one({
-                        "evo_message_id": evo_msg_id,
-                        "user_id": user["_id"],
-                    })
+                if from_me:
+                    existing = None
+                    # Primary lookup: by evo_message_id
+                    if evo_msg_id:
+                        existing = await db.messages.find_one({
+                            "evo_message_id": evo_msg_id,
+                            "user_id": user["_id"],
+                        })
+                    # Fallback: send_message() stores BEFORE calling Evolution API,
+                    # so evo_message_id may not be set yet when this webhook fires.
+                    # Match by content + direction + recency (last 30s) instead.
+                    if not existing and body:
+                        _dedup_cutoff = datetime.utcnow() - __import__("datetime").timedelta(seconds=30)
+                        existing = await db.messages.find_one({
+                            "user_id": user["_id"],
+                            "customer_id": customer_id,
+                            "direction": "outgoing",
+                            "content": body,
+                            "created_at": {"$gte": _dedup_cutoff},
+                        })
                     if existing:
                         print(f"DEBUG: Outgoing message already exists (send_context={existing.get('send_context','?')}), skipping AI")
+                        # Back-fill evo_message_id if missing (fixes the race window)
+                        if evo_msg_id and not existing.get("evo_message_id"):
+                            await db.messages.update_one(
+                                {"_id": existing["_id"]},
+                                {"$set": {"evo_message_id": evo_msg_id}}
+                            )
                         # Only pause auto-reply when the OWNER manually typed this message.
                         # Bot-sent messages (auto_reply, broadcast, etc.) must NOT set owner_reply
                         # or they will lock out the bot for 15 minutes after every auto-reply.
@@ -6697,6 +6718,96 @@ async def evolution_webhook(request: Request):
                     "business_type": _business_type,
                     "owner_was_handling": _owner_was_handling,  # owner replied but stepped away >15min ago
                 }
+
+                # ── PRE-ROUTER: Menu selection handler ─────────────────────
+                # Short numeric messages ("1", "2", "3") get misclassified by
+                # the intent analyzer. Check conversation state for active menus
+                # BEFORE the router to handle them correctly.
+                _body_sel = body.strip()
+                if customer_id and len(_body_sel) <= 2 and _body_sel.isdigit():
+                    from agents.conversation_state import load_state as _load_pre, save_state as _save_pre
+                    _pre_state = await _load_pre(db, user["_id"], str(customer_id))
+                    if _pre_state.get("waiting_for_selection") and _pre_state.get("menu_items"):
+                        _pre_items = _pre_state.get("menu_items", {})
+                        _pre_type = _pre_state.get("menu_type", "")
+                        if _body_sel in _pre_items:
+                            _pre_sel = _pre_items[_body_sel]
+                            logging.info(f"[PreRouter] Menu selection intercepted: '{_body_sel}' → {_pre_sel.get('name','')} (type={_pre_type})")
+
+                            if _pre_type == "single_product_actions":
+                                _action = _pre_sel.get("action", "order")
+                                _pprice = _pre_sel.get("price", 0)
+                                _pid = _pre_sel.get("id")
+                                # Menu item name is "Order Now"/"Add to Cart" — get real product name from DB
+                                _pname = ""
+                                if _pid:
+                                    _prod_doc = await db.products.find_one({"_id": _pid})
+                                    if _prod_doc:
+                                        _pname = _prod_doc.get("name", "")
+                                if not _pname:
+                                    # Fallback: check last_discussed_product from state
+                                    _pname = _pre_state.get("last_discussed_product", _pre_sel.get("name", "Product"))
+
+                                if _action == "similar":
+                                    # Don't clear state — let router menu gate handle "see similar"
+                                    pass
+                                else:
+                                    # Clear menu state for order/add_cart
+                                    await _save_pre(db, user["_id"], str(customer_id), {
+                                        "active_menu": False, "waiting_for_selection": False,
+                                        "menu_items": {}, "menu_type": None,
+                                        "last_discussed_product": _pname,
+                                    })
+                                    # Order Now or Add to Cart → collect delivery details
+                                    _order_reply = (
+                                        f"*{_pname}* — {currency} {_pprice:,.0f} 🛒\n\n"
+                                        f"How many would you like, and what's your *delivery address*? "
+                                        f"(Or let me know if you prefer *pickup*.) 📦"
+                                    )
+                                    await _save_pre(db, user["_id"], str(customer_id), {
+                                        "pending_order_creation": True,
+                                        "pending_order_product_id": _pid,
+                                        "pending_order_product_name": _pname,
+                                        "pending_order_price": _pprice,
+                                    })
+                                    try:
+                                        await db.customers.update_one(
+                                            {"_id": customer_id},
+                                            {"$set": {
+                                                "needs_human": True,
+                                                "needs_human_reason": f"Customer wants to order: {_pname} ({currency} {_pprice:,.0f})",
+                                                "needs_human_at": datetime.utcnow(),
+                                            }}
+                                        )
+                                    except Exception:
+                                        pass
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_order_reply, customer_name=customer_name,
+                                        send_context="auto_reply"
+                                    )
+                                    return {"status": "ok", "handled_by": "pre_router_menu"}
+
+                            elif _pre_type in ("catalog_selection", "product_selection"):
+                                # Product selected from catalog — let the router handle
+                                # (it has full showcase logic)
+                                pass
+
+                            elif _pre_type == "service_selection":
+                                # Service selected — let the router handle
+                                # (it has booking date collection logic)
+                                pass
+
+                            # For "0" = view gallery
+                            elif _body_sel == "0":
+                                await _save_pre(db, user["_id"], str(customer_id), {
+                                    "active_menu": False, "waiting_for_selection": False,
+                                    "menu_items": {}, "menu_type": None,
+                                })
+                                # Fall through to router which has gallery logic
+                                pass
+                # ── END PRE-ROUTER ─────────────────────────────────────────
 
                 agent_result = await router.route_and_process(
                     user_id=user["_id"],
