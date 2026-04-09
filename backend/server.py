@@ -6881,21 +6881,39 @@ async def evolution_webhook(request: Request):
                                         send_context="auto_reply"
                                     )
                                 await _aio_gallery.sleep(_WA_DELAY_BETWEEN_IMGS)
+                            # After images, send numbered catalog list for selection
+                            await _aio_gallery.sleep(_WA_DELAY_BETWEEN_MSGS)
+                            _cat_lines = ["📋 *Our Catalog:*\n"]
+                            _cat_menu = {}
+                            for _ci, _cp in enumerate(_gallery_prods, 1):
+                                _cp_price = _cp.get("price", 0)
+                                _cp_stock = "✅" if _cp.get("in_stock", True) else "❌"
+                                _cp_price_s = f"{_gallery_currency} {_cp_price:,.0f}" if _cp_price else "POA"
+                                _cat_lines.append(f"{_ci}️⃣  *{_cp['name']}* — {_cp_price_s} {_cp_stock}")
+                                _cat_menu[str(_ci)] = {
+                                    "name": _cp["name"], "price": _cp_price,
+                                    "id": str(_cp["_id"]), "type": "product"
+                                }
                             if _has_more_gallery:
-                                await _aio_gallery.sleep(_WA_DELAY_BETWEEN_MSGS)
-                                await ws.send_message(
-                                    user_id=user["_id"], to_number=from_number,
-                                    message="📌 That's our top picks! Type *catalog* to see the full numbered list.",
-                                    customer_name=customer_name, send_context="auto_reply"
-                                )
-                        # Persist context_update from gallery agent result
-                        _gallery_ctx = agent_result.get("context_update")
-                        if _gallery_ctx and customer_id:
-                            try:
-                                from agents.conversation_state import save_state as _save_state_g
-                                await _save_state_g(db, user["_id"], customer_id, _gallery_ctx)
-                            except Exception as _gctx_err:
-                                logging.error(f"[Webhook] Failed to save gallery context_update: {_gctx_err}")
+                                _cat_lines.append("\n📌 Type *catalog* to see more products.")
+                            _cat_lines.append("\n👉 Reply with the *number* to view a product!")
+                            await ws.send_message(
+                                user_id=user["_id"], to_number=from_number,
+                                message="\n".join(_cat_lines),
+                                customer_name=customer_name, send_context="auto_reply"
+                            )
+                            # Save menu state so customer can select by number
+                            if customer_id:
+                                try:
+                                    from agents.conversation_state import save_state as _save_state_g
+                                    await _save_state_g(db, user["_id"], customer_id, {
+                                        "active_menu": True,
+                                        "waiting_for_selection": True,
+                                        "menu_type": "product_selection",
+                                        "menu_items": _cat_menu,
+                                    })
+                                except Exception as _gctx_err:
+                                    logging.error(f"[Webhook] Failed to save gallery menu state: {_gctx_err}")
                         return {"status": "ok", "handled_by": "gallery"}
 
                     # Send all messages returned by agent — with safe delays between
