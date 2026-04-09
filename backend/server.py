@@ -115,8 +115,7 @@ from redis_client import (
 # Anti-duplicate auto-reply guard: tracks evo_message_id to prevent double replies
 # Evolution API often fires messages.upsert webhook multiple times for the same message
 import asyncio as _aio
-_AUTO_REPLY_DEDUP_TTL = 120  # seconds
-_PING_PONG_TTL = 90          # seconds — increased from 30s; prevents rapid loops
+_AUTO_REPLY_DEDUP_TTL = 120  # seconds — prevents duplicate processing of same Evolution API message ID
 _OWNER_ATTENTION_TTL = 900   # 15 minutes
 
 # WhatsApp safe send delays (seconds) — avoids spam detection + rate limits
@@ -6365,10 +6364,13 @@ async def evolution_webhook(request: Request):
                         "user_id": user["_id"],
                     })
                     if existing:
-                        print(f"DEBUG: Outgoing message already exists, skipping AI")
-                        # Track manual owner reply — pause auto-reply for this contact for 15 min
-                        await _redis_set_ts(f"{user['_id']}:{from_number}:owner_reply", _OWNER_ATTENTION_TTL)
-                        logging.info(f"Owner manually replied to {from_number} — auto-reply paused 15 min")
+                        print(f"DEBUG: Outgoing message already exists (send_context={existing.get('send_context','?')}), skipping AI")
+                        # Only pause auto-reply when the OWNER manually typed this message.
+                        # Bot-sent messages (auto_reply, broadcast, etc.) must NOT set owner_reply
+                        # or they will lock out the bot for 15 minutes after every auto-reply.
+                        if existing.get("send_context", "manual") == "manual":
+                            await _redis_set_ts(f"{user['_id']}:{from_number}:owner_reply", _OWNER_ATTENTION_TTL)
+                            logging.info(f"Owner manually replied to {from_number} — auto-reply paused 15 min")
                         return {"status": "ok"}
                 
                 message_id = str(uuid.uuid4())
@@ -6438,9 +6440,16 @@ async def evolution_webhook(request: Request):
                         {"user_id": user["_id"], "customer_id": customer_id, "direction": "incoming", "read": {"$ne": True}},
                         {"$set": {"read": True}}
                     )
-                    # Clear any active menu state so the next customer message isn't
-                    # misinterpreted as a menu number selection after owner replied
-                    if customer_id:
+                    # Only clear menu state when the OWNER manually replies from their phone.
+                    # Do NOT clear it for bot-sent messages — the bot saves menu state AFTER
+                    # sending and Evolution API fires this from_me webhook almost immediately,
+                    # which would wipe the menu before the customer can select anything.
+                    # We detect owner vs bot by checking the owner-attention Redis key:
+                    # if the owner was NOT already handling this chat, this is a bot message.
+                    import time as _fm_t
+                    _owner_ts = await _redis_get_ts(f"{user['_id']}:{from_number}:owner_reply")
+                    _owner_active = (_fm_t.time() - _owner_ts) < _OWNER_ATTENTION_TTL
+                    if customer_id and _owner_active:
                         try:
                             from agents.conversation_state import save_state as _save_state
                             await _save_state(db, user["_id"], customer_id, {
@@ -6530,25 +6539,14 @@ async def evolution_webhook(request: Request):
                 )
                 
                 # ============================================================
-                # PING-PONG LOOP GUARD (in-memory, zero DB cost)
-                # If we sent an auto-reply to this number in the last 30s,
-                # we're in an AI↔AI loop — stop immediately.
-                # Real customers get normal replies; loops are cut after 1 reply.
-                # ============================================================
-                import time as _t_loop
-                _loop_key = f"{user['_id']}:{from_number}"
-                _now_loop = _t_loop.time()
-                _last_sent = await _redis_get_ts(f"{_loop_key}:auto_sent")
-                if _now_loop - _last_sent < _PING_PONG_TTL:
-                    logging.info(f"Auto-reply BLOCKED: ping-pong loop detected for {from_number} (last reply {_now_loop - _last_sent:.1f}s ago)")
-                    return {"status": "ok", "message": "loop guard: recent auto-reply detected"}
-
-                # ============================================================
                 # OWNER ATTENTION COOLDOWN
                 # If owner manually replied to this contact within last 15 min,
                 # block AI — owner is handling it.
                 # After 15 min with no new owner reply, AI resumes automatically.
                 # ============================================================
+                import time as _t_owner
+                _loop_key = f"{user['_id']}:{from_number}"
+                _now_loop = _t_owner.time()
                 _owner_reply_ts = await _redis_get_ts(f"{_loop_key}:owner_reply")
                 _time_since_owner = _now_loop - _owner_reply_ts
                 _owner_handling = _owner_reply_ts > 0 and _time_since_owner < _OWNER_ATTENTION_TTL
@@ -6779,7 +6777,14 @@ async def evolution_webhook(request: Request):
                                     message="📌 That's our top picks! Type *catalog* to see the full numbered list.",
                                     customer_name=customer_name, send_context="auto_reply"
                                 )
-                        await _redis_set_ts(f"{user['_id']}:{from_number}:auto_sent", _PING_PONG_TTL)
+                        # Persist context_update from gallery agent result
+                        _gallery_ctx = agent_result.get("context_update")
+                        if _gallery_ctx and customer_id:
+                            try:
+                                from agents.conversation_state import save_state as _save_state_g
+                                await _save_state_g(db, user["_id"], customer_id, _gallery_ctx)
+                            except Exception as _gctx_err:
+                                logging.error(f"[Webhook] Failed to save gallery context_update: {_gctx_err}")
                         return {"status": "ok", "handled_by": "gallery"}
 
                     # Send all messages returned by agent — with safe delays between
@@ -6799,7 +6804,15 @@ async def evolution_webhook(request: Request):
                             send_context="auto_reply"
                         )
 
-                    await _redis_set_ts(f"{user['_id']}:{from_number}:auto_sent", _PING_PONG_TTL)
+                    # Persist context_update returned by agent (menu state, intent, etc.)
+                    _ctx_update = agent_result.get("context_update")
+                    if _ctx_update and customer_id:
+                        try:
+                            from agents.conversation_state import save_state as _save_state
+                            await _save_state(db, user["_id"], customer_id, _ctx_update)
+                        except Exception as _ctx_err:
+                            logging.error(f"[Webhook] Failed to save context_update: {_ctx_err}")
+
                     return {"status": "ok", "handled_by": "agent"}
 
                 # Handle order button taps: "order_<product_id>"
@@ -7197,7 +7210,6 @@ async def evolution_webhook(request: Request):
                                     except Exception as img_err:
                                         logging.error(f"Failed to send product button/image {pid}: {img_err}")
                             
-                            await _redis_set_ts(f"{user['_id']}:{from_number}:auto_sent", _PING_PONG_TTL)
                             logging.info(f"Auto-replied to {c_name} ({from_number}), images_sent={len(images_sent)}")
                         
                     except Exception as e:

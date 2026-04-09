@@ -637,6 +637,7 @@ class WhatsAppService:
                 "message_credits": _credits,
                 "to_number": to_number,
                 "status": "pending",
+                "send_context": send_context,
                 "created_at": datetime.utcnow(),
             }
             if media_url:
