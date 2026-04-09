@@ -75,6 +75,14 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                 "pending_booking_list": doc.get("pending_booking_list"),
                 "pending_booking_action": doc.get("pending_booking_action"),
                 "updated_at": doc.get("updated_at"),
+                # Menu selection state — enables numbered reply routing
+                "active_menu": doc.get("active_menu", False),
+                "waiting_for_selection": doc.get("waiting_for_selection", False),
+                "menu_items": doc.get("menu_items", {}),
+                "menu_type": doc.get("menu_type"),
+                "menu_sent_at": doc.get("menu_sent_at"),
+                "catalog_all_ids": doc.get("catalog_all_ids", []),
+                "catalog_has_more": doc.get("catalog_has_more", False),
                 # 13.2: Enriched customer profile fields
                 "preferred_language": doc.get("preferred_language"),
                 "price_sensitivity": doc.get("price_sensitivity"),   # low|medium|high
