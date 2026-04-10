@@ -38,7 +38,8 @@ class SalesAgent(BaseAgent):
             product_name = conv_state.get("pending_order_product_name", "your item")
             product_price = conv_state.get("pending_order_price", 0)
             product_id = conv_state.get("pending_order_product_id", "")
-            order_step = conv_state.get("pending_order_step", "quantity")
+            # FIX: Handle None as "quantity" - dict.get() returns None if key exists with None value
+            order_step = conv_state.get("pending_order_step") or "quantity"
             import re as _re2
             import uuid as _uuid2
             from datetime import datetime as _dt2
