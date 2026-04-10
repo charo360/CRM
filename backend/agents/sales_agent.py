@@ -30,115 +30,102 @@ class SalesAgent(BaseAgent):
         # Use business_id from context (authoritative for product queries)
         biz_id = context.get("business_id", user_id)
 
-        # --- PENDING ORDER CREATION: collect quantity → delivery details → confirm ---
-        # Run before catalog fetch: if product query fails, we must still complete this flow
-        # instead of falling through to ChatAgent (which can fake order confirmations).
+        # --- PENDING ORDER CREATION (WhatsApp retail) ---
+        # Single-step after "How many?": save order + exit — long address/payment chains felt like
+        # "it keeps asking for the order". Legacy delivery/payment steps still complete in one message.
         if conv_state.get("pending_order_creation"):
             product_name = conv_state.get("pending_order_product_name", "your item")
             product_price = conv_state.get("pending_order_price", 0)
             product_id = conv_state.get("pending_order_product_id", "")
-            order_step = conv_state.get("pending_order_step", "quantity")  # quantity → delivery → done
+            order_step = conv_state.get("pending_order_step", "quantity")
+            import re as _re2
+            import uuid as _uuid2
+            from datetime import datetime as _dt2
 
-            if order_step == "quantity":
-                # Customer just gave quantity — ask for delivery details
-                import re as _re2
-                qty_match = _re2.search(r'\d+', message)
-                quantity = int(qty_match.group()) if qty_match else 1
-                total = product_price * quantity
-                reply = (
-                    f"Got it! *{quantity}x {product_name}* = *{currency} {total:,.0f}* 🛒\n\n"
-                    f"Please share your *delivery address* so we can arrange delivery. 📍"
-                )
+            def _cleared_order_context() -> Dict[str, Any]:
                 return {
-                    "handled": True,
-                    "messages": [{"text": reply}],
-                    "context_update": {
-                        "pending_order_creation": True,
-                        "pending_order_step": "delivery",
-                        "pending_order_quantity": quantity,
-                        "pending_order_total": total,
-                        "pending_order_product_name": product_name,
-                        "pending_order_price": product_price,
-                        "pending_order_product_id": product_id,
-                    },
+                    "pending_order_creation": False,
+                    "pending_order_step": None,
+                    "pending_order_quantity": None,
+                    "pending_order_total": None,
+                    "pending_order_delivery": None,
+                    "pending_order_product_id": None,
+                    "pending_order_product_name": None,
+                    "pending_order_price": None,
+                    "state": "ongoing",
+                    "last_intent": intent,
                 }
 
-            elif order_step == "delivery":
-                # Customer gave delivery address — ask for payment method
-                delivery_address = message.strip()
-                # Get business payment methods
-                bk_payment = ""
-                if business_knowledge:
-                    for line in business_knowledge.split("\n"):
-                        if "payment" in line.lower() or "mpesa" in line.lower() or "cash" in line.lower():
-                            bk_payment = line.strip()
-                            break
-                payment_hint = f"\n💳 Payment options: {bk_payment}" if bk_payment else ""
-                reply = (
-                    f"Perfect! Delivery to: _{delivery_address}_ 📍\n\n"
-                    f"How would you like to pay?{payment_hint}\n\n"
-                    f"Reply with your preferred payment method to confirm your order. ✅"
-                )
-                return {
-                    "handled": True,
-                    "messages": [{"text": reply}],
-                    "context_update": {
-                        "pending_order_creation": True,
-                        "pending_order_step": "payment",
-                        "pending_order_delivery": delivery_address,
-                        "pending_order_quantity": conv_state.get("pending_order_quantity", 1),
-                        "pending_order_total": conv_state.get("pending_order_total", product_price),
-                        "pending_order_product_name": product_name,
-                        "pending_order_price": product_price,
-                        "pending_order_product_id": product_id,
-                    },
-                }
-
-            elif order_step == "payment":
-                # Customer gave payment method — create order in DB and confirm
-                payment_method = message.strip()
-                quantity = conv_state.get("pending_order_quantity", 1)
-                total = conv_state.get("pending_order_total", product_price)
-                delivery_address = conv_state.get("pending_order_delivery", "")
-                import uuid as _uuid2
-                from datetime import datetime as _dt2
+            async def _insert_order_and_reply(
+                quantity: int,
+                total: float,
+                delivery_address: str,
+                payment_method: str,
+            ) -> Dict[str, Any]:
+                _cid = context.get("customer_id")
                 order_doc = {
                     "_id": str(_uuid2.uuid4()),
                     "user_id": user_id,
                     "customer_name": customer_name,
                     "items": [{"product_id": product_id, "name": product_name, "quantity": quantity, "price": product_price}],
                     "total_amount": total,
-                    "delivery_address": delivery_address,
-                    "payment_method": payment_method,
+                    "delivery_address": delivery_address or "— (confirm on chat)",
+                    "payment_method": payment_method or "— (confirm on chat)",
                     "delivery_status": "Pending",
                     "payment_status": "Pending",
                     "created_at": _dt2.utcnow(),
                 }
+                if _cid:
+                    order_doc["customer_id"] = str(_cid)
                 try:
                     await self.db.orders.insert_one(order_doc)
                     logger.info(f"[SalesAgent] Order created: {order_doc['_id']} for {customer_name}")
                 except Exception as e:
                     logger.error(f"[SalesAgent] Order DB insert failed: {e}")
+                _addr_line = delivery_address.strip() if delivery_address.strip() else "We'll confirm with you on chat"
+                _pay_line = payment_method.strip() if payment_method.strip() else "We'll confirm with you on chat"
                 reply = (
-                    f"✅ *Order Confirmed!*\n\n"
+                    f"✅ *Order received!*\n\n"
                     f"📦 {quantity}x {product_name}\n"
-                    f"💰 Total: {currency} {total:,.0f}\n"
-                    f"📍 Delivery: {delivery_address}\n"
-                    f"💳 Payment: {payment_method}\n\n"
-                    f"We'll process your order and be in touch shortly. Thank you {customer_name}! 🙏"
+                    f"💰 Total: *{currency} {total:,.0f}*\n"
+                    f"📍 Delivery: {_addr_line}\n"
+                    f"💳 Payment: {_pay_line}\n\n"
+                    f"We'll follow up on WhatsApp to finalize details. Thanks {customer_name}! 🙏"
                 )
                 return {
                     "handled": True,
                     "messages": [{"text": reply}],
                     "flag_for_human": True,
-                    "flag_reason": f"New order placed: {quantity}x {product_name} — {currency} {total:,.0f} — deliver to {delivery_address}",
-                    "context_update": {
-                        "pending_order_creation": False,
-                        "pending_order_step": None,
-                        "state": "ongoing",
-                        "last_intent": intent,
-                    },
+                    "flag_reason": (
+                        f"New order: {quantity}x {product_name} — {currency} {total:,.0f}"
+                    ),
+                    "context_update": _cleared_order_context(),
                 }
+
+            if order_step == "quantity":
+                qty_match = _re2.search(r"\d+", message)
+                quantity = int(qty_match.group()) if qty_match else 1
+                if quantity < 1:
+                    quantity = 1
+                total = float(product_price) * quantity
+                return await _insert_order_and_reply(
+                    quantity, total, "", "",
+                )
+
+            elif order_step == "delivery":
+                # Legacy mid-flow: customer already gave qty; this message is the address
+                delivery_address = message.strip()
+                quantity = int(conv_state.get("pending_order_quantity") or 1)
+                total = float(conv_state.get("pending_order_total") or (product_price * quantity))
+                return await _insert_order_and_reply(quantity, total, delivery_address, "")
+
+            elif order_step == "payment":
+                # Legacy mid-flow: finalize with payment preference
+                payment_method = message.strip()
+                quantity = int(conv_state.get("pending_order_quantity") or 1)
+                total = float(conv_state.get("pending_order_total") or (product_price * quantity))
+                delivery_address = str(conv_state.get("pending_order_delivery") or "")
+                return await _insert_order_and_reply(quantity, total, delivery_address, payment_method)
 
         # Fetch products - physical/digital products first
         try:
