@@ -44,42 +44,113 @@ class SalesAgent(BaseAgent):
             logger.error(f"[SalesAgent] DB error fetching products: {e}")
             return {"handled": False}
 
-        # --- PENDING ORDER CREATION: customer is providing delivery details ---
+        # --- PENDING ORDER CREATION: collect quantity → delivery details → confirm ---
         if conv_state.get("pending_order_creation"):
             product_name = conv_state.get("pending_order_product_name", "your item")
             product_price = conv_state.get("pending_order_price", 0)
-            try:
-                from ai_service import get_drafter
-                ai = get_drafter()
-                prompt = f"""You are a business owner on WhatsApp. A customer selected "{product_name}" (price: {currency} {product_price:,.0f}) and has now replied with quantity or a short order clarification.
+            product_id = conv_state.get("pending_order_product_id", "")
+            order_step = conv_state.get("pending_order_step", "quantity")  # quantity → delivery → done
 
-Customer message: "{message}"
-Customer name: {customer_name}
-Language: {language}
+            if order_step == "quantity":
+                # Customer just gave quantity — ask for delivery details
+                import re as _re2
+                qty_match = _re2.search(r'\d+', message)
+                quantity = int(qty_match.group()) if qty_match else 1
+                total = product_price * quantity
+                reply = (
+                    f"Got it! *{quantity}x {product_name}* = *{currency} {total:,.0f}* 🛒\n\n"
+                    f"Please share your *delivery address* so we can arrange delivery. 📍"
+                )
+                return {
+                    "handled": True,
+                    "messages": [{"text": reply}],
+                    "context_update": {
+                        "pending_order_creation": True,
+                        "pending_order_step": "delivery",
+                        "pending_order_quantity": quantity,
+                        "pending_order_total": total,
+                        "pending_order_product_name": product_name,
+                        "pending_order_price": product_price,
+                        "pending_order_product_id": product_id,
+                    },
+                }
 
-Write a warm, natural {language} reply that:
-1. Acknowledges what they shared (especially quantity)
-2. Confirms you've received their request and will be in touch shortly to finalise the order
-3. NEVER confirm the order is placed — just say you'll confirm soon
-4. 2 sentences max. WhatsApp tone.
+            elif order_step == "delivery":
+                # Customer gave delivery address — ask for payment method
+                delivery_address = message.strip()
+                # Get business payment methods
+                bk_payment = ""
+                if business_knowledge:
+                    for line in business_knowledge.split("\n"):
+                        if "payment" in line.lower() or "mpesa" in line.lower() or "cash" in line.lower():
+                            bk_payment = line.strip()
+                            break
+                payment_hint = f"\n💳 Payment options: {bk_payment}" if bk_payment else ""
+                reply = (
+                    f"Perfect! Delivery to: _{delivery_address}_ 📍\n\n"
+                    f"How would you like to pay?{payment_hint}\n\n"
+                    f"Reply with your preferred payment method to confirm your order. ✅"
+                )
+                return {
+                    "handled": True,
+                    "messages": [{"text": reply}],
+                    "context_update": {
+                        "pending_order_creation": True,
+                        "pending_order_step": "payment",
+                        "pending_order_delivery": delivery_address,
+                        "pending_order_quantity": conv_state.get("pending_order_quantity", 1),
+                        "pending_order_total": conv_state.get("pending_order_total", product_price),
+                        "pending_order_product_name": product_name,
+                        "pending_order_price": product_price,
+                        "pending_order_product_id": product_id,
+                    },
+                }
 
-Output only the customer-facing message."""
-                reply = await ai._call_llm(prompt, model_pref="standard")
-            except Exception as e:
-                logger.error(f"[SalesAgent] pending order creation error: {e}")
-                reply = f"Got it {customer_name}! I've noted your details for *{product_name}* and will confirm your order shortly. 📦"
-            return {
-                "handled": True,
-                "messages": [{"text": reply}],
-                "escalate": False,
-                "flag_for_human": True,
-                "flag_reason": f"Customer provided order quantity for: {product_name} — needs owner confirmation",
-                "context_update": {
-                    "pending_order_creation": False,  # clear after acknowledging
-                    "state": "ongoing",
-                    "last_intent": intent,
-                },
-            }
+            elif order_step == "payment":
+                # Customer gave payment method — create order in DB and confirm
+                payment_method = message.strip()
+                quantity = conv_state.get("pending_order_quantity", 1)
+                total = conv_state.get("pending_order_total", product_price)
+                delivery_address = conv_state.get("pending_order_delivery", "")
+                import uuid as _uuid2
+                from datetime import datetime as _dt2
+                order_doc = {
+                    "_id": str(_uuid2.uuid4()),
+                    "user_id": user_id,
+                    "customer_name": customer_name,
+                    "items": [{"product_id": product_id, "name": product_name, "quantity": quantity, "price": product_price}],
+                    "total_amount": total,
+                    "delivery_address": delivery_address,
+                    "payment_method": payment_method,
+                    "delivery_status": "Pending",
+                    "payment_status": "Pending",
+                    "created_at": _dt2.utcnow(),
+                }
+                try:
+                    await self.db.orders.insert_one(order_doc)
+                    logger.info(f"[SalesAgent] Order created: {order_doc['_id']} for {customer_name}")
+                except Exception as e:
+                    logger.error(f"[SalesAgent] Order DB insert failed: {e}")
+                reply = (
+                    f"✅ *Order Confirmed!*\n\n"
+                    f"📦 {quantity}x {product_name}\n"
+                    f"💰 Total: {currency} {total:,.0f}\n"
+                    f"📍 Delivery: {delivery_address}\n"
+                    f"💳 Payment: {payment_method}\n\n"
+                    f"We'll process your order and be in touch shortly. Thank you {customer_name}! 🙏"
+                )
+                return {
+                    "handled": True,
+                    "messages": [{"text": reply}],
+                    "flag_for_human": True,
+                    "flag_reason": f"New order placed: {quantity}x {product_name} — {currency} {total:,.0f} — deliver to {delivery_address}",
+                    "context_update": {
+                        "pending_order_creation": False,
+                        "pending_order_step": None,
+                        "state": "ongoing",
+                        "last_intent": intent,
+                    },
+                }
 
         # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
         if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:
