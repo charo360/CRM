@@ -421,6 +421,8 @@ class Router:
                             "menu_items": {},
                             "menu_type": None,
                             "last_discussed_product": _name_o,
+                            "pending_order_list": None,
+                            "pending_order_action": None,
                             "pending_order_creation": True,
                             "pending_order_product_id": _pid_o,
                             "pending_order_product_name": _name_o,
@@ -1076,15 +1078,18 @@ class Router:
         # ── 5. Dispatch to agent ───────────────────────────────────────────
         agent_name = route_intent_to_agent(intent, context.get("business_type", ""), current_contact_type)
         
-        # Override agent routing based on active multi-step flows
-        if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
-            logger.info("[Router] Overriding agent to 'order' due to pending order state")
-            agent_name = "order"
-        elif conv_state.get("pending_order_creation") or conv_state.get("pending_order_step") in (
+        # Override agent routing based on active multi-step flows.
+        # Checkout (quantity / delivery / payment) MUST win over browsing order lists:
+        # otherwise a stale pending_order_list makes "3" open order #3 instead of qty 3.
+        _in_checkout = conv_state.get("pending_order_creation") or conv_state.get("pending_order_step") in (
             "quantity", "delivery", "payment"
-        ):
-            logger.info("[Router] Overriding agent to 'sales' due to pending order flow")
+        )
+        if _in_checkout:
+            logger.info("[Router] Overriding agent to 'sales' due to pending order flow (checkout)")
             agent_name = "sales"
+        elif conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
+            logger.info("[Router] Overriding agent to 'order' due to pending order list/action")
+            agent_name = "order"
         elif conv_state.get("pending_booking_action") or conv_state.get("pending_booking_list"):
             logger.info("[Router] Overriding agent to 'booking' due to pending booking state")
             agent_name = "booking"

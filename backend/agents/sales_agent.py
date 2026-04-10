@@ -72,6 +72,8 @@ class SalesAgent(BaseAgent):
                     "pending_order_product_id": None,
                     "pending_order_product_name": None,
                     "pending_order_price": None,
+                    "pending_order_list": None,
+                    "pending_order_action": None,
                     "state": "ongoing",
                     "last_intent": intent,
                 }

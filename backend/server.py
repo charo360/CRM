@@ -6783,6 +6783,8 @@ async def evolution_webhook(request: Request):
                                             "active_menu": False, "waiting_for_selection": False,
                                             "menu_items": {}, "menu_type": None,
                                             "last_discussed_product": _pname,
+                                            "pending_order_list": None,
+                                            "pending_order_action": None,
                                             "pending_order_creation": True,
                                             "pending_order_product_id": _pid,
                                             "pending_order_product_name": _pname,
