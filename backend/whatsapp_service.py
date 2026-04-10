@@ -501,8 +501,9 @@ class WhatsAppService:
         """Send read receipt to Evolution API — gives customer blue ticks immediately."""
         try:
             async with httpx.AsyncClient(timeout=5) as client:
+                # Evolution API v2: POST /chat/markMessageAsRead/{instance} (v1 used /message/markAsRead)
                 await client.post(
-                    f"{self.base_url}/message/markAsRead/{instance_name}",
+                    f"{self.base_url}/chat/markMessageAsRead/{instance_name}",
                     headers=self._headers(),
                     json={
                         "readMessages": [

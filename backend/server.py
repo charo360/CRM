@@ -49,7 +49,7 @@ def validate_startup_env():
 
 validate_startup_env()
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9382,6 +9382,12 @@ async def broadcast_catalog(
 @api_router.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@api_router.head("/health")
+async def health_check_head():
+    """Render and some probes use HEAD; GET-only routes return 405."""
+    return Response(status_code=200)
 
 app.include_router(api_router)
 
