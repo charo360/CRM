@@ -6772,6 +6772,12 @@ async def evolution_webhook(request: Request):
                                         "pending_order_price": _pprice,
                                     })
                                     try:
+                                        await db.pending_catalogs.delete_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]}
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
                                         await db.customers.update_one(
                                             {"_id": customer_id},
                                             {"$set": {

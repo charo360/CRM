@@ -30,21 +30,9 @@ class SalesAgent(BaseAgent):
         # Use business_id from context (authoritative for product queries)
         biz_id = context.get("business_id", user_id)
 
-        # Fetch products - physical/digital products first
-        try:
-            products = await self.db.products.find({
-                "user_id": biz_id,
-                "offering_type": {"$in": ["product", "digital", "menu_item"]}
-            }).to_list(100)
-            # Fallback: if no physical products found (e.g. service business with empty/wrong
-            # business_type routed here), show ALL products so catalog is never empty
-            if not products:
-                products = await self.db.products.find({"user_id": biz_id}).to_list(100)
-        except Exception as e:
-            logger.error(f"[SalesAgent] DB error fetching products: {e}")
-            return {"handled": False}
-
         # --- PENDING ORDER CREATION: collect quantity → delivery details → confirm ---
+        # Run before catalog fetch: if product query fails, we must still complete this flow
+        # instead of falling through to ChatAgent (which can fake order confirmations).
         if conv_state.get("pending_order_creation"):
             product_name = conv_state.get("pending_order_product_name", "your item")
             product_price = conv_state.get("pending_order_price", 0)
@@ -151,6 +139,20 @@ class SalesAgent(BaseAgent):
                         "last_intent": intent,
                     },
                 }
+
+        # Fetch products - physical/digital products first
+        try:
+            products = await self.db.products.find({
+                "user_id": biz_id,
+                "offering_type": {"$in": ["product", "digital", "menu_item"]}
+            }).to_list(100)
+            # Fallback: if no physical products found (e.g. service business with empty/wrong
+            # business_type routed here), show ALL products so catalog is never empty
+            if not products:
+                products = await self.db.products.find({"user_id": biz_id}).to_list(100)
+        except Exception as e:
+            logger.error(f"[SalesAgent] DB error fetching products: {e}")
+            return {"handled": False}
 
         # --- CONTACT-AWARE SMALL TALK (KNOWN_CUSTOMER) ---
         if intent in ["GREETING", "GENERAL_CHAT", "UNKNOWN", "SMALL_TALK"]:

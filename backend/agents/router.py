@@ -532,6 +532,12 @@ class Router:
                                 "pending_order_price": _price,
                             })
                             try:
+                                await self.db.pending_catalogs.delete_one(
+                                    {"customer_id": customer_id, "user_id": user_id}
+                                )
+                            except Exception as _pce:
+                                logger.error(f"[Router] pending_catalogs clear on order start: {_pce}")
+                            try:
                                 await self.db.customers.update_one(
                                     {"_id": customer_id},
                                     {"$set": {
@@ -1042,7 +1048,21 @@ class Router:
             logger.info("[Router] Overriding agent to 'booking' due to pending_rental_dates_input")
             agent_name = "booking"
 
-        if is_personal:
+        # Personal contacts normally use PersonalAgent — but not while they are in an
+        # active order/booking/update flow. Forcing "personal" here would override the
+        # sales/booking/order handlers above and send generic LLM replies (including
+        # fake "thanks for your order" messages) instead of SalesAgent steps.
+        _in_transactional_flow = bool(
+            conv_state.get("pending_order_creation")
+            or conv_state.get("pending_order_action")
+            or conv_state.get("pending_order_list")
+            or conv_state.get("pending_booking_action")
+            or conv_state.get("pending_booking_list")
+            or conv_state.get("pending_booking_date_input")
+            or conv_state.get("pending_rental_dates_input")
+            or conv_state.get("pending_update_step")
+        )
+        if is_personal and not _in_transactional_flow:
             agent_name = "personal"
 
         # 12.3: BookingAgent handling a complaint → ComplaintAgent
