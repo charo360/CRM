@@ -7,6 +7,24 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _payment_methods_to_bullets(raw_pm: list) -> List[str]:
+    """Turn user.payment_methods (strings or {name,details}) into WhatsApp bullet lines."""
+    lines: List[str] = []
+    if not raw_pm:
+        return lines
+    for pm in raw_pm:
+        if isinstance(pm, dict):
+            n = (pm.get("name") or "").strip()
+            d = (pm.get("details") or "").strip()
+            if n and d:
+                lines.append(f"  • {n}: {d}")
+            elif n:
+                lines.append(f"  • {n}")
+        elif isinstance(pm, str) and pm.strip():
+            lines.append(f"  • {pm.strip()}")
+    return lines
+
+
 class SalesAgent(BaseAgent):
     async def process(self, user_id: str, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -31,8 +49,8 @@ class SalesAgent(BaseAgent):
         biz_id = context.get("business_id", user_id)
 
         # --- PENDING ORDER CREATION (WhatsApp retail) ---
-        # Single-step after "How many?": save order + exit — long address/payment chains felt like
-        # "it keeps asking for the order". Legacy delivery/payment steps still complete in one message.
+        # After "How many?": create order with ORD-XXXXXX, payment bullets from account settings,
+        # and instructions for proof + delivery (same workflow as manual / legacy flows).
         logger.info(f"[SalesAgent] Checking pending_order_creation: {conv_state.get('pending_order_creation')}, step: {conv_state.get('pending_order_step')}, product: {conv_state.get('pending_order_product_name')}")
         if conv_state.get("pending_order_creation"):
             product_name = conv_state.get("pending_order_product_name", "your item")
@@ -65,41 +83,82 @@ class SalesAgent(BaseAgent):
                 payment_method: str,
             ) -> Dict[str, Any]:
                 _cid = context.get("customer_id")
+                oid = str(_uuid2.uuid4())
+                order_number = "ORD-" + oid[:6].upper()
+                product_summary = f"{quantity}x {product_name}" if quantity != 1 else product_name
+                product_line = f"{quantity}x {product_name}" if quantity != 1 else product_name
+
+                raw_pm = context.get("payment_methods") or []
+                if not raw_pm:
+                    try:
+                        _owner = await self.db.users.find_one({"_id": user_id}, {"payment_methods": 1})
+                        raw_pm = (_owner or {}).get("payment_methods") or []
+                    except Exception as _e_pm:
+                        logger.warning(f"[SalesAgent] Could not load payment_methods: {_e_pm}")
+                        raw_pm = []
+                pay_bullets = _payment_methods_to_bullets(raw_pm)
+
                 order_doc = {
-                    "_id": str(_uuid2.uuid4()),
+                    "_id": oid,
+                    "order_number": order_number,
                     "user_id": user_id,
                     "customer_name": customer_name,
-                    "items": [{"product_id": product_id, "name": product_name, "quantity": quantity, "price": product_price}],
+                    "product": product_summary,
+                    "items": [
+                        {
+                            "product_id": product_id,
+                            "name": product_name,
+                            "product_name": product_name,
+                            "quantity": quantity,
+                            "price": product_price,
+                        }
+                    ],
                     "total_amount": total,
                     "delivery_address": delivery_address or "— (confirm on chat)",
                     "payment_method": payment_method or "— (confirm on chat)",
                     "delivery_status": "Pending",
                     "payment_status": "Pending",
+                    "status": "pending",
                     "created_at": _dt2.utcnow(),
                 }
                 if _cid:
                     order_doc["customer_id"] = str(_cid)
                 try:
                     await self.db.orders.insert_one(order_doc)
-                    logger.info(f"[SalesAgent] Order created: {order_doc['_id']} for {customer_name}")
+                    logger.info(f"[SalesAgent] Order created: {order_number} id={order_doc['_id']} for {customer_name}")
                 except Exception as e:
                     logger.error(f"[SalesAgent] Order DB insert failed: {e}")
-                _addr_line = delivery_address.strip() if delivery_address.strip() else "We'll confirm with you on chat"
-                _pay_line = payment_method.strip() if payment_method.strip() else "We'll confirm with you on chat"
+
+                if pay_bullets:
+                    pay_block = (
+                        "\n\nTo complete your order, please make payment using the details below.\n\n"
+                        "💳 *Payment Details:*\n" + "\n".join(pay_bullets)
+                    )
+                else:
+                    pay_block = (
+                        "\n\n💳 *Payment:* We'll confirm payment options with you on WhatsApp shortly."
+                    )
+
                 reply = (
-                    f"✅ *Order received!*\n\n"
-                    f"📦 {quantity}x {product_name}\n"
-                    f"💰 Total: *{currency} {total:,.0f}*\n"
-                    f"📍 Delivery: {_addr_line}\n"
-                    f"💳 Payment: {_pay_line}\n\n"
-                    f"We'll follow up on WhatsApp to finalize details. Thanks {customer_name}! 🙏"
+                    f"*Order Received!*\n\n"
+                    f"🔖 Order No: *#{order_number}*\n"
+                    f"📦 {product_line}\n"
+                    f"💰 {currency} {total:,.0f}\n"
+                    f"Status: 🔴 Unpaid"
+                    f"{pay_block}\n\n"
+                    f"📸 Once you have paid, send us a screenshot of your payment confirmation.\n\n"
+                    f"Also send your delivery details:\n"
+                    f"• Full name\n"
+                    f"• Delivery address\n"
+                    f"• Phone number\n\n"
+                    f"Your order *#{order_number}* will be processed once payment is confirmed. 🙏"
                 )
                 return {
                     "handled": True,
                     "messages": [{"text": reply}],
                     "flag_for_human": True,
                     "flag_reason": (
-                        f"New order: {quantity}x {product_name} — {currency} {total:,.0f}"
+                        f"New order #{order_number}: {quantity}x {product_name} — {currency} {total:,.0f}"
                     ),
                     "context_update": _cleared_order_context(),
                 }

@@ -6708,6 +6708,11 @@ async def evolution_webhook(request: Request):
                     )["currency"]
                 )
                 _business_type = _user_settings.get("business_type") or user.get("business_type", "")
+                _raw_pm_ctx = user.get("payment_methods") or []
+                _payment_methods_ctx = [
+                    m if isinstance(m, dict) else {"name": str(m), "details": ""}
+                    for m in _raw_pm_ctx
+                ]
                 agent_context = {
                     "currency": currency,
                     "customer_id": customer_id,
@@ -6719,6 +6724,7 @@ async def evolution_webhook(request: Request):
                     "ai_model": _user_settings.get("ai_model", "standard"),
                     "business_type": _business_type,
                     "owner_was_handling": _owner_was_handling,  # owner replied but stepped away >15min ago
+                    "payment_methods": _payment_methods_ctx,
                 }
 
                 # ── PRE-ROUTER: Menu selection handler ─────────────────────
