@@ -294,8 +294,11 @@ class Router:
         conv_state = await load_state(self.db, user_id, str(customer_id) if customer_id else "")
         context["conversation_state_data"] = conv_state
 
-        # Heal stale catalog menu while in order flow — "2" for qty must not stay in menu_items as "product 2"
-        if conv_state.get("pending_order_creation") and customer_id:
+        # Heal stale catalog menu while in order flow — qty digits must not stay as catalog keys
+        _in_order_flow = conv_state.get("pending_order_creation") or (
+            conv_state.get("pending_order_step") in ("quantity", "delivery", "payment")
+        )
+        if _in_order_flow and customer_id:
             if conv_state.get("waiting_for_selection") or conv_state.get("menu_items"):
                 await save_state(self.db, user_id, str(customer_id), {
                     "active_menu": False,
@@ -317,8 +320,8 @@ class Router:
         logger.info(f"[Router] Menu gate check: waiting={conv_state.get('waiting_for_selection')}, items_count={len(conv_state.get('menu_items', {}))}, type={conv_state.get('menu_type')}, msg='{message[:30]}'")
         # While collecting order qty / delivery / payment, numeric replies (e.g. "2" for two
         # items) must NOT be treated as catalog keys — stale menu_items often still has "2" = 2nd product.
-        if conv_state.get("pending_order_creation"):
-            logger.info("[Router] Skipping menu gate — pending_order_creation (order flow)")
+        if _in_order_flow:
+            logger.info("[Router] Skipping menu gate — active order flow (pending_order_creation / step)")
         elif conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
             _sel = _normalize_selection(message)
             _menu_items = conv_state.get("menu_items", {})
@@ -389,6 +392,54 @@ class Router:
                     except Exception as _pe:
                         logger.error(f"[Router] See more pagination error: {_pe}")
                         return {"handled": True, "escalated": False, "messages": [{"text": "Couldn't load the next page right now — please try again! 😊"}]}
+
+                # Order Now / Add to Cart — single atomic save (clear menu + pending order).
+                # If we only $set pending_order after a separate clear, a late context_update can
+                # leave catalog menu live so qty "1" re-triggers showcase for product 1.
+                _paction_early = _selected.get("action", "order")
+                if _menu_type == "single_product_actions" and _paction_early != "similar":
+                    _name_o = _selected.get("name", "")
+                    _price_o = _selected.get("price", 0)
+                    _currency_o = context.get("currency", "")
+                    _pid_o = _selected.get("id") or _selected.get("_id")
+                    _order_reply_early = (
+                        f"*{_name_o}* — {_currency_o} {_price_o:,.0f} 🛒\n\n"
+                        f"How many would you like? 🔢"
+                    )
+                    if customer_id:
+                        await save_state(self.db, user_id, str(customer_id), {
+                            "active_menu": False,
+                            "waiting_for_selection": False,
+                            "menu_items": {},
+                            "menu_type": None,
+                            "last_discussed_product": _name_o,
+                            "pending_order_creation": True,
+                            "pending_order_product_id": _pid_o,
+                            "pending_order_product_name": _name_o,
+                            "pending_order_price": _price_o,
+                            "pending_order_step": "quantity",
+                        })
+                        try:
+                            await self.db.pending_catalogs.delete_one(
+                                {"customer_id": customer_id, "user_id": user_id}
+                            )
+                        except Exception as _pce_o:
+                            logger.error(f"[Router] pending_catalogs clear on order start: {_pce_o}")
+                        try:
+                            await self.db.customers.update_one(
+                                {"_id": customer_id},
+                                {"$set": {
+                                    "needs_human": True,
+                                    "needs_human_reason": f"Customer wants to order: {_name_o} ({_currency_o} {_price_o:,.0f})",
+                                    "needs_human_at": datetime.now(timezone.utc),
+                                }}
+                            )
+                        except Exception as _fe_o:
+                            logger.error(f"[Router] Order flag error: {_fe_o}")
+                    return {
+                        "handled": True, "escalated": False,
+                        "messages": [{"text": _order_reply_early}],
+                    }
 
                 # ── Normal selection: clear menu state ──────────────────────
                 if customer_id:
@@ -530,49 +581,14 @@ class Router:
                         "messages": [{"text": _reply}],
                     }
                 elif _menu_type == "single_product_actions":
-                    # Customer picked Order Now / Add to Cart / See Similar
+                    # Order / Add to cart handled above (atomic). Only "similar" reaches here.
                     _action = _selected.get("action", "order")
                     if _action == "similar":
-                        # Re-dispatch to sales to find similar items
                         _sim_ctx = {**context, "intent": "CATALOG_REQUEST", "_similar_to": _name}
                         _sim_result = await self._dispatch("sales", user_id, f"show me products similar to {_name}", _sim_ctx)
                         return {
                             "handled": True, "escalated": False,
                             "messages": _sim_result.get("messages") if _sim_result and _sim_result.get("messages") else [{"text": f"Let me find you something similar to *{_name}*! 🛍️"}],
-                        }
-                    else:
-                        # Order Now or Add to Cart — collect delivery details
-                        _order_reply = (
-                            f"*{_name}* — {_currency} {_price:,.0f} 🛒\n\n"
-                            f"How many would you like? 🔢"
-                        )
-                        if customer_id:
-                            await save_state(self.db, user_id, str(customer_id), {
-                                "pending_order_creation": True,
-                                "pending_order_product_id": _product_id,
-                                "pending_order_product_name": _name,
-                                "pending_order_price": _price,
-                            })
-                            try:
-                                await self.db.pending_catalogs.delete_one(
-                                    {"customer_id": customer_id, "user_id": user_id}
-                                )
-                            except Exception as _pce:
-                                logger.error(f"[Router] pending_catalogs clear on order start: {_pce}")
-                            try:
-                                await self.db.customers.update_one(
-                                    {"_id": customer_id},
-                                    {"$set": {
-                                        "needs_human": True,
-                                        "needs_human_reason": f"Customer wants to order: {_name} ({_currency} {_price:,.0f})",
-                                        "needs_human_at": datetime.now(timezone.utc),
-                                    }}
-                                )
-                            except Exception as _fe:
-                                logger.error(f"[Router] Order flag error: {_fe}")
-                        return {
-                            "handled": True, "escalated": False,
-                            "messages": [{"text": _order_reply}],
                         }
                 else:
                     # catalog_selection or product_selection → showcase product with image + action menu
@@ -1056,9 +1072,10 @@ class Router:
         if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
             logger.info("[Router] Overriding agent to 'order' due to pending order state")
             agent_name = "order"
-        elif conv_state.get("pending_order_creation"):
-            # Customer is providing delivery details after selecting "Order Now"
-            logger.info("[Router] Overriding agent to 'sales' due to pending order creation")
+        elif conv_state.get("pending_order_creation") or conv_state.get("pending_order_step") in (
+            "quantity", "delivery", "payment"
+        ):
+            logger.info("[Router] Overriding agent to 'sales' due to pending order flow")
             agent_name = "sales"
         elif conv_state.get("pending_booking_action") or conv_state.get("pending_booking_list"):
             logger.info("[Router] Overriding agent to 'booking' due to pending booking state")
@@ -1076,6 +1093,7 @@ class Router:
         # fake "thanks for your order" messages) instead of SalesAgent steps.
         _in_transactional_flow = bool(
             conv_state.get("pending_order_creation")
+            or conv_state.get("pending_order_step") in ("quantity", "delivery", "payment")
             or conv_state.get("pending_order_action")
             or conv_state.get("pending_order_list")
             or conv_state.get("pending_booking_action")

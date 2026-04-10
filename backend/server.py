@@ -6729,8 +6729,11 @@ async def evolution_webhook(request: Request):
                 if customer_id and len(_body_sel) <= 2 and _body_sel.isdigit():
                     from agents.conversation_state import load_state as _load_pre, save_state as _save_pre
                     _pre_state = await _load_pre(db, user["_id"], str(customer_id))
-                    # Do not treat "1"/"2"/… as menu picks while order qty/delivery/payment is active
-                    if _pre_state.get("pending_order_creation"):
+                    # Do not treat digits as menu picks while order qty/delivery/payment is active
+                    _pre_order_flow = _pre_state.get("pending_order_creation") or (
+                        _pre_state.get("pending_order_step") in ("quantity", "delivery", "payment")
+                    )
+                    if _pre_order_flow:
                         pass
                     elif _pre_state.get("waiting_for_selection") and _pre_state.get("menu_items"):
                         _pre_items = _pre_state.get("menu_items", {})
@@ -6757,22 +6760,20 @@ async def evolution_webhook(request: Request):
                                     # Don't clear state — let router menu gate handle "see similar"
                                     pass
                                 else:
-                                    # Clear menu state for order/add_cart
-                                    await _save_pre(db, user["_id"], str(customer_id), {
-                                        "active_menu": False, "waiting_for_selection": False,
-                                        "menu_items": {}, "menu_type": None,
-                                        "last_discussed_product": _pname,
-                                    })
-                                    # Order Now or Add to Cart → collect delivery details
+                                    # Single save: clear menu + pending order (avoid qty "1" re-opening catalog)
                                     _order_reply = (
                                         f"*{_pname}* — {currency} {_pprice:,.0f} 🛒\n\n"
                                         f"How many would you like? 🔢"
                                     )
                                     await _save_pre(db, user["_id"], str(customer_id), {
+                                        "active_menu": False, "waiting_for_selection": False,
+                                        "menu_items": {}, "menu_type": None,
+                                        "last_discussed_product": _pname,
                                         "pending_order_creation": True,
                                         "pending_order_product_id": _pid,
                                         "pending_order_product_name": _pname,
                                         "pending_order_price": _pprice,
+                                        "pending_order_step": "quantity",
                                     })
                                     try:
                                         await db.pending_catalogs.delete_one(
@@ -6951,7 +6952,17 @@ async def evolution_webhook(request: Request):
                     _ctx_update = agent_result.get("context_update")
                     if _ctx_update and customer_id:
                         try:
-                            from agents.conversation_state import save_state as _save_state
+                            from agents.conversation_state import load_state as _load_ctx, save_state as _save_state
+                            _existing_ctx = await _load_ctx(db, user["_id"], str(customer_id))
+                            _ord_flow = _existing_ctx.get("pending_order_creation") or (
+                                _existing_ctx.get("pending_order_step") in ("quantity", "delivery", "payment")
+                            )
+                            if _ord_flow:
+                                for _mk in (
+                                    "menu_items", "menu_type", "waiting_for_selection", "active_menu",
+                                    "catalog_all_ids", "catalog_has_more", "menu_sent_at",
+                                ):
+                                    _ctx_update.pop(_mk, None)
                             await _save_state(db, user["_id"], customer_id, _ctx_update)
                         except Exception as _ctx_err:
                             logging.error(f"[Webhook] Failed to save context_update: {_ctx_err}")
