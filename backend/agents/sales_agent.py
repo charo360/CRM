@@ -33,6 +33,7 @@ class SalesAgent(BaseAgent):
         # --- PENDING ORDER CREATION (WhatsApp retail) ---
         # Single-step after "How many?": save order + exit — long address/payment chains felt like
         # "it keeps asking for the order". Legacy delivery/payment steps still complete in one message.
+        logger.info(f"[SalesAgent] Checking pending_order_creation: {conv_state.get('pending_order_creation')}, step: {conv_state.get('pending_order_step')}, product: {conv_state.get('pending_order_product_name')}")
         if conv_state.get("pending_order_creation"):
             product_name = conv_state.get("pending_order_product_name", "your item")
             product_price = conv_state.get("pending_order_price", 0)

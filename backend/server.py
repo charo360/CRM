@@ -6726,13 +6726,19 @@ async def evolution_webhook(request: Request):
                 # the intent analyzer. Check conversation state for active menus
                 # BEFORE the router to handle them correctly.
                 _body_sel = body.strip()
+                logging.info(f"[PreRouter] Checking message: '{_body_sel}', customer_id={customer_id}, isdigit={_body_sel.isdigit() if _body_sel else False}")
                 if customer_id and len(_body_sel) <= 2 and _body_sel.isdigit():
                     from agents.conversation_state import load_state as _load_pre, save_state as _save_pre
                     _pre_state = await _load_pre(db, user["_id"], str(customer_id))
+                    logging.info(f"[PreRouter] Loaded state: pending_order_creation={_pre_state.get('pending_order_creation')}, "
+                                 f"pending_order_step={_pre_state.get('pending_order_step')}, "
+                                 f"waiting_for_selection={_pre_state.get('waiting_for_selection')}, "
+                                 f"menu_type={_pre_state.get('menu_type')}")
                     # Do not treat digits as menu picks while order qty/delivery/payment is active
                     _pre_order_flow = _pre_state.get("pending_order_creation") or (
                         _pre_state.get("pending_order_step") in ("quantity", "delivery", "payment")
                     )
+                    logging.info(f"[PreRouter] _pre_order_flow={_pre_order_flow}")
                     if _pre_order_flow:
                         pass
                     elif _pre_state.get("waiting_for_selection") and _pre_state.get("menu_items"):
@@ -6765,16 +6771,21 @@ async def evolution_webhook(request: Request):
                                         f"*{_pname}* — {currency} {_pprice:,.0f} 🛒\n\n"
                                         f"How many would you like? 🔢"
                                     )
-                                    await _save_pre(db, user["_id"], str(customer_id), {
-                                        "active_menu": False, "waiting_for_selection": False,
-                                        "menu_items": {}, "menu_type": None,
-                                        "last_discussed_product": _pname,
-                                        "pending_order_creation": True,
-                                        "pending_order_product_id": _pid,
-                                        "pending_order_product_name": _pname,
-                                        "pending_order_price": _pprice,
-                                        "pending_order_step": "quantity",
-                                    })
+                                    logging.info(f"[PreRouter] Saving order flow state: pending_order_creation=True, product={_pname}, price={_pprice}, pid={_pid}")
+                                    try:
+                                        await _save_pre(db, user["_id"], str(customer_id), {
+                                            "active_menu": False, "waiting_for_selection": False,
+                                            "menu_items": {}, "menu_type": None,
+                                            "last_discussed_product": _pname,
+                                            "pending_order_creation": True,
+                                            "pending_order_product_id": _pid,
+                                            "pending_order_product_name": _pname,
+                                            "pending_order_price": _pprice,
+                                            "pending_order_step": "quantity",
+                                        })
+                                        logging.info(f"[PreRouter] State saved successfully for customer_id={customer_id}")
+                                    except Exception as _save_err:
+                                        logging.error(f"[PreRouter] FAILED to save order state: {_save_err}")
                                     try:
                                         await db.pending_catalogs.delete_one(
                                             {"customer_id": customer_id, "user_id": user["_id"]}

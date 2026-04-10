@@ -294,10 +294,18 @@ class Router:
         conv_state = await load_state(self.db, user_id, str(customer_id) if customer_id else "")
         context["conversation_state_data"] = conv_state
 
+        # DEBUG: Log key order flow state
+        logger.info(f"[Router] Loaded state: pending_order_creation={conv_state.get('pending_order_creation')}, "
+                    f"pending_order_step={conv_state.get('pending_order_step')}, "
+                    f"pending_order_product_name={conv_state.get('pending_order_product_name')}, "
+                    f"waiting_for_selection={conv_state.get('waiting_for_selection')}, "
+                    f"menu_type={conv_state.get('menu_type')}")
+
         # Heal stale catalog menu while in order flow — qty digits must not stay as catalog keys
         _in_order_flow = conv_state.get("pending_order_creation") or (
             conv_state.get("pending_order_step") in ("quantity", "delivery", "payment")
         )
+        logger.info(f"[Router] _in_order_flow={_in_order_flow}")
         if _in_order_flow and customer_id:
             if conv_state.get("waiting_for_selection") or conv_state.get("menu_items"):
                 await save_state(self.db, user_id, str(customer_id), {
