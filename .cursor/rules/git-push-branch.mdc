@@ -1,0 +1,11 @@
+---
+description: After committing CRM changes, push to the current git branch (never leave commits local-only).
+alwaysApply: true
+---
+
+# Git — push to current branch
+
+- **Repository:** This project’s git root is this `CRM` folder (`charo360/CRM` on GitHub).
+- **After any commit** that completes a task or fix, **push to the checked-out branch** (e.g. `fix/autoreply-journey-settings`), not only `main`, unless the user names another branch.
+- If `git push` is rejected, **rebase onto remote** (`git pull --rebase origin <branch>`), resolve conflicts, then push again. Stash unrelated dirty files (e.g. `yarn.lock`) only if needed for the rebase.
+- Do not ask whether to push unless the user has no remote or auth is missing; otherwise **push as part of finishing the task**.
