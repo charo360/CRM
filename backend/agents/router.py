@@ -294,10 +294,32 @@ class Router:
         conv_state = await load_state(self.db, user_id, str(customer_id) if customer_id else "")
         context["conversation_state_data"] = conv_state
 
+        # Heal stale catalog menu while in order flow — "2" for qty must not stay in menu_items as "product 2"
+        if conv_state.get("pending_order_creation") and customer_id:
+            if conv_state.get("waiting_for_selection") or conv_state.get("menu_items"):
+                await save_state(self.db, user_id, str(customer_id), {
+                    "active_menu": False,
+                    "waiting_for_selection": False,
+                    "menu_items": {},
+                    "menu_type": None,
+                })
+                conv_state = {
+                    **conv_state,
+                    "waiting_for_selection": False,
+                    "menu_items": {},
+                    "menu_type": None,
+                    "active_menu": False,
+                }
+                context["conversation_state_data"] = conv_state
+
         # ── 2.5: Menu selection gate (17) ─────────────────────────────────
         # Check BEFORE intent analyzer — intercepts "One", "moja", "first", "ya kwanza" etc.
         logger.info(f"[Router] Menu gate check: waiting={conv_state.get('waiting_for_selection')}, items_count={len(conv_state.get('menu_items', {}))}, type={conv_state.get('menu_type')}, msg='{message[:30]}'")
-        if conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
+        # While collecting order qty / delivery / payment, numeric replies (e.g. "2" for two
+        # items) must NOT be treated as catalog keys — stale menu_items often still has "2" = 2nd product.
+        if conv_state.get("pending_order_creation"):
+            logger.info("[Router] Skipping menu gate — pending_order_creation (order flow)")
+        elif conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
             _sel = _normalize_selection(message)
             _menu_items = conv_state.get("menu_items", {})
 

@@ -6729,7 +6729,10 @@ async def evolution_webhook(request: Request):
                 if customer_id and len(_body_sel) <= 2 and _body_sel.isdigit():
                     from agents.conversation_state import load_state as _load_pre, save_state as _save_pre
                     _pre_state = await _load_pre(db, user["_id"], str(customer_id))
-                    if _pre_state.get("waiting_for_selection") and _pre_state.get("menu_items"):
+                    # Do not treat "1"/"2"/… as menu picks while order qty/delivery/payment is active
+                    if _pre_state.get("pending_order_creation"):
+                        pass
+                    elif _pre_state.get("waiting_for_selection") and _pre_state.get("menu_items"):
                         _pre_items = _pre_state.get("menu_items", {})
                         _pre_type = _pre_state.get("menu_type", "")
                         if _body_sel in _pre_items:
