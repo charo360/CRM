@@ -1148,6 +1148,18 @@ class Router:
             }
 
         if not agent_result.get("handled"):
+            # Checkout (qty / delivery / payment) must reach SalesAgent even if primary routing
+            # was order (e.g. stale pending_order_list) or booking.
+            _cs_fb = context.get("conversation_state_data") or {}
+            _checkout_fb = _cs_fb.get("pending_order_creation") or _cs_fb.get("pending_order_step") in (
+                "quantity", "delivery", "payment"
+            )
+            if _checkout_fb and agent_name != "sales":
+                logger.info(f"[Router] Checkout fallback: retrying sales (primary was {agent_name})")
+                agent_result = await self._dispatch("sales", user_id, message, context)
+                if agent_result and agent_result.get("handled") and not agent_result.get("escalate"):
+                    agent_name = "sales"
+
             # For service/retail businesses, try the business-specific agent before chat fallback
             # This ensures booking/catalog requests that slip through intent classification
             # still reach the correct agent instead of ChatAgent generating fake confirmations
@@ -1159,10 +1171,10 @@ class Router:
             ))
             
             # If the primary attempt failed, and we haven't tried the domain-specific agent yet, do so.
-            if _is_svc_fb and agent_name != "booking":
+            if (not agent_result or not agent_result.get("handled")) and _is_svc_fb and agent_name != "booking":
                 logger.info(f"[Router] Service biz fallback: trying booking agent for intent={intent}")
                 agent_result = await self._dispatch("booking", user_id, message, context)
-            elif not _is_svc_fb and agent_name != "sales":
+            elif (not agent_result or not agent_result.get("handled")) and not _is_svc_fb and agent_name != "sales":
                 logger.info(f"[Router] Retail biz fallback: trying sales agent for intent={intent}")
                 agent_result = await self._dispatch("sales", user_id, message, context)
             

@@ -172,6 +172,14 @@ class OrderAgent:
                 "escalate": False,
             }
 
+        # Retail checkout (qty / delivery / payment) must be handled by SalesAgent — never treat
+        # "3" as picking order #3 from a stale pending_order_list.
+        _in_checkout = conv_state.get("pending_order_creation") or conv_state.get("pending_order_step") in (
+            "quantity", "delivery", "payment"
+        )
+        if _in_checkout:
+            return {"handled": False}
+
         # ── Handle update sub-flow steps (add/remove/change qty) ──────────
         pending_update_step = conv_state.get("pending_update_step")
         pending_action_order_id = conv_state.get("pending_order_action")

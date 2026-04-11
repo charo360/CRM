@@ -167,7 +167,18 @@ class SalesAgent(BaseAgent):
 
             if order_step == "quantity":
                 qty_match = _re2.search(r"\d+", message)
-                quantity = int(qty_match.group()) if qty_match else 1
+                if not qty_match:
+                    return {
+                        "handled": True,
+                        "escalate": False,
+                        "messages": [{
+                            "text": (
+                                f"Please send a *number only* for how many *{product_name}* you want "
+                                f"(e.g. *1*, *2*, *3*). 🔢"
+                            ),
+                        }],
+                    }
+                quantity = int(qty_match.group())
                 if quantity < 1:
                     quantity = 1
                 total = float(product_price) * quantity
