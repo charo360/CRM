@@ -373,6 +373,9 @@ Output only the customer-facing message."""
                 "menu_sent_at": _dt.utcnow().isoformat(),
                 "preferred_language": language,
                 "menu_items": _menu_items_catalog,
+                # Clear any stale order-list state so routing stays on the catalog flow
+                "pending_order_list": None,
+                "pending_order_action": None,
             },
         }
 

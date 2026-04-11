@@ -527,9 +527,15 @@ class Router:
                         if customer_id:
                             await save_state(self.db, user_id, str(customer_id), {
                                 "pending_order_creation": True,
+                                "pending_order_step": "quantity",
                                 "pending_order_product_id": _product_id,
                                 "pending_order_product_name": _name,
                                 "pending_order_price": _price,
+                                # Clear menu — order flow has taken over
+                                "active_menu": False,
+                                "waiting_for_selection": False,
+                                "menu_items": {},
+                                "menu_type": None,
                             })
                             try:
                                 await self.db.customers.update_one(
@@ -551,7 +557,8 @@ class Router:
                     _prod_doc = None
                     if _product_id:
                         try:
-                            _prod_doc = await self.db.products.find_one({"_id": _product_id})
+                            from bson import ObjectId as _ObjIdProd
+                            _prod_doc = await self.db.products.find_one({"_id": _ObjIdProd(_product_id)})
                         except Exception:
                             pass
                     _p_name = _prod_doc.get("name", _name) if _prod_doc else _name

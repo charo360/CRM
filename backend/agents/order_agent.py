@@ -409,7 +409,20 @@ class OrderAgent:
         lines.append(f"\n{prompt} Reply with the number (e.g. *1*).")
         # Save order IDs so next message resolves the pick
         order_ids = [str(o.get("_id", "")) for o in orders]
-        await save_state(self.db, user_id, customer_id, {"pending_order_list": order_ids})
+        await save_state(
+            self.db,
+            user_id,
+            customer_id,
+            {
+                "pending_order_list": order_ids,
+                "pending_order_action": None,
+                # Clear any active product-selection menu so it doesn't conflict
+                "active_menu": False,
+                "waiting_for_selection": False,
+                "menu_items": {},
+                "menu_type": None,
+            },
+        )
         return {
             "handled": True,
             "messages": [{"text": "\n".join(lines)}],

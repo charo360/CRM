@@ -6735,6 +6735,126 @@ async def evolution_webhook(request: Request):
                     "payment_methods": _payment_methods_ctx,
                 }
 
+                # ── PRE-ROUTER: Menu selection handler ─────────────────────
+                # Short numeric messages ("1", "2", "3") get misclassified by
+                # the intent analyzer. Check conversation state for active menus
+                # BEFORE the router to handle them correctly.
+                _body_sel = body.strip()
+                logging.info(f"[PreRouter] Checking message: '{_body_sel}', customer_id={customer_id}, isdigit={_body_sel.isdigit() if _body_sel else False}")
+                if customer_id and len(_body_sel) <= 2 and _body_sel.isdigit():
+                    from agents.conversation_state import load_state as _load_pre, save_state as _save_pre
+                    _pre_state = await _load_pre(db, user["_id"], str(customer_id))
+                    logging.info(f"[PreRouter] Loaded state: pending_order_creation={_pre_state.get('pending_order_creation')}, "
+                                 f"pending_order_step={_pre_state.get('pending_order_step')}, "
+                                 f"waiting_for_selection={_pre_state.get('waiting_for_selection')}, "
+                                 f"menu_type={_pre_state.get('menu_type')}")
+                    # Do not treat digits as menu picks while order qty/delivery/payment is active
+                    _pre_order_flow = _pre_state.get("pending_order_creation") or (
+                        _pre_state.get("pending_order_step") in ("quantity", "delivery", "payment")
+                    )
+                    logging.info(f"[PreRouter] _pre_order_flow={_pre_order_flow}")
+                    if _pre_order_flow:
+                        pass
+                    elif _pre_state.get("waiting_for_selection") and _pre_state.get("menu_items"):
+                        _pre_items = _pre_state.get("menu_items", {})
+                        _pre_type = _pre_state.get("menu_type", "")
+                        if _body_sel in _pre_items:
+                            _pre_sel = _pre_items[_body_sel]
+                            logging.info(f"[PreRouter] Menu selection intercepted: '{_body_sel}' → {_pre_sel.get('name','')} (type={_pre_type})")
+
+                            if _pre_type == "single_product_actions":
+                                _action = _pre_sel.get("action", "order")
+                                _pprice = _pre_sel.get("price", 0)
+                                _pid = _pre_sel.get("id")
+                                # Menu item name is "Order Now"/"Add to Cart" — get real product name from DB
+                                _pname = ""
+                                if _pid:
+                                    try:
+                                        from bson import ObjectId as _ObjIdPre
+                                        _prod_doc = await db.products.find_one({"_id": _ObjIdPre(_pid)})
+                                        if _prod_doc:
+                                            _pname = _prod_doc.get("name", "")
+                                    except Exception:
+                                        pass
+                                if not _pname:
+                                    # Fallback: check last_discussed_product from state
+                                    _pname = _pre_state.get("last_discussed_product", _pre_sel.get("name", "Product"))
+
+                                if _action == "similar":
+                                    # Don't clear state — let router menu gate handle "see similar"
+                                    pass
+                                else:
+                                    # Single save: clear menu + pending order (avoid qty "1" re-opening catalog)
+                                    _order_reply = (
+                                        f"*{_pname}* — {currency} {_pprice:,.0f} 🛒\n\n"
+                                        f"How many would you like? 🔢"
+                                    )
+                                    logging.info(f"[PreRouter] Saving order flow state: pending_order_creation=True, product={_pname}, price={_pprice}, pid={_pid}")
+                                    try:
+                                        await _save_pre(db, user["_id"], str(customer_id), {
+                                            "active_menu": False, "waiting_for_selection": False,
+                                            "menu_items": {}, "menu_type": None,
+                                            "last_discussed_product": _pname,
+                                            "pending_order_list": None,
+                                            "pending_order_action": None,
+                                            "pending_order_creation": True,
+                                            "pending_order_product_id": _pid,
+                                            "pending_order_product_name": _pname,
+                                            "pending_order_price": _pprice,
+                                            "pending_order_step": "quantity",
+                                        })
+                                        logging.info(f"[PreRouter] State saved successfully for customer_id={customer_id}")
+                                    except Exception as _save_err:
+                                        logging.error(f"[PreRouter] FAILED to save order state: {_save_err}")
+                                    try:
+                                        await db.pending_catalogs.delete_one(
+                                            {"customer_id": customer_id, "user_id": user["_id"]}
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        await db.customers.update_one(
+                                            {"_id": customer_id},
+                                            {"$set": {
+                                                "needs_human": True,
+                                                "needs_human_reason": f"Customer wants to order: {_pname} ({currency} {_pprice:,.0f})",
+                                                "needs_human_at": datetime.utcnow(),
+                                            }}
+                                        )
+                                    except Exception:
+                                        pass
+                                    ws = get_whatsapp_service(db)
+                                    await ws.send_message(
+                                        user_id=user["_id"], to_number=from_number,
+                                        message=_order_reply, customer_name=customer_name,
+                                        send_context="auto_reply"
+                                    )
+                                    return {"status": "ok", "handled_by": "pre_router_menu"}
+
+                            elif _pre_type in ("catalog_selection", "product_selection"):
+                                # Product selected from catalog — let the router handle
+                                # (it has full showcase logic)
+                                pass
+
+                            elif _pre_type == "service_selection":
+                                # Service selected — let the router handle
+                                # (it has booking date collection logic)
+                                pass
+
+                            # For "0" = view gallery
+                            elif _body_sel == "0":
+                                await _save_pre(db, user["_id"], str(customer_id), {
+                                    "active_menu": False, "waiting_for_selection": False,
+                                    "menu_items": {}, "menu_type": None,
+                                })
+                                # Fall through to router which has gallery logic
+                                pass
+                # ── PRE-ROUTER: Pending order creation ─────────────────────
+                # After the "How many would you like?" prompt, customer replies
+                # with quantity. Short numeric replies like "1" get misclassified
+                # by the intent analyzer. Handle directly via SalesAgent.
+                # ── END PRE-ROUTER ─────────────────────────────────────────
+
                 agent_result = await router.route_and_process(
                     user_id=user["_id"],
                     message=body,

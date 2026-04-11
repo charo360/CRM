@@ -41,7 +41,7 @@ async def load_state(db, user_id: str, customer_id: str) -> Dict[str, Any]:
                         current_state = doc.get("state", "new")
                         has_unresolved_complaint = doc.get("complaint_count", 0) > 0 and current_state not in ("resolved", "new")
                         has_pending_action = any(doc.get(k) for k in (
-                            "pending_order_list", "pending_order_action",
+                            "pending_order_creation",
                             "pending_booking_list", "pending_booking_action",
                             "pending_update_step",
                             "pending_payment_verification",
