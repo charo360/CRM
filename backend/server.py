@@ -6205,11 +6205,19 @@ async def evolution_webhook(request: Request):
             _u_id = parsed.get("user", {}).get("_id", "unknown")
             _cust_id_dedup = parsed.get("from_number", "unknown")
 
-            _dedup_key = _evo_id if _evo_id else f"{_u_id}:{_cust_id_dedup}:{_hl.md5(_body_content.encode()).hexdigest()[:16]}"
-
-            if not await _dedup_check_and_set(_dedup_key, _AUTO_REPLY_DEDUP_TTL):
-                logging.info(f"Webhook dedup: skipping duplicate key={_dedup_key[:30]}")
+            # ALWAYS check content-hash first (10s TTL).
+            # Evolution API fires the same message twice: once without evo_message_id
+            # (uses content hash key) and once with it (uses evo_id key).
+            # Without this, both calls use different keys and both pass dedup.
+            _content_key = f"{_u_id}:{_cust_id_dedup}:{_hl.md5(_body_content.encode()).hexdigest()[:16]}"
+            if not await _dedup_check_and_set(_content_key, 10):
+                logging.info(f"Webhook dedup (content): skipping duplicate key={_content_key[:40]}")
                 return {"status": "ok"}
+            # Also check evo_id key if present (longer TTL for cross-instance safety)
+            if _evo_id:
+                if not await _dedup_check_and_set(_evo_id, _AUTO_REPLY_DEDUP_TTL):
+                    logging.info(f"Webhook dedup (evo_id): skipping duplicate key={_evo_id[:40]}")
+                    return {"status": "ok"}
             # === END DEDUPLICATION GUARD ===
 
             log_trace(f"Parsed body: {parsed.get('body')}")

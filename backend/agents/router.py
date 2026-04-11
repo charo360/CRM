@@ -954,8 +954,8 @@ class Router:
             "pending_rental_dates_input", "pending_order_creation", "pending_order_action", "pending_order_list",
         ]
         _has_pending = any(conv_state.get(k) for k in _stale_pending_keys)
-        _topic_change_intents = {"GREETING", "CATALOG_REQUEST", "PRODUCT_INQUIRY", "GENERAL_CHAT", "SMALL_TALK", "PERSONAL_CHAT"}
-        if _has_pending and intent in _topic_change_intents and confidence >= 0.6:
+        _booking_intents = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "SCHEDULE_INQUIRY", "RESCHEDULE_REQUEST", "BOOKING_CANCEL", "BOOKING_CONFIRM"}
+        if _has_pending and intent not in _booking_intents and confidence >= 0.5:
             logger.info(f"[Router] Clearing stale pending flags — customer changed topic to {intent} (conf={confidence:.0%})")
             _clear_pending = {k: False for k in _stale_pending_keys if conv_state.get(k)}
             _clear_pending.update({"active_menu": False, "waiting_for_selection": False, "menu_items": {}, "menu_type": None})
