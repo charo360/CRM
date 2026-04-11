@@ -949,20 +949,34 @@ class Router:
         
         # Override agent routing based on active multi-step flows
         # But first — clear stale pending flags if the customer clearly changed topic
-        _stale_pending_keys = [
+        _booking_pending_keys = [
             "pending_booking_date_input", "pending_booking_action", "pending_booking_list",
-            "pending_rental_dates_input", "pending_order_creation", "pending_order_action", "pending_order_list",
+            "pending_rental_dates_input",
         ]
-        _has_pending = any(conv_state.get(k) for k in _stale_pending_keys)
+        _order_pending_keys = [
+            "pending_order_creation", "pending_order_action", "pending_order_list",
+        ]
+        _stale_pending_keys = _booking_pending_keys + _order_pending_keys
         _booking_intents = {"BOOKING_REQUEST", "AVAILABILITY_CHECK", "SCHEDULE_INQUIRY", "RESCHEDULE_REQUEST", "BOOKING_CANCEL", "BOOKING_CONFIRM"}
-        if _has_pending and intent not in _booking_intents and confidence >= 0.5:
-            logger.info(f"[Router] Clearing stale pending flags — customer changed topic to {intent} (conf={confidence:.0%})")
-            _clear_pending = {k: False for k in _stale_pending_keys if conv_state.get(k)}
+        _order_intents = {"ORDER_REQUEST", "PRODUCT_INQUIRY", "CATALOG_REQUEST", "PURCHASE_INTENT", "ORDER_STATUS"}
+        # Only clear booking pending if customer clearly changed away from booking
+        _has_booking_pending = any(conv_state.get(k) for k in _booking_pending_keys)
+        if _has_booking_pending and intent not in _booking_intents and confidence >= 0.5:
+            logger.info(f"[Router] Clearing stale booking flags — customer changed topic to {intent} (conf={confidence:.0%})")
+            _clear_pending = {k: False for k in _booking_pending_keys if conv_state.get(k)}
             _clear_pending.update({"active_menu": False, "waiting_for_selection": False, "menu_items": {}, "menu_type": None})
             if customer_id:
                 await save_state(self.db, user_id, str(customer_id), _clear_pending)
-            # Also clear in local conv_state so the overrides below don't trigger
-            for k in _stale_pending_keys:
+            for k in _booking_pending_keys:
+                conv_state[k] = False
+        # Only clear order pending if customer clearly changed away from order/product topics
+        _has_order_pending = any(conv_state.get(k) for k in _order_pending_keys)
+        if _has_order_pending and intent not in _order_intents and intent not in _booking_intents and confidence >= 0.7:
+            logger.info(f"[Router] Clearing stale order flags — customer changed topic to {intent} (conf={confidence:.0%})")
+            _clear_pending = {k: False for k in _order_pending_keys if conv_state.get(k)}
+            if customer_id:
+                await save_state(self.db, user_id, str(customer_id), _clear_pending)
+            for k in _order_pending_keys:
                 conv_state[k] = False
 
         if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
