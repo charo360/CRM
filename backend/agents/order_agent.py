@@ -32,6 +32,29 @@ UPDATE_KEYWORDS_RE = re.compile(
 # Cancellable order statuses
 CANCELLABLE_STATUSES = {"pending", "unpaid", "confirmed"}
 
+
+def _item_label(it: dict) -> str:
+    """Line items from SalesAgent use 'name'; older docs use 'product_name'."""
+    return (it.get("product_name") or it.get("name") or "Item").strip() or "Item"
+
+
+def _payment_is_actionable(payment: str) -> bool:
+    """Unsettled payment — customer can still cancel/update from chat."""
+    p = (payment or "").strip().lower()
+    return p in ("pending", "unpaid", "partial")
+
+
+def _order_allows_customer_actions(order: dict) -> bool:
+    """Whether to show Cancel/Update hints and accept 1/2 replies."""
+    status = (order.get("status") or "").lower()
+    payment = (order.get("payment_status") or "").lower()
+    if status in CANCELLABLE_STATUSES:
+        return True
+    # Many orders only set payment_status=Pending (not status=unpaid)
+    if _payment_is_actionable(payment):
+        return True
+    return False
+
 # ── Minimal UI translations for order flow error prompts ──────────────────────
 _ORDER_T = {
     "invalid_menu": {
@@ -104,7 +127,9 @@ def _format_order_block(o: dict, currency: str = "") -> str:
     # Item list
     if items:
         for it in items:
-            lines.append(f"  • {it.get('product_name','Item')} × {it.get('quantity',1)} — {currency} {it.get('price',0):,.0f}")
+            lines.append(
+                f"  • {_item_label(it)} × {it.get('quantity',1)} — {currency} {it.get('price',0):,.0f}"
+            )
     else:
         lines.append(f"  • {product}")
 
@@ -146,6 +171,14 @@ class OrderAgent:
                 "messages": [{"text": self._no_record_reply(language)}],
                 "escalate": False,
             }
+
+        # Retail checkout (qty / delivery / payment) must be handled by SalesAgent — never treat
+        # "3" as picking order #3 from a stale pending_order_list.
+        _in_checkout = conv_state.get("pending_order_creation") or conv_state.get("pending_order_step") in (
+            "quantity", "delivery", "payment"
+        )
+        if _in_checkout:
+            return {"handled": False}
 
         # ── Handle update sub-flow steps (add/remove/change qty) ──────────
         pending_update_step = conv_state.get("pending_update_step")
@@ -238,8 +271,7 @@ class OrderAgent:
             orders = await self._fetch_customer_orders(user_id, customer_id, limit=10)
             if not orders:
                 return {"handled": True, "messages": [{"text": self._no_orders_reply(language)}], "escalate": False}
-            actionable = [o for o in orders if (o.get("status") or "").lower() in CANCELLABLE_STATUSES
-                          or (o.get("payment_status") or "").lower() == "unpaid"]
+            actionable = [o for o in orders if _order_allows_customer_actions(o)]
             if len(actionable) == 1:
                 if is_cancel:
                     return await self._handle_cancel(actionable[0], customer_name, currency, language, user_id, customer_id)
@@ -312,8 +344,11 @@ class OrderAgent:
             )
 
         active_statuses = {"pending", "processing", "confirmed", "unpaid"}
-        active_orders = [o for o in orders if (o.get("status") or "").lower() in active_statuses
-                         or (o.get("payment_status") or "").lower() == "unpaid"]
+        active_orders = [
+            o for o in orders
+            if (o.get("status") or "").lower() in active_statuses
+            or _payment_is_actionable(o.get("payment_status", ""))
+        ]
 
         # 1-2 active orders — show directly with actions
         if active_orders and len(active_orders) <= 2:
@@ -394,12 +429,15 @@ class OrderAgent:
         lines = [f"Hi {customer_name}! You have {len(orders)} order(s):\n"]
         for i, o in enumerate(orders, 1):
             order_num = o.get("order_number") or ("ORD-" + str(o.get("_id", ""))[:6].upper())
-            product = o.get("product_name") or o.get("product") or "Item"
             items = o.get("items", [])
-            if items and len(items) > 1:
-                product = ", ".join(it.get("product_name", "Item") for it in items[:2])
+            if len(items) > 1:
+                product = ", ".join(_item_label(it) for it in items[:2])
                 if len(items) > 2:
                     product += f" +{len(items)-2} more"
+            elif len(items) == 1:
+                product = _item_label(items[0])
+            else:
+                product = o.get("product_name") or o.get("product") or "Item"
             status = (o.get("status") or "pending").capitalize()
             payment = o.get("payment_status", "")
             status_str = status
@@ -409,7 +447,12 @@ class OrderAgent:
         lines.append(f"\n{prompt} Reply with the number (e.g. *1*).")
         # Save order IDs so next message resolves the pick
         order_ids = [str(o.get("_id", "")) for o in orders]
-        await save_state(self.db, user_id, customer_id, {"pending_order_list": order_ids})
+        await save_state(
+            self.db,
+            user_id,
+            customer_id,
+            {"pending_order_list": order_ids, "pending_order_action": None},
+        )
         return {
             "handled": True,
             "messages": [{"text": "\n".join(lines)}],
@@ -433,21 +476,17 @@ class OrderAgent:
         if hint:
             reply += f"\n\n{hint}"
         # Save order ID for 1=Cancel / 2=Update reply, clear any pending order list
-        status = (order.get("status") or "").lower()
-        payment = (order.get("payment_status") or "").lower()
-        action_order_id = str(order["_id"]) if (status in CANCELLABLE_STATUSES or payment == "unpaid") else None
+        action_order_id = str(order["_id"]) if _order_allows_customer_actions(order) else None
         await save_state(self.db, user_id, customer_id, {"pending_order_list": None, "pending_order_action": action_order_id})
         return {"handled": True, "messages": [{"text": reply}], "escalate": False}
 
     def _action_hint(self, order: dict) -> str:
         """Return a short action prompt based on order status."""
-        status = (order.get("status") or "").lower()
-        payment = (order.get("payment_status") or "").lower()
-        if status in CANCELLABLE_STATUSES or payment == "unpaid":
+        if _order_allows_customer_actions(order):
             return (
-                f"_Need to make changes?_\n"
-                f"1️⃣ Cancel Order\n"
-                f"2️⃣ Update Order"
+                "_Need to make changes?_\n"
+                "1️⃣ Cancel Order\n"
+                "2️⃣ Update Order"
             )
         return "Let me know if you need anything else! 😊"
 
