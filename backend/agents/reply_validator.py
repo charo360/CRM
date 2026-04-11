@@ -77,7 +77,10 @@ SALES_HALLUCINATION_PATTERNS = [
 # These MUST be broad enough to catch every creative variation the LLM generates.
 FAKE_CONFIRMATION_PATTERNS = [
     # ── English ──────────────────────────────────────────────────────────────
-    r'\b(is\s+now\s+booked|has\s+been\s+booked|is\s+confirmed|has\s+been\s+confirmed)\b',
+    r'\b(is\s+now\s+booked|has\s+been\s+booked)\b',
+    # Avoid matching "payment is confirmed" / "once payment is confirmed" in real checkout copy
+    r'(?<!payment )\bis\s+confirmed\b',
+    r'(?<!payment )\bhas\s+been\s+confirmed\b',
     r'\b(booked\s+you\s+(for|in|at)|booking\s+you\s+(for|in|at))\b',
     r'\b(you\'?re\s+(all\s+)?booked|all\s+booked|you\s+are\s+booked)\b',
     r'\b(booked\s+for\s+(the|a|your|haircut|massage|service|appointment))\b',

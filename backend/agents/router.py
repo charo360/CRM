@@ -1205,11 +1205,10 @@ class Router:
                 # do NOT retry ChatAgent — it cannot fix this.
                 # Instead, infer the correct agent and dispatch to it.
                 # Only escalate if we truly can't determine the right agent.
-                _is_confirmation_hallucination = (
-                    agent_name == "chat" and (
-                        "fake booking" in reason.lower() or "confirmation" in reason.lower()
-                    )
-                ) or "fake booking" in reason.lower()
+                # Only ChatAgent should trigger infer-and-reroute; other agents use normal retry below.
+                _is_confirmation_hallucination = agent_name == "chat" and (
+                    "fake booking" in reason.lower() or "confirmation" in reason.lower()
+                )
                 if _is_confirmation_hallucination:
                     _correct_agent = _infer_correct_agent(intent, message, context.get("business_type", ""))
                     if _correct_agent and _correct_agent != "chat":
