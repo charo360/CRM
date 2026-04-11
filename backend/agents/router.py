@@ -969,9 +969,11 @@ class Router:
                 await save_state(self.db, user_id, str(customer_id), _clear_pending)
             for k in _booking_pending_keys:
                 conv_state[k] = False
-        # Only clear order pending if customer clearly changed away from order/product topics
+        # Only clear order pending if customer clearly changed away from order/product topics.
+        # NEVER clear pending_order_creation — customer is mid-order-flow providing qty/delivery/payment.
         _has_order_pending = any(conv_state.get(k) for k in _order_pending_keys)
-        if _has_order_pending and intent not in _order_intents and intent not in _booking_intents and confidence >= 0.7:
+        _order_creation_active = conv_state.get("pending_order_creation")
+        if _has_order_pending and not _order_creation_active and intent not in _order_intents and intent not in _booking_intents and confidence >= 0.7:
             logger.info(f"[Router] Clearing stale order flags — customer changed topic to {intent} (conf={confidence:.0%})")
             _clear_pending = {k: False for k in _order_pending_keys if conv_state.get(k)}
             if customer_id:
