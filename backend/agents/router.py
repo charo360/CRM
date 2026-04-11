@@ -294,43 +294,9 @@ class Router:
         conv_state = await load_state(self.db, user_id, str(customer_id) if customer_id else "")
         context["conversation_state_data"] = conv_state
 
-        # DEBUG: Log key order flow state
-        logger.info(f"[Router] Loaded state: pending_order_creation={conv_state.get('pending_order_creation')}, "
-                    f"pending_order_step={conv_state.get('pending_order_step')}, "
-                    f"pending_order_product_name={conv_state.get('pending_order_product_name')}, "
-                    f"waiting_for_selection={conv_state.get('waiting_for_selection')}, "
-                    f"menu_type={conv_state.get('menu_type')}")
-
-        # Heal stale catalog menu while in order flow — qty digits must not stay as catalog keys
-        _in_order_flow = conv_state.get("pending_order_creation") or (
-            conv_state.get("pending_order_step") in ("quantity", "delivery", "payment")
-        )
-        logger.info(f"[Router] _in_order_flow={_in_order_flow}")
-        if _in_order_flow and customer_id:
-            if conv_state.get("waiting_for_selection") or conv_state.get("menu_items"):
-                await save_state(self.db, user_id, str(customer_id), {
-                    "active_menu": False,
-                    "waiting_for_selection": False,
-                    "menu_items": {},
-                    "menu_type": None,
-                })
-                conv_state = {
-                    **conv_state,
-                    "waiting_for_selection": False,
-                    "menu_items": {},
-                    "menu_type": None,
-                    "active_menu": False,
-                }
-                context["conversation_state_data"] = conv_state
-
         # ── 2.5: Menu selection gate (17) ─────────────────────────────────
         # Check BEFORE intent analyzer — intercepts "One", "moja", "first", "ya kwanza" etc.
-        logger.info(f"[Router] Menu gate check: waiting={conv_state.get('waiting_for_selection')}, items_count={len(conv_state.get('menu_items', {}))}, type={conv_state.get('menu_type')}, msg='{message[:30]}'")
-        # While collecting order qty / delivery / payment, numeric replies (e.g. "2" for two
-        # items) must NOT be treated as catalog keys — stale menu_items often still has "2" = 2nd product.
-        if _in_order_flow:
-            logger.info("[Router] Skipping menu gate — active order flow (pending_order_creation / step)")
-        elif conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
+        if conv_state.get("waiting_for_selection") and conv_state.get("menu_items"):
             _sel = _normalize_selection(message)
             _menu_items = conv_state.get("menu_items", {})
 
@@ -400,56 +366,6 @@ class Router:
                     except Exception as _pe:
                         logger.error(f"[Router] See more pagination error: {_pe}")
                         return {"handled": True, "escalated": False, "messages": [{"text": "Couldn't load the next page right now — please try again! 😊"}]}
-
-                # Order Now / Add to Cart — single atomic save (clear menu + pending order).
-                # If we only $set pending_order after a separate clear, a late context_update can
-                # leave catalog menu live so qty "1" re-triggers showcase for product 1.
-                _paction_early = _selected.get("action", "order")
-                if _menu_type == "single_product_actions" and _paction_early != "similar":
-                    _name_o = _selected.get("name", "")
-                    _price_o = _selected.get("price", 0)
-                    _currency_o = context.get("currency", "")
-                    _pid_o = _selected.get("id") or _selected.get("_id")
-                    _order_reply_early = (
-                        f"*{_name_o}* — {_currency_o} {_price_o:,.0f} 🛒\n\n"
-                        f"How many would you like? 🔢"
-                    )
-                    if customer_id:
-                        await save_state(self.db, user_id, str(customer_id), {
-                            "active_menu": False,
-                            "waiting_for_selection": False,
-                            "menu_items": {},
-                            "menu_type": None,
-                            "last_discussed_product": _name_o,
-                            "pending_order_list": None,
-                            "pending_order_action": None,
-                            "pending_order_creation": True,
-                            "pending_order_product_id": _pid_o,
-                            "pending_order_product_name": _name_o,
-                            "pending_order_price": _price_o,
-                            "pending_order_step": "quantity",
-                        })
-                        try:
-                            await self.db.pending_catalogs.delete_one(
-                                {"customer_id": customer_id, "user_id": user_id}
-                            )
-                        except Exception as _pce_o:
-                            logger.error(f"[Router] pending_catalogs clear on order start: {_pce_o}")
-                        try:
-                            await self.db.customers.update_one(
-                                {"_id": customer_id},
-                                {"$set": {
-                                    "needs_human": True,
-                                    "needs_human_reason": f"Customer wants to order: {_name_o} ({_currency_o} {_price_o:,.0f})",
-                                    "needs_human_at": datetime.now(timezone.utc),
-                                }}
-                            )
-                        except Exception as _fe_o:
-                            logger.error(f"[Router] Order flag error: {_fe_o}")
-                    return {
-                        "handled": True, "escalated": False,
-                        "messages": [{"text": _order_reply_early}],
-                    }
 
                 # ── Normal selection: clear menu state ──────────────────────
                 if customer_id:
@@ -591,103 +507,51 @@ class Router:
                         "messages": [{"text": _reply}],
                     }
                 elif _menu_type == "single_product_actions":
-                    # Order / Add to cart handled above (atomic). Only "similar" reaches here.
+                    # Customer picked Order Now / Add to Cart / See Similar
                     _action = _selected.get("action", "order")
                     if _action == "similar":
+                        # Re-dispatch to sales to find similar items
                         _sim_ctx = {**context, "intent": "CATALOG_REQUEST", "_similar_to": _name}
                         _sim_result = await self._dispatch("sales", user_id, f"show me products similar to {_name}", _sim_ctx)
                         return {
                             "handled": True, "escalated": False,
                             "messages": _sim_result.get("messages") if _sim_result and _sim_result.get("messages") else [{"text": f"Let me find you something similar to *{_name}*! 🛍️"}],
                         }
-                else:
-                    # catalog_selection or product_selection → showcase product with image + action menu
-                    _lang2 = conv_state.get("preferred_language", "English") or "English"
-                    _currency2 = context.get("currency", "KES")
-                    _showcase_msgs = []
-                    _selected_name = _name or "Product"
-                    _selected_price = _price or 0
-                    try:
-                        _prod_doc = None
-                        if _product_id:
-                            # Support both BSON ObjectId and UUID/string product IDs.
-                            try:
-                                from bson import ObjectId as _ObjId2
-                                _prod_doc = await self.db.products.find_one({"_id": _ObjId2(_product_id)})
-                            except Exception:
-                                _prod_doc = await self.db.products.find_one({"_id": _product_id})
-                        if _prod_doc:
-                            # Build image URL
-                            _prod_imgs = []
-                            if _prod_doc.get("image_url"):
-                                _prod_imgs.append(_prod_doc["image_url"])
-                            for _img in _prod_doc.get("images", []):
-                                if _img and _img not in _prod_imgs:
-                                    _prod_imgs.append(_img)
-                            _prod_price = _prod_doc.get("price", 0)
-                            _selected_name = _prod_doc.get("name", _selected_name)
-                            _selected_price = _prod_price
-                            _price_str = f"{_currency2} {_prod_price:,.0f}" if _prod_price else "POA"
-                            _caption = f"*{_prod_doc['name']}*\n💰 {_price_str}"
-                            if _prod_doc.get("description"):
-                                _caption += f"\n_{_prod_doc['description']}_"
-                            # Send product image (with caption)
-                            if _prod_imgs:
-                                from .tools import normalize_url as _nu
-                                _showcase_msgs.append({"text": _caption, "media_url": _nu(_prod_imgs[0])})
-                            else:
-                                _showcase_msgs.append({"text": _caption})
-                            # Action menu
-                            _action_menu = (
-                                f"*What would you like to do?*\n\n"
-                                f"1️⃣  Order Now\n"
-                                f"2️⃣  Add to Cart\n"
-                                f"3️⃣  See Similar Products\n"
-                                f"0️⃣  🖼️ View Gallery\n\n"
-                                f"_Reply with a number to select_"
-                            )
-                            _showcase_msgs.append({"text": _action_menu})
-                            # Save single_product_actions menu state
-                            _action_menu_items = {
-                                "1": {"name": "Order Now", "price": _prod_price, "id": str(_prod_doc["_id"]), "type": "product_action", "action": "order"},
-                                "2": {"name": "Add to Cart", "price": _prod_price, "id": str(_prod_doc["_id"]), "type": "product_action", "action": "add_cart"},
-                                "3": {"name": "See Similar", "price": _prod_price, "id": str(_prod_doc["_id"]), "type": "product_action", "action": "similar"},
-                            }
-                            if customer_id:
-                                await save_state(self.db, user_id, str(customer_id), {
-                                    "active_menu": True,
-                                    "waiting_for_selection": True,
-                                    "menu_type": "single_product_actions",
-                                    "menu_items": _action_menu_items,
-                                    "last_discussed_product": _prod_doc["name"],
-                                    "last_discussed_product_id": str(_prod_doc["_id"]),
-                                    "last_price_offered": _prod_price,
-                                })
-                    except Exception as _se:
-                        logger.error(f"[Router] Product showcase error: {_se}")
-                    if not _showcase_msgs:
-                        # Keep order journey usable even if product lookup/showcase fails.
+                    else:
+                        # Order Now or Add to Cart — collect delivery details
+                        _order_reply = (
+                            f"*{_name}* — {_currency} {_price:,.0f} 🛒\n\n"
+                            f"How many would you like, and what's your *delivery address*? "
+                            f"(Or let me know if you prefer *pickup*.) 📦"
+                        )
                         if customer_id:
+                            await save_state(self.db, user_id, str(customer_id), {
+                                "pending_order_creation": True,
+                                "pending_order_product_id": _product_id,
+                                "pending_order_product_name": _name,
+                                "pending_order_price": _price,
+                            })
                             try:
-                                await save_state(self.db, user_id, str(customer_id), {
-                                    "active_menu": True,
-                                    "waiting_for_selection": True,
-                                    "menu_type": "single_product_actions",
-                                    "menu_items": {
-                                        "1": {"name": "Order Now", "price": _selected_price, "id": _product_id, "type": "product_action", "action": "order"},
-                                        "2": {"name": "Add to Cart", "price": _selected_price, "id": _product_id, "type": "product_action", "action": "add_cart"},
-                                        "3": {"name": "See Similar", "price": _selected_price, "id": _product_id, "type": "product_action", "action": "similar"},
-                                    },
-                                    "last_discussed_product": _selected_name,
-                                    "last_discussed_product_id": _product_id,
-                                    "last_price_offered": _selected_price,
-                                })
-                            except Exception as _fallback_state_err:
-                                logger.error(f"[Router] Fallback action menu state save error: {_fallback_state_err}")
-                        _showcase_msgs = [{"text": f"*{_selected_name}* — {_currency2} {_selected_price:,.0f}\n\nReply *1* to order or *0* to view gallery."}]
+                                await self.db.customers.update_one(
+                                    {"_id": customer_id},
+                                    {"$set": {
+                                        "needs_human": True,
+                                        "needs_human_reason": f"Customer wants to order: {_name} ({_currency} {_price:,.0f})",
+                                        "needs_human_at": datetime.now(timezone.utc),
+                                    }}
+                                )
+                            except Exception as _fe:
+                                logger.error(f"[Router] Order flag error: {_fe}")
+                        return {
+                            "handled": True, "escalated": False,
+                            "messages": [{"text": _order_reply}],
+                        }
+                else:
+                    # catalog_selection or product_selection → showcase with full images + action buttons
                     return {
                         "handled": True, "escalated": False,
-                        "messages": _showcase_msgs,
+                        "messages": [],  # server.py sends product showcase
+                        "showcase_product_id": _product_id,
                     }
             elif _sel is None:
                 # Unrelated text reply — clear menu state, continue to intent analyzer
@@ -1028,22 +892,6 @@ class Router:
         )
         session_summary_text = format_summary_for_prompt(session_summary)
 
-        # Owner-was-handling instruction: owner replied but stepped away >15 min ago
-        owner_was_handling = context.get("owner_was_handling", False)
-        owner_handling_instruction = ""
-        if owner_was_handling:
-            owner_handling_instruction = (
-                "NOTE: A staff member was handling this conversation earlier but has not responded "
-                "in the last 15 minutes. The customer may still have an unresolved issue. "
-                "Acknowledge warmly, let them know you are picking this up, and if the issue "
-                "is unclear say something like: 'Let me check on that and get back to you shortly.' "
-                "Do NOT pretend the previous staff reply did not happen."
-            )
-
-        # Append owner-handling note into careful_instruction so all agents pick it up
-        if owner_handling_instruction:
-            careful_instruction = (careful_instruction + "\n" + owner_handling_instruction).strip()
-
         # Enrich context with classification results
         context.update({
             "intent": intent,
@@ -1078,18 +926,14 @@ class Router:
         # ── 5. Dispatch to agent ───────────────────────────────────────────
         agent_name = route_intent_to_agent(intent, context.get("business_type", ""), current_contact_type)
         
-        # Override agent routing based on active multi-step flows.
-        # Checkout (quantity / delivery / payment) MUST win over browsing order lists:
-        # otherwise a stale pending_order_list makes "3" open order #3 instead of qty 3.
-        _in_checkout = conv_state.get("pending_order_creation") or conv_state.get("pending_order_step") in (
-            "quantity", "delivery", "payment"
-        )
-        if _in_checkout:
-            logger.info("[Router] Overriding agent to 'sales' due to pending order flow (checkout)")
-            agent_name = "sales"
-        elif conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
-            logger.info("[Router] Overriding agent to 'order' due to pending order list/action")
+        # Override agent routing based on active multi-step flows
+        if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
+            logger.info("[Router] Overriding agent to 'order' due to pending order state")
             agent_name = "order"
+        elif conv_state.get("pending_order_creation"):
+            # Customer is providing delivery details after selecting "Order Now"
+            logger.info("[Router] Overriding agent to 'sales' due to pending order creation")
+            agent_name = "sales"
         elif conv_state.get("pending_booking_action") or conv_state.get("pending_booking_list"):
             logger.info("[Router] Overriding agent to 'booking' due to pending booking state")
             agent_name = "booking"
@@ -1100,22 +944,7 @@ class Router:
             logger.info("[Router] Overriding agent to 'booking' due to pending_rental_dates_input")
             agent_name = "booking"
 
-        # Personal contacts normally use PersonalAgent — but not while they are in an
-        # active order/booking/update flow. Forcing "personal" here would override the
-        # sales/booking/order handlers above and send generic LLM replies (including
-        # fake "thanks for your order" messages) instead of SalesAgent steps.
-        _in_transactional_flow = bool(
-            conv_state.get("pending_order_creation")
-            or conv_state.get("pending_order_step") in ("quantity", "delivery", "payment")
-            or conv_state.get("pending_order_action")
-            or conv_state.get("pending_order_list")
-            or conv_state.get("pending_booking_action")
-            or conv_state.get("pending_booking_list")
-            or conv_state.get("pending_booking_date_input")
-            or conv_state.get("pending_rental_dates_input")
-            or conv_state.get("pending_update_step")
-        )
-        if is_personal and not _in_transactional_flow:
+        if is_personal:
             agent_name = "personal"
 
         # 12.3: BookingAgent handling a complaint → ComplaintAgent
@@ -1148,18 +977,6 @@ class Router:
             }
 
         if not agent_result.get("handled"):
-            # Checkout (qty / delivery / payment) must reach SalesAgent even if primary routing
-            # was order (e.g. stale pending_order_list) or booking.
-            _cs_fb = context.get("conversation_state_data") or {}
-            _checkout_fb = _cs_fb.get("pending_order_creation") or _cs_fb.get("pending_order_step") in (
-                "quantity", "delivery", "payment"
-            )
-            if _checkout_fb and agent_name != "sales":
-                logger.info(f"[Router] Checkout fallback: retrying sales (primary was {agent_name})")
-                agent_result = await self._dispatch("sales", user_id, message, context)
-                if agent_result and agent_result.get("handled") and not agent_result.get("escalate"):
-                    agent_name = "sales"
-
             # For service/retail businesses, try the business-specific agent before chat fallback
             # This ensures booking/catalog requests that slip through intent classification
             # still reach the correct agent instead of ChatAgent generating fake confirmations
@@ -1171,10 +988,10 @@ class Router:
             ))
             
             # If the primary attempt failed, and we haven't tried the domain-specific agent yet, do so.
-            if (not agent_result or not agent_result.get("handled")) and _is_svc_fb and agent_name != "booking":
+            if _is_svc_fb and agent_name != "booking":
                 logger.info(f"[Router] Service biz fallback: trying booking agent for intent={intent}")
                 agent_result = await self._dispatch("booking", user_id, message, context)
-            elif (not agent_result or not agent_result.get("handled")) and not _is_svc_fb and agent_name != "sales":
+            elif not _is_svc_fb and agent_name != "sales":
                 logger.info(f"[Router] Retail biz fallback: trying sales agent for intent={intent}")
                 agent_result = await self._dispatch("sales", user_id, message, context)
             
@@ -1217,10 +1034,11 @@ class Router:
                 # do NOT retry ChatAgent — it cannot fix this.
                 # Instead, infer the correct agent and dispatch to it.
                 # Only escalate if we truly can't determine the right agent.
-                # Only ChatAgent should trigger infer-and-reroute; other agents use normal retry below.
-                _is_confirmation_hallucination = agent_name == "chat" and (
-                    "fake booking" in reason.lower() or "confirmation" in reason.lower()
-                )
+                _is_confirmation_hallucination = (
+                    agent_name == "chat" and (
+                        "fake booking" in reason.lower() or "confirmation" in reason.lower()
+                    )
+                ) or "fake booking" in reason.lower()
                 if _is_confirmation_hallucination:
                     _correct_agent = _infer_correct_agent(intent, message, context.get("business_type", ""))
                     if _correct_agent and _correct_agent != "chat":
