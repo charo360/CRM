@@ -547,12 +547,33 @@ class Router:
                             "messages": [{"text": _order_reply}],
                         }
                 else:
-                    # catalog_selection or product_selection → showcase with full images + action buttons
-                    return {
-                        "handled": True, "escalated": False,
-                        "messages": [],  # server.py sends product showcase
-                        "showcase_product_id": _product_id,
-                    }
+                    # catalog_selection or product_selection → show product details + action menu
+                    _prod_doc = None
+                    if _product_id:
+                        try:
+                            _prod_doc = await self.db.products.find_one({"_id": _product_id})
+                        except Exception:
+                            pass
+                    _p_name = _prod_doc.get("name", _name) if _prod_doc else _name
+                    _p_price = _prod_doc.get("price", _price) if _prod_doc else _price
+                    _p_desc = _prod_doc.get("description", "") if _prod_doc else ""
+                    _p_stock = "In Stock ✅" if (_prod_doc or {}).get("in_stock", True) else "Out of Stock ❌"
+                    _showcase = f"*{_p_name}*\n💰 {_currency} {_p_price:,.0f}\n{_p_stock}"
+                    if _p_desc:
+                        _showcase += f"\n{_p_desc}"
+                    _showcase += f"\n\n1️⃣ Order Now\n2️⃣ See Similar\n\n👉 Reply with a number!"
+                    # Save single_product_actions menu so customer can reply 1 or 2
+                    if customer_id:
+                        await save_state(self.db, user_id, str(customer_id), {
+                            "active_menu": True, "waiting_for_selection": True,
+                            "menu_type": "single_product_actions",
+                            "menu_items": {
+                                "1": {"name": "Order Now", "price": _p_price, "id": _product_id, "type": "product_action", "action": "order"},
+                                "2": {"name": "See Similar", "price": _p_price, "id": _product_id, "type": "product_action", "action": "similar"},
+                            },
+                            "last_discussed_product": _p_name,
+                        })
+                    return {"handled": True, "escalated": False, "messages": [{"text": _showcase}]}
             elif _sel is None:
                 # Unrelated text reply — clear menu state, continue to intent analyzer
                 if customer_id:
@@ -927,6 +948,23 @@ class Router:
         agent_name = route_intent_to_agent(intent, context.get("business_type", ""), current_contact_type)
         
         # Override agent routing based on active multi-step flows
+        # But first — clear stale pending flags if the customer clearly changed topic
+        _stale_pending_keys = [
+            "pending_booking_date_input", "pending_booking_action", "pending_booking_list",
+            "pending_rental_dates_input", "pending_order_creation", "pending_order_action", "pending_order_list",
+        ]
+        _has_pending = any(conv_state.get(k) for k in _stale_pending_keys)
+        _topic_change_intents = {"GREETING", "CATALOG_REQUEST", "PRODUCT_INQUIRY", "GENERAL_CHAT", "SMALL_TALK", "PERSONAL_CHAT"}
+        if _has_pending and intent in _topic_change_intents and confidence >= 0.6:
+            logger.info(f"[Router] Clearing stale pending flags — customer changed topic to {intent} (conf={confidence:.0%})")
+            _clear_pending = {k: False for k in _stale_pending_keys if conv_state.get(k)}
+            _clear_pending.update({"active_menu": False, "waiting_for_selection": False, "menu_items": {}, "menu_type": None})
+            if customer_id:
+                await save_state(self.db, user_id, str(customer_id), _clear_pending)
+            # Also clear in local conv_state so the overrides below don't trigger
+            for k in _stale_pending_keys:
+                conv_state[k] = False
+
         if conv_state.get("pending_order_action") or conv_state.get("pending_order_list"):
             logger.info("[Router] Overriding agent to 'order' due to pending order state")
             agent_name = "order"
