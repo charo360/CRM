@@ -1897,7 +1897,7 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
     top_level_fields = {}
     settings_fields = {}
     for k, v in body.items():
-        if k in ("currency", "country_code"):
+        if k in ("currency", "country_code", "payment_methods"):
             top_level_fields[k] = v
         else:
             settings_fields[f"settings.{k}"] = v

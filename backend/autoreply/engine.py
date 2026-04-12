@@ -88,7 +88,7 @@ async def process_message(
 
         # 5. Execute CRM actions
         actions = response_data.get("actions", [])
-        await execute_actions(
+        action_results = await execute_actions(
             db=db,
             actions=actions,
             user_id=user_id,
@@ -202,8 +202,10 @@ async def process_message(
                         except Exception as img_err:
                             logger.warning(f"[AutoReplyV2] Failed to send catalog image: {img_err}")
 
-        # 9. Send text reply
+        # 9. Send text reply — append order number if a new order was created
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY
+        if action_results.get("order_number"):
+            reply_text += f"\n\n🧾 *Order #:* {action_results['order_number']}"
         await whatsapp_service.send_message(
             user_id=user_id,
             to_number=from_number,

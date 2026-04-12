@@ -30,10 +30,12 @@ async def execute_actions(
     user_id,
     customer_id,
     user: dict,
-) -> None:
-    """Execute all CRM write actions returned by Claude. Failures are logged, not raised."""
+) -> Dict[str, Any]:
+    """Execute all CRM write actions returned by Claude. Failures are logged, not raised.
+    Returns a dict of generated values (e.g. order_number) for the caller to use."""
+    results: Dict[str, Any] = {}
     if not actions:
-        return
+        return results
 
     currency = (user.get("settings") or {}).get("currency") or user.get("currency", "KES")
 
@@ -41,7 +43,9 @@ async def execute_actions(
         atype = action.get("type", "")
         try:
             if atype == "create_order":
-                await _create_order(db, action, user_id, customer_id, currency)
+                order_number = await _create_order(db, action, user_id, customer_id, currency)
+                if order_number:
+                    results["order_number"] = order_number
             elif atype == "update_order":
                 await _update_order(db, action, user_id, customer_id, currency)
             elif atype == "create_booking":
@@ -63,6 +67,8 @@ async def execute_actions(
         except Exception as exc:
             logger.error(f"[ActionHandler] Action '{atype}' failed: {exc}", exc_info=True)
 
+    return results
+
 
 # ── Individual action handlers ────────────────────────────────────────────────
 
@@ -77,7 +83,7 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
         product_name = (action.get("product_name") or "").strip()
         if not product_name:
             logger.warning("[ActionHandler] create_order skipped — no items and no product_name")
-            return
+            return None
         qty = max(1, int(action.get("quantity") or 1))
         unit_price = float(action.get("unit_price") or 0)
         raw_items = [{"product_name": product_name, "product_id": action.get("product_id", ""),
@@ -104,7 +110,7 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
 
     if not items:
         logger.warning("[ActionHandler] create_order skipped — no valid items")
-        return
+        return None
 
     total = round(total, 2)
     primary_name = items[0]["product_name"] if len(items) == 1 else f"{len(items)} items"
@@ -127,6 +133,7 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
     }
     result = await db.orders.insert_one(order_doc)
     logger.info(f"[ActionHandler] Order created: {order_number} id={result.inserted_id} items={len(items)} total={currency}{total}")
+    return order_number
 
 
 async def _update_order(db, action: dict, user_id, customer_id, currency: str) -> None:
