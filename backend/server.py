@@ -917,6 +917,12 @@ class OrderResponse(BaseModel):
     notes: Optional[str] = None
     due_date: Optional[str] = None
     created_at: str
+    order_number: Optional[str] = None
+    delivery_type: Optional[str] = None
+    delivery_address: Optional[str] = None
+    items: Optional[list] = None
+    status: Optional[str] = None
+    created_by: Optional[str] = None
 
 # Expense Models
 class ExpenseCreate(BaseModel):
@@ -4269,20 +4275,37 @@ async def get_orders(user = Depends(get_current_user)):
             customer_name = customer["name"] if customer else "Unknown"
             customer_phone = customer["phone_number"] if customer else "N/A"
         
+        # Support both manual orders (product/quantity/price) and autoreply orders (product_name/items/total_amount)
+        items = order.get("items") or []
+        product_label = (
+            order.get("product")
+            or order.get("product_name")
+            or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
+        )
+        quantity = order.get("quantity") or (items[0].get("quantity", 1) if items else 1)
+        unit_price = order.get("price") or (items[0].get("unit_price", 0) if items else 0)
+        total = order.get("total_amount") or order.get("total") or 0
+
         result.append(OrderResponse(
-            id=order["_id"],
-            customer_id=order["customer_id"],
+            id=str(order["_id"]),
+            customer_id=str(order.get("customer_id", "")),
             customer_name=customer_name,
             customer_phone=customer_phone,
-            product=order["product"],
-            quantity=order["quantity"],
-            price=order["price"],
-            total_amount=order["total_amount"],
+            product=product_label,
+            quantity=quantity,
+            price=unit_price,
+            total_amount=total,
             payment_status=order.get("payment_status", "unpaid"),
-            delivery_status=order.get("delivery_status", "pending"),
+            delivery_status=order.get("delivery_status", order.get("status", "pending")),
             notes=order.get("notes"),
             due_date=order.get("due_date"),
-            created_at=order["created_at"].isoformat()
+            created_at=order["created_at"].isoformat(),
+            order_number=order.get("order_number"),
+            delivery_type=order.get("delivery_type"),
+            delivery_address=order.get("delivery_address"),
+            items=items if items else None,
+            status=order.get("status"),
+            created_by=order.get("created_by"),
         ))
     
     return result
