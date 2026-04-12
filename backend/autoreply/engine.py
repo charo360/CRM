@@ -36,6 +36,34 @@ logger = logging.getLogger(__name__)
 FALLBACK_REPLY = "Sorry, I didn't quite catch that. Could you please repeat?"
 MAX_RETRIES = 2
 
+
+async def _send_push_notification(db, user_id, title: str, body: str, data: dict = None) -> None:
+    """Send Expo push notification to all devices registered for this user."""
+    import httpx
+    try:
+        user = await db.users.find_one({"_id": user_id})
+        if not user:
+            return
+        tokens = user.get("push_tokens", [])
+        if not tokens:
+            return
+        messages = [
+            {"to": t, "title": title, "body": body, "data": data or {}, "sound": "default", "priority": "high"}
+            for t in tokens
+            if t.startswith("ExponentPushToken") or t.startswith("ExpoPushToken")
+        ]
+        if not messages:
+            return
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.post(
+                "https://exp.host/--/api/v2/push/send",
+                json=messages,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+        logger.info(f"[AutoReplyV2] Push sent to {len(messages)} device(s): {resp.status_code}")
+    except Exception as exc:
+        logger.warning(f"[AutoReplyV2] Push notification failed: {exc}")
+
 # Singleton drafter — created once, reused across requests
 _drafter = None
 
@@ -96,11 +124,46 @@ async def process_message(
             user=user,
         )
 
-        # 6. Handle escalation
+        # 6. Handle escalation + push notifications to owner
         if response_data.get("escalate"):
             await _mark_needs_human(
                 db, customer_id,
                 response_data.get("escalate_reason", "Escalated by bot"),
+            )
+
+        # Push notification for payment received or escalation
+        for action in actions:
+            atype = action.get("type")
+            reason = action.get("reason", "")
+            if atype == "notify_owner":
+                if reason == "payment_received":
+                    await _send_push_notification(
+                        db, user_id,
+                        title=f"💰 Payment Received — {customer_name or from_number}",
+                        body=action.get("message", "Customer sent payment screenshot"),
+                        data={"type": "payment_received", "customer_id": str(customer_id)},
+                    )
+                elif reason in ("escalation", "complaint"):
+                    await _send_push_notification(
+                        db, user_id,
+                        title=f"⚠️ Customer Needs Attention — {customer_name or from_number}",
+                        body=action.get("message", "Customer requested human support"),
+                        data={"type": "escalation", "customer_id": str(customer_id)},
+                    )
+                else:
+                    await _send_push_notification(
+                        db, user_id,
+                        title=f"🔔 Alert — {customer_name or from_number}",
+                        body=action.get("message", reason or "Customer needs attention"),
+                        data={"type": "notify_owner", "customer_id": str(customer_id)},
+                    )
+
+        if response_data.get("escalate"):
+            await _send_push_notification(
+                db, user_id,
+                title=f"🚨 Escalation — {customer_name or from_number}",
+                body=response_data.get("escalate_reason", "Customer requested human support"),
+                data={"type": "escalation", "customer_id": str(customer_id)},
             )
 
         # 7. Update mini-state
