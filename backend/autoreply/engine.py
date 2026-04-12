@@ -404,11 +404,11 @@ async def _call_openai_compat(client, model_name: str, system_prompt: str, messa
         "messages": api_messages,
     }
     if is_grok_reasoning:
-        kwargs["max_completion_tokens"] = 800
+        kwargs["max_completion_tokens"] = 1500
     elif is_gpt5:
         pass  # GPT-5 manages its own output length
     else:
-        kwargs["max_tokens"] = 800
+        kwargs["max_tokens"] = 1500
         kwargs["temperature"] = 0.4   # lower temp → more consistent JSON
 
     response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
@@ -426,7 +426,7 @@ async def _call_claude_http(client_config: Dict, model_name: str, system_prompt:
     }
     payload = {
         "model": model_name,
-        "max_tokens": 800,
+        "max_tokens": 1500,
         "system": system_prompt,
         "messages": messages,
     }

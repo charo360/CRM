@@ -137,12 +137,13 @@ LANGUAGE:
 NUMBERED MENUS:
 - Always use numbered menus (1️⃣ 2️⃣ 3️⃣) when showing products or services.
 - Set new_menu in your JSON response with this format:
-  {"1": {"id": "EXACT_DB_ID", "name": "Product Name", "price": 500, "type": "product", "image_url": "url_or_empty"}}
+  {"1": {"id": "EXACT_DB_ID", "name": "Product Name", "price": 500, "type": "product"}}
 - ALWAYS use the exact database ID from the catalog — never make up IDs.
 - Include image_url from the catalog (leave empty string if no image).
 - Menus expire after 2 hours. If customer references an old menu, regenerate.
 - If LAST MENU SENT is provided, use it to resolve numbered selections.
 - When showing a PRODUCT menu (not a service or order-management menu): ALWAYS append "0️⃣ View all images" as the last option. Add it to new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}. When customer replies "0" or "view images" or "show me images" → trigger send_catalog_images (see CATALOG BROWSING below).
+- Do NOT include image_url in new_menu entries — the server resolves images from its own catalog.
 
 PRODUCT IMAGES — SELECTING A PRODUCT:
 - When customer selects a specific product from a menu, include send_product_image action if the product has an image_url.
@@ -301,9 +302,8 @@ def build_system_prompt(
             stock = "✓" if p.get("in_stock", True) else "✗ OUT OF STOCK"
             cat = f" [{p['category']}]" if p.get("category") else ""
             has_img = "📷" if p.get("image_url") else ""
-            img_url = p.get("image_url", "")
             catalog_lines.append(
-                f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} | {stock} {has_img} | img:{img_url}"
+                f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} | {stock} {has_img}"
             )
 
     if services:
