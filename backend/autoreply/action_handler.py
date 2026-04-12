@@ -103,13 +103,17 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
         unit_price = float(it.get("unit_price") or 0)
         line_total = round(qty * unit_price, 2)
         total += line_total
-        items.append({
+        variant = (it.get("variant") or "").strip()
+        item_entry: dict = {
             "product_name": name,
             "product_id":   it.get("product_id", ""),
             "quantity":     qty,
             "unit_price":   unit_price,
             "price":        line_total,
-        })
+        }
+        if variant:
+            item_entry["variant"] = variant
+        items.append(item_entry)
 
     if not items:
         logger.warning("[ActionHandler] create_order skipped — no valid items")

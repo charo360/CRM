@@ -26,6 +26,7 @@ class OrderItem(BaseModel):
     product_id: str = ""
     quantity: int = Field(default=1, ge=1)
     unit_price: float = Field(default=0, ge=0)
+    variant: str = ""       # e.g. "Pepperoni", "Chicken", "Large"
 
 
 class CreateOrderAction(BaseModel):

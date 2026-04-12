@@ -180,6 +180,11 @@ const RETAIL_CATEGORIES = [
     'Other'
 ];
 
+interface Variant {
+    name: string;
+    price: number;
+}
+
 interface Product {
     id: string;
     name: string;
@@ -191,6 +196,7 @@ interface Product {
     description?: string;
     in_stock: boolean;
     stock_quantity?: number;
+    variants?: Variant[];
     created_at: string;
 }
 
@@ -231,7 +237,12 @@ export default function ProductCatalogModal({
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
     const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
     const [subscriptionPlan, setSubscriptionPlan] = useState('free');
-    
+
+    // Variants state
+    const [editVariants, setEditVariants] = useState<Variant[]>([]);
+    const [newVariantName, setNewVariantName] = useState('');
+    const [newVariantPrice, setNewVariantPrice] = useState('');
+
     // Ref for description TextInput to control scroll position
     const descriptionInputRef = useRef<TextInput>(null);
 
@@ -546,6 +557,9 @@ export default function ProductCatalogModal({
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
         setEditStockQuantity(product.stock_quantity?.toString() || '');
+        setEditVariants(product.variants || []);
+        setNewVariantName('');
+        setNewVariantPrice('');
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -564,6 +578,9 @@ export default function ProductCatalogModal({
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
+        setEditVariants([]);
+        setNewVariantName('');
+        setNewVariantPrice('');
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -596,6 +613,8 @@ export default function ProductCatalogModal({
 
             let createdProductId = '';
 
+            const variantsToSave = editVariants.filter(v => v.name.trim());
+
             if (addMode) {
                 const productData: any = {
                     name: editName.trim(),
@@ -604,6 +623,7 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    variants: variantsToSave.length > 0 ? variantsToSave : undefined,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -623,6 +643,7 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    variants: variantsToSave,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -958,6 +979,54 @@ export default function ProductCatalogModal({
                                         <Text style={styles.aiImproveBtnText}>Improve with AI</Text>
                                     </TouchableOpacity>
                                 )}
+                            </View>
+
+                            {/* ── Variants Section ── */}
+                            <View style={styles.formGroup}>
+                                <View style={styles.formLabelRow}>
+                                    <Text style={styles.formLabel}>Variants (Optional)</Text>
+                                    <Text style={styles.stockHint}>e.g. Pepperoni · Chicken · Beef</Text>
+                                </View>
+
+                                {editVariants.map((v, idx) => (
+                                    <View key={idx} style={styles.variantRow}>
+                                        <Text style={styles.variantName}>{v.name}</Text>
+                                        <Text style={styles.variantPrice}>{currency} {v.price.toLocaleString()}</Text>
+                                        <TouchableOpacity onPress={() => setEditVariants(editVariants.filter((_, i) => i !== idx))}>
+                                            <Ionicons name="close-circle" size={20} color="#e05252" />
+                                        </TouchableOpacity>
+                                    </View>
+                                ))}
+
+                                <View style={styles.variantAddRow}>
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 2, marginRight: 6 }]}
+                                        value={newVariantName}
+                                        onChangeText={setNewVariantName}
+                                        placeholder="Variant name"
+                                        placeholderTextColor="#555"
+                                    />
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1, marginRight: 6 }]}
+                                        value={newVariantPrice}
+                                        onChangeText={setNewVariantPrice}
+                                        placeholder="Price"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <TouchableOpacity
+                                        style={styles.variantAddBtn}
+                                        onPress={() => {
+                                            if (!newVariantName.trim()) return;
+                                            const price = parseFloat(newVariantPrice) || parseFloat(editPrice) || 0;
+                                            setEditVariants([...editVariants, { name: newVariantName.trim(), price }]);
+                                            setNewVariantName('');
+                                            setNewVariantPrice('');
+                                        }}
+                                    >
+                                        <Ionicons name="add" size={20} color="#fff" />
+                                    </TouchableOpacity>
+                                </View>
                             </View>
 
                             {showStock && (
@@ -2079,5 +2148,40 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#25D366',
         fontWeight: '500',
+    },
+    variantRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#1A2535',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        marginBottom: 6,
+        gap: 8,
+    },
+    variantName: {
+        flex: 1,
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '500',
+    },
+    variantPrice: {
+        color: '#25D366',
+        fontSize: 13,
+        fontWeight: '600',
+        marginRight: 4,
+    },
+    variantAddRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 4,
+    },
+    variantAddBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 8,
+        backgroundColor: '#25D366',
+        alignItems: 'center',
+        justifyContent: 'center',
     },
 });

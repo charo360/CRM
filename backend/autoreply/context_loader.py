@@ -167,6 +167,12 @@ async def _load_products(db, user_id) -> List[Dict]:
             if extra and extra not in imgs:
                 imgs.append(extra)
 
+        raw_variants = p.get("variants") or []
+        variants = [
+            {"name": _sanitize(v.get("name", "")), "price": float(v.get("price", p.get("price", 0)))}
+            for v in raw_variants if v.get("name", "").strip()
+        ]
+
         products.append({
             "id":          str(p["_id"]),
             "name":        name,
@@ -176,6 +182,7 @@ async def _load_products(db, user_id) -> List[Dict]:
             "in_stock":    p.get("in_stock", True),
             "image_url":   imgs[0] if imgs else "",
             "images":      imgs[:3],  # max 3 images per product
+            "variants":    variants,  # [{name, price}, ...]
         })
     return products
 

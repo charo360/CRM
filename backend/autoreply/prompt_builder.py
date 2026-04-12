@@ -368,8 +368,20 @@ CATALOG BROWSING:
 - ALWAYS use the CATALOG ITEM LABEL from context (e.g., "products" / "menu items" / "services"):
   "0️⃣ View all [item label]" as last new_menu option.
 
+VARIANTS — CRITICAL:
+- If a catalog item shows "↳ Variants:" in your context → that item has multiple options.
+- When customer selects such an item → ALWAYS show variant menu FIRST before asking quantity:
+  "Which type would you like?
+   1️⃣ Pepperoni — KES 1,200
+   2️⃣ Chicken — KES 1,100
+   3️⃣ Beef — KES 1,300"
+  new_menu: {"1": {"id": "DB_ID", "name": "Pepperoni Pizza", "price": 1200, "type": "product"}}
+- Use the VARIANT price (not the base price) in the order total.
+- Record: name="Pizza", variant="Pepperoni", price=1200 in the OrderItem.
+- Never skip variant selection if variants exist.
+
 MULTI-ITEM CART:
-- After each item confirmed → "Anything else or checkout?"
+- After each item (+ variant if applicable) confirmed → "Anything else or checkout?"
 - Keep collecting until customer says: done / checkout / confirm / ndiyo / sawa / no more.
 - Fire create_order ONCE with ALL items in the items[] array. Never fire mid-collection.
 - Never fire create_order in the middle of item collection.
@@ -407,8 +419,13 @@ SERVICE CATALOG BROWSING:
     - "category": "chosen" field in send_catalog_images to filter.
     - If more → "Reply *0* or *more* to see more."
 
+VARIANTS:
+- If a service shows "↳ Variants:" → ask which variant before confirming the booking.
+  "Which type? 1️⃣ Swedish (KES 2,000) 2️⃣ Deep Tissue (KES 2,500) 3️⃣ Hot Stone (KES 3,000)"
+- Use the variant's price. Record variant="Swedish" in create_booking notes/variant field.
+
 BOOKING RULES:
-- Fire create_booking ONLY after: service confirmed + date confirmed + time confirmed (where needed).
+- Fire create_booking ONLY after: service confirmed + variant (if any) + date confirmed + time confirmed.
 - Never fire create_booking mid-collection.
 - After booking saved → show payment details if deposit is required.
 
@@ -715,6 +732,14 @@ def build_system_prompt(
     _is_service = btype in _SERVICE_TYPES
     _is_rental  = btype in _RENTAL_TYPES
 
+    def _variants_line(p: Dict, cur: str) -> str:
+        """Return an indented variants line if the product has variants."""
+        vs = p.get("variants") or []
+        if not vs:
+            return ""
+        parts_v = ", ".join(f"{v['name']} ({cur} {v['price']:,.0f})" for v in vs)
+        return f"    ↳ Variants: {parts_v}"
+
     catalog_lines: List[str] = []
     if products:
         if _is_menu:
@@ -725,6 +750,9 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
                 )
+                vl = _variants_line(p, currency)
+                if vl:
+                    catalog_lines.append(vl)
         elif _is_service:
             catalog_lines.append("SERVICES / CATALOG (ID | Name | Category | Price | HasImage):")
             for p in products:
@@ -733,6 +761,9 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
                 )
+                vl = _variants_line(p, currency)
+                if vl:
+                    catalog_lines.append(vl)
         elif _is_rental:
             catalog_lines.append("LISTINGS / RENTAL CATALOG (ID | Name | Category | Rate | HasImage):")
             for p in products:
@@ -741,6 +772,9 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f}/night {has_img}"
                 )
+                vl = _variants_line(p, currency)
+                if vl:
+                    catalog_lines.append(vl)
         else:
             catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Stock | HasImage):")
             for p in products:
@@ -750,6 +784,9 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} | {stock} {has_img}"
                 )
+                vl = _variants_line(p, currency)
+                if vl:
+                    catalog_lines.append(vl)
 
     if services:
         catalog_lines.append("SERVICES (ID | Name | Category | Duration | Price):")
