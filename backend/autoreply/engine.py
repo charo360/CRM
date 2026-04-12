@@ -33,7 +33,7 @@ from .action_handler import execute_actions
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_REPLY = "Sorry, I didn't quite catch that. Could you please repeat?"
+FALLBACK_REPLY = "Sorry, I'm having a little trouble right now. Please send your message again! 🙏"
 MAX_RETRIES = 2
 
 
@@ -166,8 +166,9 @@ async def process_message(
                 data={"type": "escalation", "customer_id": str(customer_id)},
             )
 
-        # 7. Update mini-state
-        await _update_mini_state(db, user_id, customer_id, response_data)
+        # 7. Update mini-state — skip on fallback so flow is preserved
+        if not response_data.get("_is_fallback"):
+            await _update_mini_state(db, user_id, customer_id, response_data)
 
         # 8. Send images BEFORE the text reply
         # Build product lookup from loaded catalog
@@ -488,6 +489,7 @@ def _fallback_response() -> Dict[str, Any]:
         "escalate_reason": "",
         "new_menu": None,
         "flow_update": None,
+        "_is_fallback": True,  # sentinel — engine skips state update on fallback
     }
 
 
