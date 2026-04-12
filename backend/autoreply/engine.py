@@ -200,9 +200,13 @@ async def _call_ai_with_retry(
             return data
 
         except _ValidationError as exc:
-            logger.warning(f"[AutoReplyV2] Validation failed attempt {attempt + 1}: {exc} | raw={raw[:200]}")
+            # Log the FULL raw response so it's visible in Railway logs
+            logger.error(
+                f"[AutoReplyV2] ❌ VALIDATION FAILED attempt {attempt + 1}/{MAX_RETRIES}\n"
+                f"Error: {exc}\n"
+                f"RAW RESPONSE FROM AI:\n{'='*60}\n{raw}\n{'='*60}"
+            )
             if attempt < MAX_RETRIES - 1:
-                # Inject correction so the model knows what went wrong
                 attempt_messages = attempt_messages + [
                     {"role": "assistant", "content": raw},
                     {"role": "user", "content": (
@@ -211,11 +215,14 @@ async def _call_ai_with_retry(
                     )},
                 ]
                 continue
-            logger.error("[AutoReplyV2] All retries failed — using fallback response")
+            logger.error("[AutoReplyV2] All retries exhausted — using fallback response")
             return _fallback_response()
 
         except Exception as exc:
-            logger.error(f"[AutoReplyV2] AI call error attempt {attempt + 1}: {exc}", exc_info=True)
+            logger.error(
+                f"[AutoReplyV2] ❌ AI CALL ERROR attempt {attempt + 1}/{MAX_RETRIES}: {exc}",
+                exc_info=True,
+            )
             if attempt < MAX_RETRIES - 1:
                 continue
             return _fallback_response()

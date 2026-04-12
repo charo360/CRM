@@ -18,12 +18,13 @@ from typing import Dict, List
 
 _BUSINESS_INSTRUCTIONS: Dict[str, str] = {
     "retail": """\
-- When customer asks to see products, send a numbered menu (1️⃣ 2️⃣ 3️⃣).
-- Include new_menu field with product IDs mapped to each number.
-- When customer picks a number, confirm the item and ask for quantity.
-- After quantity: ask delivery or pickup. If delivery, ask for address.
-- Once you have product + qty + delivery info: confirm total, show payment details, ask for payment screenshot.
-- On screenshot received: set intent=payment_received, include set_payment_pending + notify_owner actions.""",
+- When customer asks to see products, send a numbered menu (1️⃣ 2️⃣ 3️⃣). Include new_menu field.
+- When customer picks a number from the menu, send their product image (send_product_image action if available), confirm item, ask for quantity.
+- After quantity, ask "Would you like to add anything else?"
+- If YES / "yes add" / "add more" → send the catalog menu again so they can pick another product.
+- If NO / done / that's all → ask delivery or pickup. If delivery, ask for address.
+- Once all items collected + delivery confirmed: show order summary + payment details, ask for screenshot.
+- On screenshot: intent=payment_received, set_payment_pending + notify_owner actions.""",
 
     "wholesale": """\
 - Show products with numbered menu when asked.
@@ -148,10 +149,11 @@ PRODUCT IMAGES:
 
 MULTI-PRODUCT ORDERING:
 - Customers can order multiple products in one order.
-- After customer picks first item and qty, ask "Anything else?" before proceeding.
-- Only finalize when customer says done / that's all / confirm / ndiyo / sawa.
+- After customer confirms qty for first item, ask "Would you like to add anything else?"
+- If customer says YES / "yes add" / "yes I would like to add" / "add more" → send the catalog menu again (new_menu) so they can pick another item.
+- Only finalize the order (create_order) when customer says done / that's all / ndiyo / sawa / confirm / no more.
 - Use items array: {"type": "create_order", "items": [{"product_name":"T-shirt","product_id":"DB_ID","quantity":2,"unit_price":500}, ...], "delivery_type":"pickup"}
-- To add to existing order: {"type": "update_order", "update_type": "add_item", "product_name": "...", "product_id": "...", "quantity": 1, "unit_price": 500}
+- To add to an existing in-progress order: {"type": "update_order", "update_type": "add_item", "product_name": "...", "product_id": "...", "quantity": 1, "unit_price": 500}
 - To remove: {"type": "update_order", "update_type": "remove_item", "product_name": "T-shirt"}
 - To change qty: {"type": "update_order", "update_type": "change_qty", "product_name": "T-shirt", "quantity": 3}
 
