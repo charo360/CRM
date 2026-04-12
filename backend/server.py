@@ -6764,7 +6764,11 @@ async def evolution_webhook(request: Request):
 
                             if _pre_type == "single_product_actions":
                                 _action = _pre_sel.get("action", "order")
-                                _pprice = _pre_sel.get("price", 0)
+                                _pprice_raw = _pre_sel.get("price", 0)
+                                try:
+                                    _pprice = float(_pprice_raw)
+                                except (ValueError, TypeError):
+                                    _pprice = 0.0
                                 _pid = _pre_sel.get("id")
                                 # Menu item name is "Order Now"/"Add to Cart" — get real product name from DB
                                 _pname = ""

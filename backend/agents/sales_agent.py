@@ -34,7 +34,7 @@ class SalesAgent(BaseAgent):
         try:
             products = await self.db.products.find({
                 "user_id": biz_id,
-                "offering_type": {"$in": ["product", "digital", "menu_item"]}
+                "offering_type": {"$in": ["product", "digital", "menu_item", "physical", "retail"]}
             }).to_list(100)
             # Fallback: if no physical products found (e.g. service business with empty/wrong
             # business_type routed here), show ALL products so catalog is never empty
@@ -150,7 +150,11 @@ Output only the customer-facing message."""
             messages_out.append({"text": header})
 
         for i, p in enumerate(to_send, 1):
-            price = p.get("price", 0)
+            price_raw = p.get("price", 0)
+            try:
+                price = float(price_raw)
+            except (ValueError, TypeError):
+                price = 0.0
             in_stock = p.get("in_stock", True)
             
             # Add product number for multi-product lists

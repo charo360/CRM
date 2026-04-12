@@ -519,8 +519,13 @@ class Router:
                         }
                     else:
                         # Order Now or Add to Cart — collect delivery details
+                        _price_raw = _price
+                        try:
+                            _price_val = float(_price_raw)
+                        except (ValueError, TypeError):
+                            _price_val = 0.0
                         _order_reply = (
-                            f"*{_name}* — {_currency} {_price:,.0f} 🛒\n\n"
+                            f"*{_name}* — {_currency} {_price_val:,.0f} 🛒\n\n"
                             f"How many would you like, and what's your *delivery address*? "
                             f"(Or let me know if you prefer *pickup*.) 📦"
                         )
@@ -562,7 +567,11 @@ class Router:
                         except Exception:
                             pass
                     _p_name = _prod_doc.get("name", _name) if _prod_doc else _name
-                    _p_price = _prod_doc.get("price", _price) if _prod_doc else _price
+                    _p_price_raw = _prod_doc.get("price", _price) if _prod_doc else _price
+                    try:
+                        _p_price = float(_p_price_raw)
+                    except (ValueError, TypeError):
+                        _p_price = 0.0
                     _p_desc = _prod_doc.get("description", "") if _prod_doc else ""
                     _p_stock = "In Stock ✅" if (_prod_doc or {}).get("in_stock", True) else "Out of Stock ❌"
                     _showcase = f"*{_p_name}*\n💰 {_currency} {_p_price:,.0f}\n{_p_stock}"
