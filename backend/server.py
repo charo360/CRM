@@ -4380,7 +4380,17 @@ async def update_order_progress(
 ):
     """Update fulfillment_status and/or assigned_to for an order."""
     business_id = user.get("business_id", user["_id"])
-    order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+    # Support both string UUIDs and legacy ObjectId _ids
+    try:
+        oid = _ObjectId(order_id)
+        order = await db.orders.find_one({"_id": oid, "user_id": business_id})
+        raw_id: Any = oid
+    except Exception:
+        order = None
+        raw_id = order_id
+    if not order:
+        order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+        raw_id = order_id
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     update: dict = {}
@@ -4389,8 +4399,8 @@ async def update_order_progress(
     if "assigned_to" in body:
         update["assigned_to"] = body["assigned_to"]
     if update:
-        await db.orders.update_one({"_id": order_id}, {"$set": update})
-    order = await db.orders.find_one({"_id": order_id})
+        await db.orders.update_one({"_id": raw_id}, {"$set": update})
+    order = await db.orders.find_one({"_id": raw_id})
     return {"fulfillment_status": order.get("fulfillment_status", "New"), "assigned_to": order.get("assigned_to")}
 
 
