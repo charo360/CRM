@@ -923,6 +923,8 @@ class OrderResponse(BaseModel):
     items: Optional[list] = None
     status: Optional[str] = None
     created_by: Optional[str] = None
+    fulfillment_status: Optional[str] = None
+    assigned_to: Optional[str] = None
 
 # Expense Models
 class ExpenseCreate(BaseModel):
@@ -4313,6 +4315,8 @@ async def get_orders(user = Depends(get_current_user)):
             items=items if items else None,
             status=order.get("status"),
             created_by=order.get("created_by"),
+            fulfillment_status=order.get("fulfillment_status", "New"),
+            assigned_to=order.get("assigned_to"),
         ))
     
     return result
@@ -4367,6 +4371,64 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         due_date=order.get("due_date"),
         created_at=order["created_at"].isoformat()
     )
+
+@api_router.patch("/orders/{order_id}/progress")
+async def update_order_progress(
+    order_id: str,
+    body: dict,
+    user = Depends(get_current_user),
+):
+    """Update fulfillment_status and/or assigned_to for an order."""
+    business_id = user.get("business_id", user["_id"])
+    order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    update: dict = {}
+    if "fulfillment_status" in body:
+        update["fulfillment_status"] = body["fulfillment_status"]
+    if "assigned_to" in body:
+        update["assigned_to"] = body["assigned_to"]
+    if update:
+        await db.orders.update_one({"_id": order_id}, {"$set": update})
+    order = await db.orders.find_one({"_id": order_id})
+    return {"fulfillment_status": order.get("fulfillment_status", "New"), "assigned_to": order.get("assigned_to")}
+
+
+@api_router.get("/settings/staff")
+async def get_staff(user = Depends(get_current_user)):
+    """Get the staff list for the current business."""
+    business_id = user.get("business_id", user["_id"])
+    doc = await db.settings.find_one({"user_id": business_id})
+    staff = (doc or {}).get("staff_list", [])
+    return {"staff": staff}
+
+
+@api_router.post("/settings/staff")
+async def add_staff(body: dict, user = Depends(get_current_user)):
+    """Add a staff member (name only) to the staff list."""
+    business_id = user.get("business_id", user["_id"])
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    staff_id = str(uuid.uuid4())
+    await db.settings.update_one(
+        {"user_id": business_id},
+        {"$push": {"staff_list": {"id": staff_id, "name": name}}},
+        upsert=True,
+    )
+    return {"id": staff_id, "name": name}
+
+
+@api_router.delete("/settings/staff/{staff_id}")
+async def remove_staff(staff_id: str, user = Depends(get_current_user)):
+    """Remove a staff member from the staff list."""
+    business_id = user.get("business_id", user["_id"])
+    await db.settings.update_one(
+        {"user_id": business_id},
+        {"$pull": {"staff_list": {"id": staff_id}}},
+    )
+    return {"message": "removed"}
+
 
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, user = Depends(get_current_user)):

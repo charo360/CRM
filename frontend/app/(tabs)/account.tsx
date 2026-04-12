@@ -123,6 +123,11 @@ export default function AccountScreen() {
   const [showBusinessTypePicker, setShowBusinessTypePicker] = useState(false);
   const [restaurantHasReservations, setRestaurantHasReservations] = useState(false);
 
+  // Staff list
+  const [staffList, setStaffList] = useState<{id: string; name: string}[]>([]);
+  const [newStaffName, setNewStaffName] = useState('');
+  const [addingStaff, setAddingStaff] = useState(false);
+
   const { user, logout, refreshUser } = useAuth();
   const { refresh: refreshBusinessContext } = useBusiness();
   const router = useRouter();
@@ -161,6 +166,10 @@ export default function AccountScreen() {
       setAutoReplyAudience(settingsRes.data.auto_reply_audience || 'everyone');
       setBusinessType(settingsRes.data.business_type || 'retail');
       setRestaurantHasReservations(settingsRes.data.restaurant_has_reservations || false);
+      try {
+        const staffRes = await apiClient.get('/settings/staff');
+        setStaffList(staffRes.data.staff || []);
+      } catch (e) {}
 
       // Fetch WhatsApp status
       try {
@@ -802,6 +811,68 @@ export default function AccountScreen() {
                 />
               </View>
             )}
+
+            {/* Staff List */}
+            <View style={[styles.settingItem, { flexDirection: 'column', alignItems: 'flex-start', paddingVertical: 14 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', width: '100%', marginBottom: staffList.length > 0 ? 10 : 0 }}>
+                <Ionicons name="people-outline" size={24} color="#25D366" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.settingText}>Staff / Attendants</Text>
+                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>Names used to assign orders</Text>
+                </View>
+              </View>
+              {staffList.map(s => (
+                <View key={s.id} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingLeft: 36, width: '100%' }}>
+                  <Ionicons name="person-circle-outline" size={18} color="#555" />
+                  <Text style={{ flex: 1, color: '#ccc', fontSize: 14, marginLeft: 8 }}>{s.name}</Text>
+                  <TouchableOpacity onPress={async () => {
+                    try {
+                      await apiClient.delete(`/settings/staff/${s.id}`);
+                      setStaffList(staffList.filter(m => m.id !== s.id));
+                    } catch (e) {}
+                  }}>
+                    <Ionicons name="remove-circle-outline" size={20} color="#e05252" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {addingStaff ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 36, width: '100%', marginTop: 8, gap: 8 }}>
+                  <TextInput
+                    style={{ flex: 1, backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, color: '#fff', fontSize: 14, borderWidth: 1, borderColor: '#333' }}
+                    value={newStaffName}
+                    onChangeText={setNewStaffName}
+                    placeholder="Staff name"
+                    placeholderTextColor="#555"
+                    autoFocus
+                  />
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#25D366', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 }}
+                    onPress={async () => {
+                      if (!newStaffName.trim()) return;
+                      try {
+                        const res = await apiClient.post('/settings/staff', { name: newStaffName.trim() });
+                        setStaffList([...staffList, res.data]);
+                        setNewStaffName('');
+                        setAddingStaff(false);
+                      } catch (e) {}
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>Add</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setAddingStaff(false); setNewStaffName(''); }}>
+                    <Ionicons name="close" size={20} color="#888" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 36, marginTop: 8, gap: 6 }}
+                  onPress={() => setAddingStaff(true)}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color="#25D366" />
+                  <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>Add staff member</Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>

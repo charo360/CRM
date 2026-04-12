@@ -59,6 +59,17 @@ interface Order {
   notes?: string;
   due_date?: string;
   created_at: string;
+  order_number?: string;
+  delivery_type?: string;
+  delivery_address?: string;
+  items?: any[];
+  fulfillment_status?: string;
+  assigned_to?: string;
+}
+
+interface StaffMember {
+  id: string;
+  name: string;
 }
 
 interface Expense {
@@ -94,6 +105,8 @@ export default function SalesScreen() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderDetailsVisible, setOrderDetailsVisible] = useState(false);
   const [orderTypeFilter, setOrderTypeFilter] = useState<'all' | 'delivery' | 'pickup' | 'dine_in'>('all');
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [showStaffPicker, setShowStaffPicker] = useState(false);
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -144,6 +157,16 @@ export default function SalesScreen() {
       } catch (e) {}
     };
     loadCurrency();
+  }, []);
+
+  useEffect(() => {
+    const loadStaff = async () => {
+      try {
+        const res = await apiClient.get('/settings/staff');
+        setStaffList(res.data.staff || []);
+      } catch (e) {}
+    };
+    loadStaff();
   }, []);
 
   const fetchData = useCallback(async () => {
@@ -1919,6 +1942,98 @@ export default function SalesScreen() {
                       </TouchableOpacity>
                     ))}
                   </View>
+                </View>
+
+                {/* ── Order Progress Stepper ── */}
+                <View style={{ marginBottom: 20 }}>
+                  <Text style={[styles.detailsLabel, { marginBottom: 12 }]}>Order Progress</Text>
+                  {(() => {
+                    const steps = ['New', 'Confirmed', 'Preparing', 'Ready', 'Done'];
+                    const stepColors: Record<string, string> = {
+                      New: '#888', Confirmed: '#3B82F6', Preparing: '#F59E0B', Ready: '#25D366', Done: '#6B7280'
+                    };
+                    const stepIcons: Record<string, string> = {
+                      New: '🆕', Confirmed: '✅', Preparing: '👨‍🍳', Ready: '🍽️', Done: '✔️'
+                    };
+                    const currentIdx = steps.indexOf(selectedOrder.fulfillment_status || 'New');
+                    return (
+                      <View style={{ gap: 8 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          {steps.map((step, idx) => {
+                            const isActive = idx === currentIdx;
+                            const isPast = idx < currentIdx;
+                            const color = isActive ? stepColors[step] : isPast ? '#25D366' : '#333';
+                            return (
+                              <View key={step} style={{ flex: 1, alignItems: 'center' }}>
+                                {idx < steps.length - 1 && (
+                                  <View style={{
+                                    position: 'absolute', top: 14, left: '50%', right: '-50%',
+                                    height: 2, backgroundColor: isPast ? '#25D366' : '#333', zIndex: 0
+                                  }} />
+                                )}
+                                <TouchableOpacity
+                                  style={{
+                                    width: 28, height: 28, borderRadius: 14,
+                                    backgroundColor: isActive ? stepColors[step] : isPast ? '#1A3A2A' : '#1E1E1E',
+                                    borderWidth: 2, borderColor: color,
+                                    alignItems: 'center', justifyContent: 'center', zIndex: 1,
+                                  }}
+                                  onPress={async () => {
+                                    try {
+                                      const res = await apiClient.patch(`/orders/${selectedOrder.id}/progress`, { fulfillment_status: step });
+                                      const updated = { ...selectedOrder, fulfillment_status: res.data.fulfillment_status };
+                                      setSelectedOrder(updated);
+                                      setOrders(orders.map(o => o.id === selectedOrder.id ? updated : o));
+                                    } catch { Alert.alert('Error', 'Failed to update progress'); }
+                                  }}
+                                >
+                                  {(isActive || isPast) ? (
+                                    <Ionicons name={isPast && !isActive ? 'checkmark' : 'ellipse'} size={12} color={isActive ? '#fff' : '#25D366'} />
+                                  ) : (
+                                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#444' }} />
+                                  )}
+                                </TouchableOpacity>
+                                <Text style={{ color: isActive ? stepColors[step] : isPast ? '#25D366' : '#555', fontSize: 9, marginTop: 4, textAlign: 'center' }}>
+                                  {step}
+                                </Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    );
+                  })()}
+                </View>
+
+                {/* ── Staff Assignment ── */}
+                <View style={{ marginBottom: 16 }}>
+                  <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Assigned To</Text>
+                  {staffList.length === 0 ? (
+                    <Text style={{ color: '#555', fontSize: 13 }}>No staff added yet — add staff in Account Settings</Text>
+                  ) : (
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      {staffList.map(s => {
+                        const isAssigned = selectedOrder.assigned_to === s.name;
+                        return (
+                          <TouchableOpacity
+                            key={s.id}
+                            style={[styles.statusOption, isAssigned && styles.statusOptionActive]}
+                            onPress={async () => {
+                              const newVal = isAssigned ? '' : s.name;
+                              try {
+                                const res = await apiClient.patch(`/orders/${selectedOrder.id}/progress`, { assigned_to: newVal });
+                                const updated = { ...selectedOrder, assigned_to: res.data.assigned_to };
+                                setSelectedOrder(updated);
+                                setOrders(orders.map(o => o.id === selectedOrder.id ? updated : o));
+                              } catch { Alert.alert('Error', 'Failed to assign staff'); }
+                            }}
+                          >
+                            <Text style={[styles.statusOptionText, isAssigned && styles.statusOptionTextActive]}>{s.name}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
                 </View>
 
                 {/* Delivery Status Update */}
