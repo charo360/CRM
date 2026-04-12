@@ -173,16 +173,32 @@ async def _load_products(db, user_id) -> List[Dict]:
             for v in raw_variants if v.get("name", "").strip()
         ]
 
+        raw_groups = p.get("modifier_groups") or []
+        modifier_groups = []
+        for g in raw_groups:
+            options = [
+                {"name": _sanitize(o.get("name", "")), "price_delta": float(o.get("price_delta", 0))}
+                for o in (g.get("options") or []) if o.get("name", "").strip()
+            ]
+            if options:
+                modifier_groups.append({
+                    "name":         _sanitize(g.get("name", "")),
+                    "required":     bool(g.get("required", False)),
+                    "multi_select": bool(g.get("multi_select", False)),
+                    "options":      options,
+                })
+
         products.append({
-            "id":          str(p["_id"]),
-            "name":        name,
-            "price":       float(p.get("price", 0)),
-            "category":    _sanitize(p.get("category", "")),
-            "description": _sanitize(p.get("description", "")),
-            "in_stock":    p.get("in_stock", True),
-            "image_url":   imgs[0] if imgs else "",
-            "images":      imgs[:3],  # max 3 images per product
-            "variants":    variants,  # [{name, price}, ...]
+            "id":              str(p["_id"]),
+            "name":            name,
+            "price":           float(p.get("price", 0)),
+            "category":        _sanitize(p.get("category", "")),
+            "description":     _sanitize(p.get("description", "")),
+            "in_stock":        p.get("in_stock", True),
+            "image_url":       imgs[0] if imgs else "",
+            "images":          imgs[:3],
+            "variants":        variants,
+            "modifier_groups": modifier_groups,
         })
     return products
 
@@ -252,10 +268,11 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "supports_delivery":  business_type in ("retail", "restaurant", "wholesale", "food", "grocery", "bakery"),
         "supports_pickup":    True,
         # Restaurant-specific config
-        "restaurant_has_dine_in":  bk.get("restaurant_has_dine_in", True),
-        "restaurant_has_delivery": bk.get("restaurant_has_delivery", True),
-        "restaurant_has_takeout":  bk.get("restaurant_has_takeout", True),
-        "restaurant_table_range":  _sanitize(bk.get("restaurant_table_range", "")),
-        "restaurant_avg_wait":     _sanitize(bk.get("restaurant_avg_wait", "")),
-        "restaurant_min_delivery": _sanitize(bk.get("restaurant_min_delivery", "")),
+        "restaurant_has_dine_in":    bk.get("restaurant_has_dine_in", True),
+        "restaurant_has_delivery":   bk.get("restaurant_has_delivery", True),
+        "restaurant_has_takeout":    bk.get("restaurant_has_takeout", True),
+        "restaurant_table_range":    _sanitize(bk.get("restaurant_table_range", "")),
+        "restaurant_avg_wait":       _sanitize(bk.get("restaurant_avg_wait", "")),
+        "restaurant_min_delivery":   _sanitize(bk.get("restaurant_min_delivery", "")),
+        "restaurant_has_reservations": bool(settings.get("restaurant_has_reservations", False)),
     }

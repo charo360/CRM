@@ -121,6 +121,7 @@ export default function AccountScreen() {
   // Business Type State
   const [businessType, setBusinessType] = useState('');
   const [showBusinessTypePicker, setShowBusinessTypePicker] = useState(false);
+  const [restaurantHasReservations, setRestaurantHasReservations] = useState(false);
 
   const { user, logout, refreshUser } = useAuth();
   const { refresh: refreshBusinessContext } = useBusiness();
@@ -159,6 +160,7 @@ export default function AccountScreen() {
       setAutoReplyEnabled(settingsRes.data.auto_reply_enabled || false);
       setAutoReplyAudience(settingsRes.data.auto_reply_audience || 'everyone');
       setBusinessType(settingsRes.data.business_type || 'retail');
+      setRestaurantHasReservations(settingsRes.data.restaurant_has_reservations || false);
 
       // Fetch WhatsApp status
       try {
@@ -780,6 +782,26 @@ export default function AccountScreen() {
               </View>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            {['restaurant', 'food', 'bakery'].includes(businessType) && (
+              <View style={[styles.settingItem, { paddingVertical: 14 }]}>
+                <Ionicons name="calendar-outline" size={24} color="#25D366" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.settingText}>Table Reservations</Text>
+                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>Customers can book tables via WhatsApp</Text>
+                </View>
+                <Switch
+                  value={restaurantHasReservations}
+                  onValueChange={async (val) => {
+                    setRestaurantHasReservations(val);
+                    try {
+                      await settingsAPI.updateSettings({ restaurant_has_reservations: val } as any);
+                    } catch (e) { console.log('Failed to save reservation setting', e); }
+                  }}
+                  trackColor={{ false: '#333', true: '#1A3A2A' }}
+                  thumbColor={restaurantHasReservations ? '#25D366' : '#666'}
+                />
+              </View>
+            )}
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>

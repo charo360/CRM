@@ -27,6 +27,9 @@ class OrderItem(BaseModel):
     quantity: int = Field(default=1, ge=1)
     unit_price: float = Field(default=0, ge=0)
     variant: str = ""       # e.g. "Pepperoni", "Chicken", "Large"
+    modifiers: List[Dict[str, Any]] = Field(default_factory=list)
+    # e.g. [{"group": "Spice Level", "choice": "Hot", "price_delta": 0},
+    #        {"group": "Extras", "choice": "Soda", "price_delta": 100}]
 
 
 class CreateOrderAction(BaseModel):

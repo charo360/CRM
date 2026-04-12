@@ -93,6 +93,7 @@ export default function SalesScreen() {
   const [saleDetailsVisible, setSaleDetailsVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderDetailsVisible, setOrderDetailsVisible] = useState(false);
+  const [orderTypeFilter, setOrderTypeFilter] = useState<'all' | 'delivery' | 'pickup' | 'dine_in'>('all');
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -445,10 +446,14 @@ export default function SalesScreen() {
     return expenses.filter((e) => passesDateFilter(e.created_at));
   }, [expenses, dateFilter]);
 
-  // Filter orders based on date
+  // Filter orders based on date + delivery type
   const filteredOrders = useMemo(() => {
-    return orders.filter((o) => passesDateFilter(o.created_at));
-  }, [orders, dateFilter]);
+    return orders.filter((o) => {
+      if (!passesDateFilter(o.created_at)) return false;
+      if (orderTypeFilter === 'all') return true;
+      return (o.delivery_type || '').toLowerCase() === orderTypeFilter;
+    });
+  }, [orders, dateFilter, orderTypeFilter]);
 
   // Calculate analytics
   const analytics = useMemo(() => {
@@ -931,6 +936,23 @@ export default function SalesScreen() {
               <Ionicons name="close-circle" size={20} color="#666" />
             </TouchableOpacity>
           )}
+        </View>
+      )}
+
+      {/* Order type filter chips — only on Orders tab */}
+      {viewMode === 'orders' && (
+        <View style={[styles.filterContainer, { paddingBottom: 0 }]}>
+          {(['all', 'delivery', 'pickup', 'dine_in'] as const).map((t) => (
+            <TouchableOpacity
+              key={t}
+              style={[styles.filterChip, orderTypeFilter === t && styles.filterChipActive]}
+              onPress={() => setOrderTypeFilter(t)}
+            >
+              <Text style={[styles.filterChipText, orderTypeFilter === t && styles.filterChipTextActive]}>
+                {t === 'all' ? '🍽️ All' : t === 'delivery' ? '🚚 Delivery' : t === 'pickup' ? '🛍️ Pickup' : '🪑 Dine-in'}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
       )}
 

@@ -185,6 +185,18 @@ interface Variant {
     price: number;
 }
 
+interface ModifierOption {
+    name: string;
+    price_delta: number;
+}
+
+interface ModifierGroup {
+    name: string;
+    required: boolean;
+    multi_select: boolean;
+    options: ModifierOption[];
+}
+
 interface Product {
     id: string;
     name: string;
@@ -197,6 +209,7 @@ interface Product {
     in_stock: boolean;
     stock_quantity?: number;
     variants?: Variant[];
+    modifier_groups?: ModifierGroup[];
     created_at: string;
 }
 
@@ -242,6 +255,16 @@ export default function ProductCatalogModal({
     const [editVariants, setEditVariants] = useState<Variant[]>([]);
     const [newVariantName, setNewVariantName] = useState('');
     const [newVariantPrice, setNewVariantPrice] = useState('');
+
+    // Modifier groups state
+    const [editModifierGroups, setEditModifierGroups] = useState<ModifierGroup[]>([]);
+    const [newGroupName, setNewGroupName] = useState('');
+    const [newGroupRequired, setNewGroupRequired] = useState(false);
+    const [newGroupMulti, setNewGroupMulti] = useState(false);
+    const [newGroupOptions, setNewGroupOptions] = useState<ModifierOption[]>([]);
+    const [newOptionName, setNewOptionName] = useState('');
+    const [newOptionPrice, setNewOptionPrice] = useState('');
+    const [showAddGroup, setShowAddGroup] = useState(false);
 
     // Ref for description TextInput to control scroll position
     const descriptionInputRef = useRef<TextInput>(null);
@@ -560,6 +583,12 @@ export default function ProductCatalogModal({
         setEditVariants(product.variants || []);
         setNewVariantName('');
         setNewVariantPrice('');
+        setEditModifierGroups(product.modifier_groups || []);
+        setNewGroupName('');
+        setNewGroupRequired(false);
+        setNewGroupMulti(false);
+        setNewGroupOptions([]);
+        setShowAddGroup(false);
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -581,6 +610,12 @@ export default function ProductCatalogModal({
         setEditVariants([]);
         setNewVariantName('');
         setNewVariantPrice('');
+        setEditModifierGroups([]);
+        setNewGroupName('');
+        setNewGroupRequired(false);
+        setNewGroupMulti(false);
+        setNewGroupOptions([]);
+        setShowAddGroup(false);
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -614,6 +649,7 @@ export default function ProductCatalogModal({
             let createdProductId = '';
 
             const variantsToSave = editVariants.filter(v => v.name.trim());
+            const modifierGroupsToSave = editModifierGroups.filter(g => g.name.trim() && g.options.length > 0);
 
             if (addMode) {
                 const productData: any = {
@@ -624,6 +660,7 @@ export default function ProductCatalogModal({
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
                     variants: variantsToSave.length > 0 ? variantsToSave : undefined,
+                    modifier_groups: modifierGroupsToSave.length > 0 ? modifierGroupsToSave : undefined,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -644,6 +681,7 @@ export default function ProductCatalogModal({
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
                     variants: variantsToSave,
+                    modifier_groups: modifierGroupsToSave,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -1027,6 +1065,144 @@ export default function ProductCatalogModal({
                                         <Ionicons name="add" size={20} color="#fff" />
                                     </TouchableOpacity>
                                 </View>
+                            </View>
+
+                            {/* ── Modifier Groups Section ── */}
+                            <View style={styles.formGroup}>
+                                <View style={styles.formLabelRow}>
+                                    <Text style={styles.formLabel}>Modifier Groups (Optional)</Text>
+                                    <Text style={styles.stockHint}>e.g. Spice Level · Extras</Text>
+                                </View>
+
+                                {editModifierGroups.map((group, gi) => (
+                                    <View key={gi} style={styles.modifierGroupCard}>
+                                        <View style={styles.modifierGroupHeader}>
+                                            <Text style={styles.modifierGroupName}>{group.name}</Text>
+                                            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                                                <Text style={styles.modifierGroupBadge}>
+                                                    {group.required ? 'Required' : 'Optional'}
+                                                    {group.multi_select ? ' · Multi' : ''}
+                                                </Text>
+                                                <TouchableOpacity onPress={() => setEditModifierGroups(editModifierGroups.filter((_, i) => i !== gi))}>
+                                                    <Ionicons name="close-circle" size={18} color="#e05252" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        </View>
+                                        {group.options.map((opt, oi) => (
+                                            <View key={oi} style={styles.modifierOptionRow}>
+                                                <Text style={styles.modifierOptionName}>{opt.name}</Text>
+                                                {opt.price_delta > 0 && (
+                                                    <Text style={styles.modifierOptionPrice}>+{currency} {opt.price_delta.toLocaleString()}</Text>
+                                                )}
+                                                <TouchableOpacity onPress={() => {
+                                                    const updated = [...editModifierGroups];
+                                                    updated[gi] = { ...updated[gi], options: updated[gi].options.filter((_, i) => i !== oi) };
+                                                    setEditModifierGroups(updated);
+                                                }}>
+                                                    <Ionicons name="remove-circle-outline" size={16} color="#888" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        ))}
+                                    </View>
+                                ))}
+
+                                {!showAddGroup ? (
+                                    <TouchableOpacity style={styles.addGroupBtn} onPress={() => setShowAddGroup(true)}>
+                                        <Ionicons name="add-circle-outline" size={16} color="#25D366" />
+                                        <Text style={styles.addGroupBtnText}>Add modifier group</Text>
+                                    </TouchableOpacity>
+                                ) : (
+                                    <View style={styles.modifierGroupCard}>
+                                        <TextInput
+                                            style={[styles.formInput, { marginBottom: 8 }]}
+                                            value={newGroupName}
+                                            onChangeText={setNewGroupName}
+                                            placeholder="Group name (e.g. Spice Level)"
+                                            placeholderTextColor="#555"
+                                        />
+                                        <View style={{ flexDirection: 'row', gap: 16, marginBottom: 10 }}>
+                                            <TouchableOpacity
+                                                style={[styles.modifierToggleBtn, newGroupRequired && styles.modifierToggleBtnActive]}
+                                                onPress={() => setNewGroupRequired(!newGroupRequired)}
+                                            >
+                                                <Text style={[styles.modifierToggleText, newGroupRequired && styles.modifierToggleTextActive]}>Required</Text>
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                                style={[styles.modifierToggleBtn, newGroupMulti && styles.modifierToggleBtnActive]}
+                                                onPress={() => setNewGroupMulti(!newGroupMulti)}
+                                            >
+                                                <Text style={[styles.modifierToggleText, newGroupMulti && styles.modifierToggleTextActive]}>Multi-select</Text>
+                                            </TouchableOpacity>
+                                        </View>
+
+                                        {newGroupOptions.map((opt, oi) => (
+                                            <View key={oi} style={styles.modifierOptionRow}>
+                                                <Text style={styles.modifierOptionName}>{opt.name}</Text>
+                                                {opt.price_delta > 0 && <Text style={styles.modifierOptionPrice}>+{currency} {opt.price_delta.toLocaleString()}</Text>}
+                                                <TouchableOpacity onPress={() => setNewGroupOptions(newGroupOptions.filter((_, i) => i !== oi))}>
+                                                    <Ionicons name="remove-circle-outline" size={16} color="#888" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        ))}
+
+                                        <View style={styles.variantAddRow}>
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 2, marginRight: 6 }]}
+                                                value={newOptionName}
+                                                onChangeText={setNewOptionName}
+                                                placeholder="Option (e.g. Mild)"
+                                                placeholderTextColor="#555"
+                                            />
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 1, marginRight: 6 }]}
+                                                value={newOptionPrice}
+                                                onChangeText={setNewOptionPrice}
+                                                placeholder="+Price"
+                                                placeholderTextColor="#555"
+                                                keyboardType="numeric"
+                                            />
+                                            <TouchableOpacity
+                                                style={styles.variantAddBtn}
+                                                onPress={() => {
+                                                    if (!newOptionName.trim()) return;
+                                                    setNewGroupOptions([...newGroupOptions, { name: newOptionName.trim(), price_delta: parseFloat(newOptionPrice) || 0 }]);
+                                                    setNewOptionName('');
+                                                    setNewOptionPrice('');
+                                                }}
+                                            >
+                                                <Ionicons name="add" size={20} color="#fff" />
+                                            </TouchableOpacity>
+                                        </View>
+
+                                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                                            <TouchableOpacity
+                                                style={[styles.variantAddBtn, { flex: 1, height: 36 }]}
+                                                onPress={() => {
+                                                    if (!newGroupName.trim() || newGroupOptions.length === 0) return;
+                                                    setEditModifierGroups([...editModifierGroups, {
+                                                        name: newGroupName.trim(),
+                                                        required: newGroupRequired,
+                                                        multi_select: newGroupMulti,
+                                                        options: newGroupOptions,
+                                                    }]);
+                                                    setNewGroupName('');
+                                                    setNewGroupRequired(false);
+                                                    setNewGroupMulti(false);
+                                                    setNewGroupOptions([]);
+                                                    setShowAddGroup(false);
+                                                }}
+                                            >
+                                                <Text style={{ color: '#fff', fontWeight: '600', fontSize: 13 }}>Save Group</Text>
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                                style={[styles.variantAddBtn, { flex: 1, height: 36, backgroundColor: '#333' }]}
+                                                onPress={() => { setShowAddGroup(false); setNewGroupName(''); setNewGroupOptions([]); }}
+                                            >
+                                                <Text style={{ color: '#aaa', fontWeight: '600', fontSize: 13 }}>Cancel</Text>
+                                            </TouchableOpacity>
+                                        </View>
+                                    </View>
+                                )}
                             </View>
 
                             {showStock && (
@@ -2183,5 +2359,84 @@ const styles = StyleSheet.create({
         backgroundColor: '#25D366',
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    modifierGroupCard: {
+        backgroundColor: '#111D2B',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: '#1E3050',
+        padding: 12,
+        marginBottom: 10,
+    },
+    modifierGroupHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 8,
+    },
+    modifierGroupName: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '700',
+        flex: 1,
+    },
+    modifierGroupBadge: {
+        color: '#25D366',
+        fontSize: 11,
+        fontWeight: '600',
+        backgroundColor: '#1A3A2A',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 10,
+    },
+    modifierOptionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 5,
+        borderTopWidth: 1,
+        borderTopColor: '#1E3050',
+        gap: 8,
+    },
+    modifierOptionName: {
+        flex: 1,
+        color: '#ccc',
+        fontSize: 13,
+    },
+    modifierOptionPrice: {
+        color: '#25D366',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    addGroupBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingVertical: 10,
+        paddingHorizontal: 4,
+    },
+    addGroupBtnText: {
+        color: '#25D366',
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    modifierToggleBtn: {
+        paddingHorizontal: 14,
+        paddingVertical: 6,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: '#333',
+        backgroundColor: '#111',
+    },
+    modifierToggleBtnActive: {
+        borderColor: '#25D366',
+        backgroundColor: '#1A3A2A',
+    },
+    modifierToggleText: {
+        color: '#888',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    modifierToggleTextActive: {
+        color: '#25D366',
     },
 });

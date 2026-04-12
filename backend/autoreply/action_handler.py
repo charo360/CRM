@@ -101,18 +101,26 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
             continue
         qty = max(1, int(it.get("quantity") or 1))
         unit_price = float(it.get("unit_price") or 0)
-        line_total = round(qty * unit_price, 2)
-        total += line_total
-        variant = (it.get("variant") or "").strip()
+        variant    = (it.get("variant") or "").strip()
+        modifiers  = [m for m in (it.get("modifiers") or []) if m.get("choice")]
+
+        # Apply modifier price_deltas on top of unit_price (single calculation)
+        modifier_delta  = sum(float(m.get("price_delta", 0)) for m in modifiers)
+        effective_price = unit_price + modifier_delta
+        line_total      = round(qty * effective_price, 2)
+        total          += line_total
+
         item_entry: dict = {
             "product_name": name,
             "product_id":   it.get("product_id", ""),
             "quantity":     qty,
-            "unit_price":   unit_price,
+            "unit_price":   effective_price,
             "price":        line_total,
         }
         if variant:
             item_entry["variant"] = variant
+        if modifiers:
+            item_entry["modifiers"] = modifiers
         items.append(item_entry)
 
     if not items:

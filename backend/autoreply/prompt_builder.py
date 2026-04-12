@@ -369,16 +369,21 @@ CATALOG BROWSING:
   "0️⃣ View all [item label]" as last new_menu option.
 
 VARIANTS — CRITICAL:
-- If a catalog item shows "↳ Variants:" in your context → that item has multiple options.
-- When customer selects such an item → ALWAYS show variant menu FIRST before asking quantity:
-  "Which type would you like?
-   1️⃣ Pepperoni — KES 1,200
-   2️⃣ Chicken — KES 1,100
-   3️⃣ Beef — KES 1,300"
+- If a catalog item shows "↳ Variants:" → show variant menu FIRST before asking quantity.
   new_menu: {"1": {"id": "DB_ID", "name": "Pepperoni Pizza", "price": 1200, "type": "product"}}
-- Use the VARIANT price (not the base price) in the order total.
-- Record: name="Pizza", variant="Pepperoni", price=1200 in the OrderItem.
-- Never skip variant selection if variants exist.
+- Use the VARIANT price. Record variant="Pepperoni" in the OrderItem.
+
+MODIFIERS — STEP-BY-STEP AFTER ITEM IS SELECTED:
+- If a catalog item shows "↳ [Group] (required/optional)" → ask for each modifier group IN ORDER:
+  1. Show numbered options for the group.
+     new_menu: {"1": {"id": "mod_NoSpice", "name": "No Spice", "price": 0, "type": "modifier"}}
+  2. required groups: MUST be answered before proceeding.
+  3. optional groups: ask once — if customer says "no" / "none" / "skip", move on.
+  4. multi_select groups: collect selections until customer says "done" / "that's all" / "no more".
+- Include each modifier in the OrderItem:
+  modifiers: [{"group": "Spice Level", "choice": "Hot", "price_delta": 0}, ...]
+- Final item price = variant price (or base price) + sum of all price_deltas.
+- After ALL modifier groups for an item → THEN ask quantity.
 
 MULTI-ITEM CART:
 - After each item (+ variant if applicable) confirmed → "Anything else or checkout?"
@@ -662,18 +667,38 @@ def _build_restaurant_instructions(bc: dict) -> str:
             "",
         ]
 
+    has_reservations = bc.get("restaurant_has_reservations", False)
+    if has_reservations:
+        lines += [
+            "RESERVATION PATH:",
+            "- When customer says \"reserve\", \"table booking\", \"book a table\" → start reservation flow.",
+            "- Ask: How many people? What date? What time?",
+            "- Confirm: \"Table for [N] on [date] at [time] — confirmed! 🎉\"",
+            "- Fire create_booking with notes=\"Table reservation: [N] guests\", delivery_type=\"dine_in\".",
+            "",
+        ]
+
     lines += [
         "MENU DISPLAY:",
-        "- Always add \"0\ufe0f\u20e3 View all images\" as last menu option when products have images. Include in new_menu as {\"0\": {\"id\": \"catalog\", \"name\": \"View all images\", \"price\": 0, \"type\": \"catalog\"}}.",
+        "- When showing menu items, include the description below each item (from catalog context '→ description').",
+        "- Format: '1️⃣ Chicken Biryani – KES 800\n   Spiced rice with tender chicken, slow-cooked with aromatic spices'",
+        "- Always add \"0️⃣ View all images\" as last menu option when products have images.",
+        "  Include in new_menu as {\"0\": {\"id\": \"catalog\", \"name\": \"View all images\", \"price\": 0, \"type\": \"catalog\"}}.",
         "- When customer picks 0 → send_catalog_images of all products with images + show full menu again.",
-        "- When customer picks a number → send_product_image (if has image), confirm item, ask quantity.",
+        "- When customer picks a number → send_product_image (if has image) → go through MODIFIERS (if any) → then ask quantity.",
+        "",
+        "MODIFIERS FLOW:",
+        "- If product has modifiers, ask customer to choose options.",
+        "- Format: 'Choose [modifier name]: [option 1], [option 2], ...'",
+        "- Customer responds with the option number.",
+        "- Update order item with chosen modifier.",
         "",
         "ORDER MANAGEMENT:",
-        "- If customer asks \"my order\" / \"order status\" → show details + 1\ufe0f\u20e3 Update 2\ufe0f\u20e3 Cancel options.",
+        "- If customer asks \"my order\" / \"order status\" → show details + 1️⃣ Update 2️⃣ Cancel options.",
         "- Cancel → confirm, fire cancel_order.",
         "",
         "SCREENSHOT / PAYMENT:",
-        "- When customer sends screenshot / \"nimetuma\" / \"sent\" / \"I\'ve paid\" → intent=payment_received + set_payment_pending + notify_owner.",
+        "- When customer sends screenshot / \"nimetuma\" / \"sent\" / \"I've paid\" → intent=payment_received + set_payment_pending + notify_owner.",
     ]
 
     return "\n".join(lines)
@@ -740,8 +765,33 @@ def build_system_prompt(
         parts_v = ", ".join(f"{v['name']} ({cur} {v['price']:,.0f})" for v in vs)
         return f"    ↳ Variants: {parts_v}"
 
+    def _modifiers_lines(p: Dict, cur: str) -> List[str]:
+        """Return indented modifier group lines if the product has modifier_groups."""
+        groups = p.get("modifier_groups") or []
+        result = []
+        for g in groups:
+            gname = g.get("name", "")
+            required = "required" if g.get("required") else "optional"
+            multi    = ", multi" if g.get("multi_select") else ""
+            opts = ", ".join(
+                f"{o['name']}" + (f" (+{cur} {o['price_delta']:,.0f})" if o.get("price_delta") else "")
+                for o in g.get("options", [])
+            )
+            result.append(f"    ↳ {gname} ({required}{multi}): {opts}")
+        return result
+
     catalog_lines: List[str] = []
     if products:
+        def _append_product_extras(p: Dict) -> None:
+            """Append description, variants, and modifier lines for a product."""
+            if p.get("description"):
+                catalog_lines.append(f"    → {p['description']}")
+            vl = _variants_line(p, currency)
+            if vl:
+                catalog_lines.append(vl)
+            for ml in _modifiers_lines(p, currency):
+                catalog_lines.append(ml)
+
         if _is_menu:
             catalog_lines.append("MENU ITEMS (ID | Name | Category | Price | HasImage):")
             for p in products:
@@ -750,9 +800,7 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
                 )
-                vl = _variants_line(p, currency)
-                if vl:
-                    catalog_lines.append(vl)
+                _append_product_extras(p)
         elif _is_service:
             catalog_lines.append("SERVICES / CATALOG (ID | Name | Category | Price | HasImage):")
             for p in products:
@@ -761,9 +809,7 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
                 )
-                vl = _variants_line(p, currency)
-                if vl:
-                    catalog_lines.append(vl)
+                _append_product_extras(p)
         elif _is_rental:
             catalog_lines.append("LISTINGS / RENTAL CATALOG (ID | Name | Category | Rate | HasImage):")
             for p in products:
@@ -772,9 +818,7 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f}/night {has_img}"
                 )
-                vl = _variants_line(p, currency)
-                if vl:
-                    catalog_lines.append(vl)
+                _append_product_extras(p)
         else:
             catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Stock | HasImage):")
             for p in products:
@@ -784,9 +828,7 @@ def build_system_prompt(
                 catalog_lines.append(
                     f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} | {stock} {has_img}"
                 )
-                vl = _variants_line(p, currency)
-                if vl:
-                    catalog_lines.append(vl)
+                _append_product_extras(p)
 
     if services:
         catalog_lines.append("SERVICES (ID | Name | Category | Duration | Price):")
