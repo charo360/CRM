@@ -1,0 +1,224 @@
+"""
+context_loader.py — loads everything Claude needs for one turn.
+
+What gets loaded:
+  - Last 10 messages (conversation history = state)
+  - Mini-state (5 fields: active_flow, flow_product_id, flow_step, last_menu+TTL, escalated)
+  - Product catalog (id, name, price, category — sanitized)
+  - Services (id, name, price, duration — sanitized)
+  - Business config (name, type, currency, payment methods, hours, etc.)
+
+Cost control: 10 messages max, catalog fields only (no long descriptions).
+Security: all catalog text sanitized against prompt injection.
+"""
+from __future__ import annotations
+
+import re
+import logging
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# Last menu expires after this many hours — prevents "1" resolving to yesterday's catalog
+MENU_TTL_HOURS = 2
+
+# Business types that support product orders
+_ORDER_TYPES = {"retail", "restaurant", "wholesale", "food", "bakery", "grocery"}
+
+# Business types that support service bookings
+_BOOKING_TYPES = {"salon", "beauty", "services", "rental", "clinic", "spa",
+                  "gym", "photography", "events", "cleaning", "repair"}
+
+# Business types that support both
+_BOTH_TYPES = {"restaurant"}
+
+
+def _sanitize(text: Any) -> str:
+    """Strip prompt-injection patterns from catalog / config fields."""
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r'\b(ignore|forget|disregard|override|system\s*prompt|instruction|jailbreak)\b',
+        "***",
+        str(text),
+        flags=re.I,
+    )
+    return cleaned.strip()
+
+
+def _supports_orders(business_type: str) -> bool:
+    bt = (business_type or "").lower()
+    return bt in _ORDER_TYPES or bt in _BOTH_TYPES
+
+
+def _supports_bookings(business_type: str) -> bool:
+    bt = (business_type or "").lower()
+    return bt in _BOOKING_TYPES or bt in _BOTH_TYPES
+
+
+async def load_context(db, user_id, customer_id, user: dict) -> dict:
+    """
+    Returns:
+        {
+            "messages": [...],          # last 10, oldest first
+            "mini_state": {...},        # 5-field state
+            "products": [...],          # sanitized catalog
+            "services": [...],          # sanitized services
+            "business_config": {...},   # all business settings
+        }
+    """
+    messages = await _load_messages(db, user_id, customer_id)
+    mini_state = await _load_mini_state(db, user_id, customer_id)
+    settings = user.get("settings", {}) or {}
+    business_type = (settings.get("business_type") or user.get("business_type", "retail")).lower()
+
+    products = []
+    services = []
+
+    if _supports_orders(business_type):
+        products = await _load_products(db, user_id)
+
+    if _supports_bookings(business_type):
+        services = await _load_services(db, user_id)
+
+    business_config = _build_business_config(user, settings, business_type)
+
+    return {
+        "messages": messages,
+        "mini_state": mini_state,
+        "products": products,
+        "services": services,
+        "business_config": business_config,
+    }
+
+
+async def _load_messages(db, user_id, customer_id) -> List[Dict]:
+    if not customer_id:
+        return []
+    raw = await db.messages.find(
+        {"user_id": user_id, "customer_id": customer_id}
+    ).sort("created_at", -1).limit(10).to_list(10)
+
+    return [
+        {
+            "role": "customer" if m.get("direction") == "incoming" else "assistant",
+            "content": m.get("content", ""),
+        }
+        for m in reversed(raw)
+        if m.get("content")
+    ]
+
+
+async def _load_mini_state(db, user_id, customer_id) -> Dict:
+    if not customer_id:
+        return {}
+    doc = await db.conversation_states.find_one(
+        {"user_id": user_id, "customer_id": customer_id}
+    )
+    if not doc:
+        return {}
+
+    state: Dict = {
+        "active_flow":      doc.get("active_flow"),
+        "flow_product_id":  doc.get("flow_product_id"),
+        "flow_step":        doc.get("flow_step"),
+        "escalated":        doc.get("escalated", False),
+    }
+
+    # last_menu with TTL check
+    last_menu = doc.get("last_menu") or {}
+    last_menu_at = doc.get("last_menu_at")
+    if last_menu and last_menu_at:
+        # Normalise to naive UTC
+        if hasattr(last_menu_at, "tzinfo") and last_menu_at.tzinfo is not None:
+            last_menu_at = last_menu_at.replace(tzinfo=None)
+        age_hours = (datetime.utcnow() - last_menu_at).total_seconds() / 3600
+        if age_hours <= MENU_TTL_HOURS:
+            state["last_menu"] = last_menu
+        else:
+            logger.info(f"[ContextLoader] last_menu expired ({age_hours:.1f}h old) — discarded")
+
+    return state
+
+
+async def _load_products(db, user_id) -> List[Dict]:
+    raw = await db.products.find(
+        {"user_id": user_id, "is_active": {"$ne": False}}
+    ).limit(40).to_list(40)
+
+    products = []
+    for p in raw:
+        name = _sanitize(p.get("name", ""))
+        if not name:
+            continue
+        products.append({
+            "id":        str(p["_id"]),
+            "name":      name,
+            "price":     float(p.get("price", 0)),
+            "category":  _sanitize(p.get("category", "")),
+            "in_stock":  p.get("in_stock", True),
+        })
+    return products
+
+
+async def _load_services(db, user_id) -> List[Dict]:
+    # Try 'services' collection; some older installs may not have it
+    try:
+        raw = await db.services.find(
+            {"user_id": user_id, "is_active": {"$ne": False}}
+        ).limit(30).to_list(30)
+    except Exception:
+        return []
+
+    services = []
+    for s in raw:
+        name = _sanitize(s.get("name", ""))
+        if not name:
+            continue
+        services.append({
+            "id":        str(s["_id"]),
+            "name":      name,
+            "price":     float(s.get("price", 0)),
+            "duration":  s.get("duration_minutes", 0),
+            "category":  _sanitize(s.get("category", "")),
+            "is_rental": s.get("service_category") == "rental",
+        })
+    return services
+
+
+def _build_business_config(user: dict, settings: dict, business_type: str) -> Dict:
+    # Currency: settings → user doc → fallback
+    currency = settings.get("currency") or user.get("currency", "KES")
+
+    # Payment methods → list of human-readable strings
+    raw_pm = user.get("payment_methods") or []
+    payment_methods: List[str] = []
+    for pm in raw_pm:
+        if isinstance(pm, dict):
+            line = pm.get("name", "")
+            if pm.get("details"):
+                line += f": {pm['details']}"
+        else:
+            line = str(pm)
+        line = line.strip()
+        if line:
+            payment_methods.append(line)
+
+    bk = user.get("business_knowledge") or {}
+
+    return {
+        "type":               business_type,
+        "name":               _sanitize(user.get("business_name", "")),
+        "currency":           currency,
+        "payment_methods":    payment_methods,
+        "business_hours":     _sanitize(bk.get("business_hours", "")),
+        "delivery_info":      _sanitize(bk.get("delivery_info", "")),
+        "about":              _sanitize(bk.get("business_description", "")),
+        "special_offers":     _sanitize(bk.get("special_offers", "")),
+        "faqs":               _sanitize(bk.get("faqs", "")),
+        "supports_orders":    _supports_orders(business_type),
+        "supports_bookings":  _supports_bookings(business_type),
+        "supports_delivery":  business_type in ("retail", "restaurant", "wholesale", "food", "grocery"),
+        "supports_pickup":    True,
+    }
