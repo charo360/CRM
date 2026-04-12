@@ -1,34 +1,31 @@
 """
 engine.py — autoreply v2 main entry point.
 
-Replaces: router.py, conversation_state.py, sales_agent.py, order_agent.py,
-          booking_agent.py, intent_analyzer.py, flow_judge.py
+Uses the existing AIMessageDrafter infrastructure so it works with
+whatever AI provider + model the business owner has chosen:
+  standard  → default provider (OpenAI gpt-4o-mini, DeepSeek, etc.)
+  premium   → gpt-4o
+  claude    → Anthropic Claude (via HTTP)
+  grok      → xAI Grok
+  deepseek  → DeepSeek
+  gpt-5     → GPT-5
 
-Flow per message:
-  1. Load context (messages + mini-state + catalog + business config)
-  2. Build system prompt (config-driven, business-type aware)
-  3. Call Claude (claude-haiku for cost efficiency)
-  4. Validate JSON response (Pydantic) — retry once on failure — fallback on second failure
-  5. Execute CRM actions (orders, bookings, tags, escalations)
-  6. Update mini-state (5 fields only)
-  7. Send WhatsApp reply
-  8. Log everything for debugging
-
-Mini-state schema (stored in conversation_states collection):
-  active_flow:      str | None   — "ordering" | "booking" | "browsing"
-  flow_product_id:  str | None   — DB product/service ID
-  flow_step:        str | None   — "awaiting_qty" | "awaiting_address" | "awaiting_date" | "awaiting_payment"
-  last_menu:        dict | None  — {"1": {id, name, price, type}, ...}
-  last_menu_at:     datetime     — for TTL check (2h expiry)
+Mini-state (5 fields in conversation_states):
+  active_flow:      "ordering" | "booking" | "browsing" | None
+  flow_product_id:  str | None
+  flow_step:        "awaiting_qty" | "awaiting_address" | "awaiting_date" | "awaiting_payment" | None
+  last_menu:        {"1": {id, name, price, type}, ...} | None
+  last_menu_at:     datetime  (2hr TTL)
   escalated:        bool
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .context_loader import load_context
 from .prompt_builder import build_system_prompt
@@ -36,23 +33,19 @@ from .action_handler import execute_actions
 
 logger = logging.getLogger(__name__)
 
-# Model: Haiku for cost efficiency (~$0.0001/message at 1000 tokens)
-_CLAUDE_MODEL = "claude-haiku-4-5-20251001"
-_MAX_TOKENS = 1024
-_MAX_RETRIES = 2
-
 FALLBACK_REPLY = "Sorry, I didn't quite catch that. Could you please repeat?"
+MAX_RETRIES = 2
 
-# Anthropic client — lazy init
-_client = None
+# Singleton drafter — created once, reused across requests
+_drafter = None
 
 
-def _get_client():
-    global _client
-    if _client is None:
-        import anthropic
-        _client = anthropic.AsyncAnthropic()
-    return _client
+def _get_drafter():
+    global _drafter
+    if _drafter is None:
+        from ai_service import AIMessageDrafter
+        _drafter = AIMessageDrafter()
+    return _drafter
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -67,13 +60,13 @@ async def process_message(
     whatsapp_service,
 ) -> dict:
     """
-    Main autoreply engine.
-    Called from server.py after all gates pass (owner pause, opt-out, AI enabled, etc.)
-
-    Returns {"status": "ok"|"error", "handled_by": "autoreply_v2"}
+    Main autoreply v2 engine.
+    Called from server.py after all gates pass (owner pause, opt-out, etc.)
     """
     user_id = user["_id"]
     customer_name = (customer or {}).get("name", "") if customer else ""
+    # Respect the business owner's AI model choice
+    model_pref = (user.get("settings") or {}).get("ai_model", "standard") or "standard"
 
     try:
         # 1. Load context
@@ -87,11 +80,11 @@ async def process_message(
             mini_state=ctx["mini_state"],
         )
 
-        # 3. Build Claude message list (conversation history + current message)
-        claude_messages = _build_claude_messages(ctx["messages"], message)
+        # 3. Build conversation messages
+        conv_messages = _build_conv_messages(ctx["messages"], message)
 
-        # 4. Call Claude with validation + retry
-        response_data = await _call_claude_with_retry(system_prompt, claude_messages)
+        # 4. Call AI with validation + retry
+        response_data = await _call_ai_with_retry(system_prompt, conv_messages, model_pref)
 
         # 5. Execute CRM actions
         await execute_actions(
@@ -102,9 +95,12 @@ async def process_message(
             user=user,
         )
 
-        # 6. Handle escalation flag
+        # 6. Handle escalation
         if response_data.get("escalate"):
-            await _mark_needs_human(db, customer_id, response_data.get("escalate_reason", "Escalated by bot"))
+            await _mark_needs_human(
+                db, customer_id,
+                response_data.get("escalate_reason", "Escalated by bot"),
+            )
 
         # 7. Update mini-state
         await _update_mini_state(db, user_id, customer_id, response_data)
@@ -120,15 +116,15 @@ async def process_message(
         )
 
         logger.info(
-            f"[AutoReplyV2] ✓ {from_number} | intent={response_data.get('intent')} "
-            f"sentiment={response_data.get('sentiment')} escalate={response_data.get('escalate')} "
+            f"[AutoReplyV2] ✓ {from_number} | model={model_pref} "
+            f"intent={response_data.get('intent')} sentiment={response_data.get('sentiment')} "
+            f"escalate={response_data.get('escalate')} "
             f"actions={[a.get('type') for a in response_data.get('actions', [])]}"
         )
         return {"status": "ok", "handled_by": "autoreply_v2"}
 
     except Exception as exc:
         logger.error(f"[AutoReplyV2] Fatal error for {from_number}: {exc}", exc_info=True)
-        # Best-effort fallback reply so customer isn't left in silence
         try:
             await whatsapp_service.send_message(
                 user_id=user_id,
@@ -142,80 +138,150 @@ async def process_message(
         return {"status": "error", "handled_by": "autoreply_v2"}
 
 
-# ── Claude call + validation ──────────────────────────────────────────────────
+# ── AI call ───────────────────────────────────────────────────────────────────
 
-def _build_claude_messages(history: list, current_message: str) -> list:
-    """Convert stored messages to Claude API format, append current message."""
+def _build_conv_messages(history: List[Dict], current_message: str) -> List[Dict]:
+    """Convert stored messages to API message format, append current message."""
     messages = []
     for m in history:
         role = "user" if m["role"] == "customer" else "assistant"
         content = (m.get("content") or "").strip()
         if content:
             messages.append({"role": role, "content": content})
-
-    # Ensure messages alternate correctly (Claude requires user/assistant/user...)
-    # If last message is also "user", merge or just append (Claude handles adjacent user turns in newer API)
     messages.append({"role": "user", "content": current_message})
     return messages
 
 
-async def _call_claude_with_retry(system_prompt: str, messages: list) -> Dict[str, Any]:
+async def _call_ai_with_retry(
+    system_prompt: str,
+    messages: List[Dict],
+    model_pref: str,
+) -> Dict[str, Any]:
     """
-    Call Claude and validate the JSON response.
-    Retries once with an explicit correction prompt.
+    Call the AI using AIMessageDrafter's provider routing.
+    Retries once with an explicit correction prompt on JSON failure.
     Falls back to a safe default on second failure.
     """
-    client = _get_client()
+    drafter = _get_drafter()
+    client_type, model_name, client = drafter._get_client_and_model(model_pref)
+
+    # If no client available, try default provider
+    if not client:
+        logger.warning(f"[AutoReplyV2] Provider '{model_pref}' not available, using default")
+        client_type, model_name, client = drafter._get_default_client_and_model()
+
+    if not client:
+        raise RuntimeError("No AI provider configured — add API key to environment")
+
     attempt_messages = messages.copy()
+    raw = ""
 
-    for attempt in range(_MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         try:
-            response = await client.messages.create(
-                model=_CLAUDE_MODEL,
-                max_tokens=_MAX_TOKENS,
-                system=system_prompt,
-                messages=attempt_messages,
-            )
-
-            raw = response.content[0].text.strip()
+            raw = await _call_provider(client_type, client, model_name, system_prompt, attempt_messages)
             data = _parse_and_validate(raw)
             return data
 
         except _ValidationError as exc:
-            logger.warning(f"[AutoReplyV2] Validation failed attempt {attempt + 1}: {exc}")
-            if attempt < _MAX_RETRIES - 1:
-                # Inject correction turn so Claude knows what went wrong
+            logger.warning(f"[AutoReplyV2] Validation failed attempt {attempt + 1}: {exc} | raw={raw[:200]}")
+            if attempt < MAX_RETRIES - 1:
+                # Inject correction so the model knows what went wrong
                 attempt_messages = attempt_messages + [
-                    {"role": "assistant", "content": raw if "raw" in dir() else ""},
+                    {"role": "assistant", "content": raw},
                     {"role": "user", "content": (
-                        "Your response was not valid JSON or was missing required fields. "
-                        "Reply with ONLY a valid JSON object matching the required schema. "
-                        "No text before or after the JSON."
+                        "Your previous response was not valid JSON or was missing required fields. "
+                        "Reply with ONLY a valid JSON object. No text before or after. No code blocks."
                     )},
                 ]
                 continue
-
-            logger.error("[AutoReplyV2] All retries exhausted — using fallback response")
+            logger.error("[AutoReplyV2] All retries failed — using fallback response")
             return _fallback_response()
 
         except Exception as exc:
-            logger.error(f"[AutoReplyV2] Claude API error attempt {attempt + 1}: {exc}", exc_info=True)
-            if attempt < _MAX_RETRIES - 1:
+            logger.error(f"[AutoReplyV2] AI call error attempt {attempt + 1}: {exc}", exc_info=True)
+            if attempt < MAX_RETRIES - 1:
                 continue
             return _fallback_response()
 
     return _fallback_response()
 
 
+async def _call_provider(
+    client_type: str,
+    client,
+    model_name: str,
+    system_prompt: str,
+    messages: List[Dict],
+) -> str:
+    """Call the correct provider with proper message format."""
+
+    if client_type == "claude":
+        # Anthropic via HTTP (client is a dict with key + endpoint)
+        return await _call_claude_http(client, model_name, system_prompt, messages)
+    else:
+        # OpenAI-compatible: OpenAI, DeepSeek, Grok
+        return await _call_openai_compat(client, model_name, system_prompt, messages)
+
+
+async def _call_openai_compat(client, model_name: str, system_prompt: str, messages: List[Dict]) -> str:
+    """Call OpenAI-compatible API (OpenAI, DeepSeek, Grok) with full message history."""
+    api_messages = [{"role": "system", "content": system_prompt}] + messages
+
+    is_grok_reasoning = model_name.startswith("grok-4")
+    is_gpt5 = model_name.startswith("gpt-5")
+
+    kwargs: Dict[str, Any] = {
+        "model": model_name,
+        "messages": api_messages,
+    }
+    if is_grok_reasoning:
+        kwargs["max_completion_tokens"] = 800
+    elif is_gpt5:
+        pass  # GPT-5 manages its own output length
+    else:
+        kwargs["max_tokens"] = 800
+        kwargs["temperature"] = 0.4   # lower temp → more consistent JSON
+
+    response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
+    return response.choices[0].message.content or ""
+
+
+async def _call_claude_http(client_config: Dict, model_name: str, system_prompt: str, messages: List[Dict]) -> str:
+    """Call Anthropic API via HTTP with full message history."""
+    import httpx
+
+    headers = {
+        "x-api-key": client_config["key"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": model_name,
+        "max_tokens": 800,
+        "system": system_prompt,
+        "messages": messages,
+    }
+    async with httpx.AsyncClient() as http:
+        resp = await http.post(client_config["endpoint"], json=payload, headers=headers, timeout=30.0)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Claude API {resp.status_code}: {resp.text[:300]}")
+        return resp.json()["content"][0]["text"]
+
+
+# ── JSON validation ───────────────────────────────────────────────────────────
+
 class _ValidationError(Exception):
     pass
 
 
 def _parse_and_validate(raw: str) -> Dict[str, Any]:
-    """Extract JSON from Claude's response and validate required fields."""
-    # Strip markdown code block if Claude wrapped the JSON
-    match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
-    text = match.group(1) if match else raw
+    """Extract and validate JSON from the AI response."""
+    text = raw.strip()
+
+    # Strip markdown code block if the model wrapped it
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if match:
+        text = match.group(1).strip()
 
     try:
         data = json.loads(text)
@@ -229,15 +295,14 @@ def _parse_and_validate(raw: str) -> Dict[str, Any]:
     if not isinstance(reply, str) or not reply.strip():
         raise _ValidationError("'reply' field is missing or empty")
 
-    # Coerce intent / sentiment to valid values (don't raise — just default)
-    valid_intents = {"order", "booking", "inquiry", "complaint", "greeting", "payment_received", "cancel", "reschedule", "other"}
+    # Coerce intent / sentiment — don't raise, just default
+    valid_intents = {"order", "booking", "inquiry", "complaint", "greeting",
+                     "payment_received", "cancel", "reschedule", "other"}
     valid_sentiments = {"positive", "neutral", "negative", "angry"}
     if data.get("intent") not in valid_intents:
         data["intent"] = "other"
     if data.get("sentiment") not in valid_sentiments:
         data["sentiment"] = "neutral"
-
-    # Ensure actions is a list
     if not isinstance(data.get("actions"), list):
         data["actions"] = []
 
@@ -260,12 +325,14 @@ def _fallback_response() -> Dict[str, Any]:
 # ── Mini-state update ─────────────────────────────────────────────────────────
 
 async def _update_mini_state(db, user_id, customer_id, response_data: Dict) -> None:
-    """Persist the 5-field mini-state from Claude's response."""
+    if not customer_id:
+        return
+
     update: Dict[str, Any] = {"updated_at": datetime.utcnow()}
 
-    # Save new menu if Claude sent one this turn
+    # Save new menu if Claude/AI sent one this turn
     new_menu = response_data.get("new_menu")
-    if new_menu and isinstance(new_menu, dict) and new_menu:
+    if new_menu and isinstance(new_menu, dict):
         update["last_menu"] = new_menu
         update["last_menu_at"] = datetime.utcnow()
 
@@ -287,16 +354,14 @@ async def _update_mini_state(db, user_id, customer_id, response_data: Dict) -> N
             "last_menu_at":    None,
         })
 
-    # Escalation flag
     if response_data.get("escalate"):
         update["escalated"] = True
 
-    if customer_id:
-        await db.conversation_states.update_one(
-            {"user_id": user_id, "customer_id": customer_id},
-            {"$set": update},
-            upsert=True,
-        )
+    await db.conversation_states.update_one(
+        {"user_id": user_id, "customer_id": customer_id},
+        {"$set": update},
+        upsert=True,
+    )
 
 
 async def _mark_needs_human(db, customer_id, reason: str) -> None:
