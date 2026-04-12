@@ -106,9 +106,12 @@ async def process_message(
         # 7. Update mini-state
         await _update_mini_state(db, user_id, customer_id, response_data)
 
-        # 8. Send product image(s) BEFORE the text reply
+        # 8. Send images BEFORE the text reply
         for action in actions:
-            if action.get("type") == "send_product_image" and action.get("image_url"):
+            atype = action.get("type")
+
+            if atype == "send_product_image" and action.get("image_url"):
+                # Single product image (on product selection)
                 try:
                     await whatsapp_service.send_message(
                         user_id=user_id,
@@ -118,9 +121,26 @@ async def process_message(
                         send_context="auto_reply",
                         media_url=action["image_url"],
                     )
-                    await asyncio.sleep(0.8)  # brief delay so image arrives before text
+                    await asyncio.sleep(0.8)
                 except Exception as img_err:
                     logger.warning(f"[AutoReplyV2] Failed to send product image: {img_err}")
+
+            elif atype == "send_catalog_images":
+                # Catalog browse — send images in batch with delays
+                img_items = [p for p in (action.get("products") or []) if p.get("image_url")]
+                for img in img_items[:8]:  # hard cap at 8 per batch
+                    try:
+                        await whatsapp_service.send_message(
+                            user_id=user_id,
+                            to_number=from_number,
+                            message=img.get("caption", ""),
+                            customer_name=customer_name,
+                            send_context="auto_reply",
+                            media_url=img["image_url"],
+                        )
+                        await asyncio.sleep(1.0)  # 1s between catalog images (WhatsApp rate limit)
+                    except Exception as img_err:
+                        logger.warning(f"[AutoReplyV2] Failed to send catalog image: {img_err}")
 
         # 9. Send text reply
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY
