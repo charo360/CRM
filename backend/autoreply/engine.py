@@ -238,26 +238,52 @@ async def process_message(
                         logger.warning(f"[AutoReplyV2] Failed to send product image: {img_err}")
 
             elif atype == "send_catalog_images":
-                # Scenario 2: customer browsing catalog — 8 products per batch, each with all angles
+                # Scenario 2: customer browsing catalog — 8 products per batch, numbered captions
                 currency = (user.get("settings") or {}).get("currency", "KES")
-                # Prefer product_ids list (DB lookup); fall back to legacy products[] with image_url
-                product_ids = action.get("product_ids") or []
+                _EMOJI_NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+                product_ids     = action.get("product_ids") or []
+                category_filter = (action.get("category") or "").strip().lower()
+
+                # Build ordered batch of products that have images
+                batch: List[dict] = []
                 if product_ids:
-                    for pid in product_ids[:8]:
+                    for pid in product_ids:
                         product = products_by_id.get(str(pid))
-                        if product:
-                            caption = f"{product['name']} — {currency} {product['price']:,.0f}"
-                            await _send_product_images(product, caption)
-                            await asyncio.sleep(1.5)  # gap between products
+                        if not product:
+                            continue
+                        if category_filter and product.get("category", "").lower() != category_filter:
+                            continue
+                        if product.get("images") or product.get("image_url"):
+                            batch.append(product)
+                        if len(batch) >= 8:
+                            break
+                else:
+                    # No IDs given — scan all loaded products (filtered by category if set)
+                    for product in products_by_id.values():
+                        if not (product.get("images") or product.get("image_url")):
+                            continue
+                        if category_filter and product.get("category", "").lower() != category_filter:
+                            continue
+                        batch.append(product)
+                        if len(batch) >= 8:
+                            break
+
+                if batch:
+                    for i, product in enumerate(batch):
+                        num     = _EMOJI_NUMS[i] if i < len(_EMOJI_NUMS) else f"{i + 1}."
+                        caption = f"{num} {product['name']} — {currency} {product['price']:,.0f}"
+                        await _send_product_images(product, caption)
+                        await asyncio.sleep(1.5)
                 else:
                     # Legacy fallback: AI provided products list with image_url
                     img_items = [p for p in (action.get("products") or []) if p.get("image_url")]
-                    for img in img_items[:8]:
+                    for i, img in enumerate(img_items[:8]):
+                        num = _EMOJI_NUMS[i] if i < len(_EMOJI_NUMS) else f"{i + 1}."
                         try:
                             await whatsapp_service.send_message(
                                 user_id=user_id,
                                 to_number=from_number,
-                                message=img.get("caption", ""),
+                                message=f"{num} {img.get('caption', '')}".strip(),
                                 customer_name=customer_name,
                                 send_context="auto_reply",
                                 media_url=img["image_url"],

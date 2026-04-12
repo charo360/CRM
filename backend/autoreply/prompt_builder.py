@@ -267,6 +267,36 @@ GENERAL BUSINESS FLOW:
 - SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 }
 
+# ── Catalog helpers (item label + category summary) ───────────────────────────
+
+_ITEM_LABEL_MAP: dict = {
+    "restaurant": "menu items",   "food": "menu items",   "bakery": "menu items",
+    "salon":      "services",     "spa":  "treatments",   "services": "services",
+    "repair":     "services",     "cleaning": "packages", "fitness": "classes",
+    "gym":        "classes",      "events": "packages",   "photography": "packages",
+    "healthcare": "services",     "clinic": "services",   "rental": "listings",
+    "creator":    "content",      "wholesale": "products", "grocery": "products",
+}
+
+
+def _get_item_label(btype: str) -> str:
+    return _ITEM_LABEL_MAP.get(btype, "products")
+
+
+def _get_categories_block(products: List[Dict], services: List[Dict]) -> str:
+    """Build a CATALOG CATEGORIES line for the AI prompt."""
+    all_items = products + services
+    cats: dict = {}
+    for p in all_items:
+        c = (p.get("category") or "").strip()
+        if c:
+            cats[c] = cats.get(c, 0) + 1
+    if len(cats) < 2:
+        return "CATALOG CATEGORIES: (single category or uncategorised — show items directly)"
+    summary = ", ".join(f"{c} ({n})" for c, n in sorted(cats.items(), key=lambda x: -x[1]))
+    return f"CATALOG CATEGORIES: {summary}  ← show category menu FIRST before listing items"
+
+
 # Fallback for unknown business types
 _DEFAULT_INSTRUCTIONS = """\
 - Show available products or services with numbered menu when asked.
@@ -309,9 +339,10 @@ NUMBERED MENUS:
 - Use numbered menus (1️⃣ 2️⃣ 3️⃣) for every product listing.
 - Set new_menu: {"1": {"id": "EXACT_DB_ID", "name": "Name", "price": 500, "type": "product"}}
 - ALWAYS use exact DB IDs from the catalog. Never invent IDs.
-- ALWAYS append "0️⃣ View all images" as the last option:
-  {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}
-- When customer replies "0" or "view images" → send send_catalog_images.
+- ALWAYS append "0️⃣ View all [use CATALOG ITEM LABEL]" as the last option.
+  E.g. for retail: "0️⃣ View all products" / for restaurant: "0️⃣ View all menu items" / for salon: "0️⃣ View all services"
+  {"0": {"id": "catalog", "name": "View all [item label]", "price": 0, "type": "catalog"}}
+- When customer replies "0" or "more" → send send_catalog_images (check for category context first).
 - Resolve numbered replies using LAST MENU SENT if provided.
 
 PRODUCT IMAGES:
@@ -319,9 +350,23 @@ PRODUCT IMAGES:
   {"type": "send_product_image", "product_id": "DB_ID", "image_url": "url", "caption": "Name — KES 500"}
 
 CATALOG BROWSING:
-- "show me" / "browse" / "show images" / "show catalog" →
-  Send new_menu (up to 8 items) + send_catalog_images action (image products only, exact DB IDs).
-  If more products exist → "Reply *0* or *more* to see more."
+- Triggered by: "show me" / "browse" / "show images" / "show catalog" / "0" / "more"
+
+  STEP 1 — CATEGORY CHECK (check CATALOG CATEGORIES in your context):
+    - If 2+ categories listed → show numbered category menu FIRST:
+      "Which category? 1️⃣ Electronics 2️⃣ Clothing 3️⃣ Accessories"
+      new_menu: {"1": {"id": "cat_Electronics", "name": "Electronics", "price": 0, "type": "category"}}
+    - When customer picks a category number → resolve from last_menu (type="category") → go to STEP 2.
+    - If only 1 category or no categories → skip to STEP 2 directly.
+
+  STEP 2 — SHOW ITEMS:
+    - Build new_menu (up to 8 items from chosen category, or all if no filter).
+    - Include: {"type": "send_catalog_images", "product_ids": ["DB_ID_1", ...], "category": "optional_filter"}
+    - The backend numbers images automatically (1️⃣ T-shirt — KES 500) — do NOT add numbers yourself in reply text.
+    - If more items exist → "Reply *0* or *more* to see the next batch."
+
+- ALWAYS use the CATALOG ITEM LABEL from context (e.g., "products" / "menu items" / "services"):
+  "0️⃣ View all [item label]" as last new_menu option.
 
 MULTI-ITEM CART:
 - After each item confirmed → "Anything else or checkout?"
@@ -351,6 +396,17 @@ SERVICE IMAGES:
 - When customer selects a service that has an image_url → send send_product_image.
   {"type": "send_product_image", "product_id": "DB_ID", "image_url": "url", "caption": "Name — KES 500"}
 
+SERVICE CATALOG BROWSING:
+- "show me services" / "what do you offer" / "browse" →
+  STEP 1 — Check CATALOG CATEGORIES:
+    - If 2+ categories → show numbered category menu first.
+      new_menu: {"1": {"id": "cat_Massage", "name": "Massage", "price": 0, "type": "category"}}
+    - Customer picks category → show items in that category.
+  STEP 2 — Show services:
+    - new_menu with up to 8 services + send_catalog_images (images only, numbered by backend).
+    - "category": "chosen" field in send_catalog_images to filter.
+    - If more → "Reply *0* or *more* to see more."
+
 BOOKING RULES:
 - Fire create_booking ONLY after: service confirmed + date confirmed + time confirmed (where needed).
 - Never fire create_booking mid-collection.
@@ -376,9 +432,16 @@ NUMBERED MENUS:
 - ALWAYS append "0️⃣ View all images" as the last option.
 - Resolve numbered replies using LAST MENU SENT if provided.
 
-LISTING IMAGES:
-- When customer selects a listing with image_url → send send_product_image.
-- "browse" / "show images" → send send_catalog_images for all listings with images.
+LISTING CATALOG BROWSING:
+- "show me listings" / "what's available" / "browse" →
+  STEP 1 — Check CATALOG CATEGORIES:
+    - If 2+ categories → show numbered category menu first.
+      new_menu: {"1": {"id": "cat_Apartments", "name": "Apartments", "price": 0, "type": "category"}}
+  STEP 2 — Show listings:
+    - new_menu with up to 8 listings + send_catalog_images (numbered by backend).
+    - {"type": "send_catalog_images", "product_ids": [...], "category": "optional_filter"}
+    - If more → "Reply *0* or *more* to see more."
+- When customer picks a listing number → send_product_image + ask check-in/check-out dates.
 
 BOOKING RULES:
 - Fire create_booking ONLY after: listing confirmed + check-in date + check-out date + total confirmed by customer.
@@ -703,6 +766,15 @@ def build_system_prompt(
             parts.append("No menu items have been set up yet. Let the customer know to check back soon.")
         else:
             parts.append("No products or services have been set up yet. Let the customer know to check back soon.")
+
+    # ── Catalog terminology + categories (used by AI for browsing + labelling) ──
+    item_label = _get_item_label(btype)
+    categories_line = _get_categories_block(products, services)
+    parts.append(
+        f"CATALOG ITEM LABEL: {item_label}\n"
+        f"(Use \"{item_label}\" when naming catalog items. E.g. \"0️⃣ View all {item_label}\")\n"
+        f"{categories_line}"
+    )
 
     # ── Current conversation state ──
     if mini_state.get("active_flow") or mini_state.get("flow_step"):
