@@ -837,9 +837,22 @@ export default function SalesScreen() {
       }
     };
 
+    const getFulfillmentColor = (status?: string) => {
+      switch (status) {
+        case 'New':        return '#FF6B6B';
+        case 'Confirmed':  return '#F39C12';
+        case 'Preparing':  return '#FFD700';
+        case 'Ready':      return '#25D366';
+        case 'Done':       return '#555';
+        default:           return '#FF6B6B';
+      }
+    };
+
+    const fulfillmentColor = getFulfillmentColor(order.fulfillment_status);
+
     return (
       <TouchableOpacity
-        style={styles.saleCard}
+        style={[styles.saleCard, { borderLeftWidth: 3, borderLeftColor: fulfillmentColor }]}
         onPress={() => {
           setSelectedOrder(order);
           setOrderDetailsVisible(true);
@@ -865,6 +878,9 @@ export default function SalesScreen() {
           <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {(order.total_amount || 0).toLocaleString()}</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          <View style={[styles.statusBadge, { backgroundColor: fulfillmentColor + '33', borderWidth: 1, borderColor: fulfillmentColor }]}>
+            <Text style={[styles.statusBadgeText, { color: fulfillmentColor }]}>{order.fulfillment_status || 'New'}</Text>
+          </View>
           <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
             <Text style={styles.statusBadgeText}>{order.payment_status}</Text>
           </View>
