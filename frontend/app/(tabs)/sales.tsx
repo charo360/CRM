@@ -62,6 +62,7 @@ interface Order {
   order_number?: string;
   delivery_type?: string;
   delivery_address?: string;
+  table_number?: string;
   items?: any[];
   fulfillment_status?: string;
   assigned_to?: string;
@@ -892,6 +893,20 @@ export default function SalesScreen() {
           <Text style={styles.itemText}>{order.product || 'Item'} (x{order.quantity || 0})</Text>
           <Text style={styles.paymentText}>@ {currency} {(order.price || 0).toLocaleString()} each</Text>
         </View>
+        {!!(order.table_number || (order.delivery_type === 'dine-in')) && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <Ionicons name="restaurant-outline" size={12} color="#F59E0B" />
+            <Text style={{ color: '#F59E0B', fontSize: 12, fontWeight: '600' }}>
+              {order.table_number ? `Table ${order.table_number}` : 'Dine-in'}
+            </Text>
+          </View>
+        )}
+        {!!(order.delivery_type === 'delivery' && order.delivery_address) && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <Ionicons name="location-outline" size={12} color="#3B82F6" />
+            <Text style={{ color: '#3B82F6', fontSize: 12 }} numberOfLines={1}>{order.delivery_address}</Text>
+          </View>
+        )}
         {order.payment_status === 'Paid' && (
           <View style={{ backgroundColor: '#1A3A2A', borderRadius: 8, padding: 8, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <Ionicons name="checkmark-circle" size={14} color="#25D366" />
@@ -1901,6 +1916,37 @@ export default function SalesScreen() {
                   </View>
                 </View>
 
+                <View style={styles.detailsDivider} />
+
+                {/* Order meta — number, type, table/address */}
+                {!!(selectedOrder.order_number || selectedOrder.delivery_type || selectedOrder.table_number) && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    {!!selectedOrder.order_number && (
+                      <View style={{ backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#333' }}>
+                        <Text style={{ color: '#888', fontSize: 10, marginBottom: 1 }}>Order #</Text>
+                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>{selectedOrder.order_number}</Text>
+                      </View>
+                    )}
+                    {!!selectedOrder.delivery_type && (
+                      <View style={{ backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#333' }}>
+                        <Text style={{ color: '#888', fontSize: 10, marginBottom: 1 }}>Type</Text>
+                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', textTransform: 'capitalize' }}>{selectedOrder.delivery_type}</Text>
+                      </View>
+                    )}
+                    {!!selectedOrder.table_number && (
+                      <View style={{ backgroundColor: '#F59E0B22', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#F59E0B' }}>
+                        <Text style={{ color: '#F59E0B', fontSize: 10, marginBottom: 1 }}>Table</Text>
+                        <Text style={{ color: '#F59E0B', fontSize: 18, fontWeight: '800' }}>{selectedOrder.table_number}</Text>
+                      </View>
+                    )}
+                    {!!(selectedOrder.delivery_type === 'delivery' && selectedOrder.delivery_address) && (
+                      <View style={{ backgroundColor: '#1E2A3A', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#3B82F6', flex: 1 }}>
+                        <Text style={{ color: '#3B82F6', fontSize: 10, marginBottom: 1 }}>Deliver to</Text>
+                        <Text style={{ color: '#fff', fontSize: 13 }}>{selectedOrder.delivery_address}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
                 <View style={styles.detailsDivider} />
 
                 <View style={styles.detailsRow}>

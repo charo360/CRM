@@ -920,6 +920,7 @@ class OrderResponse(BaseModel):
     order_number: Optional[str] = None
     delivery_type: Optional[str] = None
     delivery_address: Optional[str] = None
+    table_number: Optional[str] = None
     items: Optional[list] = None
     status: Optional[str] = None
     created_by: Optional[str] = None
@@ -4312,6 +4313,7 @@ async def get_orders(user = Depends(get_current_user)):
             order_number=order.get("order_number"),
             delivery_type=order.get("delivery_type"),
             delivery_address=order.get("delivery_address"),
+            table_number=order.get("table_number"),
             items=items if items else None,
             status=order.get("status"),
             created_by=order.get("created_by"),
