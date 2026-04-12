@@ -152,12 +152,23 @@ async def _load_products(db, user_id) -> List[Dict]:
         name = _sanitize(p.get("name", ""))
         if not name:
             continue
+        # Collect all image URLs for this product
+        imgs = []
+        if p.get("image_url"):
+            imgs.append(p["image_url"])
+        for extra in p.get("images", []):
+            if extra and extra not in imgs:
+                imgs.append(extra)
+
         products.append({
-            "id":        str(p["_id"]),
-            "name":      name,
-            "price":     float(p.get("price", 0)),
-            "category":  _sanitize(p.get("category", "")),
-            "in_stock":  p.get("in_stock", True),
+            "id":          str(p["_id"]),
+            "name":        name,
+            "price":       float(p.get("price", 0)),
+            "category":    _sanitize(p.get("category", "")),
+            "description": _sanitize(p.get("description", "")),
+            "in_stock":    p.get("in_stock", True),
+            "image_url":   imgs[0] if imgs else "",
+            "images":      imgs[:3],  # max 3 images per product
         })
     return products
 
@@ -207,6 +218,10 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
 
     bk = user.get("business_knowledge") or {}
 
+    # If structured payment_methods is empty, try to pull details from business_knowledge
+    if not payment_methods and bk.get("pricing_info"):
+        payment_methods = [_sanitize(bk["pricing_info"])]
+
     return {
         "type":               business_type,
         "name":               _sanitize(user.get("business_name", "")),
@@ -215,6 +230,7 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "business_hours":     _sanitize(bk.get("business_hours", "")),
         "delivery_info":      _sanitize(bk.get("delivery_info", "")),
         "about":              _sanitize(bk.get("business_description", "")),
+        "products_services":  _sanitize(bk.get("products_services", "")),
         "special_offers":     _sanitize(bk.get("special_offers", "")),
         "faqs":               _sanitize(bk.get("faqs", "")),
         "supports_orders":    _supports_orders(business_type),

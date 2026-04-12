@@ -42,6 +42,8 @@ async def execute_actions(
         try:
             if atype == "create_order":
                 await _create_order(db, action, user_id, customer_id, currency)
+            elif atype == "update_order":
+                await _update_order(db, action, user_id, customer_id, currency)
             elif atype == "create_booking":
                 await _create_booking(db, action, user_id, customer_id)
             elif atype == "cancel_order":
@@ -65,40 +67,123 @@ async def execute_actions(
 # ── Individual action handlers ────────────────────────────────────────────────
 
 async def _create_order(db, action: dict, user_id, customer_id, currency: str) -> None:
-    qty = max(1, int(action.get("quantity") or 1))
-    unit_price = float(action.get("unit_price") or 0)
-    total = round(qty * unit_price, 2)
     order_number = f"ORD-{uuid.uuid4().hex[:6].upper()}"
-    product_name = (action.get("product_name") or "").strip()
 
-    if not product_name:
-        logger.warning("[ActionHandler] create_order skipped — product_name missing")
+    # Support both single-item (legacy) and multi-item (items array)
+    raw_items = action.get("items") or []
+
+    if not raw_items:
+        # Single item shorthand
+        product_name = (action.get("product_name") or "").strip()
+        if not product_name:
+            logger.warning("[ActionHandler] create_order skipped — no items and no product_name")
+            return
+        qty = max(1, int(action.get("quantity") or 1))
+        unit_price = float(action.get("unit_price") or 0)
+        raw_items = [{"product_name": product_name, "product_id": action.get("product_id", ""),
+                      "quantity": qty, "unit_price": unit_price}]
+
+    # Build normalised items list
+    items = []
+    total = 0.0
+    for it in raw_items:
+        name = (it.get("product_name") or "").strip()
+        if not name:
+            continue
+        qty = max(1, int(it.get("quantity") or 1))
+        unit_price = float(it.get("unit_price") or 0)
+        line_total = round(qty * unit_price, 2)
+        total += line_total
+        items.append({
+            "product_name": name,
+            "product_id":   it.get("product_id", ""),
+            "quantity":     qty,
+            "unit_price":   unit_price,
+            "price":        line_total,
+        })
+
+    if not items:
+        logger.warning("[ActionHandler] create_order skipped — no valid items")
         return
+
+    total = round(total, 2)
+    primary_name = items[0]["product_name"] if len(items) == 1 else f"{len(items)} items"
 
     order_doc = {
         "user_id":        user_id,
         "customer_id":    customer_id,
         "order_number":   order_number,
-        "product_name":   product_name,
-        "items": [{
-            "product_name": product_name,
-            "product_id":   action.get("product_id", ""),
-            "quantity":     qty,
-            "unit_price":   unit_price,
-            "price":        total,
-        }],
-        "total_amount":       total,
-        "total":              total,
-        "status":             "pending",
-        "payment_status":     "unpaid",
-        "delivery_type":      action.get("delivery_type", "pickup"),
-        "delivery_address":   action.get("delivery_address", ""),
-        "notes":              action.get("notes", ""),
-        "created_at":         datetime.utcnow(),
-        "created_by":         "customer",
+        "product_name":   primary_name,
+        "items":          items,
+        "total_amount":   total,
+        "total":          total,
+        "status":         "pending",
+        "payment_status": "unpaid",
+        "delivery_type":  action.get("delivery_type", "pickup"),
+        "delivery_address": action.get("delivery_address", ""),
+        "notes":          action.get("notes", ""),
+        "created_at":     datetime.utcnow(),
+        "created_by":     "customer",
     }
     result = await db.orders.insert_one(order_doc)
-    logger.info(f"[ActionHandler] Order created: {order_number} id={result.inserted_id} product='{product_name}' qty={qty} total={currency}{total}")
+    logger.info(f"[ActionHandler] Order created: {order_number} id={result.inserted_id} items={len(items)} total={currency}{total}")
+
+
+async def _update_order(db, action: dict, user_id, customer_id, currency: str) -> None:
+    """Add item, remove item, or change quantity on an existing order."""
+    update_type = action.get("update_type", "")  # add_item | remove_item | change_qty | change_delivery
+    order_id = action.get("order_id", "latest")
+
+    query: dict = {"user_id": user_id, "customer_id": customer_id, "status": {"$ne": "cancelled"}}
+    if order_id and order_id != "latest":
+        query["order_number"] = order_id
+
+    order = await db.orders.find_one(query, sort=[("created_at", -1)])
+    if not order:
+        logger.warning(f"[ActionHandler] update_order — no active order found for customer {customer_id}")
+        return
+
+    items = list(order.get("items") or [])
+
+    if update_type == "add_item":
+        name = (action.get("product_name") or "").strip()
+        qty = max(1, int(action.get("quantity") or 1))
+        unit_price = float(action.get("unit_price") or 0)
+        items.append({"product_name": name, "product_id": action.get("product_id", ""),
+                      "quantity": qty, "unit_price": unit_price, "price": round(qty * unit_price, 2)})
+
+    elif update_type == "remove_item":
+        name = (action.get("product_name") or "").strip().lower()
+        items = [it for it in items if it.get("product_name", "").lower() != name]
+
+    elif update_type == "change_qty":
+        name = (action.get("product_name") or "").strip().lower()
+        new_qty = max(1, int(action.get("quantity") or 1))
+        for it in items:
+            if it.get("product_name", "").lower() == name:
+                it["quantity"] = new_qty
+                it["price"] = round(new_qty * it.get("unit_price", 0), 2)
+
+    elif update_type == "change_delivery":
+        await db.orders.update_one(
+            {"_id": order["_id"]},
+            {"$set": {"delivery_type": action.get("delivery_type", "pickup"),
+                      "delivery_address": action.get("delivery_address", ""),
+                      "updated_at": datetime.utcnow()}},
+        )
+        logger.info(f"[ActionHandler] Order {order.get('order_number')} delivery updated")
+        return
+
+    # Recalculate total
+    new_total = round(sum(it.get("price", 0) for it in items), 2)
+    primary_name = items[0]["product_name"] if len(items) == 1 else f"{len(items)} items"
+
+    await db.orders.update_one(
+        {"_id": order["_id"]},
+        {"$set": {"items": items, "total_amount": new_total, "total": new_total,
+                  "product_name": primary_name, "updated_at": datetime.utcnow()}},
+    )
+    logger.info(f"[ActionHandler] Order {order.get('order_number')} updated: {update_type} total={currency}{new_total}")
 
 
 async def _create_booking(db, action: dict, user_id, customer_id) -> None:

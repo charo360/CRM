@@ -87,9 +87,10 @@ async def process_message(
         response_data = await _call_ai_with_retry(system_prompt, conv_messages, model_pref)
 
         # 5. Execute CRM actions
+        actions = response_data.get("actions", [])
         await execute_actions(
             db=db,
-            actions=response_data.get("actions", []),
+            actions=actions,
             user_id=user_id,
             customer_id=customer_id,
             user=user,
@@ -105,7 +106,23 @@ async def process_message(
         # 7. Update mini-state
         await _update_mini_state(db, user_id, customer_id, response_data)
 
-        # 8. Send reply
+        # 8. Send product image(s) BEFORE the text reply
+        for action in actions:
+            if action.get("type") == "send_product_image" and action.get("image_url"):
+                try:
+                    await whatsapp_service.send_message(
+                        user_id=user_id,
+                        to_number=from_number,
+                        message=action.get("caption", ""),
+                        customer_name=customer_name,
+                        send_context="auto_reply",
+                        media_url=action["image_url"],
+                    )
+                    await asyncio.sleep(0.8)  # brief delay so image arrives before text
+                except Exception as img_err:
+                    logger.warning(f"[AutoReplyV2] Failed to send product image: {img_err}")
+
+        # 9. Send text reply
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY
         await whatsapp_service.send_message(
             user_id=user_id,
