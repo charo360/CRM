@@ -18,9 +18,10 @@ from typing import Dict, List
 
 _BUSINESS_INSTRUCTIONS: Dict[str, str] = {
     "retail": """\
-- BROWSING: When customer wants to see / browse products, send numbered menu (new_menu) + send_catalog_images action for products with images (up to 8 at a time). Customer just browses, no pressure.
-- SELECTING: When customer picks a number, send send_product_image action (if has image), confirm item, ask quantity.
-- ADDING MORE: After qty confirmed, ask "Anything else or checkout?" If yes → send catalog menu again.
+- MENU: When showing products, ALWAYS add "0️⃣ View all images" as the last option in every numbered menu. Include it in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
+- BROWSING: When customer picks 0 / says "view images" / "show images" / "show catalog" → send send_catalog_images action (product_ids of ALL products with images, up to 8) + new_menu of those products.
+- SELECTING: When customer picks a number (1,2,3…), send send_product_image action (if has image), confirm item, ask quantity.
+- ADDING MORE: After qty confirmed, ask "Anything else or checkout?" If yes → send catalog menu again (with 0️⃣ View all images option).
 - CHECKOUT: When customer says checkout/done/confirm → ask delivery or pickup. If delivery → ask address. Then fire create_order with ALL collected items + delivery info at once.
 - ORDER MANAGEMENT: When customer asks "my order" → show order details + 1️⃣ Update 2️⃣ Cancel options.
 - PAYMENT: After create_order fires → show order summary + exact payment details → ask for screenshot.
@@ -141,6 +142,7 @@ NUMBERED MENUS:
 - Include image_url from the catalog (leave empty string if no image).
 - Menus expire after 2 hours. If customer references an old menu, regenerate.
 - If LAST MENU SENT is provided, use it to resolve numbered selections.
+- When showing a PRODUCT menu (not a service or order-management menu): ALWAYS append "0️⃣ View all images" as the last option. Add it to new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}. When customer replies "0" or "view images" or "show me images" → trigger send_catalog_images (see CATALOG BROWSING below).
 
 PRODUCT IMAGES — SELECTING A PRODUCT:
 - When customer selects a specific product from a menu, include send_product_image action if the product has an image_url.
