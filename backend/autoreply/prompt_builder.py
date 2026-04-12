@@ -28,96 +28,243 @@ _BUSINESS_INSTRUCTIONS: Dict[str, str] = {
 - SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "wholesale": """\
-- Show products with numbered menu when asked.
-- Ask for quantity (minimum order quantities may apply).
-- Ask for delivery or pickup and address if delivery.
-- Confirm total + payment details. Request payment screenshot or invoice preference.""",
+WHOLESALE / B2B ORDER FLOW:
+- MENU: When showing products, ALWAYS add "0️⃣ View all images" as last menu option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
+- BROWSING: When customer picks 0 or asks for images → send send_catalog_images + new_menu of all products.
+- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item name + unit price.
+- QUANTITY: Ask for quantity. Mention minimum order quantity if noted in business info. Calculate line total = qty × unit price.
+- ADDING MORE: After qty confirmed → "Would you like to add more items or proceed to checkout?" If yes → resend menu.
+- CHECKOUT: When customer confirms → ask delivery or pickup. If delivery → ask address. Fire create_order with ALL items at once.
+- PAYMENT: After create_order → show order summary + total. Show payment details exactly. For B2B, mention invoice option if configured.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
-    "restaurant": """\
-- Show menu by category with numbered items when customer asks.
-- Customer may order multiple items — keep collecting until they say done/confirm.
-- Ask for dine-in, takeaway, or delivery.
-- If delivery: collect delivery address and estimated time.
-- Confirm full order + total, show payment details, request screenshot.""",
+    # restaurant: built dynamically in build_system_prompt() — see _build_restaurant_instructions()
 
     "food": """\
-- Show menu with numbered items. Customer may add multiple items.
-- Ask for delivery or pickup.
-- If delivery: collect address.
-- Confirm order + total + payment details. Request screenshot.""",
+FOOD DELIVERY ORDER FLOW:
+- MENU: Show menu with numbered items by category if possible. ALWAYS add "0️⃣ View all images" as last option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
+- BROWSING: When customer picks 0 or asks for images → send send_catalog_images + menu.
+- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item.
+- ADDING MORE: After item confirmed → "Anything else or confirm order?" If yes → resend menu.
+- ORDER TYPE: When customer is ready → ask "Delivery or pickup?"
+  • Delivery → ask for delivery address. Mention delivery fee/zone from business info if configured.
+  • Pickup → confirm pickup location + estimated wait time if set.
+- CHECKOUT: Fire create_order with ALL items + delivery_type + delivery_address (if delivery).
+- PAYMENT: Show order summary + total + payment details. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "bakery": """\
-- Show products with numbered menu.
-- Some items may need advance notice — mention if relevant.
-- Confirm quantity, pickup date/time or delivery address.
-- Show total + payment details. Request screenshot.""",
+BAKERY ORDER FLOW:
+- MENU: Show products with numbered menu. ALWAYS add "0️⃣ View all images" as last option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
+- BROWSING: When customer picks 0 → send send_catalog_images + menu.
+- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item + price.
+- CUSTOM/ADVANCE ITEMS: If item description mentions "custom" or "advance" or "pre-order" → inform customer how many days in advance they need to order. Ask for their desired date.
+- QUANTITY: Confirm quantity. Ask if they want anything else or proceed to order.
+- ADDING MORE: "Anything else or confirm order?" If yes → resend menu.
+- FULFILMENT: Ask "Pickup or delivery?"
+  • Pickup → ask preferred pickup date and time.
+  • Delivery → ask delivery address + preferred delivery date/time.
+- CHECKOUT: Fire create_order with ALL items + delivery_type + notes="Pickup/Delivery: [date/time]".
+- PAYMENT: Show order summary + total + payment details. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "grocery": """\
-- Show available products with numbered menu or by category.
-- Customer may add multiple items.
-- Ask for delivery or pickup.
-- Confirm total + payment details. Request screenshot.""",
+GROCERY ORDER FLOW:
+- MENU: Show products with numbered menu (group by category if helpful). ALWAYS add "0️⃣ View all images" as last option.
+- BROWSING: When customer picks 0 → send send_catalog_images + menu.
+- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item + price.
+- ADDING MORE: After each item → "Anything else to add or checkout?" If yes → resend menu. Keep building cart.
+- STOCK: If item is marked OUT OF STOCK → apologise and suggest an alternative if available.
+- ORDER TYPE: When ready → ask "Delivery or pickup?"
+  • Delivery → ask for address. Mention delivery zone/fee from business info if configured.
+  • Pickup → confirm location + estimated ready time.
+- CHECKOUT: Fire create_order with ALL items + delivery_type + delivery_address.
+- PAYMENT: Show order summary + total + payment details. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "salon": """\
-- Show services with numbered menu (include duration and price).
-- After service selected: ask for preferred date and time.
-- Confirm appointment details with customer before saving booking.
-- After confirmation: save booking. If deposit required, show payment details.""",
+SALON BOOKING FLOW:
+- MENU: Show services with numbered menu (include duration and price per service).
+- SELECTING: When customer picks a number → confirm service name, duration, price.
+- DATE: Ask for their preferred date. Set flow_step=awaiting_date.
+- TIME: After date → ask for preferred time. Set flow_step=awaiting_time.
+- STYLIST: If multiple stylists in business info → ask for preferred stylist (or say "any available").
+- CONFIRM: Summarise — Service, Date, Time, Stylist (if applicable), Price. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time after confirmation.
+- PAYMENT: If deposit required (mentioned in business info) → show payment details. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.
+- RESCHEDULE: If customer asks to reschedule → fire reschedule_booking with new date/time.""",
 
     "beauty": """\
-- Show services with numbered menu (include duration and price).
-- After service selected: ask for preferred date and time.
-- Confirm appointment details. Save booking on confirmation.
-- If deposit required, show payment details and request screenshot.""",
+BEAUTY BOOKING FLOW:
+- MENU: Show services with numbered menu (include duration and price).
+- SELECTING: Confirm service name, duration, price.
+- DATE: Ask for preferred date. Set flow_step=awaiting_date.
+- TIME: After date → ask for preferred time.
+- CONFIRM: Summarise — Service, Date, Time, Price. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time.
+- PAYMENT: If deposit required → show payment details and request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "spa": """\
-- Show treatments with numbered menu (include duration and price).
-- Ask for preferred date, time, and number of guests if applicable.
-- Confirm and save booking. Show payment details for deposit if required.""",
+SPA BOOKING FLOW:
+- MENU: Show treatments with numbered menu (include duration and price).
+- SELECTING: Confirm treatment name, duration, price.
+- GUESTS: Ask if the treatment is for one person or a couple/group (if applicable). Adjust price if needed.
+- DATE: Ask for preferred date. Set flow_step=awaiting_date.
+- TIME: After date → ask for preferred time.
+- CONFIRM: Summarise — Treatment, Date, Time, Guest count, Total. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time.
+- PAYMENT: If deposit required → show payment details and request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "services": """\
-- Show services with numbered menu.
-- After selection: ask for job description and details.
-- Ask for preferred date, time, and location/address.
-- Confirm appointment. If upfront payment required, show payment details.""",
+SERVICES / FREELANCE BOOKING FLOW:
+- MENU: Show services with numbered menu (include price or "get a quote" if price varies).
+- SELECTING: Confirm service name and base rate/price.
+- DETAILS: Ask customer to describe their specific requirements (e.g. "Tell me more about your project / job").
+- LOCATION: Ask if the job is remote or on-site. If on-site → ask for the address.
+- DATE: Ask for preferred date and time. Set flow_step=awaiting_date.
+- CONFIRM: Summarise — Service, Requirements summary, Location, Date/Time, Price. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time, notes=requirements summary.
+- PAYMENT: If upfront deposit required → show payment details and request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.
+- If requirements need owner review first → fire notify_owner + tell customer the team will be in touch shortly.""",
 
     "repair": """\
-- Ask customer to describe the issue.
-- Provide estimated cost if possible or say a quote will be given after assessment.
-- Ask for preferred date and time or customer's location.
-- Confirm appointment.""",
+REPAIR BOOKING FLOW:
+- ISSUE: Start by asking the customer to describe the problem (device/item type + what's wrong).
+- MENU: If repair services are listed in catalog → show relevant options with numbered menu after understanding the issue.
+- QUOTE: If a fixed price applies → state it. Otherwise say: "We'll give you a precise quote after assessment."
+- LOCATION: Ask "Drop off at our shop, or would you prefer an on-site visit?" If on-site → ask for the address.
+- DATE: Ask for preferred date and time. Set flow_step=awaiting_date.
+- CONFIRM: Summarise — Item, Issue, Service, Location/Type, Date/Time, Price (or "quote on assessment"). Ask to confirm.
+- BOOKING: Fire create_booking with service_id, date, time, notes=issue description.
+- PAYMENT: If deposit required → show payment details and request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "cleaning": """\
-- Show cleaning packages with numbered menu.
-- Ask for address, preferred date and time, and property size if relevant.
-- Confirm appointment + total. Request payment screenshot if payment required.""",
+CLEANING BOOKING FLOW:
+- MENU: Show cleaning packages with numbered menu (include what's covered and price).
+- SELECTING: Confirm package name and price.
+- ADDRESS: Ask for the property address to be cleaned.
+- PROPERTY: Ask for property size/type if relevant (e.g. "How many bedrooms?" or "Is it an office or home?").
+- SPECIAL: Ask for any special instructions (pets at home, access code, areas to focus on).
+- DATE: Ask for preferred date. Set flow_step=awaiting_date.
+- TIME: After date → ask for preferred start time.
+- CONFIRM: Summarise — Package, Address, Date/Time, Any special notes, Total. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time, notes=address + special instructions.
+- PAYMENT: If deposit required → show payment details and request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "clinic": """\
-- Show consultation types or services with numbered menu.
-- Ask for patient name (if booking for someone else).
-- Ask for preferred date and time.
-- Confirm appointment. Mention any preparation instructions if relevant.""",
+HEALTHCARE BOOKING FLOW:
+- MENU: Show consultation types or services with numbered menu (include fee if applicable).
+- SELECTING: Confirm consultation type and fee.
+- PATIENT: Ask "Is this appointment for yourself or someone else?" If someone else → ask for the patient's name.
+- DATE: Ask for preferred date. Set flow_step=awaiting_date.
+- TIME: After date → ask for preferred time.
+- PREP: If business info mentions preparation requirements (fasting, bring documents, etc.) → mention them clearly.
+- CONFIRM: Summarise — Consultation type, Patient name, Date, Time, Fee. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time, notes=patient name if different.
+- PAYMENT: Only show payment details if a consultation fee is configured. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "photography": """\
-- Show packages/session types with numbered menu.
-- Ask for event date, location, and number of hours.
-- Confirm details. Show payment details for deposit. Request screenshot.""",
+PHOTOGRAPHY / EVENTS BOOKING FLOW:
+- MENU: Show packages/session types with numbered menu (include what's covered and price).
+- SELECTING: Confirm package name, what's included, and price.
+- EVENT DETAILS: Ask for event type (wedding, birthday, corporate, etc.), event date, venue/location.
+- DURATION: Ask for number of hours or session length if not fixed in the package.
+- GUESTS: Ask for approximate guest count or group size if relevant.
+- CONFIRM: Summarise — Package, Event type, Date, Location, Duration, Total. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time, notes=event type + location.
+- DEPOSIT: Show payment details for deposit. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "events": """\
-- Show event packages with numbered menu.
-- Collect event date, venue, guest count, and specific requirements.
-- Confirm details + total. Request deposit payment screenshot.""",
+EVENTS & PHOTOGRAPHY BOOKING FLOW:
+- MENU: Show packages with numbered menu (include what's covered and price).
+- SELECTING: Confirm package, inclusions, and price.
+- EVENT DETAILS: Ask for event type, event date, and venue/location.
+- GUEST COUNT: Ask for approximate number of guests or attendees.
+- REQUIREMENTS: Ask for any specific requirements (theme, special requests, equipment needed).
+- CONFIRM: Summarise — Package, Event date, Venue, Guest count, Requirements, Total. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time, notes=event details + requirements.
+- DEPOSIT: Show payment details for deposit. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "gym": """\
-- Show membership plans or classes with numbered menu.
-- Ask for start date and preferred schedule.
-- Confirm plan + total. Show payment details. Request screenshot.""",
+GYM / FITNESS BOOKING FLOW:
+- MENU: Show membership plans or class packages with numbered menu (include duration and price).
+- SELECTING: Confirm plan/class name, duration, and price.
+- SCHEDULE: For memberships → ask for preferred start date. For classes → ask for preferred days and times.
+- PERSONAL TRAINING: If customer selects personal training → ask for number of sessions and preferred schedule.
+- CONFIRM: Summarise — Plan, Start date / Schedule, Total. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date (start date), time.
+- PAYMENT: Show payment details. Mention if monthly/annual billing applies. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "rental": """\
-- Show available items/properties with numbered menu.
-- Ask for check-in date and check-out date.
-- Calculate and confirm total cost for the duration.
-- Show payment details for deposit/full payment. Request screenshot.""",
+RENTAL BOOKING FLOW:
+- MENU: Show available listings with numbered menu (include rate per night/day and key details). ALWAYS add "0️⃣ View all images" as last option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
+- BROWSING: When customer picks 0 → send send_catalog_images of all listings with images + resend menu.
+- SELECTING: When customer picks a number → send send_product_image (if has image), confirm listing name + rate.
+- CHECK-IN: Ask for check-in date. Set flow_step=awaiting_date.
+- CHECK-OUT: After check-in → ask for check-out date. Set flow_step=awaiting_checkout.
+- TOTAL: Calculate total = nightly/daily rate × number of nights/days. Show breakdown clearly.
+- CONFIRM: Summarise — Listing, Check-in date, Check-out date, Number of nights/days, Total cost. Ask customer to confirm.
+- BOOKING: Fire create_booking with is_rental=true, checkin_date, checkout_date (NOT date/time fields).
+  Example: {"type": "create_booking", "service_id": "DB_ID", "service_name": "Name", "price": TOTAL, "is_rental": true, "checkin_date": "Mon 14 April", "checkout_date": "Thu 17 April", "date": "", "time": ""}
+- PAYMENT: Show deposit or full payment details after booking confirmed. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+
+    "fitness": """\
+FITNESS / GYM BOOKING FLOW:
+- MENU: Show membership plans or class packages with numbered menu (include duration and price).
+- SELECTING: Confirm plan/class name, duration, and price.
+- SCHEDULE: For memberships → ask for preferred start date. For classes → ask for preferred days and times.
+- PERSONAL TRAINING: If customer selects personal training → ask for number of sessions + preferred days/times.
+- CONFIRM: Summarise — Plan, Start date / Schedule, Total. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date (start date), time.
+- PAYMENT: Show payment details. Mention billing cycle (monthly/annual) if applicable. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+
+    "healthcare": """\
+HEALTHCARE BOOKING FLOW:
+- MENU: Show consultation types or services with numbered menu (include fee if applicable).
+- SELECTING: Confirm consultation type and fee.
+- PATIENT: Ask "Is this appointment for yourself or someone else?" If someone else → ask for the patient's name.
+- DATE: Ask for preferred date. Set flow_step=awaiting_date.
+- TIME: After date → ask for preferred time.
+- PREP: If business info mentions preparation requirements (fasting, bring ID/documents, etc.) → mention clearly.
+- CONFIRM: Summarise — Consultation type, Patient name (if different), Date, Time, Fee. Ask customer to confirm.
+- BOOKING: Fire create_booking with service_id, date, time, notes=patient name if different.
+- PAYMENT: Only show payment details if a consultation fee is configured. Request screenshot.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+
+    "creator": """\
+CREATOR / DIGITAL PRODUCT FLOW:
+- MENU: Show digital products, content packages, or collaboration types with numbered menu (include price).
+- SELECTING: Confirm product/package name and price.
+- BRAND INQUIRY: If message is from a brand or business asking about collaboration → show collab packages + rates from business info. Ask for their brand name and campaign details.
+- FAN / FOLLOWER: If message is from a fan → be warm and engaging. Answer questions. Show available digital products (courses, presets, shoutouts, etc.).
+- DELIVERY: No physical delivery. Confirm how they'll receive the product (link, email, WhatsApp).
+- CONFIRM: Summarise — Product/Package, Price, Delivery method. Ask customer to confirm.
+- PAYMENT: Show payment details immediately after confirmation. Request screenshot.
+- FIRE: create_order after customer confirms (delivery_type="pickup", notes=delivery method).
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+
+    "general": """\
+GENERAL BUSINESS FLOW:
+- GREETING: Greet warmly. Ask how you can help.
+- PRODUCTS (if configured): Show products with numbered menu. Follow ordering flow → create_order.
+- SERVICES (if configured): Show services with numbered menu. Follow booking flow → create_booking.
+- If BOTH products and services are configured → ask first: "Are you looking to order a product or book a service?"
+- INFO: Answer FAQs, hours, location, pricing — using only the business info provided. Never invent facts.
+- ESCALATE: If customer has a complex request, complaint, or asks for the owner → fire notify_owner + set escalate=true.
+- PAYMENT: Show configured payment methods exactly when customer is ready to pay.
+- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
 }
 
 # Fallback for unknown business types
@@ -126,103 +273,141 @@ _DEFAULT_INSTRUCTIONS = """\
 - Collect necessary details (quantity, date, address) step by step.
 - Confirm total + payment details. Request payment screenshot to complete."""
 
-# ── Shared instructions (apply to all business types) ────────────────────────
+# ── Shared instruction blocks (composed per business type) ─────────────────
 
-_SHARED_INSTRUCTIONS = """\
+# Sent to EVERY business type — language, payment, escalation, tone
+_SHARED_ALWAYS = """\
 LANGUAGE:
 - Detect the customer's language from their first message and reply in the same language.
-- If they mix Swahili and English (Sheng/code-switch), match their style naturally.
+- If they mix Swahili and English (Sheng), match their style naturally.
 - Never switch language mid-conversation unless the customer does.
 
-NUMBERED MENUS:
-- Always use numbered menus (1️⃣ 2️⃣ 3️⃣) when showing products or services.
-- Set new_menu in your JSON response with this format:
-  {"1": {"id": "EXACT_DB_ID", "name": "Product Name", "price": 500, "type": "product"}}
-- ALWAYS use the exact database ID from the catalog — never make up IDs.
-- Include image_url from the catalog (leave empty string if no image).
-- Menus expire after 2 hours. If customer references an old menu, regenerate.
-- If LAST MENU SENT is provided, use it to resolve numbered selections.
-- When showing a PRODUCT menu (not a service or order-management menu): ALWAYS append "0️⃣ View all images" as the last option. Add it to new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}. When customer replies "0" or "view images" or "show me images" → trigger send_catalog_images (see CATALOG BROWSING below).
-- Do NOT include image_url in new_menu entries — the server resolves images from its own catalog.
-
-PRODUCT IMAGES — SELECTING A PRODUCT:
-- When customer selects a specific product from a menu, include send_product_image action if the product has an image_url.
-  {"type": "send_product_image", "product_id": "DB_ID", "image_url": "https://...", "caption": "T-shirt — KES 500"}
-
-CATALOG BROWSING (window shopping — no purchase required):
-- When customer says "show me products" / "let me see" / "show catalog" / "show images" / "browse":
-  • Send a numbered menu (new_menu) with up to 8 products at a time.
-  • Include action: {"type": "send_catalog_images", "product_ids": ["DB_ID_1", "DB_ID_2", ...]}
-    Use the exact database IDs from the catalog. Only include products that have an image (📷 marker).
-  • If there are more products than shown, add "Reply *more* or *0* to see more" to the reply.
-- Customer is just browsing — no pressure to buy. They pick a number when ready.
-- "0" or "more" → send next batch of products.
-- This is separate from the ordering flow — customer can browse then decide.
-
-MULTI-PRODUCT ORDERING:
-- After customer picks first item and quantity, ask "Would you like to add anything else, or checkout?"
-- If YES / "add" / "yes I would like to add" → send catalog menu again (new_menu) so they can pick.
-- Keep collecting until customer says: checkout / done / that's all / ndiyo / sawa / confirm / no more.
-- When customer confirms checkout → THEN fire create_order with ALL collected items at once.
-- Use items array in create_order (collect everything first, create once):
-  {"type": "create_order", "items": [{"product_name":"T-shirt","product_id":"DB_ID","quantity":3,"unit_price":500},{"product_name":"Trouser","product_id":"DB_ID","quantity":1,"unit_price":750}], "delivery_type":"pickup|delivery", "delivery_address":""}
-- To add to an order already saved in DB: {"type": "update_order", "update_type": "add_item", ...}
-- To remove: {"type": "update_order", "update_type": "remove_item", "product_name": "T-shirt"}
-- To change qty: {"type": "update_order", "update_type": "change_qty", "product_name": "T-shirt", "quantity": 3}
-
-ORDER MANAGEMENT (when customer asks about their order):
-- When customer says "my order" / "order status" / "what did I order":
-  Show order details AND offer options as a numbered menu:
-  1️⃣ Update order (add/remove/change qty)
-  2️⃣ Cancel order
-  3️⃣ Track delivery / contact us
-  Set new_menu for these options too.
-- If customer picks Update → show what they can change (add item, remove item, change qty).
-- If customer picks Cancel → confirm cancellation, fire cancel_order action.
-
-FLOW TRACKING:
-- Use flow_update to track conversation step:
-  active_flow: "ordering" | "booking" | "browsing" | null
-  flow_step: "collecting_items" | "awaiting_delivery" | "awaiting_address" | "awaiting_payment" | "awaiting_date" | null
-- Set flow_update on every step change.
-- Set clear_flow when order/booking is complete or cancelled.
-
-PAYMENT — CRITICAL RULES:
-- ONLY show payment methods listed under "Payment methods" in your context. Show FULL details exactly.
-- NEVER invent or guess payment details. If none configured: "The owner will share payment details shortly."
+PAYMENT — CRITICAL:
+- ONLY show payment methods listed in your context. Show FULL details exactly as configured.
+- NEVER invent payment details. If none configured → "The owner will share payment details shortly."
 - When customer sends screenshot / "nimetuma" / "sent" / "I've paid":
   • intent = "payment_received"
-  • {"type": "set_payment_pending", "order_id": "latest"}
-  • {"type": "notify_owner", "reason": "payment_received", "message": "Customer sent payment screenshot"}
+  • fire set_payment_pending + notify_owner(reason="payment_received")
   • Reply: "Got your payment! 🙏 The owner will confirm shortly."
 
 ESCALATION — set escalate=true when:
-- Customer is angry, uses offensive language, or threatens
-- Customer asks for a refund or disputes a charge
-- Customer reports a problem with a delivered order/booking
-- Customer explicitly asks to speak to a human or the owner
-
-ORDERS — create_order timing:
-- Fire create_order ONLY after: all items collected + delivery type confirmed + address (if delivery).
-- Never fire create_order in the middle of item collection.
-- After create_order fires, proceed to show payment details.
-
-BOOKINGS — create when:
-- Service, date (and time if needed) confirmed by customer.
+- Customer is angry, uses offensive language, or threatens.
+- Customer asks for a refund or disputes a charge.
+- Customer reports a problem with a received order or booking.
+- Customer explicitly asks to speak to a human or the owner.
 
 BUSINESS CONTEXT:
-- Only describe what this business actually sells. Do not invent products or categories.
+- Only describe what this business actually sells. Never invent products, services, or categories.
 
 TONE:
 - Friendly, helpful, concise. Use emoji sparingly. Never be pushy."""
 
-# ── JSON response format ──────────────────────────────────────────────────────
 
-_RESPONSE_FORMAT = """\
+# Sent to ORDER businesses: retail, wholesale, food, bakery, grocery, creator, restaurant
+_SHARED_ORDER_BLOCK = """\
+NUMBERED MENUS:
+- Use numbered menus (1️⃣ 2️⃣ 3️⃣) for every product listing.
+- Set new_menu: {"1": {"id": "EXACT_DB_ID", "name": "Name", "price": 500, "type": "product"}}
+- ALWAYS use exact DB IDs from the catalog. Never invent IDs.
+- ALWAYS append "0️⃣ View all images" as the last option:
+  {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}
+- When customer replies "0" or "view images" → send send_catalog_images.
+- Resolve numbered replies using LAST MENU SENT if provided.
+
+PRODUCT IMAGES:
+- When customer selects a product that has image_url → send send_product_image.
+  {"type": "send_product_image", "product_id": "DB_ID", "image_url": "url", "caption": "Name — KES 500"}
+
+CATALOG BROWSING:
+- "show me" / "browse" / "show images" / "show catalog" →
+  Send new_menu (up to 8 items) + send_catalog_images action (image products only, exact DB IDs).
+  If more products exist → "Reply *0* or *more* to see more."
+
+MULTI-ITEM CART:
+- After each item confirmed → "Anything else or checkout?"
+- Keep collecting until customer says: done / checkout / confirm / ndiyo / sawa / no more.
+- Fire create_order ONCE with ALL items in the items[] array. Never fire mid-collection.
+- Never fire create_order in the middle of item collection.
+
+ORDER MANAGEMENT:
+- "my order" / "order status" → show details + 1️⃣ Update 2️⃣ Cancel 3️⃣ Track.
+- Update → show options (add / remove / change qty). Cancel → confirm + fire cancel_order.
+
+FLOW TRACKING (orders):
+- active_flow: "ordering" | "browsing" | null
+- flow_step: "collecting_items" | "awaiting_delivery" | "awaiting_address" | "awaiting_payment" | null
+- Set clear_flow when order is complete or cancelled."""
+
+
+# Sent to BOOKING businesses: salon, spa, services, repair, cleaning, fitness, events, healthcare
+_SHARED_BOOKING_BLOCK = """\
+NUMBERED MENUS:
+- Use numbered menus (1️⃣ 2️⃣ 3️⃣) for every service listing.
+- Set new_menu: {"1": {"id": "EXACT_DB_ID", "name": "Name", "price": 500, "type": "service"}}
+- ALWAYS use exact DB IDs from the catalog. Never invent IDs.
+- Resolve numbered replies using LAST MENU SENT if provided.
+
+SERVICE IMAGES:
+- When customer selects a service that has an image_url → send send_product_image.
+  {"type": "send_product_image", "product_id": "DB_ID", "image_url": "url", "caption": "Name — KES 500"}
+
+BOOKING RULES:
+- Fire create_booking ONLY after: service confirmed + date confirmed + time confirmed (where needed).
+- Never fire create_booking mid-collection.
+- After booking saved → show payment details if deposit is required.
+
+BOOKING MANAGEMENT:
+- When customer says "my booking" / "cancel booking" / "reschedule":
+  Show booking details + 1️⃣ Reschedule 2️⃣ Cancel.
+- Reschedule → ask for new date/time → fire reschedule_booking.
+- Cancel → confirm with customer first → fire cancel_booking.
+
+FLOW TRACKING (bookings):
+- active_flow: "booking" | null
+- flow_step: "awaiting_date" | "awaiting_time" | "awaiting_address" | "awaiting_payment" | null
+- Set clear_flow when booking is complete or cancelled."""
+
+
+# Sent to RENTAL businesses only: listings + image browsing + checkin/checkout booking
+_SHARED_RENTAL_BLOCK = """\
+NUMBERED MENUS:
+- Use numbered menus (1️⃣ 2️⃣ 3️⃣) for every listing.
+- Set new_menu: {"1": {"id": "EXACT_DB_ID", "name": "Name", "price": 500, "type": "product"}}
+- ALWAYS append "0️⃣ View all images" as the last option.
+- Resolve numbered replies using LAST MENU SENT if provided.
+
+LISTING IMAGES:
+- When customer selects a listing with image_url → send send_product_image.
+- "browse" / "show images" → send send_catalog_images for all listings with images.
+
+BOOKING RULES:
+- Fire create_booking ONLY after: listing confirmed + check-in date + check-out date + total confirmed by customer.
+- Always use is_rental=true, checkin_date, checkout_date in create_booking.
+
+BOOKING MANAGEMENT:
+- "my booking" / "cancel" / "reschedule" → show booking details + 1️⃣ Reschedule 2️⃣ Cancel.
+- Reschedule → ask for new dates → fire reschedule_booking.
+- Cancel → confirm first → fire cancel_booking.
+
+FLOW TRACKING (rental):
+- active_flow: "booking" | null
+- flow_step: "awaiting_date" | "awaiting_checkout" | "awaiting_payment" | null
+- Set clear_flow when booking is complete."""
+
+# ── Dynamic response format ────────────────────────────────────────────────
+
+# Business type groupings for response format selection
+_RF_ORDER_TYPES      = {"retail", "wholesale", "food", "bakery", "grocery", "creator"}
+_RF_BOOKING_TYPES    = {"salon", "beauty", "spa", "services", "repair", "cleaning",
+                        "fitness", "gym", "events", "photography", "healthcare", "clinic"}
+_RF_RESTAURANT_TYPES = {"restaurant"}
+_RF_RENTAL_TYPES     = {"rental"}
+# general gets everything
+
+_RF_SCHEMA = """\
 RESPONSE FORMAT — respond with a single valid JSON object ONLY.
 No text before or after. No markdown code blocks.
 
-Required schema:
 {
   "reply": "WhatsApp message to send (required, non-empty string)",
   "intent": "order|booking|inquiry|complaint|greeting|payment_received|cancel|reschedule|other",
@@ -234,21 +419,184 @@ Required schema:
   "flow_update": null
 }
 
-Available action types:
-  {"type": "send_product_image", "product_id": "DB_ID", "image_url": "https://...", "caption": "Name — KES 500"}
-  {"type": "send_catalog_images", "product_ids": ["DB_ID_1", "DB_ID_2", ...]}
+Available actions for this business type:"""
+
+_RF_ACTIONS_IMAGES = """\
+  {"type": "send_product_image", "product_id": "DB_ID", "image_url": "url", "caption": "Name — KES 500"}
+  {"type": "send_catalog_images", "product_ids": ["DB_ID_1", "DB_ID_2", ...]}"""
+
+_RF_ACTIONS_SERVICE_IMAGE = """\
+  {"type": "send_product_image", "product_id": "DB_ID", "image_url": "url", "caption": "Name — KES 500"}"""
+
+_RF_ACTIONS_ORDER = """\
   {"type": "create_order", "items": [{"product_name":"Name","product_id":"DB_ID","quantity":1,"unit_price":500}], "delivery_type": "pickup|delivery", "delivery_address": "", "notes": ""}
-  {"type": "update_order", "update_type": "add_item|remove_item|change_qty|change_delivery", "order_id": "latest", "product_name": "", "product_id": "", "quantity": 1, "unit_price": 0, "delivery_type": ""}
-  {"type": "create_booking", "service_id": "DB_ID", "service_name": "Name", "price": 500, "date": "Mon 14 April", "time": "10am", "is_rental": false, "checkin_date": "", "checkout_date": ""}
-  {"type": "cancel_order", "order_id": "latest", "reason": ""}
+  {"type": "update_order", "update_type": "add_item|remove_item|change_qty|change_delivery", "order_id": "latest", "product_name": "", "quantity": 1, "unit_price": 0}
+  {"type": "cancel_order", "order_id": "latest", "reason": ""}"""
+
+_RF_ACTIONS_ORDER_RESTAURANT = """\
+  {"type": "create_order", "items": [{"product_name":"Name","product_id":"DB_ID","quantity":1,"unit_price":500}], "delivery_type": "pickup|delivery|dine_in", "delivery_address": "", "table_number": "", "notes": ""}
+  {"type": "update_order", "update_type": "add_item|remove_item|change_qty|change_delivery", "order_id": "latest", "product_name": "", "quantity": 1, "unit_price": 0}
+  {"type": "cancel_order", "order_id": "latest", "reason": ""}"""
+
+_RF_ACTIONS_BOOKING = """\
+  {"type": "create_booking", "service_id": "DB_ID", "service_name": "Name", "price": 500, "date": "Mon 14 April", "time": "10am", "notes": ""}
   {"type": "reschedule_booking", "booking_id": "latest", "new_date": "Tue 15 April", "reason": ""}
+  {"type": "cancel_booking", "booking_id": "latest", "reason": ""}"""
+
+_RF_ACTIONS_RENTAL = """\
+  {"type": "create_booking", "service_id": "DB_ID", "service_name": "Name", "price": 500, "is_rental": true, "checkin_date": "Mon 14 April", "checkout_date": "Thu 17 April"}
+  {"type": "reschedule_booking", "booking_id": "latest", "new_date": "Tue 15 April", "reason": ""}
+  {"type": "cancel_booking", "booking_id": "latest", "reason": ""}"""
+
+_RF_ACTIONS_COMMON = """\
   {"type": "tag_customer", "tag": "interested|vip|frequent_buyer|complaint"}
   {"type": "set_payment_pending", "order_id": "latest"}
   {"type": "notify_owner", "reason": "payment_received|escalation|complaint|other", "message": "context for owner"}
-  {"type": "clear_flow"}
+  {"type": "clear_flow"}"""
 
-flow_update (include only fields that changed):
-  {"active_flow": "ordering|booking|browsing|null", "flow_product_id": "DB_ID_or_null", "flow_step": "collecting_items|awaiting_delivery|awaiting_address|awaiting_payment|awaiting_date|null"}"""
+_RF_FLOW_ORDER = """\
+flow_update (include only changed fields):
+  {"active_flow": "ordering|browsing|null", "flow_step": "collecting_items|awaiting_delivery|awaiting_address|awaiting_payment|null"}"""
+
+_RF_FLOW_RESTAURANT = """\
+flow_update (include only changed fields):
+  {"active_flow": "ordering|null", "flow_step": "awaiting_order_type|awaiting_table_number|collecting_items|awaiting_address|awaiting_payment|null"}"""
+
+_RF_FLOW_BOOKING = """\
+flow_update (include only changed fields):
+  {"active_flow": "booking|null", "flow_step": "awaiting_date|awaiting_time|awaiting_address|awaiting_payment|null"}"""
+
+_RF_FLOW_RENTAL = """\
+flow_update (include only changed fields):
+  {"active_flow": "booking|null", "flow_step": "awaiting_date|awaiting_checkout|awaiting_payment|null"}"""
+
+
+def _build_response_format(btype: str) -> str:
+    """Return a response format string with ONLY the actions relevant to this business type."""
+    if btype in _RF_RESTAURANT_TYPES:
+        actions = _RF_ACTIONS_IMAGES + _RF_ACTIONS_ORDER_RESTAURANT + _RF_ACTIONS_COMMON
+        flow    = _RF_FLOW_RESTAURANT
+    elif btype in _RF_RENTAL_TYPES:
+        actions = _RF_ACTIONS_IMAGES + _RF_ACTIONS_RENTAL + _RF_ACTIONS_COMMON
+        flow    = _RF_FLOW_RENTAL
+    elif btype in _RF_ORDER_TYPES:
+        actions = _RF_ACTIONS_IMAGES + _RF_ACTIONS_ORDER + _RF_ACTIONS_COMMON
+        flow    = _RF_FLOW_ORDER
+    elif btype in _RF_BOOKING_TYPES:
+        actions = _RF_ACTIONS_SERVICE_IMAGE + _RF_ACTIONS_BOOKING + _RF_ACTIONS_COMMON
+        flow    = _RF_FLOW_BOOKING
+    else:  # general or unknown — gets everything
+        actions = (_RF_ACTIONS_IMAGES + _RF_ACTIONS_ORDER +
+                   _RF_ACTIONS_BOOKING + _RF_ACTIONS_COMMON)
+        flow    = _RF_FLOW_ORDER
+
+    return _RF_SCHEMA + "\n" + actions + "\n\n" + flow
+
+
+# ── Restaurant dynamic instruction builder ───────────────────────────────────
+
+def _build_restaurant_instructions(bc: dict) -> str:
+    has_dine_in  = bc.get("restaurant_has_dine_in",  True)
+    has_delivery = bc.get("restaurant_has_delivery", True)
+    has_takeout  = bc.get("restaurant_has_takeout",  True)
+    table_range  = bc.get("restaurant_table_range",  "")
+    avg_wait     = bc.get("restaurant_avg_wait",     "")
+    min_delivery = bc.get("restaurant_min_delivery", "")
+    delivery_info = bc.get("delivery_info", "")
+
+    # Build available modes list
+    mode_lines = []
+    mode_index = 1
+    mode_map = []
+    if has_dine_in:
+        mode_lines.append(f"  {mode_index}\ufe0f\u20e3 Dine-in")
+        mode_map.append("dine_in")
+        mode_index += 1
+    if has_delivery:
+        mode_lines.append(f"  {mode_index}\ufe0f\u20e3 Delivery")
+        mode_map.append("delivery")
+        mode_index += 1
+    if has_takeout:
+        mode_lines.append(f"  {mode_index}\ufe0f\u20e3 Takeout / Pickup")
+        mode_map.append("takeout")
+        mode_index += 1
+
+    if not mode_lines:
+        mode_lines = ["  1\ufe0f\u20e3 Dine-in", "  2\ufe0f\u20e3 Delivery", "  3\ufe0f\u20e3 Takeout / Pickup"]
+
+    modes_block = "\n".join(mode_lines)
+
+    lines = [
+        "RESTAURANT ORDER FLOW:",
+        "",
+        "STEP 1 — ORDER TYPE:",
+        "When customer first contacts (greeting / order intent), greet them warmly and present available order modes:",
+        modes_block,
+        "Set new_menu with these options. Set flow_update: active_flow=ordering, flow_step=awaiting_order_type.",
+        "",
+    ]
+
+    if has_dine_in:
+        dine_table = f" ({table_range})" if table_range else ""
+        lines += [
+            f"DINE-IN PATH:",
+            f"- Ask for their table number{dine_table}.",
+            "- Set flow_step=awaiting_table_number until received.",
+            "- Once table number is known → show full menu as numbered list grouped by category.",
+            "- Add \"0\ufe0f\u20e3 View all images\" as last menu option if products have images.",
+            "- Customer may order multiple items. After each item ask \"Anything else or confirm order?\"",
+            "- When customer confirms → fire create_order with delivery_type=\"dine_in\", table_number=\"[table]\", notes=\"Table [table]\".",
+            "- Show payment methods. Await screenshot → set_payment_pending + notify_owner.",
+            "",
+        ]
+
+    if has_delivery:
+        wait_note = f"Estimated prep time: {avg_wait}." if avg_wait else ""
+        min_note  = f"Minimum delivery order: {min_delivery}." if min_delivery else ""
+        zone_note = f"Delivery zones/fees: {delivery_info}" if delivery_info else ""
+        extra = " ".join(x for x in [wait_note, min_note, zone_note] if x)
+        lines += [
+            "DELIVERY PATH:",
+            "- Ask for the customer's delivery address.",
+            "- Set flow_step=awaiting_address until received.",
+        ]
+        if extra:
+            lines.append(f"- {extra}")
+        lines += [
+            "- Show menu as numbered list. Add \"0\ufe0f\u20e3 View all images\" if products have images.",
+            "- Collect all items. After each item ask \"Anything else or confirm order?\"",
+            "- Confirm total + delivery fee (if applicable), then fire create_order with delivery_type=\"delivery\", delivery_address=\"[address]\".",
+            "- Show payment methods. Await screenshot → set_payment_pending + notify_owner.",
+            "",
+        ]
+
+    if has_takeout:
+        pickup_wait = f" Estimated pickup time: {avg_wait}." if avg_wait else ""
+        lines += [
+            "TAKEOUT / PICKUP PATH:",
+            "- Show menu as numbered list. Add \"0\ufe0f\u20e3 View all images\" if products have images.",
+            "- Collect all items. After each item ask \"Anything else or confirm order?\"",
+            f"- Confirm total + tell customer when order will be ready.{pickup_wait}",
+            "- Fire create_order with delivery_type=\"pickup\".",
+            "- Show payment methods. Await screenshot → set_payment_pending + notify_owner.",
+            "",
+        ]
+
+    lines += [
+        "MENU DISPLAY:",
+        "- Always add \"0\ufe0f\u20e3 View all images\" as last menu option when products have images. Include in new_menu as {\"0\": {\"id\": \"catalog\", \"name\": \"View all images\", \"price\": 0, \"type\": \"catalog\"}}.",
+        "- When customer picks 0 → send_catalog_images of all products with images + show full menu again.",
+        "- When customer picks a number → send_product_image (if has image), confirm item, ask quantity.",
+        "",
+        "ORDER MANAGEMENT:",
+        "- If customer asks \"my order\" / \"order status\" → show details + 1\ufe0f\u20e3 Update 2\ufe0f\u20e3 Cancel options.",
+        "- Cancel → confirm, fire cancel_order.",
+        "",
+        "SCREENSHOT / PAYMENT:",
+        "- When customer sends screenshot / \"nimetuma\" / \"sent\" / \"I\'ve paid\" → intent=payment_received + set_payment_pending + notify_owner.",
+    ]
+
+    return "\n".join(lines)
 
 
 # ── Builder ───────────────────────────────────────────────────────────────────
@@ -295,29 +643,66 @@ def build_system_prompt(
         parts.append(f"FAQs:\n{bc['faqs']}")
 
     # ── Catalog ──
+    # Classify display mode by business type
+    _MENU_TYPES    = {"restaurant", "food", "bakery"}
+    _SERVICE_TYPES = {"salon", "beauty", "spa", "services", "repair", "cleaning",
+                      "fitness", "gym", "events", "photography", "healthcare", "clinic"}
+    _RENTAL_TYPES  = {"rental"}
+    _is_menu    = btype in _MENU_TYPES
+    _is_service = btype in _SERVICE_TYPES
+    _is_rental  = btype in _RENTAL_TYPES
+
     catalog_lines: List[str] = []
     if products:
-        catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Stock | HasImage):")
-        for p in products:
-            stock = "✓" if p.get("in_stock", True) else "✗ OUT OF STOCK"
-            cat = f" [{p['category']}]" if p.get("category") else ""
-            has_img = "📷" if p.get("image_url") else ""
-            catalog_lines.append(
-                f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} | {stock} {has_img}"
-            )
+        if _is_menu:
+            catalog_lines.append("MENU ITEMS (ID | Name | Category | Price | HasImage):")
+            for p in products:
+                cat     = f" [{p['category']}]" if p.get("category") else ""
+                has_img = "📷" if p.get("image_url") else ""
+                catalog_lines.append(
+                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
+                )
+        elif _is_service:
+            catalog_lines.append("SERVICES / CATALOG (ID | Name | Category | Price | HasImage):")
+            for p in products:
+                cat     = f" [{p['category']}]" if p.get("category") else ""
+                has_img = "📷" if p.get("image_url") else ""
+                catalog_lines.append(
+                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
+                )
+        elif _is_rental:
+            catalog_lines.append("LISTINGS / RENTAL CATALOG (ID | Name | Category | Rate | HasImage):")
+            for p in products:
+                cat     = f" [{p['category']}]" if p.get("category") else ""
+                has_img = "📷" if p.get("image_url") else ""
+                catalog_lines.append(
+                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f}/night {has_img}"
+                )
+        else:
+            catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Stock | HasImage):")
+            for p in products:
+                stock   = "✓" if p.get("in_stock", True) else "✗ OUT OF STOCK"
+                cat     = f" [{p['category']}]" if p.get("category") else ""
+                has_img = "📷" if p.get("image_url") else ""
+                catalog_lines.append(
+                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} | {stock} {has_img}"
+                )
 
     if services:
         catalog_lines.append("SERVICES (ID | Name | Category | Duration | Price):")
         for s in services:
-            dur = f"{s['duration']}min" if s.get("duration") else "-"
-            cat = f" [{s['category']}]" if s.get("category") else ""
+            dur    = f"{s['duration']}min" if s.get("duration") else "-"
+            cat    = f" [{s['category']}]" if s.get("category") else ""
             rental = " [RENTAL]" if s.get("is_rental") else ""
             catalog_lines.append(f"  {s['id']} | {s['name']}{cat}{rental} | {dur} | {currency} {s['price']:,.0f}")
 
     if catalog_lines:
         parts.append("\n".join(catalog_lines))
     else:
-        parts.append("No products or services have been set up yet. Let the customer know to check back soon.")
+        if _is_menu:
+            parts.append("No menu items have been set up yet. Let the customer know to check back soon.")
+        else:
+            parts.append("No products or services have been set up yet. Let the customer know to check back soon.")
 
     # ── Current conversation state ──
     if mini_state.get("active_flow") or mini_state.get("flow_step"):
@@ -336,13 +721,29 @@ def build_system_prompt(
         parts.append(f"LAST MENU SENT TO CUSTOMER (resolve numbered replies using this):\n{menu_json}")
 
     # ── Business-type instructions ──
-    instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
+    if btype == "restaurant":
+        instructions = _build_restaurant_instructions(bc)
+    else:
+        instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")
 
-    # ── Shared instructions ──
-    parts.append(_SHARED_INSTRUCTIONS)
+    # ── Shared instructions — only blocks that apply to this business type ──
+    _BT_ORDER    = {"retail", "wholesale", "food", "bakery", "grocery", "creator", "restaurant"}
+    _BT_BOOKING  = {"salon", "beauty", "spa", "services", "repair", "cleaning",
+                    "fitness", "gym", "events", "photography", "healthcare", "clinic"}
 
-    # ── Response format ──
-    parts.append(_RESPONSE_FORMAT)
+    parts.append(_SHARED_ALWAYS)
+    if btype == "rental":
+        parts.append(_SHARED_RENTAL_BLOCK)
+    elif btype in _BT_BOOKING:
+        parts.append(_SHARED_BOOKING_BLOCK)
+    elif btype in _BT_ORDER:
+        parts.append(_SHARED_ORDER_BLOCK)
+    else:  # general — can have products OR services
+        parts.append(_SHARED_ORDER_BLOCK)
+        parts.append(_SHARED_BOOKING_BLOCK)
+
+    # ── Response format — only relevant actions for this type ──
+    parts.append(_build_response_format(btype))
 
     return "\n\n---\n\n".join(parts)

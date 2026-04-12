@@ -1473,6 +1473,13 @@ class BusinessKnowledge(BaseModel):
     business_description: Optional[str] = None
     # Business type
     business_type: Optional[str] = None  # 'general', 'retail', 'creator', 'restaurant', 'service'
+    # Restaurant-specific fields
+    restaurant_has_dine_in: Optional[bool] = None
+    restaurant_has_delivery: Optional[bool] = None
+    restaurant_has_takeout: Optional[bool] = None
+    restaurant_table_range: Optional[str] = None   # e.g. "Tables 1–20"
+    restaurant_avg_wait: Optional[str] = None       # e.g. "15–20 minutes"
+    restaurant_min_delivery: Optional[str] = None   # e.g. "$10 minimum order"
     # Creator-specific fields
     creator_niche: Optional[str] = None
     creator_platforms: Optional[str] = None
@@ -7533,6 +7540,8 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     fields = [
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
         'faqs', 'special_offers', 'business_description', 'business_type',
+        'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
+        'restaurant_table_range', 'restaurant_avg_wait', 'restaurant_min_delivery',
         'creator_niche', 'creator_platforms', 'creator_audience_size',
         'creator_collab_types', 'creator_rate_card', 'creator_whats_included',
         'creator_turnaround', 'creator_booking_process', 'creator_min_budget',

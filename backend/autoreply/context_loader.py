@@ -24,14 +24,17 @@ logger = logging.getLogger(__name__)
 MENU_TTL_HOURS = 2
 
 # Business types that support product orders
-_ORDER_TYPES = {"retail", "restaurant", "wholesale", "food", "bakery", "grocery"}
+_ORDER_TYPES = {"retail", "restaurant", "wholesale", "food", "bakery", "grocery",
+                "creator",   # digital products (courses, presets, content packages)
+                "general"}   # flexible — may have products OR services OR both
 
 # Business types that support service bookings
-_BOOKING_TYPES = {"salon", "beauty", "services", "rental", "clinic", "spa",
-                  "gym", "photography", "events", "cleaning", "repair"}
+_BOOKING_TYPES = {"salon", "beauty", "spa", "services", "rental", "clinic", "healthcare",
+                  "gym", "fitness", "photography", "events", "cleaning", "repair",
+                  "general"}  # flexible — may have services in addition to products
 
-# Business types that support both
-_BOTH_TYPES = {"restaurant"}
+# Business types that support both orders AND bookings
+_BOTH_TYPES: set = set()  # restaurant handles dine-in/delivery/takeout entirely via create_order
 
 
 def _sanitize(text: Any) -> str:
@@ -73,12 +76,12 @@ async def load_context(db, user_id, customer_id, user: dict) -> dict:
     settings = user.get("settings", {}) or {}
     business_type = (settings.get("business_type") or user.get("business_type", "retail")).lower()
 
-    products = []
+    # Always load products — all businesses add their catalog via ProductCatalogModal → db.products
+    products = await _load_products(db, user_id)
+
+    # Additionally load from services collection for booking businesses
+    # (secondary catalog; most items will be in db.products)
     services = []
-
-    if _supports_orders(business_type):
-        products = await _load_products(db, user_id)
-
     if _supports_bookings(business_type):
         services = await _load_services(db, user_id)
 
@@ -239,6 +242,13 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "faqs":               _sanitize(bk.get("faqs", "")),
         "supports_orders":    _supports_orders(business_type),
         "supports_bookings":  _supports_bookings(business_type),
-        "supports_delivery":  business_type in ("retail", "restaurant", "wholesale", "food", "grocery"),
+        "supports_delivery":  business_type in ("retail", "restaurant", "wholesale", "food", "grocery", "bakery"),
         "supports_pickup":    True,
+        # Restaurant-specific config
+        "restaurant_has_dine_in":  bk.get("restaurant_has_dine_in", True),
+        "restaurant_has_delivery": bk.get("restaurant_has_delivery", True),
+        "restaurant_has_takeout":  bk.get("restaurant_has_takeout", True),
+        "restaurant_table_range":  _sanitize(bk.get("restaurant_table_range", "")),
+        "restaurant_avg_wait":     _sanitize(bk.get("restaurant_avg_wait", "")),
+        "restaurant_min_delivery": _sanitize(bk.get("restaurant_min_delivery", "")),
     }

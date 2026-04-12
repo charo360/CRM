@@ -127,6 +127,45 @@ const RENTAL_CATEGORIES = [
     'Other'
 ];
 
+// Spa-specific categories
+const SPA_CATEGORIES = [
+    'Swedish Massage',
+    'Deep Tissue Massage',
+    'Hot Stone Massage',
+    'Facial',
+    'Body Scrub',
+    'Body Wrap',
+    'Aromatherapy',
+    'Couples Treatment',
+    'Manicure & Pedicure',
+    'Other'
+];
+
+// Cleaning-specific categories
+const CLEANING_CATEGORIES = [
+    'Deep Clean',
+    'Regular Clean',
+    'Move In/Out Clean',
+    'Office Cleaning',
+    'Post-Construction',
+    'Carpet & Upholstery',
+    'Window Cleaning',
+    'Other'
+];
+
+// Events & Photography categories
+const EVENTS_CATEGORIES = [
+    'Wedding',
+    'Birthday Party',
+    'Corporate Event',
+    'Graduation',
+    'Baby Shower',
+    'Product Launch',
+    'Conference',
+    'Portrait Session',
+    'Other'
+];
+
 // Retail categories (physical products)
 const RETAIL_CATEGORIES = [
     'Electronics',
@@ -200,27 +239,33 @@ export default function ProductCatalogModal({
     const catalogLabel = config.catalogLabel;
     const itemLabel = config.catalogItemLabel;
     const showStock = config.showStock;
-    const isCreator = config.customerLabel === 'Fan'; // Creator detection
+    const isCreator    = config.customerLabel === 'Fan';
     const isRestaurant = catalogLabel === 'Menu';
-    const isRental = catalogLabel === 'Listings';
+    const isRental     = catalogLabel === 'Listings';
     const isHealthcare = config.customerLabel === 'Patient';
-    const isFitness = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
-    const isServices = config.customerLabel === 'Client' && config.staffLabel === 'Technician';
-    const isSalon = config.customerLabel === 'Client' && config.staffLabel === 'Stylist';
+    const isFitness    = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
+    const isServices   = config.customerLabel === 'Client' && config.staffLabel === 'Technician';
+    const isSalon      = config.customerLabel === 'Client' && config.staffLabel === 'Stylist';
+    const isSpa        = config.catalogLabel === 'Treatments';
+    const isCleaning   = config.catalogLabel === 'Packages' && config.staffLabel === '';
+    const isEvents     = config.staffLabel === 'Photographer';
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
 
     // Get appropriate categories based on business type
     const getAppropriateCategories = () => {
-        if (isCreator) return CREATOR_CATEGORIES;
-        if (isRestaurant) return RESTAURANT_CATEGORIES;
-        if (isHealthcare) return HEALTHCARE_CATEGORIES;
-        if (isFitness) return FITNESS_CATEGORIES;
-        if (isServices) return SERVICES_CATEGORIES;
-        if (isSalon) return SALON_CATEGORIES;
-        if (isRental) return RENTAL_CATEGORIES;
-        return RETAIL_CATEGORIES; // Default for retail/general
+        if (isCreator)     return CREATOR_CATEGORIES;
+        if (isRestaurant)  return RESTAURANT_CATEGORIES;
+        if (isHealthcare)  return HEALTHCARE_CATEGORIES;
+        if (isFitness)     return FITNESS_CATEGORIES;
+        if (isServices)    return SERVICES_CATEGORIES;
+        if (isSalon)       return SALON_CATEGORIES;
+        if (isRental)      return RENTAL_CATEGORIES;
+        if (isSpa)         return SPA_CATEGORIES;
+        if (isCleaning)    return CLEANING_CATEGORIES;
+        if (isEvents)      return EVENTS_CATEGORIES;
+        return RETAIL_CATEGORIES; // Default for retail/wholesale/grocery/general
     };
 
     useEffect(() => {
@@ -283,7 +328,7 @@ export default function ProductCatalogModal({
 
     const handleUploadProducts = async (source: 'library' | 'camera' = 'library') => {
         if (maxProducts !== null && products.length >= maxProducts) {
-            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} products. Upgrade to add more.`);
+            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} ${itemLabel.toLowerCase()}s. Upgrade to add more.`);
             return;
         }
         try {
@@ -339,7 +384,7 @@ export default function ProductCatalogModal({
                             // Non-blocking hint about the other products
                             setTimeout(() => {
                                 Alert.alert(
-                                    `${response.products.length} Products Uploaded`,
+                                    `${response.products.length} ${catalogLabel} Items Uploaded`,
                                     'Reviewing the first one — go back to the catalog to check the rest.',
                                     [{ text: 'OK' }]
                                 );
@@ -348,7 +393,7 @@ export default function ProductCatalogModal({
                     }
                 } catch (error) {
                     console.error('Upload error:', error);
-                    Alert.alert('Upload Failed', 'Could not upload products. Please try again.');
+                    Alert.alert('Upload Failed', `Could not upload ${itemLabel.toLowerCase()}s. Please try again.`);
                 } finally {
                     setUploading(false);
                 }
@@ -509,7 +554,7 @@ export default function ProductCatalogModal({
 
     const startAddProduct = () => {
         if (maxProducts !== null && products.length >= maxProducts) {
-            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} products. Upgrade to add more.`);
+            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} ${itemLabel.toLowerCase()}s. Upgrade to add more.`);
             return;
         }
         setEditName('');

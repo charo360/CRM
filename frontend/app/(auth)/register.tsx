@@ -19,15 +19,23 @@ import { useBusiness } from '../../context/BusinessContext';
 import { COUNTRIES } from '../../components/CountryPicker';
 
 const BUSINESS_TYPES = [
-  { id: 'retail',     icon: '🛍️',  label: 'Retail',           desc: 'Physical or online shop' },
-  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',   desc: 'Hair, nails & beauty services' },
-  { id: 'services',   icon: '🔧',   label: 'Services / Tech',  desc: 'IT, freelance, trades & repairs' },
-  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',          desc: 'Gym, classes & training' },
-  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',       desc: 'Food & dining' },
-  { id: 'healthcare', icon: '🏥',   label: 'Healthcare',       desc: 'Clinic, dental & medical' },
-  { id: 'creator',    icon: '🎨',   label: 'Creator',          desc: 'Digital products & content' },
-  { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb',  desc: 'Properties, cars & equipment' },
-  { id: 'general',    icon: '💬',   label: 'General / Other',  desc: 'Fintech, NGO, info & assistant' },
+  { id: 'retail',     icon: '🛍️',  label: 'Retail / Shop',        desc: 'Physical or online store' },
+  { id: 'wholesale',  icon: '📦',   label: 'Wholesale / B2B',      desc: 'Bulk orders & distribution' },
+  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant / Café',    desc: 'Dine-in, takeaway & delivery' },
+  { id: 'food',       icon: '🥡',   label: 'Food Delivery',        desc: 'Home kitchen & delivery-only' },
+  { id: 'bakery',     icon: '🍰',   label: 'Bakery',               desc: 'Cakes, pastries & custom orders' },
+  { id: 'grocery',    icon: '🛒',   label: 'Grocery / Supermarket',desc: 'Fresh produce & packaged goods' },
+  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',       desc: 'Hair, nails & beauty services' },
+  { id: 'spa',        icon: '💆',   label: 'Spa & Wellness',       desc: 'Massages, treatments & relaxation' },
+  { id: 'services',   icon: '🔧',   label: 'Services / Freelance', desc: 'IT, trades, freelance & consulting' },
+  { id: 'repair',     icon: '🛠️',  label: 'Repair & Maintenance', desc: 'Electronics, appliances & vehicles' },
+  { id: 'cleaning',   icon: '🧹',   label: 'Cleaning Services',    desc: 'Home, office & commercial cleaning' },
+  { id: 'fitness',    icon: '🏋️',  label: 'Gym & Fitness',        desc: 'Memberships, classes & training' },
+  { id: 'events',     icon: '📸',   label: 'Events & Photography', desc: 'Events, shoots & productions' },
+  { id: 'healthcare', icon: '🏥',   label: 'Healthcare / Clinic',  desc: 'Consultations & medical services' },
+  { id: 'rental',     icon: '�',   label: 'Rental / Airbnb',      desc: 'Properties, cars & equipment' },
+  { id: 'creator',    icon: '�',   label: 'Creator / Digital',    desc: 'Courses, content & digital products' },
+  { id: 'general',    icon: '💬',   label: 'General / Other',      desc: 'Fintech, NGO, info & assistant' },
 ];
 
 export default function RegisterScreen() {

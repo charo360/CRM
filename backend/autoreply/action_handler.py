@@ -8,6 +8,7 @@ Actions supported:
   create_order          → db.orders.insert_one
   create_booking        → db.bookings.insert_one
   cancel_order          → db.orders.update_one (status=cancelled)
+  cancel_booking        → db.bookings.update_one (status=cancelled)
   reschedule_booking    → db.bookings.update_one (status=reschedule_requested)
   tag_customer          → db.customers.update_one ($addToSet tags)
   set_payment_pending   → db.orders.update_one (payment_status=pending_verification)
@@ -52,6 +53,8 @@ async def execute_actions(
                 await _create_booking(db, action, user_id, customer_id)
             elif atype == "cancel_order":
                 await _cancel_order(db, action, user_id, customer_id)
+            elif atype == "cancel_booking":
+                await _cancel_booking(db, action, user_id, customer_id)
             elif atype == "reschedule_booking":
                 await _reschedule_booking(db, action, user_id, customer_id)
             elif atype == "tag_customer":
@@ -125,9 +128,10 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
         "total":          total,
         "status":         "pending",
         "payment_status": "unpaid",
-        "delivery_type":  action.get("delivery_type", "pickup"),
+        "delivery_type":    action.get("delivery_type", "pickup"),
         "delivery_address": action.get("delivery_address", ""),
-        "notes":          action.get("notes", ""),
+        "table_number":     action.get("table_number", ""),
+        "notes":            action.get("notes", ""),
         "created_at":     datetime.utcnow(),
         "created_by":     "customer",
     }
@@ -251,6 +255,30 @@ async def _cancel_order(db, action: dict, user_id, customer_id) -> None:
         }},
     )
     logger.info(f"[ActionHandler] Order cancelled: {order.get('order_number')} id={order['_id']}")
+
+
+async def _cancel_booking(db, action: dict, user_id, customer_id) -> None:
+    booking_id = action.get("booking_id", "latest")
+    query: dict = {"user_id": user_id, "customer_id": customer_id, "status": {"$ne": "cancelled"}}
+
+    if booking_id and booking_id != "latest":
+        query["booking_number"] = booking_id
+
+    booking = await db.bookings.find_one(query, sort=[("created_at", -1)])
+    if not booking:
+        logger.warning(f"[ActionHandler] cancel_booking — no active booking found for customer {customer_id}")
+        return
+
+    await db.bookings.update_one(
+        {"_id": booking["_id"]},
+        {"$set": {
+            "status":        "cancelled",
+            "cancelled_at":  datetime.utcnow(),
+            "cancelled_by":  "customer",
+            "cancel_reason": action.get("reason", ""),
+        }},
+    )
+    logger.info(f"[ActionHandler] Booking cancelled: {booking.get('booking_number')} id={booking['_id']}")
 
 
 async def _reschedule_booking(db, action: dict, user_id, customer_id) -> None:

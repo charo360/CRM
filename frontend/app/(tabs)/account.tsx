@@ -766,9 +766,15 @@ export default function AccountScreen() {
                 <Text style={styles.settingText}>Business Type</Text>
                 <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
                   {({
-                    retail: 'Retail', salon: 'Salon & Beauty', services: 'Services / Tech',
-                    fitness: 'Fitness', restaurant: 'Restaurant', healthcare: 'Healthcare',
-                    creator: 'Creator', rental: 'Rental / Airbnb', general: 'General / Other'
+                    retail: 'Retail / Shop', wholesale: 'Wholesale / B2B',
+                    restaurant: 'Restaurant / Café', food: 'Food Delivery',
+                    bakery: 'Bakery', grocery: 'Grocery / Supermarket',
+                    salon: 'Salon & Beauty', spa: 'Spa & Wellness',
+                    services: 'Services / Freelance', repair: 'Repair & Maintenance',
+                    cleaning: 'Cleaning Services', fitness: 'Gym & Fitness',
+                    events: 'Events & Photography', healthcare: 'Healthcare / Clinic',
+                    rental: 'Rental / Airbnb', creator: 'Creator / Digital',
+                    general: 'General / Other',
                   } as any)[businessType] || businessType}
                 </Text>
               </View>
@@ -937,38 +943,48 @@ export default function AccountScreen() {
           onRequestClose={() => setShowBusinessTypePicker(false)}
         >
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' }}>
-            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 36 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 20, paddingHorizontal: 20, paddingBottom: 0, maxHeight: '78%' }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>Business Type</Text>
                 <TouchableOpacity onPress={() => setShowBusinessTypePicker(false)}>
                   <Text style={{ color: '#8B9DC3', fontSize: 16 }}>Close</Text>
                 </TouchableOpacity>
               </View>
-              <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 16 }}>
+              <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 14 }}>
                 Changing your business type personalises your dashboard, catalog labels, and booking features.
               </Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 36 }}>
                 {[
-                  { id: 'retail',     icon: '🛍️',  label: 'Retail',          desc: 'Shop & products' },
-                  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',  desc: 'Hair & services' },
-                  { id: 'services',   icon: '🔧',   label: 'Services',        desc: 'Trades & repairs' },
-                  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',         desc: 'Gym & classes' },
-                  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',      desc: 'Food & dining' },
-                  { id: 'healthcare', icon: '🏥',   label: 'Healthcare',      desc: 'Clinic & medical' },
-                  { id: 'creator',    icon: '🎨',   label: 'Creator',         desc: 'Digital products' },
-                  { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb', desc: 'Properties & cars' },
-                  { id: 'general',    icon: '💬',   label: 'General / Other', desc: 'Fintech, NGO & info' },
-                ].map(bt => (
+                  { id: 'retail',     icon: '🛍️',  label: 'Retail / Shop',        desc: 'Physical or online store' },
+                  { id: 'wholesale',  icon: '📦',   label: 'Wholesale / B2B',      desc: 'Bulk orders & distribution' },
+                  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant / Café',    desc: 'Dine-in, takeaway & delivery' },
+                  { id: 'food',       icon: '🥡',   label: 'Food Delivery',        desc: 'Home kitchen & delivery-only' },
+                  { id: 'bakery',     icon: '🍰',   label: 'Bakery',               desc: 'Cakes, pastries & custom orders' },
+                  { id: 'grocery',    icon: '🛒',   label: 'Grocery / Supermarket',desc: 'Fresh produce & packaged goods' },
+                  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',       desc: 'Hair, nails & beauty services' },
+                  { id: 'spa',        icon: '💆',   label: 'Spa & Wellness',       desc: 'Massages, treatments & relaxation' },
+                  { id: 'services',   icon: '🔧',   label: 'Services / Freelance', desc: 'IT, trades, freelance & consulting' },
+                  { id: 'repair',     icon: '🛠️',  label: 'Repair & Maintenance', desc: 'Electronics, appliances & vehicles' },
+                  { id: 'cleaning',   icon: '🧹',   label: 'Cleaning Services',    desc: 'Home, office & commercial cleaning' },
+                  { id: 'fitness',    icon: '🏋️',  label: 'Gym & Fitness',        desc: 'Memberships, classes & training' },
+                  { id: 'events',     icon: '📸',   label: 'Events & Photography', desc: 'Events, shoots & productions' },
+                  { id: 'healthcare', icon: '🏥',   label: 'Healthcare / Clinic',  desc: 'Consultations & medical services' },
+                  { id: 'rental',     icon: '�',   label: 'Rental / Airbnb',      desc: 'Properties, cars & equipment' },
+                  { id: 'creator',    icon: '�',   label: 'Creator / Digital',    desc: 'Courses, content & digital products' },
+                  { id: 'general',    icon: '💬',   label: 'General / Other',      desc: 'Fintech, NGO, info & assistant' },
+                ].map((bt, idx, arr) => (
                   <TouchableOpacity
                     key={bt.id}
                     style={{
-                      width: '47%',
-                      backgroundColor: businessType === bt.id ? 'rgba(37,211,102,0.08)' : 'rgba(255,255,255,0.05)',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      paddingVertical: 13,
+                      paddingHorizontal: 12,
                       borderRadius: 12,
-                      padding: 14,
+                      marginBottom: 6,
+                      backgroundColor: businessType === bt.id ? 'rgba(37,211,102,0.08)' : 'rgba(255,255,255,0.04)',
                       borderWidth: 1.5,
                       borderColor: businessType === bt.id ? '#25D366' : 'transparent',
-                      position: 'relative',
                     }}
                     onPress={async () => {
                       setBusinessType(bt.id);
@@ -980,19 +996,19 @@ export default function AccountScreen() {
                         console.log('Failed to update business type', e);
                       }
                     }}
-                    activeOpacity={0.8}
+                    activeOpacity={0.75}
                   >
-                    <Text style={{ fontSize: 26, marginBottom: 6 }}>{bt.icon}</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: businessType === bt.id ? '#25D366' : '#FFFFFF', marginBottom: 2 }}>{bt.label}</Text>
-                    <Text style={{ fontSize: 11, color: '#64748B' }}>{bt.desc}</Text>
+                    <Text style={{ fontSize: 26, width: 40 }}>{bt.icon}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: businessType === bt.id ? '#25D366' : '#FFFFFF', marginBottom: 2 }}>{bt.label}</Text>
+                      <Text style={{ fontSize: 12, color: '#64748B' }}>{bt.desc}</Text>
+                    </View>
                     {businessType === bt.id && (
-                      <View style={{ position: 'absolute', top: 8, right: 8 }}>
-                        <Ionicons name="checkmark-circle" size={18} color="#25D366" />
-                      </View>
+                      <Ionicons name="checkmark-circle" size={20} color="#25D366" />
                     )}
                   </TouchableOpacity>
                 ))}
-              </View>
+              </ScrollView>
             </View>
           </View>
         </Modal>

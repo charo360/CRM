@@ -74,7 +74,8 @@ const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Sala
 
 export default function SalesScreen() {
   const router = useRouter();
-  const { config } = useBusiness();
+  const { config, isRetailBusiness } = useBusiness();
+  const showOrdersTab = isRetailBusiness;   // only order-capable businesses (retail, food, etc.) show Orders tab
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -871,10 +872,10 @@ export default function SalesScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Sales</Text>
+          <Text style={styles.headerTitle}>{config.salesTabLabel}</Text>
           <Text style={styles.headerSubtitle}>
             {viewMode === 'sales'
-              ? `${analytics.salesCount} sales`
+              ? `${analytics.salesCount} ${config.salesTabLabel.toLowerCase()}`
               : viewMode === 'expenses'
                 ? `${filteredExpenses.length} expenses`
                 : `${filteredOrders.length} orders`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
@@ -896,7 +897,7 @@ export default function SalesScreen() {
           style={[styles.toggleButton, viewMode === 'sales' && styles.toggleButtonActive]}
           onPress={() => setViewMode('sales')}
         >
-          <Text style={[styles.toggleText, viewMode === 'sales' && styles.toggleTextActive]}>Sales</Text>
+          <Text style={[styles.toggleText, viewMode === 'sales' && styles.toggleTextActive]}>{config.salesTabLabel}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.toggleButton, viewMode === 'expenses' && styles.toggleButtonActive]}
@@ -904,12 +905,14 @@ export default function SalesScreen() {
         >
           <Text style={[styles.toggleText, viewMode === 'expenses' && styles.toggleTextActive]}>Expenses</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.toggleButton, viewMode === 'orders' && styles.toggleButtonActive]}
-          onPress={() => setViewMode('orders')}
-        >
-          <Text style={[styles.toggleText, viewMode === 'orders' && styles.toggleTextActive]}>Orders</Text>
-        </TouchableOpacity>
+        {showOrdersTab && (
+          <TouchableOpacity
+            style={[styles.toggleButton, viewMode === 'orders' && styles.toggleButtonActive]}
+            onPress={() => setViewMode('orders')}
+          >
+            <Text style={[styles.toggleText, viewMode === 'orders' && styles.toggleTextActive]}>Orders</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Search Bar */}

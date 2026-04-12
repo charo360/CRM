@@ -21,14 +21,26 @@ class MenuItem(BaseModel):
 
 # ── Actions ──────────────────────────────────────────────────────────────────
 
-class CreateOrderAction(BaseModel):
-    type: Literal["create_order"]
-    product_id: str = ""
+class OrderItem(BaseModel):
     product_name: str
+    product_id: str = ""
     quantity: int = Field(default=1, ge=1)
     unit_price: float = Field(default=0, ge=0)
-    delivery_type: Literal["delivery", "pickup"] = "pickup"
+
+
+class CreateOrderAction(BaseModel):
+    type: Literal["create_order"]
+    # Multi-item (preferred)
+    items: List[OrderItem] = Field(default_factory=list)
+    # Single-item legacy shorthand
+    product_id: str = ""
+    product_name: str = ""
+    quantity: int = Field(default=1, ge=1)
+    unit_price: float = Field(default=0, ge=0)
+    # Fulfilment
+    delivery_type: Literal["delivery", "pickup", "dine_in"] = "pickup"
     delivery_address: str = ""
+    table_number: str = ""    # dine-in table number
     notes: str = ""
 
 
@@ -48,6 +60,12 @@ class CreateBookingAction(BaseModel):
 class CancelOrderAction(BaseModel):
     type: Literal["cancel_order"]
     order_id: str = "latest"
+    reason: str = ""
+
+
+class CancelBookingAction(BaseModel):
+    type: Literal["cancel_booking"]
+    booking_id: str = "latest"
     reason: str = ""
 
 
@@ -82,6 +100,7 @@ Action = Union[
     CreateOrderAction,
     CreateBookingAction,
     CancelOrderAction,
+    CancelBookingAction,
     RescheduleBookingAction,
     TagCustomerAction,
     SetPaymentPendingAction,

@@ -390,6 +390,16 @@ export const settingsAPI = {
     faqs?: string;
     special_offers?: string;
     business_description?: string;
+    business_type?: string;
+    // Restaurant-specific
+    restaurant_has_dine_in?: boolean;
+    restaurant_has_delivery?: boolean;
+    restaurant_has_takeout?: boolean;
+    restaurant_table_range?: string;
+    restaurant_avg_wait?: string;
+    restaurant_min_delivery?: string;
+    // Creator-specific
+    [key: string]: any;
   }) => {
     const response = await apiClient.put('/business-knowledge', knowledge);
     return response.data;
