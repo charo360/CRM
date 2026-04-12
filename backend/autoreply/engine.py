@@ -270,12 +270,13 @@ async def process_message(
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY
         if action_results.get("order_number"):
             reply_text += f"\n\n🧾 *Order #:* {action_results['order_number']}"
+        is_fallback = response_data.get("_is_fallback", False)
         await whatsapp_service.send_message(
             user_id=user_id,
             to_number=from_number,
             message=reply_text,
             customer_name=customer_name,
-            send_context="auto_reply",
+            send_context="fallback" if is_fallback else "auto_reply",
         )
 
         logger.info(
@@ -294,7 +295,7 @@ async def process_message(
                 to_number=from_number,
                 message=FALLBACK_REPLY,
                 customer_name=customer_name,
-                send_context="auto_reply",
+                send_context="fallback",  # tagged so context_loader excludes it from history
             )
         except Exception:
             pass

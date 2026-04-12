@@ -97,7 +97,11 @@ async def _load_messages(db, user_id, customer_id) -> List[Dict]:
     if not customer_id:
         return []
     raw = await db.messages.find(
-        {"user_id": user_id, "customer_id": customer_id}
+        {
+            "user_id": user_id,
+            "customer_id": customer_id,
+            "send_context": {"$ne": "fallback"},  # exclude fallback error msgs from AI history
+        }
     ).sort("created_at", -1).limit(10).to_list(10)
 
     return [
