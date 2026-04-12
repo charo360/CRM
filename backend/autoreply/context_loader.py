@@ -193,6 +193,7 @@ async def _load_products(db, user_id) -> List[Dict]:
             "name":            name,
             "price":           float(p.get("price", 0)),
             "category":        _sanitize(p.get("category", "")),
+            "sub_category":    _sanitize(p.get("sub_category", "")),
             "description":     _sanitize(p.get("description", "")),
             "in_stock":        p.get("in_stock", True),
             "image_url":       imgs[0] if imgs else "",

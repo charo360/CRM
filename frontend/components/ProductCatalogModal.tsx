@@ -205,6 +205,7 @@ interface Product {
     image_url: string;
     images: string[];
     category: string;
+    sub_category?: string;
     description?: string;
     in_stock: boolean;
     stock_quantity?: number;
@@ -239,6 +240,7 @@ export default function ProductCatalogModal({
     const [editDiscountPrice, setEditDiscountPrice] = useState('');
     const [editDescription, setEditDescription] = useState('');
     const [editCategory, setEditCategory] = useState('');
+    const [editSubCategory, setEditSubCategory] = useState('');
     const [editStockQuantity, setEditStockQuantity] = useState('');
     const [editInStock, setEditInStock] = useState(true);
     const [editImages, setEditImages] = useState<string[]>([]);
@@ -577,6 +579,7 @@ export default function ProductCatalogModal({
         setEditPrice(product.price.toString());
         setEditDiscountPrice(product.discount_price?.toString() || '');
         setEditCategory(product.category || 'Other');
+        setEditSubCategory(product.sub_category || '');
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
         setEditStockQuantity(product.stock_quantity?.toString() || '');
@@ -604,6 +607,7 @@ export default function ProductCatalogModal({
         setEditPrice('');
         setEditDiscountPrice('');
         setEditCategory('Other');
+        setEditSubCategory('');
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
@@ -661,6 +665,7 @@ export default function ProductCatalogModal({
                     stock_quantity: stockQuantity,
                     variants: variantsToSave.length > 0 ? variantsToSave : undefined,
                     modifier_groups: modifierGroupsToSave.length > 0 ? modifierGroupsToSave : undefined,
+                    sub_category: editSubCategory.trim() || undefined,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -682,6 +687,7 @@ export default function ProductCatalogModal({
                     stock_quantity: stockQuantity,
                     variants: variantsToSave,
                     modifier_groups: modifierGroupsToSave,
+                    sub_category: editSubCategory.trim() || undefined,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -960,6 +966,20 @@ export default function ProductCatalogModal({
                                     </View>
                                 </View>
                             </View>
+
+                            {isRestaurant && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Sub-category <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editSubCategory}
+                                    onChangeText={setEditSubCategory}
+                                    placeholder="e.g. Pizza, Burgers, Rice Dishes, Cocktails"
+                                    placeholderTextColor="#555"
+                                />
+                                <Text style={styles.stockHint}>Groups items under a category — e.g. Main Course → Pizza</Text>
+                            </View>
+                            )}
 
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>

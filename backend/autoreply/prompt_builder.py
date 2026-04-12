@@ -11,6 +11,7 @@ Design principles:
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from typing import Dict, List
 
 
@@ -793,30 +794,51 @@ def build_system_prompt(
                 catalog_lines.append(ml)
 
         if _is_menu:
-            catalog_lines.append("MENU ITEMS (ID | Name | Category | Price | HasImage):")
+            # Group by category → sub_category for a clean hierarchical menu
+            # Build: {cat: {sub_cat: [products]}}
+            cat_map: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
             for p in products:
-                cat     = f" [{p['category']}]" if p.get("category") else ""
-                has_img = "📷" if p.get("image_url") else ""
-                catalog_lines.append(
-                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
-                )
-                _append_product_extras(p)
+                cat = p.get("category") or "Uncategorized"
+                sub = p.get("sub_category") or ""
+                cat_map[cat][sub].append(p)
+
+            catalog_lines.append("MENU (grouped by Category > Sub-category):")
+            for cat, sub_map in cat_map.items():
+                catalog_lines.append(f"▸ {cat}")
+                for sub, items in sub_map.items():
+                    if sub:
+                        catalog_lines.append(f"  ── {sub}")
+                        indent = "    "
+                    else:
+                        indent = "  "
+                    for p in items:
+                        has_img = "📷" if p.get("image_url") else ""
+                        catalog_lines.append(
+                            f"{indent}{p['id']} | {p['name']} | {currency} {p['price']:,.0f} {has_img}"
+                        )
+                        # description / variants / modifiers indented one extra level
+                        orig_len = len(catalog_lines)
+                        _append_product_extras(p)
+                        for i in range(orig_len, len(catalog_lines)):
+                            catalog_lines[i] = indent + catalog_lines[i].lstrip()
         elif _is_service:
             catalog_lines.append("SERVICES / CATALOG (ID | Name | Category | Price | HasImage):")
             for p in products:
                 cat     = f" [{p['category']}]" if p.get("category") else ""
+                sub     = f" / {p['sub_category']}" if p.get("sub_category") else ""
                 has_img = "📷" if p.get("image_url") else ""
                 catalog_lines.append(
-                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} {has_img}"
+                    f"  {p['id']} | {p['name']}{cat}{sub} | {currency} {p['price']:,.0f} {has_img}"
                 )
                 _append_product_extras(p)
         elif _is_rental:
             catalog_lines.append("LISTINGS / RENTAL CATALOG (ID | Name | Category | Rate | HasImage):")
             for p in products:
                 cat     = f" [{p['category']}]" if p.get("category") else ""
+                sub     = f" / {p['sub_category']}" if p.get("sub_category") else ""
                 has_img = "📷" if p.get("image_url") else ""
                 catalog_lines.append(
-                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f}/night {has_img}"
+                    f"  {p['id']} | {p['name']}{cat}{sub} | {currency} {p['price']:,.0f}/night {has_img}"
                 )
                 _append_product_extras(p)
         else:
@@ -824,9 +846,10 @@ def build_system_prompt(
             for p in products:
                 stock   = "✓" if p.get("in_stock", True) else "✗ OUT OF STOCK"
                 cat     = f" [{p['category']}]" if p.get("category") else ""
+                sub     = f" / {p['sub_category']}" if p.get("sub_category") else ""
                 has_img = "📷" if p.get("image_url") else ""
                 catalog_lines.append(
-                    f"  {p['id']} | {p['name']}{cat} | {currency} {p['price']:,.0f} | {stock} {has_img}"
+                    f"  {p['id']} | {p['name']}{cat}{sub} | {currency} {p['price']:,.0f} | {stock} {has_img}"
                 )
                 _append_product_extras(p)
 
