@@ -107,40 +107,100 @@ async def process_message(
         await _update_mini_state(db, user_id, customer_id, response_data)
 
         # 8. Send images BEFORE the text reply
-        for action in actions:
-            atype = action.get("type")
+        # Build product lookup from loaded catalog
+        products_by_id = {p["id"]: p for p in ctx.get("products", [])}
 
-            if atype == "send_product_image" and action.get("image_url"):
-                # Single product image (on product selection)
+        async def _send_product_images(product: dict, caption: str) -> None:
+            """
+            Send all images for a product:
+              - Extra angles (all but last) → no caption
+              - Last image → with caption (name + price)
+            """
+            images = product.get("images") or []
+            if not images and product.get("image_url"):
+                images = [product["image_url"]]
+            if not images:
+                return
+            # Extra angles — no caption
+            for img_url in images[:-1]:
                 try:
                     await whatsapp_service.send_message(
                         user_id=user_id,
                         to_number=from_number,
-                        message=action.get("caption", ""),
+                        message="",
                         customer_name=customer_name,
                         send_context="auto_reply",
-                        media_url=action["image_url"],
+                        media_url=img_url,
                     )
-                    await asyncio.sleep(0.8)
+                    await asyncio.sleep(0.7)
                 except Exception as img_err:
-                    logger.warning(f"[AutoReplyV2] Failed to send product image: {img_err}")
+                    logger.warning(f"[AutoReplyV2] Failed to send extra angle: {img_err}")
+            # Last image WITH caption
+            try:
+                await whatsapp_service.send_message(
+                    user_id=user_id,
+                    to_number=from_number,
+                    message=caption,
+                    customer_name=customer_name,
+                    send_context="auto_reply",
+                    media_url=images[-1],
+                )
+                await asyncio.sleep(0.5)
+            except Exception as img_err:
+                logger.warning(f"[AutoReplyV2] Failed to send captioned image: {img_err}")
 
-            elif atype == "send_catalog_images":
-                # Catalog browse — send images in batch with delays
-                img_items = [p for p in (action.get("products") or []) if p.get("image_url")]
-                for img in img_items[:8]:  # hard cap at 8 per batch
+        for action in actions:
+            atype = action.get("type")
+
+            if atype == "send_product_image":
+                # Scenario 1: customer selected a specific product
+                product = products_by_id.get(action.get("product_id", ""))
+                if product:
+                    caption = action.get("caption") or f"{product['name']} — {(user.get('settings') or {}).get('currency', 'KES')} {product['price']:,.0f}"
+                    await _send_product_images(product, caption)
+                elif action.get("image_url"):
+                    # Fallback: AI provided URL directly (no extra angles)
                     try:
                         await whatsapp_service.send_message(
                             user_id=user_id,
                             to_number=from_number,
-                            message=img.get("caption", ""),
+                            message=action.get("caption", ""),
                             customer_name=customer_name,
                             send_context="auto_reply",
-                            media_url=img["image_url"],
+                            media_url=action["image_url"],
                         )
-                        await asyncio.sleep(1.0)  # 1s between catalog images (WhatsApp rate limit)
+                        await asyncio.sleep(0.8)
                     except Exception as img_err:
-                        logger.warning(f"[AutoReplyV2] Failed to send catalog image: {img_err}")
+                        logger.warning(f"[AutoReplyV2] Failed to send product image: {img_err}")
+
+            elif atype == "send_catalog_images":
+                # Scenario 2: customer browsing catalog — 8 products per batch, each with all angles
+                currency = (user.get("settings") or {}).get("currency", "KES")
+                # Prefer product_ids list (DB lookup); fall back to legacy products[] with image_url
+                product_ids = action.get("product_ids") or []
+                if product_ids:
+                    for pid in product_ids[:8]:
+                        product = products_by_id.get(str(pid))
+                        if product:
+                            caption = f"{product['name']} — {currency} {product['price']:,.0f}"
+                            await _send_product_images(product, caption)
+                            await asyncio.sleep(1.5)  # gap between products
+                else:
+                    # Legacy fallback: AI provided products list with image_url
+                    img_items = [p for p in (action.get("products") or []) if p.get("image_url")]
+                    for img in img_items[:8]:
+                        try:
+                            await whatsapp_service.send_message(
+                                user_id=user_id,
+                                to_number=from_number,
+                                message=img.get("caption", ""),
+                                customer_name=customer_name,
+                                send_context="auto_reply",
+                                media_url=img["image_url"],
+                            )
+                            await asyncio.sleep(1.0)
+                        except Exception as img_err:
+                            logger.warning(f"[AutoReplyV2] Failed to send catalog image: {img_err}")
 
         # 9. Send text reply
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY

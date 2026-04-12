@@ -149,8 +149,8 @@ PRODUCT IMAGES — SELECTING A PRODUCT:
 CATALOG BROWSING (window shopping — no purchase required):
 - When customer says "show me products" / "let me see" / "show catalog" / "show images" / "browse":
   • Send a numbered menu (new_menu) with up to 8 products at a time.
-  • Include action: {"type": "send_catalog_images", "products": [{"image_url":"...","caption":"1️⃣ T-shirt — KES 500"},…]}
-    (only include products that have an image_url)
+  • Include action: {"type": "send_catalog_images", "product_ids": ["DB_ID_1", "DB_ID_2", ...]}
+    Use the exact database IDs from the catalog. Only include products that have an image (📷 marker).
   • If there are more products than shown, add "Reply *more* or *0* to see more" to the reply.
 - Customer is just browsing — no pressure to buy. They pick a number when ready.
 - "0" or "more" → send next batch of products.
@@ -233,7 +233,7 @@ Required schema:
 
 Available action types:
   {"type": "send_product_image", "product_id": "DB_ID", "image_url": "https://...", "caption": "Name — KES 500"}
-  {"type": "send_catalog_images", "products": [{"image_url": "https://...", "caption": "1️⃣ T-shirt — KES 500"}, ...]}
+  {"type": "send_catalog_images", "product_ids": ["DB_ID_1", "DB_ID_2", ...]}
   {"type": "create_order", "items": [{"product_name":"Name","product_id":"DB_ID","quantity":1,"unit_price":500}], "delivery_type": "pickup|delivery", "delivery_address": "", "notes": ""}
   {"type": "update_order", "update_type": "add_item|remove_item|change_qty|change_delivery", "order_id": "latest", "product_name": "", "product_id": "", "quantity": 1, "unit_price": 0, "delivery_type": ""}
   {"type": "create_booking", "service_id": "DB_ID", "service_name": "Name", "price": 500, "date": "Mon 14 April", "time": "10am", "is_rental": false, "checkin_date": "", "checkout_date": ""}
