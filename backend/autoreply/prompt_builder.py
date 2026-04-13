@@ -54,20 +54,7 @@ FOOD DELIVERY ORDER FLOW:
 - PAYMENT: Show order summary + total + payment details. ask for payee name + amount.
 - PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
-    "bakery": """\
-BAKERY ORDER FLOW:
-- MENU: Show products with numbered menu. ALWAYS add "0️⃣ View all images" as last option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
-- BROWSING: When customer picks 0 → send send_catalog_images + menu.
-- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item + price.
-- CUSTOM/ADVANCE ITEMS: If item description mentions "custom" or "advance" or "pre-order" → inform customer how many days in advance they need to order. Ask for their desired date.
-- QUANTITY: Confirm quantity. Ask if they want anything else or proceed to order.
-- ADDING MORE: "Anything else or confirm order?" If yes → resend menu.
-- FULFILMENT: Ask "Pickup or delivery?"
-  • Pickup → ask preferred pickup date and time.
-  • Delivery → ask delivery address + preferred delivery date/time.
-- CHECKOUT: Fire create_order with ALL items + delivery_type + notes="Pickup/Delivery: [date/time]".
-- PAYMENT: Show order summary + total + payment details. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
+    # bakery: built dynamically in build_system_prompt() — see _build_bakery_instructions()
 
     "grocery": """\
 GROCERY ORDER FLOW:
@@ -585,6 +572,140 @@ def _build_response_format(btype: str) -> str:
 
 # ── Restaurant dynamic instruction builder ───────────────────────────────────
 
+def _build_bakery_instructions(bc: dict) -> str:
+    """Build full bakery-specific autoreply instructions from business config."""
+    has_delivery      = bc.get("bakery_has_delivery", True)
+    has_pickup        = bc.get("bakery_has_pickup", True)
+    advance_days      = bc.get("bakery_advance_days", 3)        # default 3 days for custom/cake orders
+    deposit_required  = bc.get("bakery_deposit_required", False)
+    deposit_pct       = bc.get("bakery_deposit_pct", 50)        # % deposit for custom orders
+    delivery_info     = bc.get("delivery_info", "")
+    pickup_hours      = bc.get("bakery_pickup_hours", "") or bc.get("business_hours", "")
+    min_order         = bc.get("bakery_min_order", "")
+
+    lines = [
+        "BAKERY ORDER FLOW:",
+        "",
+        "STEP 1 — MENU & BROWSING:",
+        "- Greet the customer warmly. Show the menu grouped by category (e.g. Cakes, Bread, Pastries, Cookies).",
+        "- Use numbered menu (1️⃣ 2️⃣ 3️⃣). Include item name, price, and description.",
+        "- ALWAYS add '0️⃣ View all images' as the last menu option.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}',
+        "- When customer picks 0 or says 'show images' / 'pictures' / 'catalog' → send send_catalog_images + resend menu.",
+        "",
+        "STEP 2 — SELECTING AN ITEM:",
+        "- When customer picks a number → resolve from last_menu → send send_product_image (if has image).",
+        "- Confirm item name and price.",
+        "- If item has VARIANTS (sizes/flavors e.g. 500g, 1kg, Chocolate, Vanilla) → ask BEFORE anything else:",
+        "  'What size/flavor would you like?'",
+        "  Show each variant with its full price: '1️⃣ 500g — KES 800  2️⃣ 1kg — KES 1,500  3️⃣ 2kg — KES 2,800'",
+        "  new_menu: {\"1\": {\"id\": \"mod_500g\", \"name\": \"500g\", \"price\": 800, \"type\": \"modifier\"}, ...}",
+        "  Use the selected variant's price as the unit_price in the order item. Record variant='[name]'.",
+        "",
+        "STEP 3 — CUSTOM & ADVANCE ORDERS:",
+        f"- If the item is a cake (birthday, wedding, anniversary, custom) OR the description mentions 'custom' / 'advance' / 'pre-order':",
+        f"  → Inform: 'This item requires at least {advance_days} days advance notice.'",
+        "  → Ask: 'What date do you need it for?' Confirm if the date is feasible.",
+        "  → Ask: 'Would you like a message written on it? (e.g. Happy Birthday John)' — record in notes.",
+        "- For standard ready items (bread, cookies, pastries) → no advance notice needed, skip this step.",
+        "",
+        "STEP 4 — DIETARY & SPECIAL REQUESTS:",
+        "- After selecting item, ask once: 'Do you have any dietary requirements or special requests?'",
+        "  (e.g. sugar-free, gluten-free, eggless, nut-free, extra moist)",
+        "- If customer says 'no' / 'none' / 'nothing' → move on immediately.",
+        "- Record any requirements in the order notes.",
+        "",
+        "STEP 5 — QUANTITY:",
+        "- Ask: 'How many would you like?'",
+        f"{'- Mention minimum order if applicable: ' + min_order if min_order else ''}",
+        "- After quantity confirmed → ask: 'Anything else or shall we confirm your order?'",
+        "- If yes → resend menu. Keep building cart until customer says done / checkout / confirm / sawa / ndiyo.",
+        "",
+        "STEP 6 — FULFILMENT:",
+        "- When customer is ready → ask: 'How would you like to receive your order?'",
+    ]
+
+    fulfil_options = []
+    if has_pickup:
+        fulfil_options.append("Pickup")
+    if has_delivery:
+        fulfil_options.append("Delivery")
+
+    if has_pickup and has_delivery:
+        lines.append("  Show: 1️⃣ Pickup  2️⃣ Delivery")
+    elif has_pickup:
+        lines.append("  Pickup only (no delivery configured).")
+    elif has_delivery:
+        lines.append("  Delivery only (no pickup configured).")
+
+    if has_pickup:
+        ph = f" (Pickup hours: {pickup_hours})" if pickup_hours else ""
+        lines += [
+            "",
+            f"PICKUP PATH{ph}:",
+            "- Ask for preferred pickup DATE and TIME.",
+            "- Confirm pickup location from business info.",
+            "- Record in notes: 'Pickup: [date] at [time]'",
+            "- Fire create_order with delivery_type='pickup', notes including pickup date/time.",
+        ]
+
+    if has_delivery:
+        dinfo = f" ({delivery_info})" if delivery_info else ""
+        lines += [
+            "",
+            f"DELIVERY PATH{dinfo}:",
+            "- Ask for delivery ADDRESS.",
+            "- Ask for preferred delivery DATE and TIME.",
+            "- Mention delivery fee/zone from business info if configured.",
+            "- Record in notes: 'Delivery to [address] on [date] at [time]'",
+            "- Fire create_order with delivery_type='delivery', delivery_address='[address]', notes including delivery date/time.",
+        ]
+
+    lines += [
+        "",
+        "STEP 7 — ORDER SUMMARY & PAYMENT:",
+        "- Show a clear order summary before payment:",
+        "  '🧁 *Your Order:*",
+        "   • [Item] ([variant if any]) × [qty] — KES [total]",
+        "   • Message: [inscription if any]",
+        "   • [Pickup/Delivery]: [date] at [time]",
+        "   📦 *Total: KES [amount]*'",
+    ]
+
+    if deposit_required:
+        lines += [
+            f"- For CUSTOM/CAKE orders → request a {deposit_pct}% deposit to confirm the order.",
+            f"  'To confirm your order, a {deposit_pct}% deposit of KES [amount] is required.'",
+            "- For STANDARD ready items → request full payment.",
+        ]
+    else:
+        lines.append("- Request full payment for all orders.")
+
+    lines += [
+        "- Show payment details EXACTLY as configured. Ask: 'Once paid, please reply with your full name and amount paid.'",
+        "",
+        "PAYMENT CONFIRMATION:",
+        "- When customer provides name + amount (or says 'nimetuma' / 'sent' / 'nimepay' / 'done'):",
+        "  → intent=payment_received",
+        "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
+        "  → fire notify_owner(reason='payment_received', message='[Name] paid [Amount] — [Item] for [date]')",
+        "  → Reply: 'Thank you [name]! 🙏 Payment received. We'll have your [item] ready for [pickup/delivery date]. We'll notify you when it's ready!'",
+        "",
+        "ORDER MANAGEMENT:",
+        "- 'my order' / 'order status' / 'is it ready?' → show order summary including pickup/delivery date from notes.",
+        "- Cancel request → confirm, mention cancellation policy if in business info, fire cancel_order.",
+        "- Change request (different flavor, date change) → confirm change, fire notify_owner for owner to action.",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER confirm a custom/cake order without first collecting: variant (if any), inscription, date, dietary needs.",
+        "- NEVER show payment details before the full order + fulfilment is confirmed.",
+        "- Always fire create_order ONCE with ALL items collected. Never fire mid-collection.",
+        "- If a product is marked OUT OF STOCK → apologise and suggest the closest available alternative.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_restaurant_instructions(bc: dict) -> str:
     has_dine_in  = bc.get("restaurant_has_dine_in",  True)
     has_delivery = bc.get("restaurant_has_delivery", True)
@@ -901,6 +1022,8 @@ def build_system_prompt(
     # ── Business-type instructions ──
     if btype == "restaurant":
         instructions = _build_restaurant_instructions(bc)
+    elif btype == "bakery":
+        instructions = _build_bakery_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")
