@@ -140,7 +140,7 @@ async def process_message(
                     await _send_push_notification(
                         db, user_id,
                         title=f"💰 Payment Received — {customer_name or from_number}",
-                        body=action.get("message", "Customer sent payment screenshot"),
+                        body=action.get("message", "Customer confirmed payment — check order to verify"),
                         data={"type": "payment_received", "customer_id": str(customer_id)},
                     )
                 elif reason in ("escalation", "complaint"):

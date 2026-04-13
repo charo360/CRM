@@ -338,14 +338,29 @@ async def _set_payment_pending(db, action: dict, user_id, customer_id) -> None:
         logger.warning(f"[ActionHandler] set_payment_pending — no order found for customer {customer_id}")
         return
 
+    payee_name  = (action.get("payee_name") or "").strip()
+    amount_paid = action.get("amount_paid") or action.get("amount") or None
+
+    update_fields: dict = {
+        "payment_status":           "pending_verification",
+        "payment_received_at":      datetime.utcnow(),
+    }
+    if payee_name:
+        update_fields["payee_name"] = payee_name
+    if amount_paid is not None:
+        try:
+            update_fields["amount_paid"] = float(str(amount_paid).replace(",", ""))
+        except (ValueError, TypeError):
+            pass
+
     await db.orders.update_one(
         {"_id": order["_id"]},
-        {"$set": {
-            "payment_status":                  "pending_verification",
-            "payment_screenshot_received_at":  datetime.utcnow(),
-        }},
+        {"$set": update_fields},
     )
-    logger.info(f"[ActionHandler] Payment pending set for order {order.get('order_number')} customer={customer_id}")
+    logger.info(
+        f"[ActionHandler] Payment pending: order={order.get('order_number')} "
+        f"payee={payee_name!r} amount={amount_paid} customer={customer_id}"
+    )
 
 
 async def _notify_owner(db, action: dict, customer_id) -> None:

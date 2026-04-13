@@ -104,7 +104,7 @@ BEAUTY BOOKING FLOW:
 - TIME: After date → ask for preferred time.
 - CONFIRM: Summarise — Service, Date, Time, Price. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time.
-- PAYMENT: If deposit required → show payment details and request screenshot.
+- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
 - PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "spa": """\
@@ -116,7 +116,7 @@ SPA BOOKING FLOW:
 - TIME: After date → ask for preferred time.
 - CONFIRM: Summarise — Treatment, Date, Time, Guest count, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time.
-- PAYMENT: If deposit required → show payment details and request screenshot.
+- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
 - PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "services": """\
@@ -128,8 +128,8 @@ SERVICES / FREELANCE BOOKING FLOW:
 - DATE: Ask for preferred date and time. Set flow_step=awaiting_date.
 - CONFIRM: Summarise — Service, Requirements summary, Location, Date/Time, Price. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=requirements summary.
-- PAYMENT: If upfront deposit required → show payment details and request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.
+- PAYMENT: If upfront deposit required → show payment details and ask for payee name + amount paid.
+- PAYMENT CONFIRM: When customer replies with name + amount → intent=payment_received + set_payment_pending + notify_owner.
 - If requirements need owner review first → fire notify_owner + tell customer the team will be in touch shortly.""",
 
     "repair": """\
@@ -141,7 +141,7 @@ REPAIR BOOKING FLOW:
 - DATE: Ask for preferred date and time. Set flow_step=awaiting_date.
 - CONFIRM: Summarise — Item, Issue, Service, Location/Type, Date/Time, Price (or "quote on assessment"). Ask to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=issue description.
-- PAYMENT: If deposit required → show payment details and request screenshot.
+- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
 - PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "cleaning": """\
@@ -155,7 +155,7 @@ CLEANING BOOKING FLOW:
 - TIME: After date → ask for preferred start time.
 - CONFIRM: Summarise — Package, Address, Date/Time, Any special notes, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=address + special instructions.
-- PAYMENT: If deposit required → show payment details and request screenshot.
+- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
 - PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "clinic": """\
@@ -302,7 +302,7 @@ def _get_categories_block(products: List[Dict], services: List[Dict]) -> str:
 _DEFAULT_INSTRUCTIONS = """\
 - Show available products or services with numbered menu when asked.
 - Collect necessary details (quantity, date, address) step by step.
-- Confirm total + payment details. Request payment screenshot to complete."""
+- Confirm total + payment details. Ask customer to reply with their name + amount paid to complete."""
 
 # ── Shared instruction blocks (composed per business type) ─────────────────
 
@@ -316,10 +316,11 @@ LANGUAGE:
 PAYMENT — CRITICAL:
 - ONLY show payment methods listed in your context. Show FULL details exactly as configured.
 - NEVER invent payment details. If none configured → "The owner will share payment details shortly."
-- When customer sends screenshot / "nimetuma" / "sent" / "I've paid":
+- After showing payment details, ask: "Once done, please reply with your *full name* and *amount paid* so we can confirm your order."
+- When customer provides name + amount (or says "nimetuma" / "sent" / "I've paid" / "done"):
   • intent = "payment_received"
-  • fire set_payment_pending + notify_owner(reason="payment_received")
-  • Reply: "Got your payment! 🙏 The owner will confirm shortly."
+  • fire set_payment_pending(payee_name="...", amount_paid=...) + notify_owner(reason="payment_received", message="[Name] paid [Amount]")
+  • Reply: "Thank you [name]! 🙏 Payment of [amount] received. The owner will confirm shortly."
 
 ESCALATION — set escalate=true when:
 - Customer is angry, uses offensive language, or threatens.
@@ -635,7 +636,7 @@ def _build_restaurant_instructions(bc: dict) -> str:
             "- Add \"0\ufe0f\u20e3 View all images\" as last menu option if products have images.",
             "- Customer may order multiple items. After each item ask \"Anything else or confirm order?\"",
             "- When customer confirms → fire create_order with delivery_type=\"dine_in\", table_number=\"[table]\", notes=\"Table [table]\".",
-            "- Show payment methods. Await screenshot → set_payment_pending + notify_owner.",
+            "- Show payment methods. Ask for name + amount paid → set_payment_pending + notify_owner.",
             "",
         ]
 
@@ -655,7 +656,7 @@ def _build_restaurant_instructions(bc: dict) -> str:
             "- Show menu as numbered list. Add \"0\ufe0f\u20e3 View all images\" if products have images.",
             "- Collect all items. After each item ask \"Anything else or confirm order?\"",
             "- Confirm total + delivery fee (if applicable), then fire create_order with delivery_type=\"delivery\", delivery_address=\"[address]\".",
-            "- Show payment methods. Await screenshot → set_payment_pending + notify_owner.",
+            "- Show payment methods. Ask for name + amount paid → set_payment_pending + notify_owner.",
             "",
         ]
 
@@ -667,7 +668,7 @@ def _build_restaurant_instructions(bc: dict) -> str:
             "- Collect all items. After each item ask \"Anything else or confirm order?\"",
             f"- Confirm total + tell customer when order will be ready.{pickup_wait}",
             "- Fire create_order with delivery_type=\"pickup\".",
-            "- Show payment methods. Await screenshot → set_payment_pending + notify_owner.",
+            "- Show payment methods. Ask for name + amount paid → set_payment_pending + notify_owner.",
             "",
         ]
 
