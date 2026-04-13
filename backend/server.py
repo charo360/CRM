@@ -4499,28 +4499,167 @@ async def update_order_progress(
             if customer_id and customer_id != "walk-in":
                 customer = await db.customers.find_one({"_id": customer_id})
                 customer_phone = customer.get("phone_number") if customer else None
-                customer_name = customer.get("name", "there") if customer else "there"
                 if customer_phone:
                     order_number = order.get("order_number", "")
                     order_ref = f" *#{order_number}*" if order_number else ""
-                    delivery_type = order.get("delivery_type", "")
+                    delivery_type = (order.get("delivery_type") or "").strip()
                     delivery_address = order.get("delivery_address", "")
-                    if delivery_type == "Delivery" and delivery_address:
-                        ready_msg = f"🎉 Your order{order_ref} is *ready* and on its way!\n\n🚗 Delivering to: *{delivery_address}*"
-                    elif delivery_type in ("Dine In", "Dine-In", "dine_in"):
-                        ready_msg = f"🍽️ Your order{order_ref} is *ready*! Enjoy your meal 😊"
-                    else:
-                        ready_msg = f"🎉 Your order{order_ref} is *ready* for pickup! Come grab it whenever you're ready 🏃"
-                    status_messages = {
-                        "Confirmed": f"✅ Your order{order_ref} has been *confirmed*! We're getting it ready for you.",
-                        "Preparing": f"👨‍🍳 Your order{order_ref} is now being *prepared*. Won't be long!",
-                        "Ready": ready_msg,
-                        "Done": (
-                            f"Thank you so much for visiting us! 🙏\n\n"
-                            f"We really appreciate your support and hope to see you again soon. Have a wonderful day! 😊"
+                    is_delivery = delivery_type.lower() == "delivery"
+                    is_dine_in = delivery_type.lower() in ("dine in", "dine-in", "dine_in")
+
+                    # Resolve business type
+                    biz_settings = await db.settings.find_one({"user_id": business_id}) or {}
+                    bk = await db.users.find_one({"_id": business_id}) or {}
+                    biz_type = (
+                        biz_settings.get("business_type")
+                        or (bk.get("business_knowledge") or {}).get("business_type")
+                        or bk.get("business_type")
+                        or "general"
+                    ).lower()
+
+                    def _msgs(confirmed, preparing, ready_dine, ready_delivery, ready_pickup, done):
+                        if is_delivery and delivery_address:
+                            ready = f"{ready_delivery}\n\n🚗 Delivering to: *{delivery_address}*"
+                        elif is_dine_in:
+                            ready = ready_dine
+                        else:
+                            ready = ready_pickup
+                        return {"Confirmed": confirmed, "Preparing": preparing, "Ready": ready, "Done": done}
+
+                    templates = {
+                        "restaurant": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're preparing it fresh for you.",
+                            f"👨‍🍳 Your food{order_ref} is being prepared in the kitchen. Won't be long!",
+                            f"🍽️ Your food{order_ref} is *ready*! Enjoy your meal 😊",
+                            f"🎉 Your food{order_ref} is *on its way*!",
+                            f"🔥 Your food{order_ref} is *ready* for pickup! Come grab it while it's hot.",
+                            f"Thank you so much for dining with us! 🙏\nWe hope you enjoyed every bite and look forward to having you back soon. 😊",
+                        ),
+                        "bakery": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We'll bake it fresh for you.",
+                            f"🔥 Your order{order_ref} is in the oven! Almost ready.",
+                            f"🥐 Your order{order_ref} is *ready*! Enjoy 😊",
+                            f"🎉 Your fresh bakes{order_ref} are *on their way*!",
+                            f"🥐 Fresh out of the oven! Your order{order_ref} is *ready* for pickup.",
+                            f"Thank you for choosing us! 🙏\nWe hope you enjoyed every bite. See you next time! 🥐",
+                        ),
+                        "grocery": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're picking and packing it now.",
+                            f"🛒 Your order{order_ref} is being packed and checked.",
+                            f"✅ Your order{order_ref} is *ready*!",
+                            f"🚗 Your groceries{order_ref} are *on their way*!",
+                            f"🛍️ Your order{order_ref} is *packed and ready* for pickup!",
+                            f"Thank you for your order! 🙏\nWe appreciate your support. See you next time! 🛒",
+                        ),
+                        "wholesale": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're processing it now.",
+                            f"📦 Your order{order_ref} is being packed and quality-checked.",
+                            f"✅ Your order{order_ref} is *ready*!",
+                            f"🚚 Your order{order_ref} is *dispatched* and on its way!",
+                            f"📦 Your order{order_ref} is *ready* for collection!",
+                            f"Thank you for your business! 🙏\nWe appreciate the partnership and look forward to your next order.",
+                        ),
+                        "salon": _msgs(
+                            f"✅ Your appointment{order_ref} is *confirmed*! We're looking forward to seeing you.",
+                            f"💇 We're getting your station ready{order_ref}. Almost time!",
+                            f"💇 We're *ready* for you{order_ref}! Come on in 😊",
+                            f"💇 We're *ready* for you{order_ref}! Come on in 😊",
+                            f"💇 We're *ready* for you{order_ref}! Come on in 😊",
+                            f"Thank you for visiting us! 🙏\nWe hope you loved your look. See you next time! 💇",
+                        ),
+                        "spa": _msgs(
+                            f"✅ Your appointment{order_ref} is *confirmed*! We're looking forward to welcoming you.",
+                            f"🕯️ We're preparing your treatment room{order_ref}. Almost ready!",
+                            f"🌿 We're *ready* for you{order_ref}. Come relax and unwind 😊",
+                            f"🌿 We're *ready* for you{order_ref}. Come relax and unwind 😊",
+                            f"🌿 We're *ready* for you{order_ref}. Come relax and unwind 😊",
+                            f"Thank you for visiting us! 🙏\nWe hope you left feeling refreshed and rejuvenated. See you next time! 🌿",
+                        ),
+                        "repair": _msgs(
+                            f"✅ Your repair job{order_ref} is *confirmed*! Our technician will get right on it.",
+                            f"🔧 Your item{order_ref} is being worked on by our technician.",
+                            f"🔧 Your item{order_ref} is *repaired*! Come pick it up 😊",
+                            f"🚗 Your repaired item{order_ref} is *on its way* back to you!",
+                            f"✅ Great news! Your item{order_ref} is *repaired and ready* for pickup 🔧",
+                            f"Thank you for trusting us with your repair! 🙏\nWe hope everything works perfectly. Don't hesitate to reach out if you need anything.",
+                        ),
+                        "cleaning": _msgs(
+                            f"✅ Your cleaning appointment{order_ref} is *confirmed*! Our team is on it.",
+                            f"🧹 Our team is on their way / getting set up{order_ref}.",
+                            f"✨ Cleaning *complete*{order_ref}! Everything is fresh and spotless.",
+                            f"✨ Cleaning *complete*{order_ref}! Everything is fresh and spotless.",
+                            f"✨ Cleaning *complete*{order_ref}! Everything is fresh and spotless.",
+                            f"Thank you for choosing us! 🙏\nWe hope you love the results. See you next time! ✨",
+                        ),
+                        "fitness": _msgs(
+                            f"✅ Your session{order_ref} is *confirmed*! Get ready to work hard 💪",
+                            f"💪 Your trainer is getting set up{order_ref}. Almost time!",
+                            f"💪 Your session{order_ref} is *ready to begin*! Let's go!",
+                            f"💪 Your session{order_ref} is *ready to begin*! Let's go!",
+                            f"💪 Your session{order_ref} is *ready to begin*! Let's go!",
+                            f"Great session! 💪\nThank you for training with us. Keep up the great work and see you next time!",
+                        ),
+                        "hotel": _msgs(
+                            f"✅ Your booking{order_ref} is *confirmed*! We're preparing for your arrival.",
+                            f"🏨 Your room{order_ref} is being prepared. Almost ready!",
+                            f"🏨 Your room{order_ref} is *ready*! Welcome — we hope you enjoy your stay 😊",
+                            f"🏨 Your room{order_ref} is *ready*! Welcome — we hope you enjoy your stay 😊",
+                            f"🏨 Your room{order_ref} is *ready*! Welcome — we hope you enjoy your stay 😊",
+                            f"Thank you for staying with us! 🙏\nWe hope you had a wonderful experience and look forward to welcoming you back. 🏨",
+                        ),
+                        "events": _msgs(
+                            f"✅ Your event booking{order_ref} is *confirmed*! We're excited to make it special.",
+                            f"🎉 We're setting everything up{order_ref}. Almost ready!",
+                            f"🎉 Everything is *set up and ready*{order_ref}! Let's celebrate!",
+                            f"🎉 Everything is *set up and ready*{order_ref}! Let's celebrate!",
+                            f"🎉 Everything is *set up and ready*{order_ref}! Let's celebrate!",
+                            f"Thank you for celebrating with us! 🎉\nWe hope it was everything you dreamed of. See you at the next one!",
+                        ),
+                        "healthcare": _msgs(
+                            f"✅ Your appointment{order_ref} is *confirmed*.",
+                            f"🩺 The practitioner will be with you shortly{order_ref}.",
+                            f"🩺 We're *ready* for you{order_ref}. Please come in.",
+                            f"🩺 We're *ready* for you{order_ref}. Please come in.",
+                            f"🩺 We're *ready* for you{order_ref}. Please come in.",
+                            f"Thank you for visiting us. 🙏\nWe hope you feel better soon. Take care!",
+                        ),
+                        "rental": _msgs(
+                            f"✅ Your rental{order_ref} is *confirmed*! We're getting it ready for you.",
+                            f"🔑 Your rental{order_ref} is being prepared and inspected.",
+                            f"🔑 Your rental{order_ref} is *ready*! Come pick it up 😊",
+                            f"🚗 Your rental{order_ref} is *on its way* to you!",
+                            f"🔑 Your rental{order_ref} is *ready* for pickup!",
+                            f"Thank you for renting with us! 🙏\nWe hope you had a great experience. See you next time!",
+                        ),
+                        "creator": _msgs(
+                            f"✅ Your project{order_ref} is *confirmed*! We'll get started right away.",
+                            f"🎨 We're working on your project{order_ref}. Progress is looking great!",
+                            f"🎨 Your project{order_ref} is *complete* and ready for delivery!",
+                            f"🎨 Your project{order_ref} is *complete* and on its way!",
+                            f"🎨 Your project{order_ref} is *complete* and ready!",
+                            f"Thank you for working with us! 🙏\nWe hope you love the final result. Looking forward to the next project together! 🎨",
+                        ),
+                        "retail": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're packing it up for you.",
+                            f"📦 Your order{order_ref} is being packed and quality-checked.",
+                            f"✅ Your order{order_ref} is *ready*!",
+                            f"🚗 Your order{order_ref} is *on its way*!",
+                            f"🛍️ Your order{order_ref} is *packed and ready* for pickup!",
+                            f"Thank you for shopping with us! 🙏\nWe hope you love your purchase. See you next time! 🛍️",
                         ),
                     }
-                    msg = status_messages.get(new_status)
+
+                    # Fall back to general for unknown business types
+                    msgs = templates.get(biz_type) or _msgs(
+                        f"✅ Your order{order_ref} has been *confirmed*! We're getting it ready for you.",
+                        f"⏳ Your order{order_ref} is now being *processed*. Won't be long!",
+                        f"🎉 Your order{order_ref} is *ready*! Enjoy 😊",
+                        f"🎉 Your order{order_ref} is *ready* and on its way!",
+                        f"✅ Your order{order_ref} is *ready* for pickup!",
+                        f"Thank you so much for your support! 🙏\nWe really appreciate your business and hope to serve you again soon. Have a wonderful day! 😊",
+                    )
+
+                    msg = msgs.get(new_status)
                     if msg:
                         ws = get_whatsapp_service(db)
                         await ws.send_message(
