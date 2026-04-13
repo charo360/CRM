@@ -1059,15 +1059,19 @@ export default function ProductCatalogModal({
                                     value={editName}
                                     onChangeText={setEditName}
                                     placeholder={
-                                        isCreator ? "e.g. Instagram Reel Package" :
+                                        isCreator    ? "e.g. Instagram Reel Package" :
                                         isRestaurant ? "e.g. Caesar Salad" :
-                                        isFood ? "e.g. Pilau, Nyama Choma, Ugali & Stew" :
-                                        isRental ? "e.g. 2BR Apartment Downtown" :
+                                        isFood       ? "e.g. Pilau, Nyama Choma, Ugali & Stew" :
+                                        isBakery     ? "e.g. Chocolate Fudge Cake, Sourdough Loaf" :
+                                        isGrocery    ? "e.g. Tomatoes, Unga Jogoo 2kg, Fresh Milk" :
+                                        isWholesale  ? "e.g. Washing Powder (carton), Sugar 50kg bag" :
+                                        businessType === 'retail' ? "e.g. Samsung TV 43\", Leather Handbag" :
+                                        isRental     ? "e.g. 2BR Apartment Downtown" :
                                         isHealthcare ? "e.g. General Consultation" :
-                                        isFitness ? "e.g. Yoga Class" :
-                                        isServices ? "e.g. Computer Repair" :
-                                        isSalon ? "e.g. Haircut & Style" :
-                                        "e.g. Chocolate Cake"
+                                        isFitness    ? "e.g. Yoga Class" :
+                                        isServices   ? "e.g. Computer Repair" :
+                                        isSalon      ? "e.g. Haircut & Style" :
+                                        "e.g. Product or Service Name"
                                     }
                                     placeholderTextColor="#555"
                                 />
@@ -1104,15 +1108,19 @@ export default function ProductCatalogModal({
                                     value={editCategory}
                                     onChangeText={setEditCategory}
                                     placeholder={
-                                        isCreator ? "e.g. Instagram Reel, Sponsored Post" :
+                                        isCreator    ? "e.g. Instagram Reel, Sponsored Post" :
                                         isRestaurant ? "e.g. Main Course, Appetizers" :
-                                        isFood ? "e.g. Rice Dishes, Stews, Breakfast" :
-                                        isRental ? "e.g. Apartment, Car, Equipment" :
+                                        isFood       ? "e.g. Rice Dishes, Stews, Breakfast" :
+                                        isBakery     ? "e.g. Cakes, Bread, Pastries, Cookies" :
+                                        isGrocery    ? "e.g. Fresh Produce, Dairy & Eggs, Beverages" :
+                                        isWholesale  ? "e.g. Food & Beverages, Household Products" :
+                                        businessType === 'retail' ? "e.g. Electronics, Clothing, Beauty & Health" :
+                                        isRental     ? "e.g. Apartment, Car, Equipment" :
                                         isHealthcare ? "e.g. Consultation, Check-up" :
-                                        isFitness ? "e.g. Yoga, Cardio, Strength" :
-                                        isServices ? "e.g. Repair, Installation, Maintenance" :
-                                        isSalon ? "e.g. Hair, Nails, Facial" :
-                                        "e.g. Cakes, Electronics, Clothing"
+                                        isFitness    ? "e.g. Yoga, Cardio, Strength" :
+                                        isServices   ? "e.g. Repair, Installation, Maintenance" :
+                                        isSalon      ? "e.g. Hair, Nails, Facial" :
+                                        "e.g. Category Name"
                                     }
                                     placeholderTextColor="#555"
                                 />
@@ -1362,11 +1370,17 @@ export default function ProductCatalogModal({
                                 </View>
                             </View>
 
-                            {/* ── Modifier Groups Section ── */}
+                            {/* ── Modifier Groups Section (restaurant & food only for spice/extras; hidden for grocery/wholesale/creator) ── */}
+                            {!isGrocery && !isWholesale && !isCreator && (
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
                                     <Text style={styles.formLabel}>Modifier Groups (Optional)</Text>
-                                    <Text style={styles.stockHint}>e.g. Spice Level · Extras</Text>
+                                    <Text style={styles.stockHint}>
+                                        {(isRestaurant || isFood) ? "e.g. Spice Level · Extras · Cooking Style" :
+                                         isBakery ? "e.g. Frosting Type · Filling · Decoration" :
+                                         businessType === 'retail' ? "e.g. Gift Wrap · Color · Engraving" :
+                                         "e.g. Add-on · Customization"}
+                                    </Text>
                                 </View>
 
                                 {editModifierGroups.map((group, gi) => (
@@ -1412,7 +1426,12 @@ export default function ProductCatalogModal({
                                             style={[styles.formInput, { marginBottom: 8 }]}
                                             value={newGroupName}
                                             onChangeText={setNewGroupName}
-                                            placeholder="Group name (e.g. Spice Level)"
+                                            placeholder={
+                                                (isRestaurant || isFood) ? "Group name (e.g. Spice Level)" :
+                                                isBakery ? "Group name (e.g. Frosting Type)" :
+                                                businessType === 'retail' ? "Group name (e.g. Gift Wrap)" :
+                                                "Group name (e.g. Add-on)"
+                                            }
                                             placeholderTextColor="#555"
                                         />
                                         <View style={{ flexDirection: 'row', gap: 16, marginBottom: 10 }}>
@@ -1499,6 +1518,7 @@ export default function ProductCatalogModal({
                                     </View>
                                 )}
                             </View>
+                            )}
 
                             {showStock && (
                             <View style={styles.formGroup}>

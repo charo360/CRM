@@ -368,12 +368,12 @@ SIZES / VERSIONS — CRITICAL:
 MODIFIERS — STEP-BY-STEP AFTER ITEM IS SELECTED:
 - If a catalog item shows "↳ [Group] (required/optional)" → ask for each modifier group IN ORDER:
   1. Show numbered options for the group.
-     new_menu: {"1": {"id": "mod_NoSpice", "name": "No Spice", "price": 0, "type": "modifier"}}
+     new_menu: {"1": {"id": "mod_Standard", "name": "Standard", "price": 0, "type": "modifier"}}
   2. required groups: MUST be answered before proceeding.
   3. optional groups: ask once — if customer says "no" / "none" / "skip", move on.
   4. multi_select groups: collect selections until customer says "done" / "that's all" / "no more".
 - Include each modifier in the OrderItem:
-  modifiers: [{"group": "Spice Level", "choice": "Hot", "price_delta": 0}, ...]
+  modifiers: [{"group": "Add-on", "choice": "Extra Sauce", "price_delta": 50}, ...]
 - Final item price = variant price (or base price) + sum of all price_deltas.
 - After ALL modifier groups for an item → THEN ask quantity.
 
