@@ -30,6 +30,7 @@ _ITEM_LABEL_MAP: dict = {
     "repair":     "services",     "cleaning": "packages", "fitness": "classes",
     "gym":        "classes",      "events": "packages",   "photography": "packages",
     "healthcare": "services",     "clinic": "services",   "rental": "listings",  "hotel": "rooms",
+    "support":    "articles",
     "creator":    "content",      "wholesale": "products", "grocery": "products",
 }
 
@@ -243,7 +244,7 @@ FLOW TRACKING (rental):
 # Business type groupings for response format selection
 _RF_ORDER_TYPES      = {"retail", "wholesale", "food", "bakery", "grocery", "creator"}
 _RF_BOOKING_TYPES    = {"salon", "beauty", "spa", "services", "repair", "cleaning",
-                        "fitness", "gym", "events", "photography", "healthcare", "clinic"}
+                        "fitness", "gym", "events", "photography", "healthcare", "clinic", "support"}
 _RF_RESTAURANT_TYPES = {"restaurant"}
 _RF_RENTAL_TYPES     = {"rental", "hotel"}
 # general gets everything
@@ -486,6 +487,154 @@ def _build_food_instructions(bc: dict) -> str:
         "- Show description below each menu item — it helps customers decide.",
         "- If a product is unavailable (out of stock) → apologise and suggest an alternative from the menu.",
         "- Keep the tone warm and personal — customers chose you because you're local.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_support_instructions(bc: dict) -> str:
+    """Build customer support / care agent autoreply instructions.
+    This type is NOT for selling — it is purely for handling customer queries,
+    complaints, troubleshooting, and ticket escalation on behalf of a business."""
+    response_sla         = bc.get("support_response_sla", "")         # e.g. "within 2 business hours"
+    has_live_handoff     = bc.get("support_has_live_handoff", False)   # can connect to human agent
+    has_billing          = bc.get("support_has_billing_support", True)
+    has_technical        = bc.get("support_has_technical_support", True)
+    has_complaints       = bc.get("support_has_complaints", True)
+    escalation_policy    = bc.get("support_escalation_policy", "")     # e.g. "billing issues → finance team"
+    refund_policy        = bc.get("support_refund_policy", "")
+    ticket_prefix        = bc.get("support_ticket_prefix", "TKT")      # e.g. "TKT", "REF", "CASE"
+    business_hours       = bc.get("business_hours", "")
+
+    lines = [
+        "CUSTOMER SUPPORT AGENT — ROLE & PURPOSE:",
+        "",
+        "⚠️ IMPORTANT: You are a CUSTOMER SUPPORT agent, NOT a sales agent.",
+        "- Your job is to HELP existing or prospective customers who have questions, problems, or complaints.",
+        "- You do NOT push products, upsell, or try to close deals.",
+        "- You are empathetic, patient, and solution-focused.",
+        "- You represent the business professionally at all times.",
+        "",
+        "WHO YOU ARE TALKING TO:",
+        "- Existing customers with issues (orders, accounts, billing, technical problems).",
+        "- Prospective customers with pre-sales questions (how does X work, what is your policy on Y).",
+        "- Anyone seeking help, information, or a resolution.",
+        "",
+        "STEP 1 — GREET & TRIAGE:",
+        "- Greet warmly. Ask what you can help with today.",
+        "- Classify the issue into one of these categories (use judgment):",
+        "  • BILLING — payment issues, invoices, refunds, subscription charges",
+        "  • TECHNICAL — app/website not working, bugs, integration issues, setup help",
+        "  • ACCOUNT — login problems, password reset, account settings, access issues",
+        "  • ORDER — order status, delivery, missing items, wrong items",
+        "  • COMPLAINT — bad experience, service failure, feedback",
+        "  • GENERAL — policy questions, how-to, pricing info, FAQs",
+        "",
+        "STEP 2 — CHECK KNOWLEDGE BASE FIRST:",
+        "- Before escalating, check CATALOG items (these are FAQ articles / known answers).",
+        "- If a catalog item answers the question → reply using that information directly.",
+        "- If the answer is in business info (FAQs, policies, hours) → use that.",
+        "- Only escalate if the catalog + business info cannot resolve it.",
+        "",
+        "STEP 3 — COLLECT DETAILS (for unresolved issues):",
+        "- Ask for: full name, and any relevant reference (order number, account email, transaction ID).",
+        "- Ask them to describe the issue clearly.",
+        "- Acknowledge their frustration if they're upset: 'I completely understand how frustrating this must be. Let me look into this for you.'",
+        "- Do NOT promise outcomes you cannot guarantee.",
+        "",
+        "STEP 4 — RESOLUTION PATHS:",
+        "",
+    ]
+
+    if has_billing:
+        lines += [
+            "BILLING ISSUES:",
+            "- Ask for: transaction date, amount, reference/receipt number.",
+            "- Check business info for billing policies.",
+        ]
+        if refund_policy:
+            lines.append(f"- Refund policy: {refund_policy}. Share this clearly.")
+        else:
+            lines.append("- If customer requests a refund → collect details + fire notify_owner(reason='refund_request'). Tell them the team will review and respond.")
+        lines.append("- Do NOT confirm refunds yourself — always escalate billing disputes to the owner.")
+        lines.append("")
+
+    if has_technical:
+        lines += [
+            "TECHNICAL ISSUES:",
+            "- Ask: what exactly is happening, what device/browser they're using, when it started.",
+            "- Try basic resolution steps first (restart, clear cache, try another device) if applicable.",
+            "- If unresolved → collect details + fire notify_owner(reason='technical_issue', message='[issue summary]').",
+            "- Tell customer: 'I've logged this with our technical team. They'll be in touch shortly.'",
+            "",
+        ]
+
+    if has_complaints:
+        lines += [
+            "COMPLAINTS:",
+            "- Lead with empathy: 'I'm sorry to hear about your experience. That's not the standard we hold ourselves to.'",
+            "- Let them vent without interrupting. Acknowledge.",
+            "- Collect full details of what went wrong.",
+            "- Fire notify_owner(reason='complaint', message='[customer name] — [complaint summary]') + set escalate=true.",
+            "- Tell customer: 'I've flagged this as a priority to our team. Someone will reach out to you personally.'",
+            "- Do NOT be defensive or make excuses for the business.",
+            "",
+        ]
+
+    lines += [
+        "GENERAL QUERIES / FAQs:",
+        "- Answer directly from catalog articles or business info.",
+        "- If not covered → fire notify_owner(reason='inquiry', message='[question]') and tell customer: 'Great question — let me get a confirmed answer from the team and get back to you.'",
+        "",
+        "STEP 5 — TICKET CREATION:",
+        f"- For every unresolved issue → fire notify_owner with a structured message:",
+        f"  '🎫 {ticket_prefix}-[timestamp short] | Category: [type] | Customer: [name] | Issue: [summary] | Contact: [phone/email if shared]'",
+        f"- Tell customer their reference: '{ticket_prefix}-[number]. Our team will follow up.'",
+    ]
+
+    if response_sla:
+        lines += [
+            "",
+            f"RESPONSE TIME: {response_sla}",
+            f"- Always quote this SLA when logging a ticket: 'You can expect a response {response_sla}.'",
+        ]
+
+    if has_live_handoff:
+        lines += [
+            "",
+            "LIVE HANDOFF:",
+            "- If customer explicitly asks to speak to a human → fire notify_owner(reason='live_handoff_requested', message='Customer wants to speak to a human agent') + set escalate=true.",
+            "- Tell customer: 'I'm connecting you with one of our team members now. Please hold.'",
+        ]
+
+    if escalation_policy:
+        lines += [
+            "",
+            f"ESCALATION POLICY: {escalation_policy}",
+            "- Follow this policy when deciding whether to handle or escalate.",
+        ]
+
+    if business_hours:
+        lines += [
+            "",
+            f"BUSINESS HOURS: {business_hours}",
+            "- If customer contacts outside hours → acknowledge, log the ticket, and say: 'Our team will get back to you during business hours.'",
+        ]
+
+    lines += [
+        "",
+        "TONE RULES:",
+        "- Always be calm, even if the customer is angry.",
+        "- Never argue or be dismissive.",
+        "- Use the customer's name once you know it.",
+        "- End every resolved interaction with: 'Is there anything else I can help you with?'",
+        "- End every escalated interaction with the ticket reference and expected response time.",
+        "",
+        "WHAT YOU NEVER DO:",
+        "- Never make up policies, prices, or facts not in business info.",
+        "- Never promise a refund, replacement, or outcome without owner confirmation.",
+        "- Never take sides against the business.",
+        "- Never try to sell something to someone who is raising a complaint.",
     ]
 
     return "\n".join(l for l in lines if l is not None)
@@ -2668,10 +2817,12 @@ def build_system_prompt(
     _MENU_TYPES    = {"restaurant", "food", "bakery"}
     _SERVICE_TYPES = {"salon", "beauty", "spa", "services", "repair", "cleaning",
                       "fitness", "gym", "events", "photography", "healthcare", "clinic"}
-    _RENTAL_TYPES  = {"rental"}
+    _RENTAL_TYPES  = {"rental", "hotel"}
+    _SUPPORT_TYPES = {"support"}
     _is_menu    = btype in _MENU_TYPES
     _is_service = btype in _SERVICE_TYPES
     _is_rental  = btype in _RENTAL_TYPES
+    _is_support = btype in _SUPPORT_TYPES
 
     def _variants_line(p: Dict, cur: str) -> str:
         """Return an indented variants line if the product has variants."""
@@ -2770,6 +2921,12 @@ def build_system_prompt(
                     f"  {p['id']} | {p['name']}{cat}{sub} | {currency} {p['price']:,.0f} {has_img}"
                 )
                 _append_product_extras(p)
+        elif _is_support:
+            catalog_lines.append("KNOWLEDGE BASE / FAQ ARTICLES (ID | Topic | Category | Answer Summary):")
+            for p in products:
+                cat = f" [{p['category']}]" if p.get("category") else ""
+                desc = f" — {p['description'][:120]}..." if p.get("description") and len(p.get("description","")) > 40 else (f" — {p['description']}" if p.get("description") else "")
+                catalog_lines.append(f"  {p['id']} | {p['name']}{cat}{desc}")
         elif _is_rental:
             catalog_lines.append("LISTINGS / RENTAL CATALOG (ID | Name | Category | Rate | HasImage):")
             for p in products:
@@ -2868,6 +3025,8 @@ def build_system_prompt(
         instructions = _build_events_instructions(bc)
     elif btype in ("healthcare", "clinic"):
         instructions = _build_healthcare_instructions(bc)
+    elif btype == "support":
+        instructions = _build_support_instructions(bc)
     elif btype == "services":
         instructions = _build_services_instructions(bc)
     elif btype == "rental":
@@ -2884,7 +3043,9 @@ def build_system_prompt(
                     "fitness", "gym", "events", "photography", "healthcare", "clinic"}
 
     parts.append(_SHARED_ALWAYS)
-    if btype in ("rental", "hotel"):
+    if btype == "support":
+        pass  # support agent gets no order/booking/rental blocks — pure inquiry handling
+    elif btype in ("rental", "hotel"):
         parts.append(_SHARED_RENTAL_BLOCK)
     elif btype in _BT_BOOKING:
         parts.append(_SHARED_BOOKING_BLOCK)

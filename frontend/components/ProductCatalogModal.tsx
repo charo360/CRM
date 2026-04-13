@@ -127,6 +127,19 @@ const RENTAL_CATEGORIES = [
     'Other'
 ];
 
+const SUPPORT_CATEGORIES = [
+    'Billing & Payments',
+    'Technical Issues',
+    'Account Management',
+    'Orders & Delivery',
+    'Returns & Refunds',
+    'Getting Started',
+    'Policies & Terms',
+    'FAQs',
+    'Complaints',
+    'Other',
+];
+
 const HOTEL_CATEGORIES = [
     'Standard Room',
     'Deluxe Room',
@@ -378,6 +391,7 @@ export default function ProductCatalogModal({
     const isMenuBusiness = isRestaurant || isFood || isBakery;
     const isRental     = businessType === 'rental';
     const isHotel      = businessType === 'hotel';
+    const isSupport    = businessType === 'support';
     const isHealthcare = businessType === 'healthcare' || businessType === 'clinic';
     const isFitness    = businessType === 'fitness' || businessType === 'gym';
     const isServices   = businessType === 'services' || businessType === 'repair';
@@ -403,6 +417,7 @@ export default function ProductCatalogModal({
         if (isSalon)       return SALON_CATEGORIES;
         if (isRental)      return RENTAL_CATEGORIES;
         if (isHotel)       return HOTEL_CATEGORIES;
+        if (isSupport)     return SUPPORT_CATEGORIES;
         if (isSpa)         return SPA_CATEGORIES;
         if (isCleaning)    return CLEANING_CATEGORIES;
         if (isEvents)      return EVENTS_CATEGORIES;
@@ -588,6 +603,7 @@ export default function ProductCatalogModal({
         if (isRestaurant) return 'restaurant';
         if (isRental) return 'rental';
         if (isHotel) return 'hotel';
+        if (isSupport) return 'support';
         if (isHealthcare) return 'healthcare';
         if (isFitness) return 'fitness';
         if (isServices) return 'services';
@@ -1084,6 +1100,7 @@ export default function ProductCatalogModal({
                                         businessType === 'retail' ? "e.g. Samsung TV 43\", Leather Handbag" :
                                         isRental     ? "e.g. 2BR Apartment Downtown" :
                                         isHotel      ? "e.g. Deluxe King Room, Garden Villa" :
+                                        isSupport    ? "e.g. How do I reset my password?" :
                                         isHealthcare ? "e.g. General Consultation, Blood Test Panel" :
                                         isFitness    ? "e.g. Morning Yoga Class, Monthly Membership" :
                                         isServices   ? "e.g. Phone Screen Repair, Appliance Service" :
@@ -1137,6 +1154,7 @@ export default function ProductCatalogModal({
                                         businessType === 'retail' ? "e.g. Electronics, Clothing, Beauty & Health" :
                                         isRental     ? "e.g. Apartment, Car, Equipment" :
                                         isHotel      ? "e.g. Standard Room, Suite, Villa" :
+                                        isSupport    ? "e.g. Billing & Payments, Technical Issues" :
                                         isHealthcare ? "e.g. Consultation, Treatment, Diagnostic" :
                                         isFitness    ? "e.g. Yoga, Cardio, Membership Plans" :
                                         isServices   ? "e.g. Repair, Installation, Maintenance" :
@@ -1312,6 +1330,7 @@ export default function ProductCatalogModal({
                                         isWholesale  ? "Describe the product, packaging, specs..." :
                                         isRental     ? "Describe amenities, location, terms..." :
                                         isHotel      ? "Describe room size, bed type, view, amenities included..." :
+                                        isSupport    ? "Write the full answer the AI should give when this question is asked..." :
                                         isHealthcare ? "Describe the procedure, duration, what to expect..." :
                                         isFitness    ? "Describe class format, intensity, what's included..." :
                                         isServices   ? "Describe scope, what's included, typical timeline..." :
@@ -1354,7 +1373,7 @@ export default function ProductCatalogModal({
                             )}
 
                             {/* ── Variants Section ── */}
-                            <View style={styles.formGroup}>
+                            {!isSupport && <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
                                     <Text style={styles.formLabel}>{isCreator ? 'Package Tiers / Options (Optional)' : 'Sizes / Versions (Optional)'}</Text>
                                     <Text style={styles.stockHint}>Enter the full price a customer pays for each option — the price shown to customer when they choose that size or version</Text>
@@ -1399,10 +1418,10 @@ export default function ProductCatalogModal({
                                         <Ionicons name="add" size={20} color="#fff" />
                                     </TouchableOpacity>
                                 </View>
-                            </View>
+                            </View>}
 
                             {/* ── Modifier Groups Section (restaurant & food only for spice/extras; hidden for grocery/wholesale/creator) ── */}
-                            {!isGrocery && !isWholesale && !isCreator && !isHotel && !isRental && (
+                            {!isGrocery && !isWholesale && !isCreator && !isHotel && !isRental && !isSupport && (
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
                                     <Text style={styles.formLabel}>Modifier Groups (Optional)</Text>
@@ -1832,6 +1851,7 @@ export default function ProductCatalogModal({
                                 isFood ? "Search menu items..." :
                                 isRental ? "Search listings..." :
                                 isHotel ? "Search rooms..." :
+                                isSupport ? "Search knowledge base..." :
                                 isHealthcare ? "Search services..." :
                                 isFitness ? "Search classes..." :
                                 isServices ? "Search services..." :

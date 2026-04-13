@@ -19,6 +19,7 @@ export type BusinessType =
   | 'healthcare'
   | 'rental'
   | 'hotel'
+  | 'support'
   | 'creator'
   | 'general'
   | '';
@@ -123,6 +124,16 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     bookingMode: 'rental', bookingLabel: 'Reservation',
     staffLabel: '', customerLabel: 'Guest',
     showCheckinCheckout: true,
+  },
+  support: {
+    // Customer support / care agent — catalog holds FAQ articles & known answers
+    catalogLabel: 'Knowledge Base', catalogItemLabel: 'Article',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: false, salesTabLabel: 'Activity',
+    dashboardMode: 'hybrid', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Ticket',
+    staffLabel: 'Agent', customerLabel: 'Customer',
+    showCheckinCheckout: false,
   },
   general: {
     // Flexible — can have products, services, or both
@@ -248,7 +259,7 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { load(); }, [load]);
 
   const config = TYPE_CONFIGS[businessType] ?? DEFAULT_CONFIG;
-  const isServiceBusiness = ['salon', 'spa', 'services', 'repair', 'cleaning', 'fitness', 'events', 'healthcare', 'rental', 'hotel'].includes(businessType);
+  const isServiceBusiness = ['salon', 'spa', 'services', 'repair', 'cleaning', 'fitness', 'events', 'healthcare', 'rental', 'hotel', 'support'].includes(businessType);
   const isRetailBusiness  = ['retail', 'wholesale', 'restaurant', 'food', 'bakery', 'grocery', 'creator', 'general'].includes(businessType);
 
   return (

@@ -172,6 +172,15 @@ export default function AccountScreen() {
   const [servicesDepositRequired, setServicesDepositRequired] = useState(false);
   const [servicesTurnaround, setServicesTurnaround] = useState('');
   const [servicesCancellationPolicy, setServicesCancellationPolicy] = useState('');
+  // Support Agent
+  const [supportResponseSla, setSupportResponseSla] = useState('');
+  const [supportHasLiveHandoff, setSupportHasLiveHandoff] = useState(false);
+  const [supportHasBilling, setSupportHasBilling] = useState(true);
+  const [supportHasTechnical, setSupportHasTechnical] = useState(true);
+  const [supportHasComplaints, setSupportHasComplaints] = useState(true);
+  const [supportEscalationPolicy, setSupportEscalationPolicy] = useState('');
+  const [supportRefundPolicy, setSupportRefundPolicy] = useState('');
+  const [supportTicketPrefix, setSupportTicketPrefix] = useState('TKT');
   // Hotel
   const [hotelCheckinTime, setHotelCheckinTime] = useState('2:00 PM');
   const [hotelCheckoutTime, setHotelCheckoutTime] = useState('11:00 AM');
@@ -310,6 +319,14 @@ export default function AccountScreen() {
         setServicesDepositRequired(!!bk.services_deposit_required);
         setServicesTurnaround(bk.services_turnaround || '');
         setServicesCancellationPolicy(bk.services_cancellation_policy || '');
+        setSupportResponseSla(bk.support_response_sla || '');
+        setSupportHasLiveHandoff(!!bk.support_has_live_handoff);
+        setSupportHasBilling(bk.support_has_billing_support !== false);
+        setSupportHasTechnical(bk.support_has_technical_support !== false);
+        setSupportHasComplaints(bk.support_has_complaints !== false);
+        setSupportEscalationPolicy(bk.support_escalation_policy || '');
+        setSupportRefundPolicy(bk.support_refund_policy || '');
+        setSupportTicketPrefix(bk.support_ticket_prefix || 'TKT');
         setHotelCheckinTime(bk.hotel_checkin_time || '2:00 PM');
         setHotelCheckoutTime(bk.hotel_checkout_time || '11:00 AM');
         setHotelMinNights(String(bk.hotel_min_nights || ''));
@@ -982,7 +999,7 @@ export default function AccountScreen() {
                     services: 'Services / Freelance', repair: 'Repair & Maintenance',
                     cleaning: 'Cleaning Services', fitness: 'Gym & Fitness',
                     events: 'Events & Photography', healthcare: 'Healthcare / Clinic',
-                    rental: 'Rental / Airbnb', hotel: 'Hotel / Hospitality', creator: 'Creator / Digital',
+                    rental: 'Rental / Airbnb', hotel: 'Hotel / Hospitality', support: 'Support Agent', creator: 'Creator / Digital',
                     general: 'General / Other',
                   } as any)[businessType] || businessType}
                 </Text>
@@ -1134,6 +1151,21 @@ export default function AccountScreen() {
                   {jSwitchRow('Require Deposit', 'Deposit needed to confirm booking', servicesDepositRequired, (v) => { setServicesDepositRequired(v); saveJourneySettings({ services_deposit_required: v }); })}
                   {jTextField('Typical Turnaround', 'Shown to customers when scoping work', servicesTurnaround, setServicesTurnaround, () => saveJourneySettings({ services_turnaround: servicesTurnaround }), 'e.g. 3–5 business days')}
                   {jTextField('Cancellation Policy', '', servicesCancellationPolicy, setServicesCancellationPolicy, () => saveJourneySettings({ services_cancellation_policy: servicesCancellationPolicy }), 'e.g. 48hrs notice required')}
+                </View>
+              );
+
+              if (businessType === 'support') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 2 }}>🎧 Support Agent Settings</Text>
+                  <Text style={{ color: '#8B9DC3', fontSize: 11, marginBottom: 8 }}>Configure how your AI handles customer queries, complaints and escalations</Text>
+                  {jTextField('Ticket Prefix', 'Used in ticket reference numbers shown to customers', supportTicketPrefix, setSupportTicketPrefix, () => saveJourneySettings({ support_ticket_prefix: supportTicketPrefix }), 'e.g. TKT, REF, CASE')}
+                  {jTextField('Response SLA', 'Quoted to customers when logging a ticket', supportResponseSla, setSupportResponseSla, () => saveJourneySettings({ support_response_sla: supportResponseSla }), 'e.g. within 2 business hours')}
+                  {jSwitchRow('Billing Support', 'AI handles payment, invoice & refund queries', supportHasBilling, (v) => { setSupportHasBilling(v); saveJourneySettings({ support_has_billing_support: v }); })}
+                  {jSwitchRow('Technical Support', 'AI handles bugs, errors & setup issues', supportHasTechnical, (v) => { setSupportHasTechnical(v); saveJourneySettings({ support_has_technical_support: v }); })}
+                  {jSwitchRow('Complaints Handling', 'AI empathetically handles formal complaints', supportHasComplaints, (v) => { setSupportHasComplaints(v); saveJourneySettings({ support_has_complaints: v }); })}
+                  {jSwitchRow('Live Handoff', 'AI can connect customer to a human agent on request', supportHasLiveHandoff, (v) => { setSupportHasLiveHandoff(v); saveJourneySettings({ support_has_live_handoff: v }); })}
+                  {jTextField('Escalation Policy', 'Rules for when AI should notify the owner', supportEscalationPolicy, setSupportEscalationPolicy, () => saveJourneySettings({ support_escalation_policy: supportEscalationPolicy }), 'e.g. Billing disputes and complaints always escalate', true)}
+                  {supportHasBilling && jTextField('Refund Policy', 'Shared with customers who ask about refunds', supportRefundPolicy, setSupportRefundPolicy, () => saveJourneySettings({ support_refund_policy: supportRefundPolicy }), 'e.g. Refunds processed within 5–7 business days', true)}
                 </View>
               );
 
@@ -1499,6 +1531,7 @@ export default function AccountScreen() {
                   { id: 'healthcare', icon: '🏥',   label: 'Healthcare / Clinic',  desc: 'Consultations & medical services' },
                   { id: 'rental',     icon: '🏠',   label: 'Rental / Airbnb',      desc: 'Properties, cars & equipment' },
                   { id: 'hotel',      icon: '🏨',   label: 'Hotel / Hospitality',   desc: 'Hotels, lodges, guesthouses & resorts' },
+                  { id: 'support',    icon: '🎧',   label: 'Support Agent',         desc: 'For businesses that need AI-powered customer support & care — not sales' },
                   { id: 'creator',    icon: '�',   label: 'Creator / Digital',    desc: 'Courses, content & digital products' },
                   { id: 'general',    icon: '💬',   label: 'General / Other',      desc: 'Fintech, NGO, info & assistant' },
                 ].map((bt, idx, arr) => (
