@@ -4853,22 +4853,28 @@ class ProductCreate(BaseModel):
     price: float = 0.0
     discount_price: Optional[float] = None
     category: str = "Other"
+    sub_category: Optional[str] = None
     image_url: Optional[str] = None
     images: List[str] = []
     description: Optional[str] = None
     in_stock: bool = True
     stock_quantity: Optional[int] = None
+    variants: Optional[List[dict]] = None          # [{name, price}]
+    modifier_groups: Optional[List[dict]] = None   # [{name, required, multi_select, options:[{name, price_delta}]}]
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     price: Optional[float] = None
     discount_price: Optional[float] = None
     category: Optional[str] = None
+    sub_category: Optional[str] = None
     image_url: Optional[str] = None
     images: Optional[List[str]] = None
     description: Optional[str] = None
     in_stock: Optional[bool] = None
     stock_quantity: Optional[int] = None
+    variants: Optional[List[dict]] = None          # [{name, price}]
+    modifier_groups: Optional[List[dict]] = None   # [{name, required, multi_select, options:[{name, price_delta}]}]
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -4933,11 +4939,14 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "price": product.price,
         "discount_price": product.discount_price,
         "category": clean_category,
+        "sub_category": product.sub_category,
         "image_url": product.image_url,
         "images": images,
         "description": clean_description,
         "in_stock": product.in_stock,
         "stock_quantity": product.stock_quantity,
+        "variants": product.variants or [],
+        "modifier_groups": product.modifier_groups or [],
         "created_at": datetime.utcnow()
     }
     
@@ -8766,12 +8775,21 @@ async def update_product(
     
     if product_update.in_stock is not None:
         update_data["in_stock"] = product_update.in_stock
-    
+
+    if product_update.sub_category is not None:
+        update_data["sub_category"] = product_update.sub_category
+
+    if product_update.variants is not None:
+        update_data["variants"] = product_update.variants
+
+    if product_update.modifier_groups is not None:
+        update_data["modifier_groups"] = product_update.modifier_groups
+
     await db.products.update_one(
         {"_id": product_id},
         {"$set": update_data}
     )
-    
+
     return {"status": "success", "message": "Product updated"}
 
 @api_router.delete("/products/{product_id}")
