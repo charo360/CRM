@@ -180,6 +180,20 @@ const RETAIL_CATEGORIES = [
     'Other'
 ];
 
+// Food business categories (cloud kitchens, home cooks, small eateries, food trucks)
+const FOOD_CATEGORIES = [
+    "Today's Special",
+    'Rice Dishes',
+    'Stews & Soups',
+    'Grilled & BBQ',
+    'Breakfast',
+    'Snacks & Light Bites',
+    'Combo Meals',
+    'Beverages',
+    'Salads & Sides',
+    'Other'
+];
+
 // Bakery-specific categories
 const BAKERY_CATEGORIES = [
     'Cakes',
@@ -343,10 +357,12 @@ export default function ProductCatalogModal({
     const itemLabel = config.catalogItemLabel;
     const showStock = config.showStock;
     const isCreator    = config.customerLabel === 'Fan';
-    const isRestaurant = catalogLabel === 'Menu' && businessType === 'restaurant';
+    const isRestaurant = businessType === 'restaurant';
+    const isFood       = businessType === 'food';
     const isBakery     = businessType === 'bakery';
     const isGrocery    = businessType === 'grocery';
     const isWholesale  = businessType === 'wholesale';
+    const isMenuBusiness = isRestaurant || isFood || isBakery;
     const isRental     = catalogLabel === 'Listings';
     const isHealthcare = config.customerLabel === 'Patient';
     const isFitness    = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
@@ -363,6 +379,7 @@ export default function ProductCatalogModal({
     const getAppropriateCategories = () => {
         if (isCreator)     return CREATOR_CATEGORIES;
         if (isRestaurant)  return RESTAURANT_CATEGORIES;
+        if (isFood)        return FOOD_CATEGORIES;
         if (isBakery)      return BAKERY_CATEGORIES;
         if (isGrocery)     return GROCERY_CATEGORIES;
         if (isWholesale)   return WHOLESALE_CATEGORIES;
@@ -1044,6 +1061,7 @@ export default function ProductCatalogModal({
                                     placeholder={
                                         isCreator ? "e.g. Instagram Reel Package" :
                                         isRestaurant ? "e.g. Caesar Salad" :
+                                        isFood ? "e.g. Pilau, Nyama Choma, Ugali & Stew" :
                                         isRental ? "e.g. 2BR Apartment Downtown" :
                                         isHealthcare ? "e.g. General Consultation" :
                                         isFitness ? "e.g. Yoga Class" :
@@ -1088,6 +1106,7 @@ export default function ProductCatalogModal({
                                     placeholder={
                                         isCreator ? "e.g. Instagram Reel, Sponsored Post" :
                                         isRestaurant ? "e.g. Main Course, Appetizers" :
+                                        isFood ? "e.g. Rice Dishes, Stews, Breakfast" :
                                         isRental ? "e.g. Apartment, Car, Equipment" :
                                         isHealthcare ? "e.g. Consultation, Check-up" :
                                         isFitness ? "e.g. Yoga, Cardio, Strength" :
@@ -1114,17 +1133,21 @@ export default function ProductCatalogModal({
                                 </View>
                             </View>
 
-                            {(isRestaurant || isBakery) && (
+                            {(isRestaurant || isFood || isBakery) && (
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Sub-category <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
                                 <TextInput
                                     style={styles.formInput}
                                     value={editSubCategory}
                                     onChangeText={setEditSubCategory}
-                                    placeholder={isBakery ? "e.g. Birthday Cakes, Wedding Cakes, Sourdough" : "e.g. Pizza, Burgers, Rice Dishes, Cocktails"}
+                                    placeholder={
+                                        isBakery ? "e.g. Birthday Cakes, Wedding Cakes, Sourdough" :
+                                        isFood ? "e.g. Beef, Chicken, Vegetarian" :
+                                        "e.g. Pizza, Burgers, Rice Dishes, Cocktails"
+                                    }
                                     placeholderTextColor="#555"
                                 />
-                                <Text style={styles.stockHint}>Groups items under a category — e.g. {isBakery ? 'Cakes → Birthday Cakes' : 'Main Course → Pizza'}</Text>
+                                <Text style={styles.stockHint}>Groups items under a category — e.g. {isBakery ? 'Cakes → Birthday Cakes' : isFood ? 'Stews → Beef Stew' : 'Main Course → Pizza'}</Text>
                             </View>
                             )}
 
@@ -1251,6 +1274,7 @@ export default function ProductCatalogModal({
                                     placeholder={
                                         isCreator ? "Describe what brands get with this content package..." :
                                         isRestaurant ? "Describe ingredients, preparation, allergens..." :
+                                        isFood ? "Describe ingredients, portion size, what's included..." :
                                         isRental ? "Describe amenities, location, terms..." :
                                         isHealthcare ? "Describe procedure, duration, what to expect..." :
                                         isFitness ? "Describe class format, intensity, equipment needed..." :
@@ -1738,6 +1762,7 @@ export default function ProductCatalogModal({
                             placeholder={
                                 isCreator ? "Search content packages..." :
                                 isRestaurant ? "Search menu items..." :
+                                isFood ? "Search menu items..." :
                                 isRental ? "Search listings..." :
                                 isHealthcare ? "Search services..." :
                                 isFitness ? "Search classes..." :
@@ -1814,7 +1839,7 @@ export default function ProductCatalogModal({
                     </View>
                 ) : filteredProducts.length > 0 ? (
                     <ScrollView style={styles.content} contentContainerStyle={styles.gridContainer}>
-                        {isRestaurant ? (
+                        {isMenuBusiness ? (
                             <View style={styles.menuList}>
                                 {filteredProducts.map((p, i) => renderMenuRow(p, i))}
                             </View>

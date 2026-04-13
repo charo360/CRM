@@ -572,6 +572,158 @@ def _build_response_format(btype: str) -> str:
 
 # ── Restaurant dynamic instruction builder ───────────────────────────────────
 
+def _build_food_instructions(bc: dict) -> str:
+    """Build full food-business autoreply instructions from business config.
+    Covers cloud kitchens, home cooks, food trucks, small eateries."""
+    has_dine_in      = bc.get("food_has_dine_in", True)
+    has_delivery     = bc.get("food_has_delivery", True)
+    has_pickup       = bc.get("food_has_pickup", True)
+    avg_wait         = bc.get("food_avg_wait", "")          # e.g. "25–35 minutes"
+    delivery_info    = bc.get("delivery_info", "")
+    min_delivery     = bc.get("food_min_delivery", "")
+    has_catering     = bc.get("food_has_catering", False)
+    has_preorders    = bc.get("food_has_preorders", False)
+    has_daily_special = bc.get("food_has_daily_special", False)
+
+    lines = [
+        "FOOD BUSINESS ORDER FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Warm, friendly, and personal. This may be a home cook, cloud kitchen, food truck, or small eatery.",
+        "- Customers are local — speak naturally. Match their language (English/Swahili/mix).",
+        "",
+        "STEP 1 — GREETING & MENU:",
+        "- Greet warmly. If business info mentions a daily special → lead with it:",
+        "  'Hi! 😊 Today's special is [special]. Here's our full menu:'",
+        "- Show menu as numbered list grouped by category:",
+        "  '1️⃣ Pilau – KES 250\n   Spiced rice cooked with meat and pilau spices'",
+        "- Include description below each item (from catalog).",
+        "- ALWAYS add '0️⃣ View all images' as last option when products have images.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}',
+        "- When customer picks 0 → send send_catalog_images + resend menu.",
+        "",
+        "STEP 2 — SELECTING AN ITEM:",
+        "- When customer picks a number → resolve from last_menu → send send_product_image (if has image).",
+        "- Confirm item name and price.",
+        "- If item has VARIANTS (e.g. sizes: Half / Full, or with/without meat) → ask FIRST:",
+        "  'Would you like the half (KES 200) or full portion (KES 350)?'",
+        "  Show options as numbered choices with full price per option.",
+        "  Use the selected variant's price as unit_price. Record variant='[name]'.",
+        "",
+        "STEP 3 — EXTRAS / MODIFIERS:",
+        "- If item has modifier groups (e.g. Spice Level, Add-ons) → ask in order after item selected:",
+        "  required groups: must be answered. optional groups: ask once, skippable.",
+        "- Record each choice in the order item's modifiers[].",
+        "- Final item price = variant price (or base price) + sum of price_deltas.",
+        "",
+        "STEP 4 — QUANTITY & MORE ITEMS:",
+        "- After all modifiers confirmed → ask: 'How many would you like?'",
+        "- After quantity → 'Anything else or shall I confirm your order?'",
+        "- Keep collecting until customer says done / confirm / ndiyo / sawa.",
+        "- Show mini cart after each item: '🛒 So far: [item] × [qty] = KES [X]. Anything else?'",
+        "",
+        "STEP 5 — ORDER TYPE:",
+    ]
+
+    modes = []
+    if has_dine_in:  modes.append("1️⃣ Dine-in")
+    if has_delivery: modes.append(f"{'2' if has_dine_in else '1'}️⃣ Delivery")
+    if has_pickup:   modes.append(f"{'3' if has_dine_in and has_delivery else '2' if has_dine_in or has_delivery else '1'}️⃣ Pickup")
+
+    if len(modes) > 1:
+        lines.append("- When customer is ready → ask: 'How would you like your order?'")
+        lines.append("  " + "  ".join(modes))
+    elif has_delivery:
+        lines.append("- Delivery only (no dine-in or pickup configured).")
+    elif has_pickup:
+        lines.append("- Pickup only.")
+
+    if has_dine_in:
+        lines += [
+            "",
+            "DINE-IN PATH:",
+            "- Ask for their table number.",
+            "- Fire create_order with delivery_type='dine_in', table_number='[table]'.",
+            "- Show payment methods. Ask for name + amount paid.",
+        ]
+
+    if has_delivery:
+        wait_note = f" Estimated delivery time: {avg_wait}." if avg_wait else ""
+        min_note  = f" Minimum order: {min_delivery}." if min_delivery else ""
+        zone_note = f" {delivery_info}" if delivery_info else ""
+        extra = (wait_note + min_note + zone_note).strip()
+        lines += [
+            "",
+            f"DELIVERY PATH{(' — ' + extra) if extra else ''}:",
+            "- Ask for delivery address.",
+            "- Confirm total + any delivery fee from business info.",
+            "- Fire create_order with delivery_type='delivery', delivery_address='[address]'.",
+            "- Show payment methods. Ask for name + amount paid.",
+        ]
+
+    if has_pickup:
+        wait_note = f" Ready in: {avg_wait}." if avg_wait else ""
+        lines += [
+            "",
+            f"PICKUP PATH:{wait_note}",
+            "- Confirm pickup location from business info.",
+            "- Fire create_order with delivery_type='pickup'.",
+            "- Show payment methods. Ask for name + amount paid.",
+        ]
+
+    lines += [
+        "",
+        "STEP 6 — ORDER SUMMARY & PAYMENT:",
+        "- Show order summary before payment:",
+        "  '🍽️ *Your Order:*",
+        "   • [Item] ([variant/modifier if any]) × [qty] — KES [total]",
+        "   📦 *Total: KES [amount]*'",
+        "- Show payment details EXACTLY as configured.",
+        "- Ask: 'Once paid, please reply with your full name and amount paid.'",
+        "",
+        "PAYMENT CONFIRMATION:",
+        "- When customer provides name + amount (or says 'nimetuma' / 'sent' / 'nimepay'):",
+        "  → intent=payment_received",
+        "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
+        "  → fire notify_owner(reason='payment_received', message='[Name] paid [Amount]')",
+        f"  → Reply: 'Thank you! 🙏 Payment received. {'Your order will be ready in ' + avg_wait + '.' if avg_wait else 'We are preparing your order!'}'",
+        "",
+    ]
+
+    if has_preorders:
+        lines += [
+            "PRE-ORDERS:",
+            "- If customer says 'tomorrow' / 'next [day]' / 'I want to pre-order' → accept the pre-order.",
+            "- Ask for the date and preferred time.",
+            "- Record in order notes: 'Pre-order for [date] at [time]'.",
+            "- Fire create_order normally with notes including the pre-order date/time.",
+            "",
+        ]
+
+    if has_catering:
+        lines += [
+            "CATERING REQUESTS:",
+            "- If customer asks about catering for groups / events → fire notify_owner(reason='catering_inquiry', message='Customer wants catering for [N] people on [date]').",
+            "- Tell customer: 'We'd love to cater for you! Our team will reach out shortly with a custom quote.'",
+            "",
+        ]
+
+    lines += [
+        "ORDER MANAGEMENT:",
+        "- 'my order' / 'is my food ready?' → show order summary and estimated wait.",
+        "- Cancel → confirm + fire cancel_order.",
+        "- Change request (add / remove item) → if order not yet started, update. Otherwise → notify_owner.",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER fire create_order mid-collection. Collect all items first.",
+        "- Show description below each menu item — it helps customers decide.",
+        "- If a product is unavailable (out of stock) → apologise and suggest an alternative from the menu.",
+        "- Keep the tone warm and personal — customers chose you because you're local.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_wholesale_instructions(bc: dict) -> str:
     """Build full wholesale/B2B autoreply instructions from business config."""
     has_delivery      = bc.get("wholesale_has_delivery", True)
@@ -1310,6 +1462,8 @@ def build_system_prompt(
         instructions = _build_grocery_instructions(bc)
     elif btype == "wholesale":
         instructions = _build_wholesale_instructions(bc)
+    elif btype == "food":
+        instructions = _build_food_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")
