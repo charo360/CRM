@@ -8934,11 +8934,11 @@ async def generate_ai_description(
     prompt_template = prompts.get(business_type.lower(), prompts["retail"])
     
     if request.mode == "improve" and request.current_description:
-        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\nCurrent Description: {request.current_description}\n\n{prompt_template}\n\nPlease improve this description to be more professional and appealing."
-        system_prompt = "You are a professional editor. Improve the given description to be more compelling, clear, and effective. Keep the same meaning but enhance the language. Keep it under 200 words."
+        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\nCurrent Description: {request.current_description}\n\n{prompt_template}\n\nImprove this description. Return ONLY the description text, no labels or quotes."
+        system_prompt = "You are a professional copywriter. Improve the description to be more appealing. Keep it to 1-2 short sentences, max 30 words. Return ONLY the description text."
     else:
-        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\n\n{prompt_template}"
-        system_prompt = "You are a professional marketing copywriter. Write compelling, accurate descriptions that help customers understand the value and make informed decisions. Keep descriptions under 200 words and focus on benefits."
+        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\n\n{prompt_template}\n\nReturn ONLY the description text, no labels, no quotes, no extra explanation."
+        system_prompt = "You are a professional copywriter. Write a short, punchy product description. Max 2 sentences, max 30 words. Focus on taste/benefit. Return ONLY the description text."
     
     try:
         # Build the prompt as a string for the AI service
