@@ -1042,8 +1042,8 @@ export default function ProductCatalogModal({
                             {/* ── Variants Section ── */}
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
-                                    <Text style={styles.formLabel}>Variants (Optional)</Text>
-                                    <Text style={styles.stockHint}>e.g. Pepperoni · Chicken · Beef</Text>
+                                    <Text style={styles.formLabel}>Sizes / Versions (Optional)</Text>
+                                    <Text style={styles.stockHint}>e.g. Small · Medium · Large or 250ml · 500ml</Text>
                                 </View>
 
                                 {editVariants.map((v, idx) => (
@@ -1061,7 +1061,7 @@ export default function ProductCatalogModal({
                                         style={[styles.formInput, { flex: 2, marginRight: 6 }]}
                                         value={newVariantName}
                                         onChangeText={setNewVariantName}
-                                        placeholder="Variant name"
+                                        placeholder="e.g. Small, Medium, Large"
                                         placeholderTextColor="#555"
                                     />
                                     <TextInput

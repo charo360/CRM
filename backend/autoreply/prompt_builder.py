@@ -369,10 +369,11 @@ CATALOG BROWSING:
 - ALWAYS use the CATALOG ITEM LABEL from context (e.g., "products" / "menu items" / "services"):
   "0️⃣ View all [item label]" as last new_menu option.
 
-VARIANTS — CRITICAL:
-- If a catalog item shows "↳ Variants:" → show variant menu FIRST before asking quantity.
-  new_menu: {"1": {"id": "DB_ID", "name": "Pepperoni Pizza", "price": 1200, "type": "product"}}
-- Use the VARIANT price. Record variant="Pepperoni" in the OrderItem.
+SIZES / VERSIONS — CRITICAL:
+- If a catalog item shows "↳ Variants:" → ask for size/version FIRST before anything else.
+  Ask naturally: "What size would you like?" then show options as a numbered menu.
+  new_menu: {"1": {"id": "mod_Small", "name": "Small", "price": 400, "type": "modifier"}, ...}
+- Use the VARIANT price as the item base price. Record variant="Small" in the OrderItem.
 
 MODIFIERS — STEP-BY-STEP AFTER ITEM IS SELECTED:
 - If a catalog item shows "↳ [Group] (required/optional)" → ask for each modifier group IN ORDER:
