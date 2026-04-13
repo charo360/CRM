@@ -611,15 +611,19 @@ class Router:
                 "messages": [{"text": _rl_msgs.get(_rl_lang, _rl_msgs["English"])}],
             }
 
-        # ── 3. Analyze intent ─────────────────────────────────────────────
-        classification = await analyze_intent(
-            message=message,
-            history=history,
-            business_knowledge=business_knowledge,
-            conversation_state=conv_state,
-            customer_name=customer_name,
-            is_personal=is_personal,
-            business_type=context.get("business_type", ""),
+        # ── 3. Analyze intent + contact state in parallel ─────────────────
+        import asyncio as _asyncio
+        classification, contact_state = await _asyncio.gather(
+            analyze_intent(
+                message=message,
+                history=history,
+                business_knowledge=business_knowledge,
+                conversation_state=conv_state,
+                customer_name=customer_name,
+                is_personal=is_personal,
+                business_type=context.get("business_type", ""),
+            ),
+            self._get_contact_state(str(customer_id) if customer_id else "", user_id),
         )
 
         intent = classification.get("intent", "UNKNOWN")
@@ -634,7 +638,6 @@ class Router:
         contact_signal = classification.get("contact_signal", {"type": "unclear", "confidence": 0.0, "reason": ""})
 
         # ── 3.5: Contact classification gate (16.2) ────────────────────────
-        contact_state = await self._get_contact_state(str(customer_id) if customer_id else "", user_id)
         msg_count = contact_state.get("message_count", 0) + 1
         current_contact_type = contact_state.get("contact_type", "UNKNOWN")
         ai_enabled = contact_state.get("ai_enabled", True)
@@ -903,15 +906,17 @@ class Router:
         }
         context["business_config"] = business_config
 
-        # 15: Session summary every 5 messages
-        session_summary = await maybe_summarize(
+        # 15: Session summary every 5 messages — fire as background task so it never blocks reply
+        import asyncio as _asyncio2
+        _asyncio2.create_task(maybe_summarize(
             history=history,
             business_knowledge=business_knowledge,
             customer_name=customer_name,
             conv_state=conv_state,
             user_id=user_id,
-        )
-        session_summary_text = format_summary_for_prompt(session_summary)
+        ))
+        session_summary = None
+        session_summary_text = ""
 
         # Enrich context with classification results
         context.update({
