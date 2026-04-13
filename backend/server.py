@@ -4851,6 +4851,16 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         customer_name = customer["name"]
         customer_phone = customer["phone_number"]
     
+    # Resolve item label and amount safely (orders use various field names)
+    items = order.get("items") or []
+    order_item = (
+        order.get("product")
+        or order.get("product_name")
+        or (", ".join(it.get("product_name", "") for it in items if it.get("product_name")) if items else None)
+        or "Order"
+    )
+    order_amount = float(order.get("total_amount") or order.get("total") or 0)
+
     # Create sale
     sale_id = str(uuid.uuid4())
     sale_doc = {
@@ -4858,8 +4868,8 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         "user_id": business_id,
         "recorded_by": user["_id"],
         "customer_id": order["customer_id"],
-        "item": order["product"],
-        "amount": order["total_amount"],
+        "item": order_item,
+        "amount": order_amount,
         "payment_method": payment_method,
         "receipt_sent": False,
         "is_credit": False,
@@ -4867,35 +4877,35 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         "paid_date": None,
         "created_at": datetime.utcnow()
     }
-    
+
     await db.sales.insert_one(sale_doc)
-    
+
     # Update customer stats (skip for walk-in)
     if order["customer_id"] != "walk-in":
         update_ops = {
-            "$inc": {"purchase_count": 1, "total_spent": order["total_amount"]},
+            "$inc": {"purchase_count": 1, "total_spent": order_amount},
             "$set": {"last_contacted": datetime.utcnow()}
         }
-        
+
         if customer.get("tag") == "New":
             update_ops["$set"]["tag"] = "Returning"
-        
+
         await db.customers.update_one(
             {"_id": order["customer_id"]},
             update_ops
         )
-    
-    # Delete the order
-    await db.orders.delete_one({"_id": order_id})
-    
+
+    # Delete the order using the actual _id from the document (may be string or ObjectId)
+    await db.orders.delete_one({"_id": order["_id"]})
+
     return SaleResponse(
         id=sale_id,
         user_id=business_id,
         customer_id=order["customer_id"],
         customer_name=customer_name,
         customer_phone=customer_phone,
-        item=order["product"],
-        amount=order["total_amount"],
+        item=order_item,
+        amount=order_amount,
         payment_method=payment_method,
         receipt_sent=False,
         is_credit=False,
