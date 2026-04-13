@@ -59,6 +59,21 @@ interface Order {
   notes?: string;
   due_date?: string;
   created_at: string;
+  order_number?: string;
+  delivery_type?: string;
+  delivery_address?: string;
+  table_number?: string;
+  items?: any[];
+  fulfillment_status?: string;
+  assigned_to?: string;
+  payee_name?: string;
+  amount_paid?: number;
+  payment_received_at?: string;
+}
+
+interface StaffMember {
+  id: string;
+  name: string;
 }
 
 interface Expense {
@@ -74,7 +89,21 @@ const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Sala
 
 export default function SalesScreen() {
   const router = useRouter();
-  const { config } = useBusiness();
+  const { config, isRetailBusiness, businessType } = useBusiness();
+
+  // Per-business-type order form config
+  const BUSINESS_ORDER_CONFIG: Record<string, { productPicker: boolean; variants: boolean; modifiers: boolean; dineIn: boolean; delivery: boolean; dueDate: boolean }> = {
+    restaurant: { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true, dueDate: false },
+    food:       { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true, dueDate: false },
+    bakery:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    grocery:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: false },
+    retail:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    wholesale:  { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    creator:    { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    general:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+  };
+  const orderConfig = BUSINESS_ORDER_CONFIG[businessType] ?? { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true };
+  const showOrdersTab = isRetailBusiness;   // only order-capable businesses (retail, food, etc.) show Orders tab
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -92,6 +121,9 @@ export default function SalesScreen() {
   const [saleDetailsVisible, setSaleDetailsVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderDetailsVisible, setOrderDetailsVisible] = useState(false);
+  const [orderTypeFilter, setOrderTypeFilter] = useState<'all' | 'delivery' | 'pickup' | 'dine_in'>('all');
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [showStaffPicker, setShowStaffPicker] = useState(false);
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -130,6 +162,16 @@ export default function SalesScreen() {
   const [orderDueDate, setOrderDueDate] = useState('');
   const [showOrderDueDatePicker, setShowOrderDueDatePicker] = useState(false);
   const [tempOrderDueDate, setTempOrderDueDate] = useState<Date>(new Date());
+  // Product picker for order form
+  const [catalogProducts, setCatalogProducts] = useState<any[]>([]);
+  const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<any | null>(null);
+  const [selectedVariant, setSelectedVariant] = useState<any | null>(null);
+  const [productPickerVisible, setProductPickerVisible] = useState(false);
+  const [productPickerSearch, setProductPickerSearch] = useState('');
+  // Delivery type
+  const [orderDeliveryType, setOrderDeliveryType] = useState<'pickup' | 'delivery' | 'dine_in' | 'digital'>('pickup');
+  const [orderDeliveryAddress, setOrderDeliveryAddress] = useState('');
+  const [orderTableNumber, setOrderTableNumber] = useState('');
 
   // Currency
   const [currency, setCurrency] = useState('USD');
@@ -142,6 +184,16 @@ export default function SalesScreen() {
       } catch (e) {}
     };
     loadCurrency();
+  }, []);
+
+  useEffect(() => {
+    const loadStaff = async () => {
+      try {
+        const res = await apiClient.get('/settings/staff');
+        setStaffList(res.data.staff || []);
+      } catch (e) {}
+    };
+    loadStaff();
   }, []);
 
   const fetchData = useCallback(async () => {
@@ -324,12 +376,16 @@ export default function SalesScreen() {
   };
 
   const handleCreateOrder = async () => {
-    // Validate
     if (!isWalkInCustomer && !selectedCustomer) {
       Alert.alert('Error', 'Please select a customer or choose Walk-in Customer');
       return;
     }
-    if (!orderProduct.trim()) {
+    // Product validation
+    if (orderConfig.productPicker && !selectedCatalogProduct) {
+      Alert.alert('Error', 'Please select a product');
+      return;
+    }
+    if (!orderConfig.productPicker && !orderProduct.trim()) {
       Alert.alert('Error', 'Please enter the product name');
       return;
     }
@@ -344,33 +400,59 @@ export default function SalesScreen() {
 
     setSaving(true);
     try {
-      const totalAmount = parseInt(orderQuantity) * parseFloat(orderPrice);
-      const response = await apiClient.post('/orders', {
+      const qty = parseInt(orderQuantity);
+      const unitPrice = parseFloat(orderPrice);
+      const totalAmount = qty * unitPrice;
+
+      const productName = orderConfig.productPicker
+        ? selectedCatalogProduct!.name
+        : orderProduct.trim();
+
+      const itemEntry: any = {
+        product_name: productName,
+        product_id: selectedCatalogProduct?.id || '',
+        quantity: qty,
+        unit_price: unitPrice,
+        price: totalAmount,
+      };
+      if (selectedVariant) itemEntry.variant = selectedVariant.name;
+
+      const payload: any = {
         customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
-        product: orderProduct.trim(),
-        quantity: parseInt(orderQuantity),
-        price: parseFloat(orderPrice),
+        product: productName,
+        product_name: productName,
+        quantity: qty,
+        price: unitPrice,
         total_amount: totalAmount,
         payment_status: 'Pending',
         delivery_status: 'Processing',
         notes: orderNotes.trim() || undefined,
         due_date: orderDueDate || undefined,
-      });
+        delivery_type: orderDeliveryType,
+        delivery_address: orderDeliveryType === 'delivery' ? orderDeliveryAddress.trim() || undefined : undefined,
+        table_number: orderDeliveryType === 'dine_in' ? orderTableNumber.trim() || undefined : undefined,
+        items: [itemEntry],
+      };
 
-      // Optimistically add to local state immediately (works online and offline)
+      const response = await apiClient.post('/orders', payload);
+
       const newOrder: Order = {
         id: response.data?.id || `temp_${Date.now()}`,
         customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
         customer_name: isWalkInCustomer ? 'Walk-in Customer' : selectedCustomer!.name,
         customer_phone: isWalkInCustomer ? '' : (selectedCustomer?.phone_number || ''),
-        product: orderProduct.trim(),
-        quantity: parseInt(orderQuantity),
-        price: parseFloat(orderPrice),
+        product: productName,
+        quantity: qty,
+        price: unitPrice,
         total_amount: totalAmount,
         payment_status: 'Pending',
         delivery_status: 'Processing',
         notes: orderNotes.trim() || undefined,
         due_date: orderDueDate || undefined,
+        delivery_type: orderDeliveryType,
+        delivery_address: orderDeliveryType === 'delivery' ? orderDeliveryAddress.trim() : undefined,
+        table_number: orderDeliveryType === 'dine_in' ? orderTableNumber.trim() : undefined,
+        items: [itemEntry],
         created_at: new Date().toISOString(),
       };
       setOrders(prev => [newOrder, ...prev]);
@@ -378,7 +460,7 @@ export default function SalesScreen() {
       setModalVisible(false);
       Alert.alert('Success', 'Order created successfully!');
 
-      // Reset form
+      // Reset order form
       setSelectedCustomer(null);
       setIsWalkInCustomer(false);
       setOrderProduct('');
@@ -386,6 +468,11 @@ export default function SalesScreen() {
       setOrderPrice('');
       setOrderNotes('');
       setOrderDueDate('');
+      setSelectedCatalogProduct(null);
+      setSelectedVariant(null);
+      setOrderDeliveryType(businessType === 'creator' ? 'digital' : 'pickup');
+      setOrderDeliveryAddress('');
+      setOrderTableNumber('');
       fetchData();
     } catch (error: any) {
       console.error('Error creating order:', error);
@@ -444,10 +531,14 @@ export default function SalesScreen() {
     return expenses.filter((e) => passesDateFilter(e.created_at));
   }, [expenses, dateFilter]);
 
-  // Filter orders based on date
+  // Filter orders based on date + delivery type
   const filteredOrders = useMemo(() => {
-    return orders.filter((o) => passesDateFilter(o.created_at));
-  }, [orders, dateFilter]);
+    return orders.filter((o) => {
+      if (!passesDateFilter(o.created_at)) return false;
+      if (orderTypeFilter === 'all') return true;
+      return (o.delivery_type || '').toLowerCase() === orderTypeFilter;
+    });
+  }, [orders, dateFilter, orderTypeFilter]);
 
   // Calculate analytics
   const analytics = useMemo(() => {
@@ -668,25 +759,25 @@ export default function SalesScreen() {
       'How was this credit sale paid?',
       [
         ...paymentMethods.map((method) => ({
-          text: method,
+          text: method.name,
           onPress: async () => {
             try {
-              await apiClient.put(`/sales/${sale.id}/mark-paid?payment_method=${encodeURIComponent(method)}`);
+              await apiClient.put(`/sales/${sale.id}/mark-paid?payment_method=${encodeURIComponent(method.name)}`);
 
               // Update local state
               const updatedSales = sales.map((s) =>
                 s.id === sale.id
-                  ? { ...s, paid_date: new Date().toISOString(), payment_method: method }
+                  ? { ...s, paid_date: new Date().toISOString(), payment_method: method.name }
                   : s
               );
               setSales(updatedSales);
 
               // Update selected sale if it's open
               if (selectedSale?.id === sale.id) {
-                setSelectedSale({ ...sale, paid_date: new Date().toISOString(), payment_method: method });
+                setSelectedSale({ ...sale, paid_date: new Date().toISOString(), payment_method: method.name });
               }
 
-              Alert.alert('Success', `Sale marked as paid via ${method}!`);
+              Alert.alert('Success', `Sale marked as paid via ${method.name}!`);
             } catch (error) {
               Alert.alert('Error', 'Failed to mark sale as paid');
             }
@@ -808,9 +899,22 @@ export default function SalesScreen() {
       }
     };
 
+    const getFulfillmentColor = (status?: string) => {
+      switch (status) {
+        case 'New':        return '#FF6B6B';
+        case 'Confirmed':  return '#F39C12';
+        case 'Preparing':  return '#FFD700';
+        case 'Ready':      return '#25D366';
+        case 'Done':       return '#555';
+        default:           return '#FF6B6B';
+      }
+    };
+
+    const fulfillmentColor = getFulfillmentColor(order.fulfillment_status);
+
     return (
       <TouchableOpacity
-        style={styles.saleCard}
+        style={[styles.saleCard, { borderLeftWidth: 3, borderLeftColor: fulfillmentColor }]}
         onPress={() => {
           setSelectedOrder(order);
           setOrderDetailsVisible(true);
@@ -836,6 +940,9 @@ export default function SalesScreen() {
           <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {(order.total_amount || 0).toLocaleString()}</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          <View style={[styles.statusBadge, { backgroundColor: fulfillmentColor + '33', borderWidth: 1, borderColor: fulfillmentColor }]}>
+            <Text style={[styles.statusBadgeText, { color: fulfillmentColor }]}>{order.fulfillment_status || 'New'}</Text>
+          </View>
           <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
             <Text style={styles.statusBadgeText}>{order.payment_status}</Text>
           </View>
@@ -847,6 +954,20 @@ export default function SalesScreen() {
           <Text style={styles.itemText}>{order.product || 'Item'} (x{order.quantity || 0})</Text>
           <Text style={styles.paymentText}>@ {currency} {(order.price || 0).toLocaleString()} each</Text>
         </View>
+        {!!(order.table_number || (order.delivery_type === 'dine-in')) && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <Ionicons name="restaurant-outline" size={12} color="#F59E0B" />
+            <Text style={{ color: '#F59E0B', fontSize: 12, fontWeight: '600' }}>
+              {order.table_number ? `Table ${order.table_number}` : 'Dine-in'}
+            </Text>
+          </View>
+        )}
+        {!!(order.delivery_type === 'delivery' && order.delivery_address) && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <Ionicons name="location-outline" size={12} color="#3B82F6" />
+            <Text style={{ color: '#3B82F6', fontSize: 12 }} numberOfLines={1}>{order.delivery_address}</Text>
+          </View>
+        )}
         {order.payment_status === 'Paid' && (
           <View style={{ backgroundColor: '#1A3A2A', borderRadius: 8, padding: 8, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <Ionicons name="checkmark-circle" size={14} color="#25D366" />
@@ -871,10 +992,10 @@ export default function SalesScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Sales</Text>
+          <Text style={styles.headerTitle}>{config.salesTabLabel}</Text>
           <Text style={styles.headerSubtitle}>
             {viewMode === 'sales'
-              ? `${analytics.salesCount} sales`
+              ? `${analytics.salesCount} ${config.salesTabLabel.toLowerCase()}`
               : viewMode === 'expenses'
                 ? `${filteredExpenses.length} expenses`
                 : `${filteredOrders.length} orders`} {dateFilter === 'All Time' ? 'total' : dateFilter.toLowerCase()}
@@ -896,7 +1017,7 @@ export default function SalesScreen() {
           style={[styles.toggleButton, viewMode === 'sales' && styles.toggleButtonActive]}
           onPress={() => setViewMode('sales')}
         >
-          <Text style={[styles.toggleText, viewMode === 'sales' && styles.toggleTextActive]}>Sales</Text>
+          <Text style={[styles.toggleText, viewMode === 'sales' && styles.toggleTextActive]}>{config.salesTabLabel}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.toggleButton, viewMode === 'expenses' && styles.toggleButtonActive]}
@@ -904,12 +1025,14 @@ export default function SalesScreen() {
         >
           <Text style={[styles.toggleText, viewMode === 'expenses' && styles.toggleTextActive]}>Expenses</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.toggleButton, viewMode === 'orders' && styles.toggleButtonActive]}
-          onPress={() => setViewMode('orders')}
-        >
-          <Text style={[styles.toggleText, viewMode === 'orders' && styles.toggleTextActive]}>Orders</Text>
-        </TouchableOpacity>
+        {showOrdersTab && (
+          <TouchableOpacity
+            style={[styles.toggleButton, viewMode === 'orders' && styles.toggleButtonActive]}
+            onPress={() => setViewMode('orders')}
+          >
+            <Text style={[styles.toggleText, viewMode === 'orders' && styles.toggleTextActive]}>Orders</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Search Bar */}
@@ -928,6 +1051,23 @@ export default function SalesScreen() {
               <Ionicons name="close-circle" size={20} color="#666" />
             </TouchableOpacity>
           )}
+        </View>
+      )}
+
+      {/* Order type filter chips — only on Orders tab */}
+      {viewMode === 'orders' && (
+        <View style={[styles.filterContainer, { paddingBottom: 0 }]}>
+          {(['all', 'delivery', 'pickup', 'dine_in'] as const).map((t) => (
+            <TouchableOpacity
+              key={t}
+              style={[styles.filterChip, orderTypeFilter === t && styles.filterChipActive]}
+              onPress={() => setOrderTypeFilter(t)}
+            >
+              <Text style={[styles.filterChipText, orderTypeFilter === t && styles.filterChipTextActive]}>
+                {t === 'all' ? '🍽️ All' : t === 'delivery' ? '🚚 Delivery' : t === 'pickup' ? '🛍️ Pickup' : '🪑 Dine-in'}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
       )}
 
@@ -1047,7 +1187,12 @@ export default function SalesScreen() {
       {/* WhatsApp-style Floating Action Button */}
       <TouchableOpacity
         style={styles.fab}
-        onPress={() => setModalVisible(true)}
+        onPress={() => {
+          setModalVisible(true);
+          if (viewMode === 'orders' && catalogProducts.length === 0) {
+            apiClient.get('/products').then(r => setCatalogProducts(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+          }
+        }}
         activeOpacity={0.8}
       >
         <Ionicons name="add" size={22} color="#FFFFFF" />
@@ -1155,7 +1300,7 @@ export default function SalesScreen() {
                       setPaymentMethod('');
                     } else {
                       // When disabling credit sale, set default payment method
-                      setPaymentMethod(paymentMethods[0] || 'Cash');
+                      setPaymentMethod(paymentMethods[0]?.name || 'Cash');
                       setDueDate('');
                     }
                   }}
@@ -1379,7 +1524,7 @@ export default function SalesScreen() {
                 {/* Order Form */}
                 {/* Customer Selection */}
                 <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Customer *</Text>
+                  <Text style={styles.formLabel}>{businessType === 'creator' ? 'Brand / Fan *' : 'Customer *'}</Text>
                   <TouchableOpacity
                     style={styles.customerSelect}
                     onPress={() => setCustomerSelectVisible(true)}
@@ -1412,17 +1557,75 @@ export default function SalesScreen() {
                   </TouchableOpacity>
                 </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Product *</Text>
-                  <TextInput
-                    style={styles.formInput}
-                    value={orderProduct}
-                    onChangeText={setOrderProduct}
-                    placeholder="e.g., Laptop, Phone, etc."
-                    placeholderTextColor="#666"
-                  />
-                </View>
+                {/* ── Product selection ── */}
+                {orderConfig.productPicker ? (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Product *</Text>
+                    <TouchableOpacity
+                      style={[styles.formInput, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
+                      onPress={() => setProductPickerVisible(true)}
+                    >
+                      <Text style={selectedCatalogProduct ? { color: '#fff', fontSize: 15 } : { color: '#666', fontSize: 15 }}>
+                        {selectedCatalogProduct ? selectedCatalogProduct.name : 'Select a product'}
+                      </Text>
+                      <Ionicons name="chevron-down" size={18} color="#888" />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>{businessType === 'creator' ? 'Package / Item *' : 'Product *'}</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderProduct}
+                      onChangeText={setOrderProduct}
+                      placeholder={
+                        businessType === 'creator'
+                          ? 'e.g., Instagram Reel Package, LUTs Preset Pack'
+                          : 'e.g., Laptop, Phone, etc.'
+                      }
+                      placeholderTextColor="#666"
+                    />
+                  </View>
+                )}
 
+                {/* ── Variant selector (only if product has variants) ── */}
+                {orderConfig.variants && selectedCatalogProduct && (selectedCatalogProduct.variants || []).length > 0 && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Size / Version</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
+                      {(selectedCatalogProduct.variants || []).map((v: any) => {
+                        const isSelected = selectedVariant?.name === v.name;
+                        return (
+                          <TouchableOpacity
+                            key={v.name}
+                            onPress={() => {
+                              setSelectedVariant(v);
+                              setOrderPrice(String(v.price));
+                            }}
+                            style={{
+                              borderWidth: 1.5,
+                              borderColor: isSelected ? '#25D366' : '#333',
+                              borderRadius: 8,
+                              paddingHorizontal: 14,
+                              paddingVertical: 8,
+                              marginRight: 8,
+                              backgroundColor: isSelected ? '#0d3321' : '#1a1a1a',
+                            }}
+                          >
+                            <Text style={{ color: isSelected ? '#25D366' : '#ccc', fontSize: 13, fontWeight: isSelected ? '700' : '400' }}>
+                              {v.name}
+                            </Text>
+                            <Text style={{ color: '#aaa', fontSize: 11, marginTop: 2 }}>
+                              {currency} {parseFloat(v.price).toLocaleString()}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                )}
+
+                {/* ── Quantity + Price ── */}
                 <View style={styles.formRow}>
                   <View style={[styles.formGroup, { flex: 1, marginRight: 8 }]}>
                     <Text style={styles.formLabel}>Quantity *</Text>
@@ -1457,13 +1660,83 @@ export default function SalesScreen() {
                   </View>
                 ) : null}
 
+                {/* ── Delivery type ── */}
+                {orderConfig.delivery && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Order Type</Text>
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                      {(businessType === 'creator'
+                        ? ['digital', 'delivery'] as const
+                        : ['pickup', 'delivery', ...(orderConfig.dineIn ? ['dine_in'] : [])] as const
+                      ).map(dt => (
+                        <TouchableOpacity
+                          key={dt}
+                          onPress={() => setOrderDeliveryType(dt as any)}
+                          style={{
+                            flex: 1,
+                            paddingVertical: 10,
+                            borderRadius: 8,
+                            borderWidth: 1.5,
+                            borderColor: orderDeliveryType === dt ? '#25D366' : '#333',
+                            backgroundColor: orderDeliveryType === dt ? '#0d3321' : '#1a1a1a',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Text style={{ color: orderDeliveryType === dt ? '#25D366' : '#888', fontSize: 13, fontWeight: orderDeliveryType === dt ? '700' : '400' }}>
+                            {dt === 'pickup' ? 'Pickup' : dt === 'delivery' ? (businessType === 'creator' ? 'Merch' : 'Delivery') : dt === 'dine_in' ? 'Dine-in' : 'Digital'}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                )}
+
+                {/* ── Delivery address ── */}
+                {orderDeliveryType === 'delivery' && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Delivery Address</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderDeliveryAddress}
+                      onChangeText={setOrderDeliveryAddress}
+                      placeholder="e.g., 14 Moi Ave, Nairobi"
+                      placeholderTextColor="#666"
+                    />
+                  </View>
+                )}
+
+                {/* ── Table number ── */}
+                {orderDeliveryType === 'dine_in' && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Table Number</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderTableNumber}
+                      onChangeText={setOrderTableNumber}
+                      placeholder="e.g., Table 5"
+                      placeholderTextColor="#666"
+                    />
+                  </View>
+                )}
+
+                {/* ── Notes + Due Date ── */}
                 <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Notes (Optional)</Text>
+                  <Text style={styles.formLabel}>
+                    {businessType === 'creator'
+                      ? orderDeliveryType === 'digital'
+                        ? 'Content Brief / Brand Info (Optional)'
+                        : 'Order Notes (Optional)'
+                      : 'Notes (Optional)'}
+                  </Text>
                   <TextInput
                     style={[styles.formInput, styles.receiptMessageInput]}
                     value={orderNotes}
                     onChangeText={setOrderNotes}
-                    placeholder="e.g., Customer requested blue color"
+                    placeholder={
+                      businessType === 'creator' && orderDeliveryType === 'digital'
+                        ? 'e.g., Brand name, campaign goal, posting date, key message...'
+                        : 'e.g., Extra napkins, no onions'
+                    }
                     placeholderTextColor="#666"
                     multiline
                     numberOfLines={3}
@@ -1471,47 +1744,113 @@ export default function SalesScreen() {
                   />
                 </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Due Date (Optional)</Text>
-                  <TouchableOpacity
-                    style={styles.formInput}
-                    onPress={() => {
-                      setTempOrderDueDate(orderDueDate ? new Date(orderDueDate) : new Date());
-                      setShowOrderDueDatePicker(true);
-                    }}
-                  >
-                    <Text style={!!orderDueDate ? styles.dateText : styles.datePlaceholder}>
-                      {orderDueDate ? new Date(orderDueDate).toLocaleDateString() : 'Select due date'}
-                    </Text>
-                  </TouchableOpacity>
-
-                  {showOrderDueDatePicker && (
-                    <DateTimePicker
-                      value={tempOrderDueDate}
-                      mode="date"
-                      display="default"
-                      onChange={(event, selectedDate) => {
-                        setShowOrderDueDatePicker(false);
-                        if (event.type === 'set' && selectedDate) {
-                          setOrderDueDate(selectedDate.toISOString());
-                        }
-                      }}
-                      minimumDate={new Date()}
-                    />
-                  )}
-
-                  {!!orderDueDate && (
+                {orderConfig.dueDate && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Due Date (Optional)</Text>
                     <TouchableOpacity
-                      onPress={() => setOrderDueDate('')}
-                      style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                      style={styles.formInput}
+                      onPress={() => {
+                        setTempOrderDueDate(orderDueDate ? new Date(orderDueDate) : new Date());
+                        setShowOrderDueDatePicker(true);
+                      }}
                     >
-                      <Text style={{ color: '#FF4444', fontSize: 12 }}>Clear Due Date</Text>
+                      <Text style={!!orderDueDate ? styles.dateText : styles.datePlaceholder}>
+                        {orderDueDate ? new Date(orderDueDate).toLocaleDateString() : 'Select due date'}
+                      </Text>
                     </TouchableOpacity>
-                  )}
-                </View>
+
+                    {showOrderDueDatePicker && (
+                      <DateTimePicker
+                        value={tempOrderDueDate}
+                        mode="date"
+                        display="default"
+                        onChange={(event, selectedDate) => {
+                          setShowOrderDueDatePicker(false);
+                          if (event.type === 'set' && selectedDate) {
+                            setOrderDueDate(selectedDate.toISOString());
+                          }
+                        }}
+                        minimumDate={new Date()}
+                      />
+                    )}
+
+                    {!!orderDueDate && (
+                      <TouchableOpacity
+                        onPress={() => setOrderDueDate('')}
+                        style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                      >
+                        <Text style={{ color: '#FF4444', fontSize: 12 }}>Clear Due Date</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
               </>
             )}
           </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Product Picker Modal */}
+      <Modal visible={productPickerVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setProductPickerVisible(false)}>
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setProductPickerVisible(false)}>
+              <Ionicons name="close" size={28} color="#888" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Select Product</Text>
+            <View style={{ width: 28 }} />
+          </View>
+          <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+            <TextInput
+              style={[styles.formInput, { marginTop: 0 }]}
+              value={productPickerSearch}
+              onChangeText={setProductPickerSearch}
+              placeholder="Search products..."
+              placeholderTextColor="#666"
+              autoFocus
+            />
+          </View>
+          <FlatList
+            data={catalogProducts.filter(p =>
+              !productPickerSearch || p.name?.toLowerCase().includes(productPickerSearch.toLowerCase())
+            )}
+            keyExtractor={p => p.id || p._id || p.name}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }}
+            renderItem={({ item: p }) => (
+              <TouchableOpacity
+                style={{
+                  paddingVertical: 14,
+                  paddingHorizontal: 4,
+                  borderBottomWidth: 1,
+                  borderBottomColor: '#222',
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+                onPress={() => {
+                  setSelectedCatalogProduct(p);
+                  setSelectedVariant(null);
+                  // Auto-fill price: use base price if no variants, else wait for variant selection
+                  const hasVariants = orderConfig.variants && (p.variants || []).length > 0;
+                  if (!hasVariants) setOrderPrice(String(p.price || 0));
+                  else setOrderPrice('');
+                  setProductPickerSearch('');
+                  setProductPickerVisible(false);
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600' }}>{p.name}</Text>
+                  {!!p.category && <Text style={{ color: '#888', fontSize: 12, marginTop: 2 }}>{p.category}{p.sub_category ? ` › ${p.sub_category}` : ''}</Text>}
+                </View>
+                <Text style={{ color: '#25D366', fontSize: 15, fontWeight: '700', marginLeft: 12 }}>
+                  {orderConfig.variants && (p.variants || []).length > 0
+                    ? `from ${currency} ${Math.min(...(p.variants || []).map((v: any) => parseFloat(v.price) || 0)).toLocaleString()}`
+                    : `${currency} ${(p.price || 0).toLocaleString()}`}
+                </Text>
+              </TouchableOpacity>
+            )}
+            ListEmptyComponent={<Text style={{ color: '#666', textAlign: 'center', marginTop: 40 }}>No products found</Text>}
+          />
         </SafeAreaView>
       </Modal>
 
@@ -1839,6 +2178,37 @@ export default function SalesScreen() {
 
                 <View style={styles.detailsDivider} />
 
+                {/* Order meta — number, type, table/address */}
+                {!!(selectedOrder.order_number || selectedOrder.delivery_type || selectedOrder.table_number) && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    {!!selectedOrder.order_number && (
+                      <View style={{ backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#333' }}>
+                        <Text style={{ color: '#888', fontSize: 10, marginBottom: 1 }}>Order #</Text>
+                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>{selectedOrder.order_number}</Text>
+                      </View>
+                    )}
+                    {!!selectedOrder.delivery_type && (
+                      <View style={{ backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#333' }}>
+                        <Text style={{ color: '#888', fontSize: 10, marginBottom: 1 }}>Type</Text>
+                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', textTransform: 'capitalize' }}>{selectedOrder.delivery_type}</Text>
+                      </View>
+                    )}
+                    {!!selectedOrder.table_number && (
+                      <View style={{ backgroundColor: '#F59E0B22', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#F59E0B' }}>
+                        <Text style={{ color: '#F59E0B', fontSize: 10, marginBottom: 1 }}>Table</Text>
+                        <Text style={{ color: '#F59E0B', fontSize: 18, fontWeight: '800' }}>{selectedOrder.table_number}</Text>
+                      </View>
+                    )}
+                    {!!(selectedOrder.delivery_type === 'delivery' && selectedOrder.delivery_address) && (
+                      <View style={{ backgroundColor: '#1E2A3A', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#3B82F6', flex: 1 }}>
+                        <Text style={{ color: '#3B82F6', fontSize: 10, marginBottom: 1 }}>Deliver to</Text>
+                        <Text style={{ color: '#fff', fontSize: 13 }}>{selectedOrder.delivery_address}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+                <View style={styles.detailsDivider} />
+
                 <View style={styles.detailsRow}>
                   <Text style={styles.detailsLabel}>Product</Text>
                   <Text style={styles.detailsValue}>{selectedOrder.product}</Text>
@@ -1896,6 +2266,98 @@ export default function SalesScreen() {
                   </View>
                 </View>
 
+                {/* ── Order Progress Stepper ── */}
+                <View style={{ marginBottom: 20 }}>
+                  <Text style={[styles.detailsLabel, { marginBottom: 12 }]}>Order Progress</Text>
+                  {(() => {
+                    const steps = ['New', 'Confirmed', 'Preparing', 'Ready', 'Done'];
+                    const stepColors: Record<string, string> = {
+                      New: '#888', Confirmed: '#3B82F6', Preparing: '#F59E0B', Ready: '#25D366', Done: '#6B7280'
+                    };
+                    const stepIcons: Record<string, string> = {
+                      New: '🆕', Confirmed: '✅', Preparing: '👨‍🍳', Ready: '🍽️', Done: '✔️'
+                    };
+                    const currentIdx = steps.indexOf(selectedOrder.fulfillment_status || 'New');
+                    return (
+                      <View style={{ gap: 8 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          {steps.map((step, idx) => {
+                            const isActive = idx === currentIdx;
+                            const isPast = idx < currentIdx;
+                            const color = isActive ? stepColors[step] : isPast ? '#25D366' : '#333';
+                            return (
+                              <View key={step} style={{ flex: 1, alignItems: 'center' }}>
+                                {idx < steps.length - 1 && (
+                                  <View style={{
+                                    position: 'absolute', top: 14, left: '50%', right: '-50%',
+                                    height: 2, backgroundColor: isPast ? '#25D366' : '#333', zIndex: 0
+                                  }} />
+                                )}
+                                <TouchableOpacity
+                                  style={{
+                                    width: 28, height: 28, borderRadius: 14,
+                                    backgroundColor: isActive ? stepColors[step] : isPast ? '#1A3A2A' : '#1E1E1E',
+                                    borderWidth: 2, borderColor: color,
+                                    alignItems: 'center', justifyContent: 'center', zIndex: 1,
+                                  }}
+                                  onPress={async () => {
+                                    try {
+                                      const res = await apiClient.patch(`/orders/${selectedOrder.id}/progress`, { fulfillment_status: step });
+                                      const updated = { ...selectedOrder, fulfillment_status: res.data.fulfillment_status };
+                                      setSelectedOrder(updated);
+                                      setOrders(orders.map(o => o.id === selectedOrder.id ? updated : o));
+                                    } catch { Alert.alert('Error', 'Failed to update progress'); }
+                                  }}
+                                >
+                                  {(isActive || isPast) ? (
+                                    <Ionicons name={isPast && !isActive ? 'checkmark' : 'ellipse'} size={12} color={isActive ? '#fff' : '#25D366'} />
+                                  ) : (
+                                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#444' }} />
+                                  )}
+                                </TouchableOpacity>
+                                <Text style={{ color: isActive ? stepColors[step] : isPast ? '#25D366' : '#555', fontSize: 9, marginTop: 4, textAlign: 'center' }}>
+                                  {step}
+                                </Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    );
+                  })()}
+                </View>
+
+                {/* ── Staff Assignment ── */}
+                <View style={{ marginBottom: 16 }}>
+                  <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Assigned To</Text>
+                  {staffList.length === 0 ? (
+                    <Text style={{ color: '#555', fontSize: 13 }}>No staff added yet — add staff in Account Settings</Text>
+                  ) : (
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      {staffList.map(s => {
+                        const isAssigned = selectedOrder.assigned_to === s.name;
+                        return (
+                          <TouchableOpacity
+                            key={s.id}
+                            style={[styles.statusOption, isAssigned && styles.statusOptionActive]}
+                            onPress={async () => {
+                              const newVal = isAssigned ? '' : s.name;
+                              try {
+                                const res = await apiClient.patch(`/orders/${selectedOrder.id}/progress`, { assigned_to: newVal });
+                                const updated = { ...selectedOrder, assigned_to: res.data.assigned_to };
+                                setSelectedOrder(updated);
+                                setOrders(orders.map(o => o.id === selectedOrder.id ? updated : o));
+                              } catch { Alert.alert('Error', 'Failed to assign staff'); }
+                            }}
+                          >
+                            <Text style={[styles.statusOptionText, isAssigned && styles.statusOptionTextActive]}>{s.name}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+                </View>
+
                 {/* Delivery Status Update */}
                 <View style={{ marginBottom: 16 }}>
                   <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Delivery Status</Text>
@@ -1941,10 +2403,10 @@ export default function SalesScreen() {
                           'This will convert the order to a sale and remove it from orders. Choose payment method:',
                           [
                             ...paymentMethods.map((method) => ({
-                              text: method,
+                              text: method.name,
                               onPress: async () => {
                                 try {
-                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method)}`);
+                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method.name)}`);
                                   setOrders(orders.filter(o => o.id !== selectedOrder.id));
                                   setOrderDetailsVisible(false);
                                   Alert.alert('Success', 'Order converted to sale!');
@@ -1971,6 +2433,34 @@ export default function SalesScreen() {
                     <View style={styles.detailsRow}>
                       <Text style={styles.detailsLabel}>Notes</Text>
                       <Text style={styles.detailsValue}>{selectedOrder.notes}</Text>
+                    </View>
+                  </>
+                )}
+
+                {(!!selectedOrder.payee_name || !!selectedOrder.amount_paid) && (
+                  <>
+                    <View style={styles.detailsDivider} />
+                    <View style={{ backgroundColor: '#0d3321', borderRadius: 10, padding: 12, marginTop: 4 }}>
+                      <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginBottom: 6 }}>💰 Payment Confirmation</Text>
+                      {!!selectedOrder.payee_name && (
+                        <View style={styles.detailsRow}>
+                          <Text style={styles.detailsLabel}>Paid by</Text>
+                          <Text style={[styles.detailsValue, { fontWeight: '700' }]}>{selectedOrder.payee_name}</Text>
+                        </View>
+                      )}
+                      {!!selectedOrder.amount_paid && (
+                        <View style={styles.detailsRow}>
+                          <Text style={styles.detailsLabel}>Amount</Text>
+                          <Text style={[styles.detailsValue, { fontWeight: '700', color: '#25D366' }]}>{currency} {selectedOrder.amount_paid.toLocaleString()}</Text>
+                        </View>
+                      )}
+                      {!!selectedOrder.payment_received_at && (
+                        <View style={styles.detailsRow}>
+                          <Text style={styles.detailsLabel}>Received at</Text>
+                          <Text style={styles.detailsValue}>{new Date(selectedOrder.payment_received_at).toLocaleString()}</Text>
+                        </View>
+                      )}
+                      <Text style={{ color: '#556677', fontSize: 11, marginTop: 6 }}>Verify against your payment records before confirming.</Text>
                     </View>
                   </>
                 )}

@@ -9,6 +9,7 @@ import {
     TextInput,
     Alert,
     ActivityIndicator,
+    Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -138,28 +139,44 @@ function FAQField({
 }
 
 const BUSINESS_TYPES = [
-    { key: 'retail',      label: 'Retail',          icon: 'cart-outline' },
-    { key: 'salon',       label: 'Salon & Beauty',  icon: 'color-palette-outline' },
-    { key: 'services',    label: 'Services/Tech',   icon: 'construct-outline' },
-    { key: 'fitness',     label: 'Fitness',         icon: 'barbell-outline' },
-    { key: 'restaurant',  label: 'Restaurant',      icon: 'restaurant-outline' },
-    { key: 'healthcare',  label: 'Healthcare',      icon: 'medkit-outline' },
-    { key: 'creator',     label: 'Creator',         icon: 'videocam-outline' },
-    { key: 'rental',      label: 'Rental',          icon: 'home-outline' },
-    { key: 'general',     label: 'General',         icon: 'storefront-outline' },
+    { key: 'retail',      label: 'Retail / Shop',        icon: 'cart-outline' },
+    { key: 'wholesale',   label: 'Wholesale / B2B',      icon: 'cube-outline' },
+    { key: 'restaurant',  label: 'Restaurant / Café',    icon: 'restaurant-outline' },
+    { key: 'food',        label: 'Food Delivery',        icon: 'fast-food-outline' },
+    { key: 'bakery',      label: 'Bakery',               icon: 'cafe-outline' },
+    { key: 'grocery',     label: 'Grocery',              icon: 'basket-outline' },
+    { key: 'salon',       label: 'Salon & Beauty',       icon: 'color-palette-outline' },
+    { key: 'spa',         label: 'Spa & Wellness',       icon: 'flower-outline' },
+    { key: 'services',    label: 'Services / Freelance', icon: 'construct-outline' },
+    { key: 'repair',      label: 'Repair',               icon: 'build-outline' },
+    { key: 'cleaning',    label: 'Cleaning',             icon: 'water-outline' },
+    { key: 'fitness',     label: 'Gym & Fitness',        icon: 'barbell-outline' },
+    { key: 'events',      label: 'Events & Photos',      icon: 'camera-outline' },
+    { key: 'healthcare',  label: 'Healthcare',           icon: 'medkit-outline' },
+    { key: 'rental',      label: 'Rental / Airbnb',      icon: 'home-outline' },
+    { key: 'creator',     label: 'Creator / Digital',    icon: 'videocam-outline' },
+    { key: 'general',     label: 'General / Other',      icon: 'storefront-outline' },
 ];
 
 const getTypeConfig = (type: string) => {
     const configs: Record<string, any> = {
-        retail:     { servicesLabel: 'Products & Prices',          servicesPlaceholder: 'Product - price',                        servicesIcon: 'cart-outline',        showDelivery: true,  deliveryLabel: 'Delivery Zones',   deliveryPlaceholder: 'Area - delivery cost',   hoursLabel: 'Business Hours',    aboutLabel: 'About Your Shop' },
-        salon:      { servicesLabel: 'Services & Prices',          servicesPlaceholder: 'Service - price (e.g. Haircut - $20)',   servicesIcon: 'cut-outline',         showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Business Hours',    aboutLabel: 'About Your Salon' },
-        services:   { servicesLabel: 'Services & Rates',           servicesPlaceholder: 'Service - rate (e.g. Web design - $500)',servicesIcon: 'construct-outline',   showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Working Hours',     aboutLabel: 'About Your Business' },
-        fitness:    { servicesLabel: 'Classes & Prices',           servicesPlaceholder: 'Class - price (e.g. Yoga - $20)',        servicesIcon: 'barbell-outline',     showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Gym / Studio Hours',aboutLabel: 'About Your Fitness Business' },
-        restaurant: { servicesLabel: 'Menu Items & Prices',        servicesPlaceholder: 'Item - price (e.g. Burger - $8)',        servicesIcon: 'restaurant-outline',  showDelivery: true,  deliveryLabel: 'Delivery Zones',   deliveryPlaceholder: 'Area - delivery fee',    hoursLabel: 'Opening Hours',     aboutLabel: 'About Your Restaurant' },
-        healthcare: { servicesLabel: 'Treatments & Fees',          servicesPlaceholder: 'Treatment - fee (e.g. Consult - $50)',   servicesIcon: 'medkit-outline',      showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Clinic Hours',      aboutLabel: 'About Your Practice' },
-        creator:    { servicesLabel: '',                           servicesPlaceholder: '',                                       servicesIcon: '',                    showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Response Hours',    aboutLabel: 'About You' },
-        rental:     { servicesLabel: 'Properties / Items & Rates', servicesPlaceholder: 'Item - rate (e.g. 2BR Apt - $80/night)',  servicesIcon: 'home-outline',        showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Availability Hours',aboutLabel: 'About Your Rental Business' },
-        general:    { servicesLabel: 'Services or Products',       servicesPlaceholder: 'Service or product - price',             servicesIcon: 'storefront-outline',  showDelivery: false, deliveryLabel: '',                 deliveryPlaceholder: '',               hoursLabel: 'Business Hours',    aboutLabel: 'About Your Business' },
+        retail:     { servicesLabel: 'Products & Prices',            servicesPlaceholder: 'Product - price (e.g. T-shirt - $15)',              servicesIcon: 'cart-outline',        showDelivery: true,  deliveryLabel: 'Delivery Zones',    deliveryPlaceholder: 'Area - delivery cost',          hoursLabel: 'Business Hours',     aboutLabel: 'About Your Shop' },
+        wholesale:  { servicesLabel: 'Products & Wholesale Prices',  servicesPlaceholder: 'Product - min qty - price (e.g. T-shirts - 12pcs - $60)', servicesIcon: 'cube-outline',   showDelivery: true,  deliveryLabel: 'Delivery Zones',    deliveryPlaceholder: 'Area - delivery cost',          hoursLabel: 'Business Hours',     aboutLabel: 'About Your Wholesale Business' },
+        restaurant: { servicesLabel: 'Menu Items & Prices',          servicesPlaceholder: 'Item - price (e.g. Burger - $8)',                  servicesIcon: 'restaurant-outline',  showDelivery: true,  deliveryLabel: 'Delivery Zones',    deliveryPlaceholder: 'Area - delivery fee',           hoursLabel: 'Opening Hours',      aboutLabel: 'About Your Restaurant' },
+        food:       { servicesLabel: 'Menu Items & Prices',          servicesPlaceholder: 'Item - price (e.g. Rice & Stew - $5)',             servicesIcon: 'fast-food-outline',   showDelivery: true,  deliveryLabel: 'Delivery Areas',    deliveryPlaceholder: 'Area - delivery fee',           hoursLabel: 'Operating Hours',    aboutLabel: 'About Your Food Business' },
+        bakery:     { servicesLabel: 'Products & Prices',            servicesPlaceholder: 'Item - price (e.g. Birthday Cake - $30)',          servicesIcon: 'cafe-outline',        showDelivery: true,  deliveryLabel: 'Delivery Zones',    deliveryPlaceholder: 'Area - delivery fee',           hoursLabel: 'Bakery Hours',       aboutLabel: 'About Your Bakery' },
+        grocery:    { servicesLabel: 'Products & Prices',            servicesPlaceholder: 'Product - price (e.g. 1kg Sugar - $1.50)',         servicesIcon: 'basket-outline',      showDelivery: true,  deliveryLabel: 'Delivery Areas',    deliveryPlaceholder: 'Area - delivery fee',           hoursLabel: 'Store Hours',        aboutLabel: 'About Your Store' },
+        salon:      { servicesLabel: 'Services & Prices',            servicesPlaceholder: 'Service - price (e.g. Haircut - $20)',             servicesIcon: 'cut-outline',         showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Business Hours',     aboutLabel: 'About Your Salon' },
+        spa:        { servicesLabel: 'Treatments & Prices',          servicesPlaceholder: 'Treatment - duration - price (e.g. Massage - 60min - $70)', servicesIcon: 'flower-outline', showDelivery: false, deliveryLabel: '',             deliveryPlaceholder: '',                              hoursLabel: 'Spa Hours',          aboutLabel: 'About Your Spa' },
+        services:   { servicesLabel: 'Services & Rates',             servicesPlaceholder: 'Service - rate (e.g. Web design - $500)',          servicesIcon: 'construct-outline',   showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Working Hours',      aboutLabel: 'About Your Business' },
+        repair:     { servicesLabel: 'Services & Rates',             servicesPlaceholder: 'Service - rate (e.g. Phone screen repair - $40)',  servicesIcon: 'build-outline',       showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Working Hours',      aboutLabel: 'About Your Repair Business' },
+        cleaning:   { servicesLabel: 'Packages & Prices',            servicesPlaceholder: 'Package - price (e.g. 2BR Deep Clean - $80)',      servicesIcon: 'water-outline',       showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Operating Hours',    aboutLabel: 'About Your Cleaning Business' },
+        fitness:    { servicesLabel: 'Classes & Memberships',        servicesPlaceholder: 'Class / plan - price (e.g. Monthly membership - $40)', servicesIcon: 'barbell-outline', showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Gym / Studio Hours', aboutLabel: 'About Your Fitness Business' },
+        events:     { servicesLabel: 'Packages & Rates',             servicesPlaceholder: 'Package - price (e.g. Wedding Photography - $800)', servicesIcon: 'camera-outline',     showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Availability',       aboutLabel: 'About Your Business' },
+        healthcare: { servicesLabel: 'Consultations & Fees',         servicesPlaceholder: 'Consultation - fee (e.g. General Consult - $50)',  servicesIcon: 'medkit-outline',      showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Clinic Hours',       aboutLabel: 'About Your Practice' },
+        rental:     { servicesLabel: 'Properties / Items & Rates',   servicesPlaceholder: 'Item - rate (e.g. 2BR Apt - $80/night)',           servicesIcon: 'home-outline',        showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Availability Hours', aboutLabel: 'About Your Rental Business' },
+        creator:    { servicesLabel: '',                             servicesPlaceholder: '',                                                 servicesIcon: '',                    showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Response Hours',     aboutLabel: 'About You' },
+        general:    { servicesLabel: 'Services or Products',         servicesPlaceholder: 'Service or product - price',                       servicesIcon: 'storefront-outline',  showDelivery: false, deliveryLabel: '',                  deliveryPlaceholder: '',                              hoursLabel: 'Business Hours',     aboutLabel: 'About Your Business' },
     };
     return configs[type] ?? configs.general;
 };
@@ -208,6 +225,12 @@ export default function BusinessKnowledgeModal({
     const [newPmName, setNewPmName] = useState('');
     const [newPmDetails, setNewPmDetails] = useState('');
     const [customPmName, setCustomPmName] = useState('');
+
+    // Restaurant-specific state
+    const [restaurantModes, setRestaurantModes] = useState({ dine_in: true, delivery: true, takeout: true });
+    const [restaurantTableRange, setRestaurantTableRange] = useState('');
+    const [restaurantAvgWait, setRestaurantAvgWait] = useState('');
+    const [restaurantMinDelivery, setRestaurantMinDelivery] = useState('');
 
     // List states (derived from string fields)
     const [productItems, setProductItems] = useState<string[]>([]);
@@ -262,6 +285,16 @@ export default function BusinessKnowledgeModal({
                         typeof m === 'string' ? { name: m, details: '' } : m
                     ));
                 }
+                // Restaurant fields
+                setRestaurantModes({
+                    dine_in:  data.restaurant_has_dine_in  ?? true,
+                    delivery: data.restaurant_has_delivery ?? true,
+                    takeout:  data.restaurant_has_takeout  ?? true,
+                });
+                setRestaurantTableRange(data.restaurant_table_range || '');
+                setRestaurantAvgWait(data.restaurant_avg_wait || '');
+                setRestaurantMinDelivery(data.restaurant_min_delivery || '');
+
                 setProductItems(stringToItems(data.products_services));
                 setDeliveryItems(stringToItems(data.delivery_info));
                 const faqLines = stringToItems(data.faqs);
@@ -322,6 +355,13 @@ export default function BusinessKnowledgeModal({
             faqs: faqList.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n'),
             special_offers: itemsToString(offerItems),
             business_type: businessType,
+            // Restaurant fields
+            restaurant_has_dine_in:  restaurantModes.dine_in,
+            restaurant_has_delivery: restaurantModes.delivery,
+            restaurant_has_takeout:  restaurantModes.takeout,
+            restaurant_table_range:  restaurantTableRange,
+            restaurant_avg_wait:     restaurantAvgWait,
+            restaurant_min_delivery: restaurantMinDelivery,
             ...creator,
             creator_platforms: selectedPlatforms.join(', '),
         };
@@ -406,7 +446,8 @@ export default function BusinessKnowledgeModal({
         }
     };
 
-    const isCreator = businessType === 'creator';
+    const isCreator     = businessType === 'creator';
+    const isRestaurant  = businessType === 'restaurant';
     const typeConfig = getTypeConfig(businessType);
 
     return (
@@ -513,6 +554,118 @@ export default function BusinessKnowledgeModal({
                                 </TouchableOpacity>
                             )}
                         </View>
+
+                        {/* ── RESTAURANT FIELDS ── */}
+                        {isRestaurant && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="restaurant" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Restaurant Setup</Text>
+                                </View>
+
+                                {/* Order Modes */}
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Order Modes</Text>
+                                    <Text style={styles.hint}>Choose which order types your restaurant accepts</Text>
+
+                                    <View style={styles.toggleRow}>
+                                        <View style={styles.toggleInfo}>
+                                            <Ionicons name="people-outline" size={18} color="#4A90D9" />
+                                            <View style={{ marginLeft: 10 }}>
+                                                <Text style={styles.toggleLabel}>Dine-in</Text>
+                                                <Text style={styles.toggleDesc}>Customers order at the table</Text>
+                                            </View>
+                                        </View>
+                                        <Switch
+                                            value={restaurantModes.dine_in}
+                                            onValueChange={v => setRestaurantModes(m => ({ ...m, dine_in: v }))}
+                                            trackColor={{ false: '#1A2942', true: '#25D366' }}
+                                            thumbColor="#fff"
+                                        />
+                                    </View>
+
+                                    <View style={styles.toggleRow}>
+                                        <View style={styles.toggleInfo}>
+                                            <Ionicons name="bicycle-outline" size={18} color="#F59E0B" />
+                                            <View style={{ marginLeft: 10 }}>
+                                                <Text style={styles.toggleLabel}>Delivery</Text>
+                                                <Text style={styles.toggleDesc}>Deliver to customer's address</Text>
+                                            </View>
+                                        </View>
+                                        <Switch
+                                            value={restaurantModes.delivery}
+                                            onValueChange={v => setRestaurantModes(m => ({ ...m, delivery: v }))}
+                                            trackColor={{ false: '#1A2942', true: '#25D366' }}
+                                            thumbColor="#fff"
+                                        />
+                                    </View>
+
+                                    <View style={styles.toggleRow}>
+                                        <View style={styles.toggleInfo}>
+                                            <Ionicons name="bag-handle-outline" size={18} color="#9B59B6" />
+                                            <View style={{ marginLeft: 10 }}>
+                                                <Text style={styles.toggleLabel}>Takeout / Pickup</Text>
+                                                <Text style={styles.toggleDesc}>Customer collects from restaurant</Text>
+                                            </View>
+                                        </View>
+                                        <Switch
+                                            value={restaurantModes.takeout}
+                                            onValueChange={v => setRestaurantModes(m => ({ ...m, takeout: v }))}
+                                            trackColor={{ false: '#1A2942', true: '#25D366' }}
+                                            thumbColor="#fff"
+                                        />
+                                    </View>
+                                </View>
+
+                                {/* Table Range — only if dine-in enabled */}
+                                {restaurantModes.dine_in && (
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Table Numbers</Text>
+                                        <Text style={styles.hint}>e.g. "Tables 1–20" or "A1–A10, B1–B10"</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            placeholder="What table numbers do you have?"
+                                            placeholderTextColor="#555"
+                                            value={restaurantTableRange}
+                                            onChangeText={setRestaurantTableRange}
+                                        />
+                                    </View>
+                                )}
+
+                                {/* Avg Wait / Prep Time */}
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>Avg. Preparation Time</Text>
+                                    <Text style={styles.hint}>e.g. "15–20 minutes" — shown to customer after ordering</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="How long does food take to prepare?"
+                                        placeholderTextColor="#555"
+                                        value={restaurantAvgWait}
+                                        onChangeText={setRestaurantAvgWait}
+                                    />
+                                </View>
+
+                                {/* Min Delivery Amount — only if delivery enabled */}
+                                {restaurantModes.delivery && (
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Minimum Delivery Order</Text>
+                                        <Text style={styles.hint}>e.g. "$10 minimum" — AI will mention this to delivery customers</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            placeholder="Minimum order amount for delivery?"
+                                            placeholderTextColor="#555"
+                                            value={restaurantMinDelivery}
+                                            onChangeText={setRestaurantMinDelivery}
+                                        />
+                                    </View>
+                                )}
+
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="storefront-outline" size={16} color="#6B7D99" />
+                                    <Text style={[styles.sectionDividerText, { color: '#6B7D99' }]}>Menu & General Info</Text>
+                                </View>
+                            </>
+                        )}
 
                         {/* ── CREATOR FIELDS ── */}
                         {isCreator && (
@@ -1297,5 +1450,33 @@ const styles = StyleSheet.create({
         color: '#FFD700',
         letterSpacing: 0.5,
         textTransform: 'uppercase',
+    },
+    // Restaurant toggle rows
+    toggleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#0D1F35',
+        borderRadius: 10,
+        paddingVertical: 12,
+        paddingHorizontal: 14,
+        marginBottom: 8,
+        borderWidth: 1,
+        borderColor: '#1A2942',
+    },
+    toggleInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+    },
+    toggleLabel: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#FFFFFF',
+    },
+    toggleDesc: {
+        fontSize: 12,
+        color: '#6B7D99',
+        marginTop: 2,
     },
 });

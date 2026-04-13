@@ -18,6 +18,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import { useBusiness } from '../../context/BusinessContext';
 import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/api';
@@ -121,6 +122,123 @@ export default function AccountScreen() {
   // Business Type State
   const [businessType, setBusinessType] = useState('');
   const [showBusinessTypePicker, setShowBusinessTypePicker] = useState(false);
+  const [restaurantHasReservations, setRestaurantHasReservations] = useState(false);
+
+  // Journey Settings — per-business-type config
+  // Shared
+  const [journeyDeliveryInfo, setJourneyDeliveryInfo] = useState('');
+  const [journeyBusinessHours, setJourneyBusinessHours] = useState('');
+  // Retail
+  const [retailHasCustomOrders, setRetailHasCustomOrders] = useState(false);
+  const [retailCustomLeadTime, setRetailCustomLeadTime] = useState('');
+  const [retailReturnPolicy, setRetailReturnPolicy] = useState('');
+  // Restaurant / food
+  const [restaurantAvgWait, setRestaurantAvgWait] = useState('');
+  const [restaurantMinDelivery, setRestaurantMinDelivery] = useState('');
+  const [restaurantTableRange, setRestaurantTableRange] = useState('');
+  // Bakery
+  const [bakeryAdvanceDays, setBakeryAdvanceDays] = useState('3');
+  const [bakeryDepositRequired, setBakeryDepositRequired] = useState(false);
+  const [bakeryDepositPct, setBakeryDepositPct] = useState('50');
+  // Grocery
+  const [groceryDeliverySlots, setGroceryDeliverySlots] = useState('');
+  const [groceryMinOrder, setGroceryMinOrder] = useState('');
+  const [groceryAllowSubs, setGroceryAllowSubs] = useState(true);
+  // Wholesale
+  const [wholesaleLeadTime, setWholesaleLeadTime] = useState('');
+  const [wholesaleMinOrderValue, setWholesaleMinOrderValue] = useState('');
+  const [wholesalePaymentTerms, setWholesalePaymentTerms] = useState('');
+  const [wholesaleHasCredit, setWholesaleHasCredit] = useState(false);
+  // Salon
+  const [salonMultipleStylists, setSalonMultipleStylists] = useState(false);
+  const [salonStylistNames, setSalonStylistNames] = useState('');
+  const [salonDepositRequired, setSalonDepositRequired] = useState(false);
+  const [salonDepositPct, setSalonDepositPct] = useState('50');
+  const [salonCancellationPolicy, setSalonCancellationPolicy] = useState('');
+  // Spa
+  const [spaHasCouples, setSpaHasCouples] = useState(true);
+  const [spaDepositRequired, setSpaDepositRequired] = useState(true);
+  const [spaDepositPct, setSpaDepositPct] = useState('50');
+  const [spaCancellationHours, setSpaCancellationHours] = useState('24');
+  // Repair
+  const [repairHasOnsite, setRepairHasOnsite] = useState(true);
+  const [repairHasDropoff, setRepairHasDropoff] = useState(true);
+  const [repairDiagnosisFree, setRepairDiagnosisFree] = useState(true);
+  const [repairTurnaround, setRepairTurnaround] = useState('');
+  const [repairWarranty, setRepairWarranty] = useState('');
+  // Services / Freelance
+  const [servicesHasOnsite, setServicesHasOnsite] = useState(true);
+  const [servicesHasRemote, setServicesHasRemote] = useState(true);
+  const [servicesQuoteFirst, setServicesQuoteFirst] = useState(false);
+  const [servicesDepositRequired, setServicesDepositRequired] = useState(false);
+  const [servicesTurnaround, setServicesTurnaround] = useState('');
+  const [servicesCancellationPolicy, setServicesCancellationPolicy] = useState('');
+  // Support Agent
+  const [supportResponseSla, setSupportResponseSla] = useState('');
+  const [supportHasLiveHandoff, setSupportHasLiveHandoff] = useState(false);
+  const [supportHasBilling, setSupportHasBilling] = useState(true);
+  const [supportHasTechnical, setSupportHasTechnical] = useState(true);
+  const [supportHasComplaints, setSupportHasComplaints] = useState(true);
+  const [supportEscalationPolicy, setSupportEscalationPolicy] = useState('');
+  const [supportRefundPolicy, setSupportRefundPolicy] = useState('');
+  const [supportTicketPrefix, setSupportTicketPrefix] = useState('TKT');
+  // Hotel
+  const [hotelCheckinTime, setHotelCheckinTime] = useState('2:00 PM');
+  const [hotelCheckoutTime, setHotelCheckoutTime] = useState('11:00 AM');
+  const [hotelMinNights, setHotelMinNights] = useState('');
+  const [hotelDepositRequired, setHotelDepositRequired] = useState(true);
+  const [hotelDepositPct, setHotelDepositPct] = useState('30');
+  const [hotelHasMealPlans, setHotelHasMealPlans] = useState(false);
+  const [hotelMealPlanOptions, setHotelMealPlanOptions] = useState('');
+  const [hotelHasAirportTransfer, setHotelHasAirportTransfer] = useState(false);
+  const [hotelHasSpa, setHotelHasSpa] = useState(false);
+  const [hotelHasPool, setHotelHasPool] = useState(false);
+  const [hotelCancellationPolicy, setHotelCancellationPolicy] = useState('');
+  // Rental
+  const [rentalType, setRentalType] = useState('property');
+  const [rentalDepositRequired, setRentalDepositRequired] = useState(true);
+  const [rentalDepositPct, setRentalDepositPct] = useState('30');
+  const [rentalMinNights, setRentalMinNights] = useState('');
+  const [rentalCheckinTime, setRentalCheckinTime] = useState('');
+  const [rentalCheckoutTime, setRentalCheckoutTime] = useState('');
+  const [rentalPetPolicy, setRentalPetPolicy] = useState('');
+  const [rentalCancellationPolicy, setRentalCancellationPolicy] = useState('');
+  const [rentalHasExtras, setRentalHasExtras] = useState(false);
+  // Cleaning
+  const [cleaningHasRecurring, setCleaningHasRecurring] = useState(true);
+  const [cleaningHasCommercial, setCleaningHasCommercial] = useState(false);
+  const [cleaningSuppliesIncluded, setCleaningSuppliesIncluded] = useState(true);
+  // Fitness
+  const [fitnessHasClasses, setFitnessHasClasses] = useState(true);
+  const [fitnessHasMemberships, setFitnessHasMemberships] = useState(true);
+  const [fitnessHasPT, setFitnessHasPT] = useState(false);
+  const [fitnessHasTrial, setFitnessHasTrial] = useState(true);
+  const [fitnessClassSchedule, setFitnessClassSchedule] = useState('');
+  // Events
+  const [eventsDepositPct, setEventsDepositPct] = useState('50');
+  const [eventsLeadTime, setEventsLeadTime] = useState('');
+  const [eventsDeliveryDays, setEventsDeliveryDays] = useState('');
+  // Healthcare
+  const [hcConsultationFee, setHcConsultationFee] = useState('');
+  const [hcHasLabTests, setHcHasLabTests] = useState(false);
+  const [hcHasHomeVisit, setHcHasHomeVisit] = useState(false);
+  const [hcPrepInstructions, setHcPrepInstructions] = useState('');
+  const [hcInsuranceAccepted, setHcInsuranceAccepted] = useState('');
+  // Creator
+  const [creatorNiche, setCreatorNiche] = useState('');
+  const [creatorPlatforms, setCreatorPlatforms] = useState('');
+  const [creatorFollowers, setCreatorFollowers] = useState('');
+  const [creatorLeadTime, setCreatorLeadTime] = useState('');
+  const [creatorRevisions, setCreatorRevisions] = useState('');
+  const [creatorUsageRights, setCreatorUsageRights] = useState('');
+  const [creatorDepositPct, setCreatorDepositPct] = useState('50');
+  const [creatorRatesOnRequest, setCreatorRatesOnRequest] = useState(false);
+  const [journeySaving, setJourneySaving] = useState(false);
+
+  // Staff list
+  const [staffList, setStaffList] = useState<{id: string; name: string}[]>([]);
+  const [newStaffName, setNewStaffName] = useState('');
+  const [addingStaff, setAddingStaff] = useState(false);
 
   const { user, logout, refreshUser } = useAuth();
   const { refresh: refreshBusinessContext } = useBusiness();
@@ -143,6 +261,108 @@ export default function AccountScreen() {
 
   const [currency, setCurrency] = useState('USD');
 
+  const fetchJourneySettings = useCallback(async () => {
+    try {
+      const bk = await settingsAPI.getBusinessKnowledge() as any;
+      setJourneyDeliveryInfo(bk.delivery_info || '');
+      setJourneyBusinessHours(bk.business_hours || '');
+      setRetailHasCustomOrders(!!bk.retail_has_custom_orders);
+      setRetailCustomLeadTime(bk.retail_custom_lead_time || '');
+      setRetailReturnPolicy(bk.retail_return_policy || '');
+      setRestaurantAvgWait(bk.restaurant_avg_wait || '');
+      setRestaurantMinDelivery(bk.restaurant_min_delivery || '');
+      setRestaurantTableRange(bk.restaurant_table_range || '');
+      setBakeryAdvanceDays(String(bk.bakery_advance_days ?? 3));
+      setBakeryDepositRequired(!!bk.bakery_deposit_required);
+      setBakeryDepositPct(String(bk.bakery_deposit_pct ?? 50));
+      setGroceryDeliverySlots(bk.grocery_delivery_slots || '');
+      setGroceryMinOrder(bk.grocery_min_order || '');
+      setGroceryAllowSubs(bk.grocery_allow_substitutions !== false);
+      setWholesaleLeadTime(bk.wholesale_lead_time || '');
+      setWholesaleMinOrderValue(bk.wholesale_min_order_value || '');
+      setWholesalePaymentTerms(bk.wholesale_payment_terms || '');
+      setWholesaleHasCredit(!!bk.wholesale_has_credit_account);
+      setSalonMultipleStylists(!!bk.salon_multiple_stylists);
+      setSalonStylistNames(bk.salon_stylist_names || '');
+      setSalonDepositRequired(!!bk.salon_deposit_required);
+      setSalonDepositPct(String(bk.salon_deposit_pct ?? 50));
+      setSalonCancellationPolicy(bk.salon_cancellation_policy || '');
+      setSpaHasCouples(bk.spa_has_couples !== false);
+      setSpaDepositRequired(bk.spa_deposit_required !== false);
+      setSpaDepositPct(String(bk.spa_deposit_pct ?? 50));
+      setSpaCancellationHours(String(bk.spa_cancellation_hours ?? 24));
+      setRepairHasOnsite(bk.repair_has_onsite !== false);
+      setRepairHasDropoff(bk.repair_has_dropoff !== false);
+      setRepairDiagnosisFree(bk.repair_diagnosis_free !== false);
+      setRepairTurnaround(bk.repair_turnaround || '');
+      setRepairWarranty(bk.repair_warranty || '');
+      setServicesHasOnsite(bk.services_has_onsite !== false);
+      setServicesHasRemote(bk.services_has_remote !== false);
+      setServicesQuoteFirst(!!bk.services_quote_first);
+      setServicesDepositRequired(!!bk.services_deposit_required);
+      setServicesTurnaround(bk.services_turnaround || '');
+      setServicesCancellationPolicy(bk.services_cancellation_policy || '');
+      setSupportResponseSla(bk.support_response_sla || '');
+      setSupportHasLiveHandoff(!!bk.support_has_live_handoff);
+      setSupportHasBilling(bk.support_has_billing_support !== false);
+      setSupportHasTechnical(bk.support_has_technical_support !== false);
+      setSupportHasComplaints(bk.support_has_complaints !== false);
+      setSupportEscalationPolicy(bk.support_escalation_policy || '');
+      setSupportRefundPolicy(bk.support_refund_policy || '');
+      setSupportTicketPrefix(bk.support_ticket_prefix || 'TKT');
+      setHotelCheckinTime(bk.hotel_checkin_time || '2:00 PM');
+      setHotelCheckoutTime(bk.hotel_checkout_time || '11:00 AM');
+      setHotelMinNights(String(bk.hotel_min_nights || ''));
+      setHotelDepositRequired(bk.hotel_deposit_required !== false);
+      setHotelDepositPct(String(bk.hotel_deposit_pct || 30));
+      setHotelHasMealPlans(!!bk.hotel_has_meal_plans);
+      setHotelMealPlanOptions(bk.hotel_meal_plan_options || '');
+      setHotelHasAirportTransfer(!!bk.hotel_has_airport_transfer);
+      setHotelHasSpa(!!bk.hotel_has_spa);
+      setHotelHasPool(!!bk.hotel_has_pool);
+      setHotelCancellationPolicy(bk.hotel_cancellation_policy || '');
+      setRentalType(bk.rental_type || 'property');
+      setRentalDepositRequired(bk.rental_deposit_required !== false);
+      setRentalDepositPct(String(bk.rental_deposit_pct || 30));
+      setRentalMinNights(String(bk.rental_min_nights || ''));
+      setRentalCheckinTime(bk.rental_checkin_time || '');
+      setRentalCheckoutTime(bk.rental_checkout_time || '');
+      setRentalPetPolicy(bk.rental_pet_policy || '');
+      setRentalCancellationPolicy(bk.rental_cancellation_policy || '');
+      setRentalHasExtras(!!bk.rental_has_extras);
+      setCleaningHasRecurring(bk.cleaning_has_recurring !== false);
+      setCleaningHasCommercial(!!bk.cleaning_has_commercial);
+      setCleaningSuppliesIncluded(bk.cleaning_supplies_included !== false);
+      setFitnessHasClasses(bk.fitness_has_classes !== false);
+      setFitnessHasMemberships(bk.fitness_has_memberships !== false);
+      setFitnessHasPT(!!bk.fitness_has_personal_training);
+      setFitnessHasTrial(bk.fitness_has_trial !== false);
+      setFitnessClassSchedule(bk.fitness_class_schedule || '');
+      setEventsDepositPct(String(bk.events_deposit_pct ?? 50));
+      setEventsLeadTime(bk.events_lead_time || '');
+      setEventsDeliveryDays(bk.events_delivery_days || '');
+      setHcConsultationFee(bk.hc_consultation_fee || '');
+      setHcHasLabTests(!!bk.hc_has_lab_tests);
+      setHcHasHomeVisit(!!bk.hc_has_home_visit);
+      setHcPrepInstructions(bk.hc_prep_instructions || '');
+      setHcInsuranceAccepted(bk.hc_insurance_accepted || '');
+      setCreatorNiche(bk.creator_niche || '');
+      setCreatorPlatforms(bk.creator_platforms || '');
+      setCreatorFollowers(bk.creator_followers || '');
+      setCreatorLeadTime(bk.creator_lead_time || '');
+      setCreatorRevisions(bk.creator_revisions || '');
+      setCreatorUsageRights(bk.creator_usage_rights || '');
+      setCreatorDepositPct(String(bk.creator_deposit_pct ?? 50));
+      setCreatorRatesOnRequest(!!bk.creator_rates_on_request);
+    } catch (e) {}
+  }, []);
+
+  // Re-sync journey settings every time the account tab gains focus
+  // (keeps them in sync with BusinessKnowledgeModal which writes to the same keys)
+  useFocusEffect(useCallback(() => {
+    fetchJourneySettings();
+  }, [fetchJourneySettings]));
+
   const fetchData = async () => {
     try {
       const [plansRes, statsRes, settingsRes] = await Promise.all([
@@ -159,6 +379,15 @@ export default function AccountScreen() {
       setAutoReplyEnabled(settingsRes.data.auto_reply_enabled || false);
       setAutoReplyAudience(settingsRes.data.auto_reply_audience || 'everyone');
       setBusinessType(settingsRes.data.business_type || 'retail');
+      setRestaurantHasReservations(settingsRes.data.restaurant_has_reservations || false);
+
+      // Journey settings — load from business-knowledge
+      await fetchJourneySettings();
+
+      try {
+        const staffRes = await apiClient.get('/settings/staff');
+        setStaffList(staffRes.data.staff || []);
+      } catch (e) {}
 
       // Fetch WhatsApp status
       try {
@@ -452,6 +681,14 @@ export default function AccountScreen() {
         },
       ]
     );
+  };
+
+  const saveJourneySettings = async (patch: Record<string, any>) => {
+    setJourneySaving(true);
+    try {
+      await settingsAPI.updateBusinessKnowledge(patch);
+    } catch (e) { console.log('Journey save error', e); }
+    finally { setJourneySaving(false); }
   };
 
   if (loading) {
@@ -766,14 +1003,354 @@ export default function AccountScreen() {
                 <Text style={styles.settingText}>Business Type</Text>
                 <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>
                   {({
-                    retail: 'Retail', salon: 'Salon & Beauty', services: 'Services / Tech',
-                    fitness: 'Fitness', restaurant: 'Restaurant', healthcare: 'Healthcare',
-                    creator: 'Creator', rental: 'Rental / Airbnb', general: 'General / Other'
+                    retail: 'Retail / Shop', wholesale: 'Wholesale / B2B',
+                    restaurant: 'Restaurant / Café', food: 'Food Delivery',
+                    bakery: 'Bakery', grocery: 'Grocery / Supermarket',
+                    salon: 'Salon & Beauty', spa: 'Spa & Wellness',
+                    services: 'Services / Freelance', repair: 'Repair & Maintenance',
+                    cleaning: 'Cleaning Services', fitness: 'Gym & Fitness',
+                    events: 'Events & Photography', healthcare: 'Healthcare / Clinic',
+                    rental: 'Rental / Airbnb', hotel: 'Hotel / Hospitality', support: 'Support Agent', creator: 'Creator / Digital',
+                    general: 'General / Other',
                   } as any)[businessType] || businessType}
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            {['restaurant', 'food', 'bakery'].includes(businessType) && (
+              <View style={[styles.settingItem, { paddingVertical: 14 }]}>
+                <Ionicons name="calendar-outline" size={24} color="#25D366" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.settingText}>Table Reservations</Text>
+                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>Customers can book tables via WhatsApp</Text>
+                </View>
+                <Switch
+                  value={restaurantHasReservations}
+                  onValueChange={async (val) => {
+                    setRestaurantHasReservations(val);
+                    try {
+                      await settingsAPI.updateSettings({ restaurant_has_reservations: val } as any);
+                    } catch (e) { console.log('Failed to save reservation setting', e); }
+                  }}
+                  trackColor={{ false: '#333', true: '#1A3A2A' }}
+                  thumbColor={restaurantHasReservations ? '#25D366' : '#666'}
+                />
+              </View>
+            )}
+
+            {/* ── Journey Settings (per-business-type) ── */}
+            {(() => {
+              const jLabelStyle = { fontSize: 13, color: '#8B9DC3', marginBottom: 4, marginTop: 12 };
+              const jInputStyle = { backgroundColor: '#1a1a1a', borderRadius: 8, borderWidth: 1, borderColor: '#333', color: '#fff', fontSize: 14, paddingHorizontal: 12, paddingVertical: 9 };
+              const jHintStyle = { fontSize: 11, color: '#555', marginTop: 3 };
+              const jRowStyle = { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'space-between' as const, paddingVertical: 10 };
+              const jSwitchRow = (label: string, hint: string, value: boolean, onToggle: (v: boolean) => void) => (
+                <View style={jRowStyle}>
+                  <View style={{ flex: 1, marginRight: 12 }}>
+                    <Text style={{ color: '#ccc', fontSize: 14 }}>{label}</Text>
+                    {!!hint && <Text style={jHintStyle}>{hint}</Text>}
+                  </View>
+                  <Switch value={value} onValueChange={onToggle} trackColor={{ false: '#333', true: '#1A3A2A' }} thumbColor={value ? '#25D366' : '#666'} />
+                </View>
+              );
+              const jTextField = (label: string, hint: string, value: string, onChange: (v: string) => void, onBlur: () => void, placeholder?: string, multiline?: boolean) => (
+                <View>
+                  <Text style={jLabelStyle}>{label}</Text>
+                  <TextInput
+                    style={[jInputStyle, multiline && { minHeight: 60, textAlignVertical: 'top' }]}
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    placeholder={placeholder || ''}
+                    placeholderTextColor="#555"
+                    multiline={multiline}
+                  />
+                  {!!hint && <Text style={jHintStyle}>{hint}</Text>}
+                </View>
+              );
+
+              const sharedFields = (
+                <>
+                  {jTextField('Delivery Info', 'Zones, fees, estimated times — shared in AI replies', journeyDeliveryInfo, setJourneyDeliveryInfo, () => saveJourneySettings({ delivery_info: journeyDeliveryInfo }), 'e.g. Free delivery within CBD, KES 200 outside')}
+                  {jTextField('Business Hours', 'When you are open — AI will quote these', journeyBusinessHours, setJourneyBusinessHours, () => saveJourneySettings({ business_hours: journeyBusinessHours }), 'e.g. Mon–Sat 8am–8pm, Sun 10am–4pm')}
+                </>
+              );
+
+              if (businessType === 'restaurant' || businessType === 'food') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🍽️ Service Settings</Text>
+                  {sharedFields}
+                  {jTextField('Avg. Wait / Prep Time', 'Shown to customers after ordering', restaurantAvgWait, setRestaurantAvgWait, () => saveJourneySettings({ restaurant_avg_wait: restaurantAvgWait }), 'e.g. 25–35 minutes')}
+                  {jTextField('Min. Delivery Order', '', restaurantMinDelivery, setRestaurantMinDelivery, () => saveJourneySettings({ restaurant_min_delivery: restaurantMinDelivery }), 'e.g. KES 500')}
+                  {businessType === 'restaurant' && jTextField('Table Range', 'Helps AI ask for the right table number', restaurantTableRange, setRestaurantTableRange, () => saveJourneySettings({ restaurant_table_range: restaurantTableRange }), 'e.g. Tables 1–20')}
+                </View>
+              );
+
+              if (businessType === 'bakery') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🧁 Bakery Settings</Text>
+                  {sharedFields}
+                  {jTextField('Advance Notice (days)', 'Minimum days required for custom/cake orders', bakeryAdvanceDays, setBakeryAdvanceDays, () => saveJourneySettings({ bakery_advance_days: parseInt(bakeryAdvanceDays) || 3 }), 'e.g. 3')}
+                  {jSwitchRow('Require Deposit for Custom Orders', 'AI will request a deposit before confirming', bakeryDepositRequired, (v) => { setBakeryDepositRequired(v); saveJourneySettings({ bakery_deposit_required: v }); })}
+                  {bakeryDepositRequired && jTextField('Deposit %', '', bakeryDepositPct, setBakeryDepositPct, () => saveJourneySettings({ bakery_deposit_pct: parseInt(bakeryDepositPct) || 50 }), 'e.g. 50')}
+                </View>
+              );
+
+              if (businessType === 'grocery') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🛒 Grocery Settings</Text>
+                  {sharedFields}
+                  {jTextField('Min. Order Value', '', groceryMinOrder, setGroceryMinOrder, () => saveJourneySettings({ grocery_min_order: groceryMinOrder }), 'e.g. KES 500')}
+                  {jTextField('Delivery Slots', 'AI will present these options to customers', groceryDeliverySlots, setGroceryDeliverySlots, () => saveJourneySettings({ grocery_delivery_slots: groceryDeliverySlots }), 'e.g. Morning (8–12), Afternoon (13–17)')}
+                  {jSwitchRow('Suggest Substitutes', 'Offer alternatives when item is out of stock', groceryAllowSubs, (v) => { setGroceryAllowSubs(v); saveJourneySettings({ grocery_allow_substitutions: v }); })}
+                </View>
+              );
+
+              if (businessType === 'wholesale') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>📦 Wholesale Settings</Text>
+                  {sharedFields}
+                  {jTextField('Lead Time', 'How long to prepare/deliver orders', wholesaleLeadTime, setWholesaleLeadTime, () => saveJourneySettings({ wholesale_lead_time: wholesaleLeadTime }), 'e.g. 2–3 business days')}
+                  {jTextField('Min. Order Value', '', wholesaleMinOrderValue, setWholesaleMinOrderValue, () => saveJourneySettings({ wholesale_min_order_value: wholesaleMinOrderValue }), 'e.g. KES 5,000')}
+                  {jTextField('Payment Terms', 'AI will quote these to B2B customers', wholesalePaymentTerms, setWholesalePaymentTerms, () => saveJourneySettings({ wholesale_payment_terms: wholesalePaymentTerms }), 'e.g. Cash on delivery, Bank transfer net 7')}
+                  {jSwitchRow('Credit Accounts', 'Some customers pay on credit terms', wholesaleHasCredit, (v) => { setWholesaleHasCredit(v); saveJourneySettings({ wholesale_has_credit_account: v }); })}
+                </View>
+              );
+
+              if (businessType === 'salon' || businessType === 'beauty') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>💇 Salon Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('Multiple Stylists', 'AI will ask for stylist preference', salonMultipleStylists, (v) => { setSalonMultipleStylists(v); saveJourneySettings({ salon_multiple_stylists: v }); })}
+                  {salonMultipleStylists && jTextField('Stylist Names', 'Comma-separated list', salonStylistNames, setSalonStylistNames, () => saveJourneySettings({ salon_stylist_names: salonStylistNames }), 'e.g. Grace, Diana, Amina')}
+                  {jSwitchRow('Require Deposit', 'Deposit needed to confirm booking', salonDepositRequired, (v) => { setSalonDepositRequired(v); saveJourneySettings({ salon_deposit_required: v }); })}
+                  {salonDepositRequired && jTextField('Deposit %', '', salonDepositPct, setSalonDepositPct, () => saveJourneySettings({ salon_deposit_pct: parseInt(salonDepositPct) || 50 }), 'e.g. 50')}
+                  {jTextField('Cancellation Policy', 'Shown to customer at booking', salonCancellationPolicy, setSalonCancellationPolicy, () => saveJourneySettings({ salon_cancellation_policy: salonCancellationPolicy }), 'e.g. 24hrs notice required')}
+                </View>
+              );
+
+              if (businessType === 'spa') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🌿 Spa Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('Couples Treatments', 'AI will ask if booking is solo or couple', spaHasCouples, (v) => { setSpaHasCouples(v); saveJourneySettings({ spa_has_couples: v }); })}
+                  {jSwitchRow('Require Deposit', '', spaDepositRequired, (v) => { setSpaDepositRequired(v); saveJourneySettings({ spa_deposit_required: v }); })}
+                  {spaDepositRequired && jTextField('Deposit %', '', spaDepositPct, setSpaDepositPct, () => saveJourneySettings({ spa_deposit_pct: parseInt(spaDepositPct) || 50 }), 'e.g. 50')}
+                  {jTextField('Cancellation Notice (hours)', '', spaCancellationHours, setSpaCancellationHours, () => saveJourneySettings({ spa_cancellation_hours: parseInt(spaCancellationHours) || 24 }), 'e.g. 24')}
+                </View>
+              );
+
+              if (businessType === 'repair') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🛠️ Repair Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('On-site Visits', 'AI will offer on-site repair option', repairHasOnsite, (v) => { setRepairHasOnsite(v); saveJourneySettings({ repair_has_onsite: v }); })}
+                  {jSwitchRow('Drop-off at Shop', 'AI will offer drop-off option', repairHasDropoff, (v) => { setRepairHasDropoff(v); saveJourneySettings({ repair_has_dropoff: v }); })}
+                  {jSwitchRow('Free Diagnosis', 'Initial diagnosis is free — no commitment', repairDiagnosisFree, (v) => { setRepairDiagnosisFree(v); saveJourneySettings({ repair_diagnosis_free: v }); })}
+                  {jTextField('Typical Turnaround', '', repairTurnaround, setRepairTurnaround, () => saveJourneySettings({ repair_turnaround: repairTurnaround }), 'e.g. Same day to 3 days')}
+                  {jTextField('Warranty Policy', 'AI will mention this after booking', repairWarranty, setRepairWarranty, () => saveJourneySettings({ repair_warranty: repairWarranty }), 'e.g. 3-month warranty on parts')}
+                </View>
+              );
+
+              if (businessType === 'services') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🔧 Services / Freelance Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('On-site / Field Work', 'AI will offer on-site or field visits', servicesHasOnsite, (v) => { setServicesHasOnsite(v); saveJourneySettings({ services_has_onsite: v }); })}
+                  {jSwitchRow('Remote Work', 'AI will offer remote / online delivery', servicesHasRemote, (v) => { setServicesHasRemote(v); saveJourneySettings({ services_has_remote: v }); })}
+                  {jSwitchRow('Quote First', 'AI collects requirements then notifies owner before confirming price', servicesQuoteFirst, (v) => { setServicesQuoteFirst(v); saveJourneySettings({ services_quote_first: v }); })}
+                  {jSwitchRow('Require Deposit', 'Deposit needed to confirm booking', servicesDepositRequired, (v) => { setServicesDepositRequired(v); saveJourneySettings({ services_deposit_required: v }); })}
+                  {jTextField('Typical Turnaround', 'Shown to customers when scoping work', servicesTurnaround, setServicesTurnaround, () => saveJourneySettings({ services_turnaround: servicesTurnaround }), 'e.g. 3–5 business days')}
+                  {jTextField('Cancellation Policy', '', servicesCancellationPolicy, setServicesCancellationPolicy, () => saveJourneySettings({ services_cancellation_policy: servicesCancellationPolicy }), 'e.g. 48hrs notice required')}
+                </View>
+              );
+
+              if (businessType === 'support') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 2 }}>🎧 Support Agent Settings</Text>
+                  <Text style={{ color: '#8B9DC3', fontSize: 11, marginBottom: 8 }}>Configure how your AI handles customer queries, complaints and escalations</Text>
+                  {jTextField('Ticket Prefix', 'Used in ticket reference numbers shown to customers', supportTicketPrefix, setSupportTicketPrefix, () => saveJourneySettings({ support_ticket_prefix: supportTicketPrefix }), 'e.g. TKT, REF, CASE')}
+                  {jTextField('Response SLA', 'Quoted to customers when logging a ticket', supportResponseSla, setSupportResponseSla, () => saveJourneySettings({ support_response_sla: supportResponseSla }), 'e.g. within 2 business hours')}
+                  {jSwitchRow('Billing Support', 'AI handles payment, invoice & refund queries', supportHasBilling, (v) => { setSupportHasBilling(v); saveJourneySettings({ support_has_billing_support: v }); })}
+                  {jSwitchRow('Technical Support', 'AI handles bugs, errors & setup issues', supportHasTechnical, (v) => { setSupportHasTechnical(v); saveJourneySettings({ support_has_technical_support: v }); })}
+                  {jSwitchRow('Complaints Handling', 'AI empathetically handles formal complaints', supportHasComplaints, (v) => { setSupportHasComplaints(v); saveJourneySettings({ support_has_complaints: v }); })}
+                  {jSwitchRow('Live Handoff', 'AI can connect customer to a human agent on request', supportHasLiveHandoff, (v) => { setSupportHasLiveHandoff(v); saveJourneySettings({ support_has_live_handoff: v }); })}
+                  {jTextField('Escalation Policy', 'Rules for when AI should notify the owner', supportEscalationPolicy, setSupportEscalationPolicy, () => saveJourneySettings({ support_escalation_policy: supportEscalationPolicy }), 'e.g. Billing disputes and complaints always escalate', true)}
+                  {supportHasBilling && jTextField('Refund Policy', 'Shared with customers who ask about refunds', supportRefundPolicy, setSupportRefundPolicy, () => saveJourneySettings({ support_refund_policy: supportRefundPolicy }), 'e.g. Refunds processed within 5–7 business days', true)}
+                </View>
+              );
+
+              if (businessType === 'hotel') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🏨 Hotel Settings</Text>
+                  {jTextField('Check-in Time', '', hotelCheckinTime, setHotelCheckinTime, () => saveJourneySettings({ hotel_checkin_time: hotelCheckinTime }), 'e.g. 2:00 PM')}
+                  {jTextField('Check-out Time', '', hotelCheckoutTime, setHotelCheckoutTime, () => saveJourneySettings({ hotel_checkout_time: hotelCheckoutTime }), 'e.g. 11:00 AM')}
+                  {jTextField('Minimum Nights', 'Leave blank if no minimum', hotelMinNights, setHotelMinNights, () => saveJourneySettings({ hotel_min_nights: parseInt(hotelMinNights) || 0 }), 'e.g. 2')}
+                  {jSwitchRow('Require Deposit', 'AI will request deposit to confirm reservation', hotelDepositRequired, (v) => { setHotelDepositRequired(v); saveJourneySettings({ hotel_deposit_required: v }); })}
+                  {hotelDepositRequired && jTextField('Deposit %', '', hotelDepositPct, setHotelDepositPct, () => saveJourneySettings({ hotel_deposit_pct: parseInt(hotelDepositPct) || 30 }), 'e.g. 30')}
+                  {jSwitchRow('Meal Plans', 'AI will ask guests to choose a meal plan', hotelHasMealPlans, (v) => { setHotelHasMealPlans(v); saveJourneySettings({ hotel_has_meal_plans: v }); })}
+                  {hotelHasMealPlans && jTextField('Meal Plan Options', 'Comma-separated', hotelMealPlanOptions, setHotelMealPlanOptions, () => saveJourneySettings({ hotel_meal_plan_options: hotelMealPlanOptions }), 'e.g. Room Only, B&B, Half Board, Full Board')}
+                  {jSwitchRow('Airport Transfer', 'AI will offer and collect flight details', hotelHasAirportTransfer, (v) => { setHotelHasAirportTransfer(v); saveJourneySettings({ hotel_has_airport_transfer: v }); })}
+                  {jSwitchRow('Spa', 'Mention spa as an amenity during booking', hotelHasSpa, (v) => { setHotelHasSpa(v); saveJourneySettings({ hotel_has_spa: v }); })}
+                  {jSwitchRow('Swimming Pool', 'Mention pool as an amenity during booking', hotelHasPool, (v) => { setHotelHasPool(v); saveJourneySettings({ hotel_has_pool: v }); })}
+                  {jTextField('Cancellation Policy', '', hotelCancellationPolicy, setHotelCancellationPolicy, () => saveJourneySettings({ hotel_cancellation_policy: hotelCancellationPolicy }), 'e.g. Free cancellation 48hrs before check-in')}
+                </View>
+              );
+
+              if (businessType === 'rental') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🏠 Rental Settings</Text>
+                  {jTextField('Rental Type', 'Helps AI use the right language', rentalType, setRentalType, () => saveJourneySettings({ rental_type: rentalType }), 'property / car / equipment / mixed')}
+                  {jSwitchRow('Require Deposit', 'AI will collect deposit to confirm booking', rentalDepositRequired, (v) => { setRentalDepositRequired(v); saveJourneySettings({ rental_deposit_required: v }); })}
+                  {rentalDepositRequired && jTextField('Deposit %', '', rentalDepositPct, setRentalDepositPct, () => saveJourneySettings({ rental_deposit_pct: parseInt(rentalDepositPct) || 30 }), 'e.g. 30')}
+                  {jTextField('Minimum Nights / Days', 'Leave blank if no minimum', rentalMinNights, setRentalMinNights, () => saveJourneySettings({ rental_min_nights: parseInt(rentalMinNights) || 0 }), 'e.g. 2')}
+                  {jTextField('Check-in Time', '', rentalCheckinTime, setRentalCheckinTime, () => saveJourneySettings({ rental_checkin_time: rentalCheckinTime }), 'e.g. 2:00 PM')}
+                  {jTextField('Check-out Time', '', rentalCheckoutTime, setRentalCheckoutTime, () => saveJourneySettings({ rental_checkout_time: rentalCheckoutTime }), 'e.g. 11:00 AM')}
+                  {jTextField('Pet Policy', 'Shown when customers ask about pets', rentalPetPolicy, setRentalPetPolicy, () => saveJourneySettings({ rental_pet_policy: rentalPetPolicy }), 'e.g. No pets / Pets allowed with KES 1,000 deposit')}
+                  {jTextField('Cancellation Policy', '', rentalCancellationPolicy, setRentalCancellationPolicy, () => saveJourneySettings({ rental_cancellation_policy: rentalCancellationPolicy }), 'e.g. Full refund if cancelled 7 days before check-in')}
+                  {jSwitchRow('Extras / Add-ons Available', 'AI will mention extras like breakfast, airport pickup, etc.', rentalHasExtras, (v) => { setRentalHasExtras(v); saveJourneySettings({ rental_has_extras: v }); })}
+                </View>
+              );
+
+              if (businessType === 'cleaning') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🧹 Cleaning Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('Offer Recurring Bookings', 'AI will suggest weekly/monthly schedules', cleaningHasRecurring, (v) => { setCleaningHasRecurring(v); saveJourneySettings({ cleaning_has_recurring: v }); })}
+                  {jSwitchRow('Commercial Cleaning', 'AI will handle office/commercial enquiries', cleaningHasCommercial, (v) => { setCleaningHasCommercial(v); saveJourneySettings({ cleaning_has_commercial: v }); })}
+                  {jSwitchRow('Supplies Included', 'Your team brings cleaning supplies', cleaningSuppliesIncluded, (v) => { setCleaningSuppliesIncluded(v); saveJourneySettings({ cleaning_supplies_included: v }); })}
+                </View>
+              );
+
+              if (businessType === 'fitness' || businessType === 'gym') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>💪 Fitness Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('Memberships', 'Offer monthly/annual membership plans', fitnessHasMemberships, (v) => { setFitnessHasMemberships(v); saveJourneySettings({ fitness_has_memberships: v }); })}
+                  {jSwitchRow('Drop-in Classes', 'Customers can book individual classes', fitnessHasClasses, (v) => { setFitnessHasClasses(v); saveJourneySettings({ fitness_has_classes: v }); })}
+                  {jSwitchRow('Personal Training', 'AI will handle PT enquiries', fitnessHasPT, (v) => { setFitnessHasPT(v); saveJourneySettings({ fitness_has_personal_training: v }); })}
+                  {jSwitchRow('Trial Session', 'Offer a first-visit / trial option', fitnessHasTrial, (v) => { setFitnessHasTrial(v); saveJourneySettings({ fitness_has_trial: v }); })}
+                  {jTextField('Class Schedule', 'AI will show this when listing classes', fitnessClassSchedule, setFitnessClassSchedule, () => saveJourneySettings({ fitness_class_schedule: fitnessClassSchedule }), 'e.g. Mon/Wed/Fri 7am, Tue/Thu 6pm', true)}
+                </View>
+              );
+
+              if (businessType === 'events' || businessType === 'photography') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>📸 Events / Photography Settings</Text>
+                  {sharedFields}
+                  {jTextField('Deposit %', 'Required to confirm event date', eventsDepositPct, setEventsDepositPct, () => saveJourneySettings({ events_deposit_pct: parseInt(eventsDepositPct) || 50 }), 'e.g. 50')}
+                  {jTextField('Lead Time Required', 'Minimum notice before event date', eventsLeadTime, setEventsLeadTime, () => saveJourneySettings({ events_lead_time: eventsLeadTime }), 'e.g. 2 weeks minimum')}
+                  {jTextField('Delivery Timeframe', 'When edited photos/videos are delivered', eventsDeliveryDays, setEventsDeliveryDays, () => saveJourneySettings({ events_delivery_days: eventsDeliveryDays }), 'e.g. 7–14 days after event')}
+                </View>
+              );
+
+              if (businessType === 'healthcare' || businessType === 'clinic') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🏥 Clinic / Healthcare Settings</Text>
+                  {sharedFields}
+                  {jTextField('Consultation Fee', 'Shown to patients before confirming', hcConsultationFee, setHcConsultationFee, () => saveJourneySettings({ hc_consultation_fee: hcConsultationFee }), 'e.g. KES 1,500')}
+                  {jSwitchRow('Lab Tests Available', 'AI will handle lab test bookings', hcHasLabTests, (v) => { setHcHasLabTests(v); saveJourneySettings({ hc_has_lab_tests: v }); })}
+                  {jSwitchRow('Home Visits', 'AI will accept home visit requests', hcHasHomeVisit, (v) => { setHcHasHomeVisit(v); saveJourneySettings({ hc_has_home_visit: v }); })}
+                  {jTextField('Prep Instructions', 'Told to patients before their appointment', hcPrepInstructions, setHcPrepInstructions, () => saveJourneySettings({ hc_prep_instructions: hcPrepInstructions }), 'e.g. Fast for 8 hours before blood tests', true)}
+                  {jTextField('Insurance Accepted', '', hcInsuranceAccepted, setHcInsuranceAccepted, () => saveJourneySettings({ hc_insurance_accepted: hcInsuranceAccepted }), 'e.g. NHIF, AAR, Jubilee')}
+                </View>
+              );
+
+              if (businessType === 'creator') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>✨ Creator Settings</Text>
+                  {jTextField('Niche', 'AI pitches this to brands', creatorNiche, setCreatorNiche, () => saveJourneySettings({ creator_niche: creatorNiche }), 'e.g. lifestyle, beauty, food')}
+                  {jTextField('Platforms', '', creatorPlatforms, setCreatorPlatforms, () => saveJourneySettings({ creator_platforms: creatorPlatforms }), 'e.g. Instagram, TikTok, YouTube')}
+                  {jTextField('Follower Count', '', creatorFollowers, setCreatorFollowers, () => saveJourneySettings({ creator_followers: creatorFollowers }), 'e.g. 45K')}
+                  {jTextField('Content Lead Time', 'Time from brief approval to posting', creatorLeadTime, setCreatorLeadTime, () => saveJourneySettings({ creator_lead_time: creatorLeadTime }), 'e.g. 5–7 business days')}
+                  {jTextField('Revision Policy', '', creatorRevisions, setCreatorRevisions, () => saveJourneySettings({ creator_revisions: creatorRevisions }), 'e.g. 1 free revision included')}
+                  {jTextField('Usage Rights', 'What brands can do with the content', creatorUsageRights, setCreatorUsageRights, () => saveJourneySettings({ creator_usage_rights: creatorUsageRights }), 'e.g. 30-day organic use only')}
+                  {jTextField('Deposit %', 'Upfront deposit for brand collabs', creatorDepositPct, setCreatorDepositPct, () => saveJourneySettings({ creator_deposit_pct: parseInt(creatorDepositPct) || 50 }), 'e.g. 50')}
+                  {jSwitchRow('Rates on Request', "Don't show rates publicly — quote per brand", creatorRatesOnRequest, (v) => { setCreatorRatesOnRequest(v); saveJourneySettings({ creator_rates_on_request: v }); })}
+                </View>
+              );
+
+              if (businessType === 'retail') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🛍️ Retail Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('Custom / Made-to-Order Items', 'AI will collect custom specs and confirm lead time', retailHasCustomOrders, (v) => { setRetailHasCustomOrders(v); saveJourneySettings({ retail_has_custom_orders: v }); })}
+                  {retailHasCustomOrders && jTextField('Custom Order Lead Time', 'Shown to customers when ordering custom items', retailCustomLeadTime, setRetailCustomLeadTime, () => saveJourneySettings({ retail_custom_lead_time: retailCustomLeadTime }), 'e.g. 5–7 business days')}
+                  {jTextField('Return / Exchange Policy', 'Shown when customers ask about returns', retailReturnPolicy, setRetailReturnPolicy, () => saveJourneySettings({ retail_return_policy: retailReturnPolicy }), 'e.g. Exchange within 7 days with receipt')}
+                </View>
+              );
+
+              if (businessType === 'general') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>⚙️ Order Settings</Text>
+                  {sharedFields}
+                </View>
+              );
+
+              return null;
+            })()}
+
+            {/* Staff List */}
+            <View style={[styles.settingItem, { flexDirection: 'column', alignItems: 'flex-start', paddingVertical: 14 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', width: '100%', marginBottom: staffList.length > 0 ? 10 : 0 }}>
+                <Ionicons name="people-outline" size={24} color="#25D366" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.settingText}>Staff / Attendants</Text>
+                  <Text style={{ fontSize: 12, color: '#8B9DC3', marginTop: 2 }}>Names used to assign orders</Text>
+                </View>
+              </View>
+              {staffList.map(s => (
+                <View key={s.id} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingLeft: 36, width: '100%' }}>
+                  <Ionicons name="person-circle-outline" size={18} color="#555" />
+                  <Text style={{ flex: 1, color: '#ccc', fontSize: 14, marginLeft: 8 }}>{s.name}</Text>
+                  <TouchableOpacity onPress={async () => {
+                    try {
+                      await apiClient.delete(`/settings/staff/${s.id}`);
+                      setStaffList(staffList.filter(m => m.id !== s.id));
+                    } catch (e) {}
+                  }}>
+                    <Ionicons name="remove-circle-outline" size={20} color="#e05252" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {addingStaff ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 36, width: '100%', marginTop: 8, gap: 8 }}>
+                  <TextInput
+                    style={{ flex: 1, backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, color: '#fff', fontSize: 14, borderWidth: 1, borderColor: '#333' }}
+                    value={newStaffName}
+                    onChangeText={setNewStaffName}
+                    placeholder="Staff name"
+                    placeholderTextColor="#555"
+                    autoFocus
+                  />
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#25D366', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 }}
+                    onPress={async () => {
+                      if (!newStaffName.trim()) return;
+                      try {
+                        const res = await apiClient.post('/settings/staff', { name: newStaffName.trim() });
+                        setStaffList([...staffList, res.data]);
+                        setNewStaffName('');
+                        setAddingStaff(false);
+                      } catch (e) {}
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>Add</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setAddingStaff(false); setNewStaffName(''); }}>
+                    <Ionicons name="close" size={20} color="#888" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 36, marginTop: 8, gap: 6 }}
+                  onPress={() => setAddingStaff(true)}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color="#25D366" />
+                  <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>Add staff member</Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>
@@ -937,38 +1514,50 @@ export default function AccountScreen() {
           onRequestClose={() => setShowBusinessTypePicker(false)}
         >
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' }}>
-            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 36 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <View style={{ backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 20, paddingHorizontal: 20, paddingBottom: 0, maxHeight: '78%' }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>Business Type</Text>
                 <TouchableOpacity onPress={() => setShowBusinessTypePicker(false)}>
                   <Text style={{ color: '#8B9DC3', fontSize: 16 }}>Close</Text>
                 </TouchableOpacity>
               </View>
-              <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 16 }}>
+              <Text style={{ color: '#8B9DC3', fontSize: 13, marginBottom: 14 }}>
                 Changing your business type personalises your dashboard, catalog labels, and booking features.
               </Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 36 }}>
                 {[
-                  { id: 'retail',     icon: '🛍️',  label: 'Retail',          desc: 'Shop & products' },
-                  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',  desc: 'Hair & services' },
-                  { id: 'services',   icon: '🔧',   label: 'Services',        desc: 'Trades & repairs' },
-                  { id: 'fitness',    icon: '🏋️',  label: 'Fitness',         desc: 'Gym & classes' },
-                  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant',      desc: 'Food & dining' },
-                  { id: 'healthcare', icon: '🏥',   label: 'Healthcare',      desc: 'Clinic & medical' },
-                  { id: 'creator',    icon: '🎨',   label: 'Creator',         desc: 'Digital products' },
-                  { id: 'rental',     icon: '🏡',   label: 'Rental / Airbnb', desc: 'Properties & cars' },
-                  { id: 'general',    icon: '💬',   label: 'General / Other', desc: 'Fintech, NGO & info' },
-                ].map(bt => (
+                  { id: 'retail',     icon: '🛍️',  label: 'Retail / Shop',        desc: 'Physical or online store' },
+                  { id: 'wholesale',  icon: '📦',   label: 'Wholesale / B2B',      desc: 'Bulk orders & distribution' },
+                  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant / Café',    desc: 'Dine-in, takeaway & delivery' },
+                  { id: 'food',       icon: '🥡',   label: 'Food Delivery',        desc: 'Home kitchen & delivery-only' },
+                  { id: 'bakery',     icon: '🍰',   label: 'Bakery',               desc: 'Cakes, pastries & custom orders' },
+                  { id: 'grocery',    icon: '🛒',   label: 'Grocery / Supermarket',desc: 'Fresh produce & packaged goods' },
+                  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',       desc: 'Hair, nails & beauty services' },
+                  { id: 'spa',        icon: '💆',   label: 'Spa & Wellness',       desc: 'Massages, treatments & relaxation' },
+                  { id: 'services',   icon: '🔧',   label: 'Services / Freelance', desc: 'IT, trades, freelance & consulting' },
+                  { id: 'repair',     icon: '🛠️',  label: 'Repair & Maintenance', desc: 'Electronics, appliances & vehicles' },
+                  { id: 'cleaning',   icon: '🧹',   label: 'Cleaning Services',    desc: 'Home, office & commercial cleaning' },
+                  { id: 'fitness',    icon: '🏋️',  label: 'Gym & Fitness',        desc: 'Memberships, classes & training' },
+                  { id: 'events',     icon: '📸',   label: 'Events & Photography', desc: 'Events, shoots & productions' },
+                  { id: 'healthcare', icon: '🏥',   label: 'Healthcare / Clinic',  desc: 'Consultations & medical services' },
+                  { id: 'rental',     icon: '🏠',   label: 'Rental / Airbnb',      desc: 'Properties, cars & equipment' },
+                  { id: 'hotel',      icon: '🏨',   label: 'Hotel / Hospitality',   desc: 'Hotels, lodges, guesthouses & resorts' },
+                  { id: 'support',    icon: '🎧',   label: 'Support Agent',         desc: 'For businesses that need AI-powered customer support & care — not sales' },
+                  { id: 'creator',    icon: '�',   label: 'Creator / Digital',    desc: 'Courses, content & digital products' },
+                  { id: 'general',    icon: '💬',   label: 'General / Other',      desc: 'Fintech, NGO, info & assistant' },
+                ].map((bt, idx, arr) => (
                   <TouchableOpacity
                     key={bt.id}
                     style={{
-                      width: '47%',
-                      backgroundColor: businessType === bt.id ? 'rgba(37,211,102,0.08)' : 'rgba(255,255,255,0.05)',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      paddingVertical: 13,
+                      paddingHorizontal: 12,
                       borderRadius: 12,
-                      padding: 14,
+                      marginBottom: 6,
+                      backgroundColor: businessType === bt.id ? 'rgba(37,211,102,0.08)' : 'rgba(255,255,255,0.04)',
                       borderWidth: 1.5,
                       borderColor: businessType === bt.id ? '#25D366' : 'transparent',
-                      position: 'relative',
                     }}
                     onPress={async () => {
                       setBusinessType(bt.id);
@@ -980,19 +1569,19 @@ export default function AccountScreen() {
                         console.log('Failed to update business type', e);
                       }
                     }}
-                    activeOpacity={0.8}
+                    activeOpacity={0.75}
                   >
-                    <Text style={{ fontSize: 26, marginBottom: 6 }}>{bt.icon}</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: businessType === bt.id ? '#25D366' : '#FFFFFF', marginBottom: 2 }}>{bt.label}</Text>
-                    <Text style={{ fontSize: 11, color: '#64748B' }}>{bt.desc}</Text>
+                    <Text style={{ fontSize: 26, width: 40 }}>{bt.icon}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: businessType === bt.id ? '#25D366' : '#FFFFFF', marginBottom: 2 }}>{bt.label}</Text>
+                      <Text style={{ fontSize: 12, color: '#64748B' }}>{bt.desc}</Text>
+                    </View>
                     {businessType === bt.id && (
-                      <View style={{ position: 'absolute', top: 8, right: 8 }}>
-                        <Ionicons name="checkmark-circle" size={18} color="#25D366" />
-                      </View>
+                      <Ionicons name="checkmark-circle" size={20} color="#25D366" />
                     )}
                   </TouchableOpacity>
                 ))}
-              </View>
+              </ScrollView>
             </View>
           </View>
         </Modal>

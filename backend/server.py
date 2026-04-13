@@ -894,14 +894,19 @@ class SaleResponse(BaseModel):
 # Order Models
 class OrderCreate(BaseModel):
     customer_id: str
-    product: str
+    product: Optional[str] = None
+    product_name: Optional[str] = None
     quantity: int = 1
-    price: float
-    total_amount: float
+    price: float = 0
+    total_amount: float = 0
     payment_status: str = "Pending"  # Pending, Partial, Paid
     delivery_status: str = "Processing"  # Processing, Shipped, Delivered
     notes: Optional[str] = None
     due_date: Optional[str] = None
+    delivery_type: Optional[str] = "pickup"
+    delivery_address: Optional[str] = None
+    table_number: Optional[str] = None
+    items: Optional[list] = None
 
 class OrderResponse(BaseModel):
     id: str
@@ -917,6 +922,15 @@ class OrderResponse(BaseModel):
     notes: Optional[str] = None
     due_date: Optional[str] = None
     created_at: str
+    order_number: Optional[str] = None
+    delivery_type: Optional[str] = None
+    delivery_address: Optional[str] = None
+    table_number: Optional[str] = None
+    items: Optional[list] = None
+    status: Optional[str] = None
+    created_by: Optional[str] = None
+    fulfillment_status: Optional[str] = None
+    assigned_to: Optional[str] = None
 
 # Expense Models
 class ExpenseCreate(BaseModel):
@@ -1467,6 +1481,105 @@ class BusinessKnowledge(BaseModel):
     business_description: Optional[str] = None
     # Business type
     business_type: Optional[str] = None  # 'general', 'retail', 'creator', 'restaurant', 'service'
+    # Restaurant-specific fields
+    restaurant_has_dine_in: Optional[bool] = None
+    restaurant_has_delivery: Optional[bool] = None
+    restaurant_has_takeout: Optional[bool] = None
+    restaurant_table_range: Optional[str] = None   # e.g. "Tables 1–20"
+    restaurant_avg_wait: Optional[str] = None       # e.g. "15–20 minutes"
+    restaurant_min_delivery: Optional[str] = None   # e.g. "$10 minimum order"
+    # Retail-specific fields
+    retail_has_custom_orders: Optional[bool] = None
+    retail_custom_lead_time: Optional[str] = None
+    retail_return_policy: Optional[str] = None
+    # Bakery-specific fields
+    bakery_advance_days: Optional[int] = None
+    bakery_deposit_required: Optional[bool] = None
+    bakery_deposit_pct: Optional[int] = None
+    # Grocery-specific fields
+    grocery_delivery_slots: Optional[str] = None
+    grocery_min_order: Optional[str] = None
+    grocery_allow_substitutions: Optional[bool] = None
+    # Wholesale-specific fields
+    wholesale_lead_time: Optional[str] = None
+    wholesale_min_order_value: Optional[str] = None
+    wholesale_payment_terms: Optional[str] = None
+    wholesale_has_credit_account: Optional[bool] = None
+    # Salon-specific fields
+    salon_multiple_stylists: Optional[bool] = None
+    salon_stylist_names: Optional[str] = None
+    salon_deposit_required: Optional[bool] = None
+    salon_deposit_pct: Optional[int] = None
+    salon_cancellation_policy: Optional[str] = None
+    # Spa-specific fields
+    spa_has_couples: Optional[bool] = None
+    spa_deposit_required: Optional[bool] = None
+    spa_deposit_pct: Optional[int] = None
+    spa_cancellation_hours: Optional[int] = None
+    # Repair-specific fields
+    repair_has_onsite: Optional[bool] = None
+    repair_has_dropoff: Optional[bool] = None
+    repair_diagnosis_free: Optional[bool] = None
+    repair_turnaround: Optional[str] = None
+    repair_warranty: Optional[str] = None
+    # Services-specific fields
+    services_has_onsite: Optional[bool] = None
+    services_has_remote: Optional[bool] = None
+    services_quote_first: Optional[bool] = None
+    services_deposit_required: Optional[bool] = None
+    services_turnaround: Optional[str] = None
+    services_cancellation_policy: Optional[str] = None
+    # Support-specific fields
+    support_ticket_prefix: Optional[str] = None
+    support_response_sla: Optional[str] = None
+    support_has_billing_support: Optional[bool] = None
+    support_has_technical_support: Optional[bool] = None
+    support_has_complaints: Optional[bool] = None
+    support_has_live_handoff: Optional[bool] = None
+    support_escalation_policy: Optional[str] = None
+    support_refund_policy: Optional[str] = None
+    # Hotel-specific fields
+    hotel_checkin_time: Optional[str] = None
+    hotel_checkout_time: Optional[str] = None
+    hotel_min_nights: Optional[int] = None
+    hotel_deposit_required: Optional[bool] = None
+    hotel_deposit_pct: Optional[int] = None
+    hotel_has_meal_plans: Optional[bool] = None
+    hotel_meal_plan_options: Optional[str] = None
+    hotel_has_airport_transfer: Optional[bool] = None
+    hotel_has_spa: Optional[bool] = None
+    hotel_has_pool: Optional[bool] = None
+    hotel_cancellation_policy: Optional[str] = None
+    # Rental-specific fields
+    rental_type: Optional[str] = None
+    rental_deposit_required: Optional[bool] = None
+    rental_deposit_pct: Optional[int] = None
+    rental_min_nights: Optional[int] = None
+    rental_checkin_time: Optional[str] = None
+    rental_checkout_time: Optional[str] = None
+    rental_pet_policy: Optional[str] = None
+    rental_cancellation_policy: Optional[str] = None
+    rental_has_extras: Optional[bool] = None
+    # Cleaning-specific fields
+    cleaning_has_recurring: Optional[bool] = None
+    cleaning_has_commercial: Optional[bool] = None
+    cleaning_supplies_included: Optional[bool] = None
+    # Fitness-specific fields
+    fitness_has_memberships: Optional[bool] = None
+    fitness_has_classes: Optional[bool] = None
+    fitness_has_personal_training: Optional[bool] = None
+    fitness_has_trial: Optional[bool] = None
+    fitness_class_schedule: Optional[str] = None
+    # Events-specific fields
+    events_deposit_pct: Optional[int] = None
+    events_lead_time: Optional[str] = None
+    events_delivery_days: Optional[str] = None
+    # Healthcare-specific fields
+    hc_consultation_fee: Optional[str] = None
+    hc_has_lab_tests: Optional[bool] = None
+    hc_has_home_visit: Optional[bool] = None
+    hc_prep_instructions: Optional[str] = None
+    hc_insurance_accepted: Optional[str] = None
     # Creator-specific fields
     creator_niche: Optional[str] = None
     creator_platforms: Optional[str] = None
@@ -1480,6 +1593,12 @@ class BusinessKnowledge(BaseModel):
     creator_blacklisted_niches: Optional[str] = None
     creator_fan_dm_response: Optional[str] = None
     creator_media_kit_link: Optional[str] = None
+    creator_followers: Optional[str] = None
+    creator_lead_time: Optional[str] = None
+    creator_revisions: Optional[str] = None
+    creator_usage_rights: Optional[str] = None
+    creator_deposit_pct: Optional[int] = None
+    creator_rates_on_request: Optional[bool] = None
 
 # Product Catalog Models
 class Product(BaseModel):
@@ -1897,7 +2016,7 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
     top_level_fields = {}
     settings_fields = {}
     for k, v in body.items():
-        if k in ("currency", "country_code"):
+        if k in ("currency", "country_code", "payment_methods"):
             top_level_fields[k] = v
         else:
             settings_fields[f"settings.{k}"] = v
@@ -4202,49 +4321,83 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
         }
     
     order_id = str(uuid.uuid4())
-    
+
+    # Resolve product label from items array or fallback to product/product_name field
+    items = order.items or []
+    product_label = (
+        order.product
+        or order.product_name
+        or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
+    )
+    quantity = order.quantity or (items[0].get("quantity", 1) if items else 1)
+    price = order.price or (items[0].get("unit_price", 0) if items else 0)
+    total_amount = order.total_amount or sum(it.get("price", 0) for it in items) or round(quantity * price, 2)
+
     order_doc = {
         "_id": order_id,
         "user_id": business_id,
         "recorded_by": user["_id"],
         "customer_id": order.customer_id,
-        "product": order.product,
-        "quantity": order.quantity,
-        "price": order.price,
-        "total_amount": order.total_amount,
+        "product": product_label,
+        "product_name": product_label,
+        "quantity": quantity,
+        "price": price,
+        "total_amount": total_amount,
+        "total": total_amount,
         "payment_status": order.payment_status,
         "delivery_status": order.delivery_status,
+        "status": "pending",
         "notes": order.notes,
         "due_date": order.due_date,
-        "created_at": datetime.utcnow()
+        "delivery_type": order.delivery_type or "pickup",
+        "delivery_address": order.delivery_address or "",
+        "table_number": order.table_number or "",
+        "items": items,
+        "created_at": datetime.utcnow(),
+        "created_by": "staff",
     }
-    
-    # Reduce stock if matching product is found and quantity is tracked
-    await db.products.update_one(
-        {
-            "user_id": business_id, 
-            "name": order.product, 
-            "stock_quantity": {"$exists": True, "$ne": None},
-            "stock_quantity": {"$gte": order.quantity}
-        },
-        {"$inc": {"stock_quantity": -order.quantity}}
-    )
+
+    # Reduce stock for each item if stock is tracked
+    for it in items:
+        if it.get("product_id"):
+            await db.products.update_one(
+                {"_id": it["product_id"], "user_id": business_id, "stock_quantity": {"$gte": it.get("quantity", 1)}},
+                {"$inc": {"stock_quantity": -it.get("quantity", 1)}}
+            )
+        elif it.get("product_name"):
+            await db.products.update_one(
+                {"user_id": business_id, "name": it["product_name"], "stock_quantity": {"$gte": it.get("quantity", 1)}},
+                {"$inc": {"stock_quantity": -it.get("quantity", 1)}}
+            )
+
+    if not items and product_label:
+        # Single-item legacy path: deduct stock by product name
+        await db.products.update_one(
+            {"user_id": business_id, "name": product_label, "stock_quantity": {"$gte": quantity}},
+            {"$inc": {"stock_quantity": -quantity}}
+        )
 
     await db.orders.insert_one(order_doc)
-    
+
     return OrderResponse(
         id=order_id,
         customer_id=order.customer_id,
-        customer_name=customer["name"],
-        customer_phone=customer["phone_number"],
-        product=order.product,
-        quantity=order.quantity,
-        price=order.price,
-        total_amount=order.total_amount,
+        customer_name=customer.get("name", "Unknown"),
+        customer_phone=customer.get("phone_number", "N/A"),
+        product=product_label,
+        quantity=int(quantity),
+        price=float(price),
+        total_amount=float(total_amount),
         payment_status=order.payment_status,
         delivery_status=order.delivery_status,
         notes=order.notes,
         due_date=order.due_date,
+        delivery_type=order.delivery_type,
+        delivery_address=order.delivery_address,
+        table_number=order.table_number,
+        items=items if items else None,
+        status="pending",
+        created_by="staff",
         created_at=order_doc["created_at"].isoformat()
     )
 
@@ -4269,20 +4422,40 @@ async def get_orders(user = Depends(get_current_user)):
             customer_name = customer["name"] if customer else "Unknown"
             customer_phone = customer["phone_number"] if customer else "N/A"
         
+        # Support both manual orders (product/quantity/price) and autoreply orders (product_name/items/total_amount)
+        items = order.get("items") or []
+        product_label = (
+            order.get("product")
+            or order.get("product_name")
+            or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
+        )
+        quantity = order.get("quantity") or (items[0].get("quantity", 1) if items else 1)
+        unit_price = order.get("price") or (items[0].get("unit_price", 0) if items else 0)
+        total = order.get("total_amount") or order.get("total") or 0
+
         result.append(OrderResponse(
-            id=order["_id"],
-            customer_id=order["customer_id"],
+            id=str(order["_id"]),
+            customer_id=str(order.get("customer_id", "")),
             customer_name=customer_name,
             customer_phone=customer_phone,
-            product=order["product"],
-            quantity=order["quantity"],
-            price=order["price"],
-            total_amount=order["total_amount"],
+            product=product_label,
+            quantity=quantity,
+            price=unit_price,
+            total_amount=total,
             payment_status=order.get("payment_status", "unpaid"),
-            delivery_status=order.get("delivery_status", "pending"),
+            delivery_status=order.get("delivery_status", order.get("status", "pending")),
             notes=order.get("notes"),
             due_date=order.get("due_date"),
-            created_at=order["created_at"].isoformat()
+            created_at=order["created_at"].isoformat(),
+            order_number=order.get("order_number"),
+            delivery_type=order.get("delivery_type"),
+            delivery_address=order.get("delivery_address"),
+            table_number=order.get("table_number"),
+            items=items if items else None,
+            status=order.get("status"),
+            created_by=order.get("created_by"),
+            fulfillment_status=order.get("fulfillment_status", "New"),
+            assigned_to=order.get("assigned_to"),
         ))
     
     return result
@@ -4290,9 +4463,15 @@ async def get_orders(user = Depends(get_current_user)):
 @api_router.put("/orders/{order_id}", response_model=OrderResponse)
 async def update_order(order_id: str, payment_status: Optional[str] = None, delivery_status: Optional[str] = None, notes: Optional[str] = None, user = Depends(get_current_user)):
     """Update order payment status, delivery status, or notes"""
+    from bson import ObjectId
     business_id = user.get("business_id", user["_id"])
-    # Verify order exists
+    # Try string _id first (autoreply orders use uuid strings), then ObjectId (manual orders)
     order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+    if not order:
+        try:
+            order = await db.orders.find_one({"_id": ObjectId(order_id), "user_id": business_id})
+        except Exception:
+            pass
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -4306,43 +4485,340 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         update_ops["notes"] = notes
     
     if update_ops:
-        await db.orders.update_one(
-            {"_id": order_id},
-            {"$set": update_ops}
-        )
-        # Refresh order data
-        order = await db.orders.find_one({"_id": order_id})
-    
+        await db.orders.update_one({"_id": order["_id"]}, {"$set": update_ops})
+        order = await db.orders.find_one({"_id": order["_id"]})
+
     # Get customer info
-    if order["customer_id"] == "walk-in":
+    if order.get("customer_id") == "walk-in":
         customer_name = "Walk-in Customer"
         customer_phone = "N/A"
     else:
-        customer = await db.customers.find_one({"_id": order["customer_id"]})
-        customer_name = customer["name"] if customer else "Unknown"
-        customer_phone = customer["phone_number"] if customer else "N/A"
-    
+        customer = await db.customers.find_one({"_id": order.get("customer_id")})
+        customer_name = customer.get("name", "Unknown") if customer else "Unknown"
+        customer_phone = customer.get("phone_number", "N/A") if customer else "N/A"
+
+    # Send WhatsApp confirmation when owner marks order as Paid
+    if payment_status == "Paid" and customer_phone and customer_phone != "N/A":
+        try:
+            ws = get_whatsapp_service(db)
+            order_number = order.get("order_number", "")
+            total = float(order.get("total_amount") or order.get("total") or 0)
+            user_settings = user.get("settings") or {}
+            currency_code = user_settings.get("currency", "")
+            total_str = f"{currency_code} {total:,.0f}".strip() if total else ""
+            order_ref = f" for order *{order_number}*" if order_number else ""
+            amount_line = f"\n💰 Amount: *{total_str}*" if total_str else ""
+            msg = (
+                f"✅ *Payment Confirmed!*\n\n"
+                f"Hi {customer_name}! Your payment{order_ref} has been confirmed.{amount_line}\n\n"
+                f"We're processing your order now. Thank you! 🙏"
+            )
+            business_id = user.get("business_id", user["_id"])
+            await ws.send_message(
+                user_id=business_id,
+                to_number=customer_phone,
+                message=msg,
+                send_context="payment_confirmed",
+            )
+        except Exception as e:
+            logging.warning(f"[update_order] Failed to send payment confirmation WhatsApp: {e}")
+
+    # Handle both autoreply orders (product_name/items) and manual orders (product)
+    items = order.get("items") or []
+    product_label = (
+        order.get("product")
+        or order.get("product_name")
+        or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
+    )
+    quantity = int(order.get("quantity") or (items[0].get("quantity", 1) if items else 1))
+    unit_price = float(order.get("price") or (items[0].get("unit_price", 0) if items else 0))
+    total = float(order.get("total_amount") or order.get("total") or 0)
+
+    created_at_raw = order.get("created_at")
+    created_at_str = created_at_raw.isoformat() if hasattr(created_at_raw, "isoformat") else str(created_at_raw or "")
+
     return OrderResponse(
-        id=order["_id"],
-        customer_id=order["customer_id"],
+        id=str(order["_id"]),
+        customer_id=str(order.get("customer_id", "")),
         customer_name=customer_name,
         customer_phone=customer_phone,
-        product=order["product"],
-        quantity=order["quantity"],
-        price=order["price"],
-        total_amount=order["total_amount"],
-        payment_status=order["payment_status"],
-        delivery_status=order["delivery_status"],
+        product=product_label,
+        quantity=quantity,
+        price=unit_price,
+        total_amount=total,
+        payment_status=order.get("payment_status", "unpaid"),
+        delivery_status=order.get("delivery_status", order.get("status", "pending")),
         notes=order.get("notes"),
         due_date=order.get("due_date"),
-        created_at=order["created_at"].isoformat()
+        created_at=created_at_str,
+        order_number=order.get("order_number"),
+        delivery_type=order.get("delivery_type"),
+        delivery_address=order.get("delivery_address"),
+        items=items if items else None,
+        status=order.get("status"),
+        created_by=order.get("created_by"),
     )
+
+@api_router.patch("/orders/{order_id}/progress")
+async def update_order_progress(
+    order_id: str,
+    body: dict,
+    user = Depends(get_current_user),
+):
+    """Update fulfillment_status and/or assigned_to for an order."""
+    business_id = user.get("business_id", user["_id"])
+    # Support both string UUIDs and legacy ObjectId _ids
+    try:
+        oid = _ObjectId(order_id)
+        order = await db.orders.find_one({"_id": oid, "user_id": business_id})
+        raw_id: Any = oid
+    except Exception:
+        order = None
+        raw_id = order_id
+    if not order:
+        order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+        raw_id = order_id
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    update: dict = {}
+    if "fulfillment_status" in body:
+        update["fulfillment_status"] = body["fulfillment_status"]
+    if "assigned_to" in body:
+        update["assigned_to"] = body["assigned_to"]
+    if update:
+        await db.orders.update_one({"_id": raw_id}, {"$set": update})
+    order = await db.orders.find_one({"_id": raw_id})
+
+    # Send WhatsApp notification on fulfillment_status change
+    new_status = update.get("fulfillment_status")
+    if new_status:
+        try:
+            customer_id = order.get("customer_id")
+            if customer_id and customer_id != "walk-in":
+                customer = await db.customers.find_one({"_id": customer_id})
+                customer_phone = customer.get("phone_number") if customer else None
+                if customer_phone:
+                    order_number = order.get("order_number", "")
+                    order_ref = f" *#{order_number}*" if order_number else ""
+                    delivery_type = (order.get("delivery_type") or "").strip()
+                    delivery_address = order.get("delivery_address", "")
+                    is_delivery = delivery_type.lower() == "delivery"
+                    is_dine_in = delivery_type.lower() in ("dine in", "dine-in", "dine_in")
+
+                    # Resolve business type
+                    biz_settings = await db.settings.find_one({"user_id": business_id}) or {}
+                    bk = await db.users.find_one({"_id": business_id}) or {}
+                    biz_type = (
+                        biz_settings.get("business_type")
+                        or (bk.get("business_knowledge") or {}).get("business_type")
+                        or bk.get("business_type")
+                        or "general"
+                    ).lower()
+
+                    def _msgs(confirmed, preparing, ready_dine, ready_delivery, ready_pickup, done):
+                        if is_delivery and delivery_address:
+                            ready = f"{ready_delivery}\n\n🚗 Delivering to: *{delivery_address}*"
+                        elif is_dine_in:
+                            ready = ready_dine
+                        else:
+                            ready = ready_pickup
+                        return {"Confirmed": confirmed, "Preparing": preparing, "Ready": ready, "Done": done}
+
+                    templates = {
+                        "restaurant": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're preparing it fresh for you.",
+                            f"👨‍🍳 Your food{order_ref} is being prepared in the kitchen. Won't be long!",
+                            f"🍽️ Your food{order_ref} is *ready*! Enjoy your meal 😊",
+                            f"🎉 Your food{order_ref} is *on its way*!",
+                            f"🔥 Your food{order_ref} is *ready* for pickup! Come grab it while it's hot.",
+                            f"Thank you so much for dining with us! 🙏\nWe hope you enjoyed every bite and look forward to having you back soon. 😊",
+                        ),
+                        "bakery": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We'll bake it fresh for you.",
+                            f"🔥 Your order{order_ref} is in the oven! Almost ready.",
+                            f"🥐 Your order{order_ref} is *ready*! Enjoy 😊",
+                            f"🎉 Your fresh bakes{order_ref} are *on their way*!",
+                            f"🥐 Fresh out of the oven! Your order{order_ref} is *ready* for pickup.",
+                            f"Thank you for choosing us! 🙏\nWe hope you enjoyed every bite. See you next time! 🥐",
+                        ),
+                        "grocery": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're picking and packing it now.",
+                            f"🛒 Your order{order_ref} is being packed and checked.",
+                            f"✅ Your order{order_ref} is *ready*!",
+                            f"🚗 Your groceries{order_ref} are *on their way*!",
+                            f"🛍️ Your order{order_ref} is *packed and ready* for pickup!",
+                            f"Thank you for your order! 🙏\nWe appreciate your support. See you next time! 🛒",
+                        ),
+                        "wholesale": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're processing it now.",
+                            f"📦 Your order{order_ref} is being packed and quality-checked.",
+                            f"✅ Your order{order_ref} is *ready*!",
+                            f"🚚 Your order{order_ref} is *dispatched* and on its way!",
+                            f"📦 Your order{order_ref} is *ready* for collection!",
+                            f"Thank you for your business! 🙏\nWe appreciate the partnership and look forward to your next order.",
+                        ),
+                        "salon": _msgs(
+                            f"✅ Your appointment{order_ref} is *confirmed*! We're looking forward to seeing you.",
+                            f"💇 We're getting your station ready{order_ref}. Almost time!",
+                            f"💇 We're *ready* for you{order_ref}! Come on in 😊",
+                            f"💇 We're *ready* for you{order_ref}! Come on in 😊",
+                            f"💇 We're *ready* for you{order_ref}! Come on in 😊",
+                            f"Thank you for visiting us! 🙏\nWe hope you loved your look. See you next time! 💇",
+                        ),
+                        "spa": _msgs(
+                            f"✅ Your appointment{order_ref} is *confirmed*! We're looking forward to welcoming you.",
+                            f"🕯️ We're preparing your treatment room{order_ref}. Almost ready!",
+                            f"🌿 We're *ready* for you{order_ref}. Come relax and unwind 😊",
+                            f"🌿 We're *ready* for you{order_ref}. Come relax and unwind 😊",
+                            f"🌿 We're *ready* for you{order_ref}. Come relax and unwind 😊",
+                            f"Thank you for visiting us! 🙏\nWe hope you left feeling refreshed and rejuvenated. See you next time! 🌿",
+                        ),
+                        "repair": _msgs(
+                            f"✅ Your repair job{order_ref} is *confirmed*! Our technician will get right on it.",
+                            f"🔧 Your item{order_ref} is being worked on by our technician.",
+                            f"🔧 Your item{order_ref} is *repaired*! Come pick it up 😊",
+                            f"🚗 Your repaired item{order_ref} is *on its way* back to you!",
+                            f"✅ Great news! Your item{order_ref} is *repaired and ready* for pickup 🔧",
+                            f"Thank you for trusting us with your repair! 🙏\nWe hope everything works perfectly. Don't hesitate to reach out if you need anything.",
+                        ),
+                        "cleaning": _msgs(
+                            f"✅ Your cleaning appointment{order_ref} is *confirmed*! Our team is on it.",
+                            f"🧹 Our team is on their way / getting set up{order_ref}.",
+                            f"✨ Cleaning *complete*{order_ref}! Everything is fresh and spotless.",
+                            f"✨ Cleaning *complete*{order_ref}! Everything is fresh and spotless.",
+                            f"✨ Cleaning *complete*{order_ref}! Everything is fresh and spotless.",
+                            f"Thank you for choosing us! 🙏\nWe hope you love the results. See you next time! ✨",
+                        ),
+                        "fitness": _msgs(
+                            f"✅ Your session{order_ref} is *confirmed*! Get ready to work hard 💪",
+                            f"💪 Your trainer is getting set up{order_ref}. Almost time!",
+                            f"💪 Your session{order_ref} is *ready to begin*! Let's go!",
+                            f"💪 Your session{order_ref} is *ready to begin*! Let's go!",
+                            f"💪 Your session{order_ref} is *ready to begin*! Let's go!",
+                            f"Great session! 💪\nThank you for training with us. Keep up the great work and see you next time!",
+                        ),
+                        "hotel": _msgs(
+                            f"✅ Your booking{order_ref} is *confirmed*! We're preparing for your arrival.",
+                            f"🏨 Your room{order_ref} is being prepared. Almost ready!",
+                            f"🏨 Your room{order_ref} is *ready*! Welcome — we hope you enjoy your stay 😊",
+                            f"🏨 Your room{order_ref} is *ready*! Welcome — we hope you enjoy your stay 😊",
+                            f"🏨 Your room{order_ref} is *ready*! Welcome — we hope you enjoy your stay 😊",
+                            f"Thank you for staying with us! 🙏\nWe hope you had a wonderful experience and look forward to welcoming you back. 🏨",
+                        ),
+                        "events": _msgs(
+                            f"✅ Your event booking{order_ref} is *confirmed*! We're excited to make it special.",
+                            f"🎉 We're setting everything up{order_ref}. Almost ready!",
+                            f"🎉 Everything is *set up and ready*{order_ref}! Let's celebrate!",
+                            f"🎉 Everything is *set up and ready*{order_ref}! Let's celebrate!",
+                            f"🎉 Everything is *set up and ready*{order_ref}! Let's celebrate!",
+                            f"Thank you for celebrating with us! 🎉\nWe hope it was everything you dreamed of. See you at the next one!",
+                        ),
+                        "healthcare": _msgs(
+                            f"✅ Your appointment{order_ref} is *confirmed*.",
+                            f"🩺 The practitioner will be with you shortly{order_ref}.",
+                            f"🩺 We're *ready* for you{order_ref}. Please come in.",
+                            f"🩺 We're *ready* for you{order_ref}. Please come in.",
+                            f"🩺 We're *ready* for you{order_ref}. Please come in.",
+                            f"Thank you for visiting us. 🙏\nWe hope you feel better soon. Take care!",
+                        ),
+                        "rental": _msgs(
+                            f"✅ Your rental{order_ref} is *confirmed*! We're getting it ready for you.",
+                            f"🔑 Your rental{order_ref} is being prepared and inspected.",
+                            f"🔑 Your rental{order_ref} is *ready*! Come pick it up 😊",
+                            f"🚗 Your rental{order_ref} is *on its way* to you!",
+                            f"🔑 Your rental{order_ref} is *ready* for pickup!",
+                            f"Thank you for renting with us! 🙏\nWe hope you had a great experience. See you next time!",
+                        ),
+                        "creator": _msgs(
+                            f"✅ Your project{order_ref} is *confirmed*! We'll get started right away.",
+                            f"🎨 We're working on your project{order_ref}. Progress is looking great!",
+                            f"🎨 Your project{order_ref} is *complete* and ready for delivery!",
+                            f"🎨 Your project{order_ref} is *complete* and on its way!",
+                            f"🎨 Your project{order_ref} is *complete* and ready!",
+                            f"Thank you for working with us! 🙏\nWe hope you love the final result. Looking forward to the next project together! 🎨",
+                        ),
+                        "retail": _msgs(
+                            f"✅ Your order{order_ref} is *confirmed*! We're packing it up for you.",
+                            f"📦 Your order{order_ref} is being packed and quality-checked.",
+                            f"✅ Your order{order_ref} is *ready*!",
+                            f"🚗 Your order{order_ref} is *on its way*!",
+                            f"🛍️ Your order{order_ref} is *packed and ready* for pickup!",
+                            f"Thank you for shopping with us! 🙏\nWe hope you love your purchase. See you next time! 🛍️",
+                        ),
+                    }
+
+                    # Fall back to general for unknown business types
+                    msgs = templates.get(biz_type) or _msgs(
+                        f"✅ Your order{order_ref} has been *confirmed*! We're getting it ready for you.",
+                        f"⏳ Your order{order_ref} is now being *processed*. Won't be long!",
+                        f"🎉 Your order{order_ref} is *ready*! Enjoy 😊",
+                        f"🎉 Your order{order_ref} is *ready* and on its way!",
+                        f"✅ Your order{order_ref} is *ready* for pickup!",
+                        f"Thank you so much for your support! 🙏\nWe really appreciate your business and hope to serve you again soon. Have a wonderful day! 😊",
+                    )
+
+                    msg = msgs.get(new_status)
+                    if msg:
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=business_id,
+                            to_number=customer_phone,
+                            message=msg,
+                            send_context="order_progress",
+                        )
+        except Exception as e:
+            logging.warning(f"[update_order_progress] Failed to send progress WhatsApp: {e}")
+
+    return {"fulfillment_status": order.get("fulfillment_status", "New"), "assigned_to": order.get("assigned_to")}
+
+
+@api_router.get("/settings/staff")
+async def get_staff(user = Depends(get_current_user)):
+    """Get the staff list for the current business."""
+    business_id = user.get("business_id", user["_id"])
+    doc = await db.settings.find_one({"user_id": business_id})
+    staff = (doc or {}).get("staff_list", [])
+    return {"staff": staff}
+
+
+@api_router.post("/settings/staff")
+async def add_staff(body: dict, user = Depends(get_current_user)):
+    """Add a staff member (name only) to the staff list."""
+    business_id = user.get("business_id", user["_id"])
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    staff_id = str(uuid.uuid4())
+    await db.settings.update_one(
+        {"user_id": business_id},
+        {"$push": {"staff_list": {"id": staff_id, "name": name}}},
+        upsert=True,
+    )
+    return {"id": staff_id, "name": name}
+
+
+@api_router.delete("/settings/staff/{staff_id}")
+async def remove_staff(staff_id: str, user = Depends(get_current_user)):
+    """Remove a staff member from the staff list."""
+    business_id = user.get("business_id", user["_id"])
+    await db.settings.update_one(
+        {"user_id": business_id},
+        {"$pull": {"staff_list": {"id": staff_id}}},
+    )
+    return {"message": "removed"}
+
 
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, user = Depends(get_current_user)):
     """Delete an order"""
+    from bson import ObjectId
     business_id = user.get("business_id", user["_id"])
     result = await db.orders.delete_one({"_id": order_id, "user_id": business_id})
+    if result.deleted_count == 0:
+        try:
+            result = await db.orders.delete_one({"_id": ObjectId(order_id), "user_id": business_id})
+        except Exception:
+            pass
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
     return {"message": "Order deleted successfully"}
@@ -4350,9 +4826,14 @@ async def delete_order(order_id: str, user = Depends(get_current_user)):
 @api_router.post("/orders/{order_id}/convert-to-sale", response_model=SaleResponse)
 async def convert_order_to_sale(order_id: str, payment_method: str, user = Depends(get_current_user)):
     """Convert a paid order to a sale"""
+    from bson import ObjectId
     business_id = user.get("business_id", user["_id"])
-    # Verify order exists
     order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+    if not order:
+        try:
+            order = await db.orders.find_one({"_id": ObjectId(order_id), "user_id": business_id})
+        except Exception:
+            pass
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -4370,6 +4851,16 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         customer_name = customer["name"]
         customer_phone = customer["phone_number"]
     
+    # Resolve item label and amount safely (orders use various field names)
+    items = order.get("items") or []
+    order_item = (
+        order.get("product")
+        or order.get("product_name")
+        or (", ".join(it.get("product_name", "") for it in items if it.get("product_name")) if items else None)
+        or "Order"
+    )
+    order_amount = float(order.get("total_amount") or order.get("total") or 0)
+
     # Create sale
     sale_id = str(uuid.uuid4())
     sale_doc = {
@@ -4377,8 +4868,8 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         "user_id": business_id,
         "recorded_by": user["_id"],
         "customer_id": order["customer_id"],
-        "item": order["product"],
-        "amount": order["total_amount"],
+        "item": order_item,
+        "amount": order_amount,
         "payment_method": payment_method,
         "receipt_sent": False,
         "is_credit": False,
@@ -4386,35 +4877,35 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         "paid_date": None,
         "created_at": datetime.utcnow()
     }
-    
+
     await db.sales.insert_one(sale_doc)
-    
+
     # Update customer stats (skip for walk-in)
     if order["customer_id"] != "walk-in":
         update_ops = {
-            "$inc": {"purchase_count": 1, "total_spent": order["total_amount"]},
+            "$inc": {"purchase_count": 1, "total_spent": order_amount},
             "$set": {"last_contacted": datetime.utcnow()}
         }
-        
+
         if customer.get("tag") == "New":
             update_ops["$set"]["tag"] = "Returning"
-        
+
         await db.customers.update_one(
             {"_id": order["customer_id"]},
             update_ops
         )
-    
-    # Delete the order
-    await db.orders.delete_one({"_id": order_id})
-    
+
+    # Delete the order using the actual _id from the document (may be string or ObjectId)
+    await db.orders.delete_one({"_id": order["_id"]})
+
     return SaleResponse(
         id=sale_id,
         user_id=business_id,
         customer_id=order["customer_id"],
         customer_name=customer_name,
         customer_phone=customer_phone,
-        item=order["product"],
-        amount=order["total_amount"],
+        item=order_item,
+        amount=order_amount,
         payment_method=payment_method,
         receipt_sent=False,
         is_credit=False,
@@ -4749,22 +5240,34 @@ class ProductCreate(BaseModel):
     price: float = 0.0
     discount_price: Optional[float] = None
     category: str = "Other"
+    sub_category: Optional[str] = None
     image_url: Optional[str] = None
     images: List[str] = []
     description: Optional[str] = None
     in_stock: bool = True
     stock_quantity: Optional[int] = None
+    variants: Optional[List[dict]] = None          # [{name, price}]
+    modifier_groups: Optional[List[dict]] = None   # [{name, required, multi_select, options:[{name, price_delta}]}]
+    unit: Optional[str] = None                     # e.g. "per kg", "per carton" — grocery/wholesale
+    moq: Optional[int] = None                      # minimum order quantity — wholesale
+    pricing_tiers: Optional[List[dict]] = None     # [{min_qty, price}] bulk pricing — wholesale
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     price: Optional[float] = None
     discount_price: Optional[float] = None
     category: Optional[str] = None
+    sub_category: Optional[str] = None
     image_url: Optional[str] = None
     images: Optional[List[str]] = None
     description: Optional[str] = None
     in_stock: Optional[bool] = None
     stock_quantity: Optional[int] = None
+    variants: Optional[List[dict]] = None          # [{name, price}]
+    modifier_groups: Optional[List[dict]] = None   # [{name, required, multi_select, options:[{name, price_delta}]}]
+    unit: Optional[str] = None                     # e.g. "per kg", "per carton" — grocery/wholesale
+    moq: Optional[int] = None                      # minimum order quantity — wholesale
+    pricing_tiers: Optional[List[dict]] = None     # [{min_qty, price}] bulk pricing — wholesale
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -4829,14 +5332,20 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "price": product.price,
         "discount_price": product.discount_price,
         "category": clean_category,
+        "sub_category": product.sub_category,
         "image_url": product.image_url,
         "images": images,
         "description": clean_description,
         "in_stock": product.in_stock,
         "stock_quantity": product.stock_quantity,
+        "variants": product.variants or [],
+        "modifier_groups": product.modifier_groups or [],
+        "unit": product.unit or "",
+        "moq": product.moq or 1,
+        "pricing_tiers": product.pricing_tiers or [],
         "created_at": datetime.utcnow()
     }
-    
+
     await db.products.insert_one(product_doc)
     
     return ProductResponse(
@@ -6735,266 +7244,21 @@ async def evolution_webhook(request: Request):
                     "payment_methods": _payment_methods_ctx,
                 }
 
-                # ── PRE-ROUTER: Menu selection handler ─────────────────────
-                # Short numeric messages ("1", "2", "3") get misclassified by
-                # the intent analyzer. Check conversation state for active menus
-                # BEFORE the router to handle them correctly.
-                _body_sel = body.strip()
-                logging.info(f"[PreRouter] Checking message: '{_body_sel}', customer_id={customer_id}, isdigit={_body_sel.isdigit() if _body_sel else False}")
-                if customer_id and len(_body_sel) <= 2 and _body_sel.isdigit():
-                    from agents.conversation_state import load_state as _load_pre, save_state as _save_pre
-                    _pre_state = await _load_pre(db, user["_id"], str(customer_id))
-                    logging.info(f"[PreRouter] Loaded state: pending_order_creation={_pre_state.get('pending_order_creation')}, "
-                                 f"pending_order_step={_pre_state.get('pending_order_step')}, "
-                                 f"waiting_for_selection={_pre_state.get('waiting_for_selection')}, "
-                                 f"menu_type={_pre_state.get('menu_type')}")
-                    # Do not treat digits as menu picks while order qty/delivery/payment is active
-                    _pre_order_flow = _pre_state.get("pending_order_creation") or (
-                        _pre_state.get("pending_order_step") in ("quantity", "delivery", "payment")
-                    )
-                    logging.info(f"[PreRouter] _pre_order_flow={_pre_order_flow}")
-                    if _pre_order_flow:
-                        pass
-                    elif _pre_state.get("waiting_for_selection") and _pre_state.get("menu_items"):
-                        _pre_items = _pre_state.get("menu_items", {})
-                        _pre_type = _pre_state.get("menu_type", "")
-                        if _body_sel in _pre_items:
-                            _pre_sel = _pre_items[_body_sel]
-                            logging.info(f"[PreRouter] Menu selection intercepted: '{_body_sel}' → {_pre_sel.get('name','')} (type={_pre_type})")
-
-                            if _pre_type == "single_product_actions":
-                                _action = _pre_sel.get("action", "order")
-                                _pprice = _pre_sel.get("price", 0)
-                                _pid = _pre_sel.get("id")
-                                # Menu item name is "Order Now"/"Add to Cart" — get real product name from DB
-                                _pname = ""
-                                if _pid:
-                                    _prod_doc = await db.products.find_one({"_id": _pid})
-                                    if _prod_doc:
-                                        _pname = _prod_doc.get("name", "")
-                                if not _pname:
-                                    # Fallback: check last_discussed_product from state
-                                    _pname = _pre_state.get("last_discussed_product", _pre_sel.get("name", "Product"))
-
-                                if _action == "similar":
-                                    # Don't clear state — let router menu gate handle "see similar"
-                                    pass
-                                else:
-                                    # Single save: clear menu + pending order (avoid qty "1" re-opening catalog)
-                                    _order_reply = (
-                                        f"*{_pname}* — {currency} {_pprice:,.0f} 🛒\n\n"
-                                        f"How many would you like? 🔢"
-                                    )
-                                    logging.info(f"[PreRouter] Saving order flow state: pending_order_creation=True, product={_pname}, price={_pprice}, pid={_pid}")
-                                    try:
-                                        await _save_pre(db, user["_id"], str(customer_id), {
-                                            "active_menu": False, "waiting_for_selection": False,
-                                            "menu_items": {}, "menu_type": None,
-                                            "last_discussed_product": _pname,
-                                            "pending_order_list": None,
-                                            "pending_order_action": None,
-                                            "pending_order_creation": True,
-                                            "pending_order_product_id": _pid,
-                                            "pending_order_product_name": _pname,
-                                            "pending_order_price": _pprice,
-                                            "pending_order_step": "quantity",
-                                        })
-                                        logging.info(f"[PreRouter] State saved successfully for customer_id={customer_id}")
-                                    except Exception as _save_err:
-                                        logging.error(f"[PreRouter] FAILED to save order state: {_save_err}")
-                                    try:
-                                        await db.pending_catalogs.delete_one(
-                                            {"customer_id": customer_id, "user_id": user["_id"]}
-                                        )
-                                    except Exception:
-                                        pass
-                                    try:
-                                        await db.customers.update_one(
-                                            {"_id": customer_id},
-                                            {"$set": {
-                                                "needs_human": True,
-                                                "needs_human_reason": f"Customer wants to order: {_pname} ({currency} {_pprice:,.0f})",
-                                                "needs_human_at": datetime.utcnow(),
-                                            }}
-                                        )
-                                    except Exception:
-                                        pass
-                                    ws = get_whatsapp_service(db)
-                                    await ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_order_reply, customer_name=customer_name,
-                                        send_context="auto_reply"
-                                    )
-                                    return {"status": "ok", "handled_by": "pre_router_menu"}
-
-                            elif _pre_type in ("catalog_selection", "product_selection"):
-                                # Product selected from catalog — let the router handle
-                                # (it has full showcase logic)
-                                pass
-
-                            elif _pre_type == "service_selection":
-                                # Service selected — let the router handle
-                                # (it has booking date collection logic)
-                                pass
-
-                            # For "0" = view gallery
-                            elif _body_sel == "0":
-                                await _save_pre(db, user["_id"], str(customer_id), {
-                                    "active_menu": False, "waiting_for_selection": False,
-                                    "menu_items": {}, "menu_type": None,
-                                })
-                                # Fall through to router which has gallery logic
-                                pass
-                # ── PRE-ROUTER: Pending order creation ─────────────────────
-                # After the "How many would you like?" prompt, customer replies
-                # with quantity. Short numeric replies like "1" get misclassified
-                # by the intent analyzer. Handle directly via SalesAgent.
-                # ── END PRE-ROUTER ─────────────────────────────────────────
-
-                agent_result = await router.route_and_process(
-                    user_id=user["_id"],
+                # ── AUTOREPLY V2 ENGINE ────────────────────────────────────
+                # Stateless AI + 5-field mini-state. Replaces the old
+                # pre-router + router + agents pipeline.
+                # ──────────────────────────────────────────────────────────
+                from autoreply.engine import process_message as _v2_process
+                _ws_v2 = get_whatsapp_service(db)
+                return await _v2_process(
+                    db=db,
+                    user=user,
+                    customer=customer,
+                    customer_id=customer_id,
                     message=body,
-                    context=agent_context
+                    from_number=from_number,
+                    whatsapp_service=_ws_v2,
                 )
-
-                if agent_result and agent_result.get("handled"):
-                    # If escalated — no message sent, human will handle
-                    if agent_result.get("escalated"):
-                        logging.info(
-                            f"[Webhook] Escalated for {from_number}: "
-                            f"{agent_result.get('escalation_reason', '')}"
-                        )
-                        return {"status": "ok", "handled_by": "escalation"}
-
-                    ws = get_whatsapp_service(db)
-
-                    # "0" = View Gallery — send product images with safe delays
-                    if agent_result.get("show_gallery"):
-                        import asyncio as _aio_gallery
-                        _gallery_prods = await db.products.find(
-                            {"user_id": user["_id"], "in_stock": {"$ne": False}}
-                        ).to_list(_WA_GALLERY_MAX + 1)  # fetch one extra to detect overflow
-                        _gallery_currency = (
-                            _user_settings.get("currency")
-                            or user.get("currency")
-                            or "KES"
-                        )
-                        _has_more_gallery = len(_gallery_prods) > _WA_GALLERY_MAX
-                        _gallery_prods = _gallery_prods[:_WA_GALLERY_MAX]
-
-                        if not _gallery_prods:
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message="No products available right now. 😊",
-                                customer_name=customer_name, send_context="auto_reply"
-                            )
-                        else:
-                            for _gp in _gallery_prods:
-                                _imgs = []
-                                if _gp.get("image_url"):
-                                    _imgs.append(_gp["image_url"])
-                                for _gi in _gp.get("images", []):
-                                    if _gi and _gi not in _imgs:
-                                        _imgs.append(_gi)
-                                _imgs = [normalize_url(u) for u in _imgs if u]
-                                _price_s = f"{_gallery_currency} {_gp['price']:,.0f}" if _gp.get("price") else "POA"
-                                _caption = f"*{_gp['name']}*\n💰 {_price_s}"
-                                if _gp.get("description"):
-                                    _caption += f"\n{_gp['description']}"
-                                if _imgs:
-                                    # Extra angles first (no caption)
-                                    for _ei in _imgs[1:3]:  # max 2 extra angles
-                                        await ws.send_message(
-                                            user_id=user["_id"], to_number=from_number,
-                                            message="", customer_name=customer_name,
-                                            send_context="auto_reply", media_url=normalize_url(_ei)
-                                        )
-                                        await _aio_gallery.sleep(_WA_DELAY_BETWEEN_IMGS)
-                                    # Main image with caption last
-                                    await ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_caption, customer_name=customer_name,
-                                        send_context="auto_reply", media_url=normalize_url(_imgs[0])
-                                    )
-                                else:
-                                    await ws.send_message(
-                                        user_id=user["_id"], to_number=from_number,
-                                        message=_caption, customer_name=customer_name,
-                                        send_context="auto_reply"
-                                    )
-                                await _aio_gallery.sleep(_WA_DELAY_BETWEEN_IMGS)
-                            # After images, send numbered catalog list for selection
-                            await _aio_gallery.sleep(_WA_DELAY_BETWEEN_MSGS)
-                            _cat_lines = ["📋 *Our Catalog:*\n"]
-                            _cat_menu = {}
-                            for _ci, _cp in enumerate(_gallery_prods, 1):
-                                _cp_price = _cp.get("price", 0)
-                                _cp_stock = "✅" if _cp.get("in_stock", True) else "❌"
-                                _cp_price_s = f"{_gallery_currency} {_cp_price:,.0f}" if _cp_price else "POA"
-                                _cat_lines.append(f"{_ci}️⃣  *{_cp['name']}* — {_cp_price_s} {_cp_stock}")
-                                _cat_menu[str(_ci)] = {
-                                    "name": _cp["name"], "price": _cp_price,
-                                    "id": str(_cp["_id"]), "type": "product"
-                                }
-                            if _has_more_gallery:
-                                _cat_lines.append("\n📌 Type *catalog* to see more products.")
-                            _cat_lines.append("\n👉 Reply with the *number* to view a product!")
-                            await ws.send_message(
-                                user_id=user["_id"], to_number=from_number,
-                                message="\n".join(_cat_lines),
-                                customer_name=customer_name, send_context="auto_reply"
-                            )
-                            # Save menu state so customer can select by number
-                            if customer_id:
-                                try:
-                                    from agents.conversation_state import save_state as _save_state_g
-                                    await _save_state_g(db, user["_id"], customer_id, {
-                                        "active_menu": True,
-                                        "waiting_for_selection": True,
-                                        "menu_type": "product_selection",
-                                        "menu_items": _cat_menu,
-                                    })
-                                except Exception as _gctx_err:
-                                    logging.error(f"[Webhook] Failed to save gallery menu state: {_gctx_err}")
-                        return {"status": "ok", "handled_by": "gallery"}
-
-                    # Send all messages returned by agent — with safe delays between
-                    import asyncio as _aio_send
-                    _msgs_to_send = [m for m in agent_result.get("messages", []) if m.get("text")]
-                    for _mi, msg in enumerate(_msgs_to_send):
-                        if _mi > 0:
-                            # Delay between messages — images need more time
-                            _delay = _WA_DELAY_BETWEEN_IMGS if msg.get("media_url") else _WA_DELAY_BETWEEN_MSGS
-                            await _aio_send.sleep(_delay)
-                        await ws.send_message(
-                            user_id=user["_id"],
-                            to_number=from_number,
-                            message=msg["text"],
-                            customer_name=customer_name,
-                            media_url=msg.get("media_url"),
-                            send_context="auto_reply"
-                        )
-
-                    # Persist context_update returned by agent (menu state, intent, etc.)
-                    _ctx_update = agent_result.get("context_update")
-                    if _ctx_update and customer_id:
-                        try:
-                            from agents.conversation_state import load_state as _load_ctx, save_state as _save_state
-                            _existing_ctx = await _load_ctx(db, user["_id"], str(customer_id))
-                            _ord_flow = _existing_ctx.get("pending_order_creation") or (
-                                _existing_ctx.get("pending_order_step") in ("quantity", "delivery", "payment")
-                            )
-                            if _ord_flow:
-                                for _mk in (
-                                    "menu_items", "menu_type", "waiting_for_selection", "active_menu",
-                                    "catalog_all_ids", "catalog_has_more", "menu_sent_at",
-                                ):
-                                    _ctx_update.pop(_mk, None)
-                            await _save_state(db, user["_id"], customer_id, _ctx_update)
-                        except Exception as _ctx_err:
-                            logging.error(f"[Webhook] Failed to save context_update: {_ctx_err}")
-
-                    return {"status": "ok", "handled_by": "agent"}
 
                 # Handle order button taps: "order_<product_id>"
                 body_lower = body.lower().strip()
@@ -7724,27 +7988,10 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         m if isinstance(m, dict) else {"name": m, "details": ""}
         for m in raw_pm
     ]
+    # Return all stored fields plus normalized payment_methods and a safe default for business_type
     return {
-        "products_services": knowledge.get('products_services', ''),
-        "pricing_info": knowledge.get('pricing_info', ''),
-        "business_hours": knowledge.get('business_hours', ''),
-        "delivery_info": knowledge.get('delivery_info', ''),
-        "faqs": knowledge.get('faqs', ''),
-        "special_offers": knowledge.get('special_offers', ''),
-        "business_description": knowledge.get('business_description', ''),
+        **knowledge,
         "business_type": knowledge.get('business_type', 'general'),
-        "creator_niche": knowledge.get('creator_niche', ''),
-        "creator_platforms": knowledge.get('creator_platforms', ''),
-        "creator_audience_size": knowledge.get('creator_audience_size', ''),
-        "creator_collab_types": knowledge.get('creator_collab_types', ''),
-        "creator_rate_card": knowledge.get('creator_rate_card', ''),
-        "creator_whats_included": knowledge.get('creator_whats_included', ''),
-        "creator_turnaround": knowledge.get('creator_turnaround', ''),
-        "creator_booking_process": knowledge.get('creator_booking_process', ''),
-        "creator_min_budget": knowledge.get('creator_min_budget', ''),
-        "creator_blacklisted_niches": knowledge.get('creator_blacklisted_niches', ''),
-        "creator_fan_dm_response": knowledge.get('creator_fan_dm_response', ''),
-        "creator_media_kit_link": knowledge.get('creator_media_kit_link', ''),
         "payment_methods": payment_methods,
     }
 
@@ -7753,12 +8000,58 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     """Update business knowledge for AI to use in conversations"""
     update_data = {}
     fields = [
+        # Core fields
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
         'faqs', 'special_offers', 'business_description', 'business_type',
+        # Restaurant
+        'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
+        'restaurant_table_range', 'restaurant_avg_wait', 'restaurant_min_delivery',
+        # Retail
+        'retail_has_custom_orders', 'retail_custom_lead_time', 'retail_return_policy',
+        # Bakery
+        'bakery_advance_days', 'bakery_deposit_required', 'bakery_deposit_pct',
+        # Grocery
+        'grocery_delivery_slots', 'grocery_min_order', 'grocery_allow_substitutions',
+        # Wholesale
+        'wholesale_lead_time', 'wholesale_min_order_value', 'wholesale_payment_terms', 'wholesale_has_credit_account',
+        # Salon
+        'salon_multiple_stylists', 'salon_stylist_names', 'salon_deposit_required', 'salon_deposit_pct', 'salon_cancellation_policy',
+        # Spa
+        'spa_has_couples', 'spa_deposit_required', 'spa_deposit_pct', 'spa_cancellation_hours',
+        # Repair
+        'repair_has_onsite', 'repair_has_dropoff', 'repair_diagnosis_free', 'repair_turnaround', 'repair_warranty',
+        # Services
+        'services_has_onsite', 'services_has_remote', 'services_quote_first', 'services_deposit_required',
+        'services_turnaround', 'services_cancellation_policy',
+        # Support
+        'support_ticket_prefix', 'support_response_sla', 'support_has_billing_support',
+        'support_has_technical_support', 'support_has_complaints', 'support_has_live_handoff',
+        'support_escalation_policy', 'support_refund_policy',
+        # Hotel
+        'hotel_checkin_time', 'hotel_checkout_time', 'hotel_min_nights', 'hotel_deposit_required',
+        'hotel_deposit_pct', 'hotel_has_meal_plans', 'hotel_meal_plan_options',
+        'hotel_has_airport_transfer', 'hotel_has_spa', 'hotel_has_pool', 'hotel_cancellation_policy',
+        # Rental
+        'rental_type', 'rental_deposit_required', 'rental_deposit_pct', 'rental_min_nights',
+        'rental_checkin_time', 'rental_checkout_time', 'rental_pet_policy',
+        'rental_cancellation_policy', 'rental_has_extras',
+        # Cleaning
+        'cleaning_has_recurring', 'cleaning_has_commercial', 'cleaning_supplies_included',
+        # Fitness
+        'fitness_has_memberships', 'fitness_has_classes', 'fitness_has_personal_training',
+        'fitness_has_trial', 'fitness_class_schedule',
+        # Events
+        'events_deposit_pct', 'events_lead_time', 'events_delivery_days',
+        # Healthcare
+        'hc_consultation_fee', 'hc_has_lab_tests', 'hc_has_home_visit',
+        'hc_prep_instructions', 'hc_insurance_accepted',
+        # Creator
         'creator_niche', 'creator_platforms', 'creator_audience_size',
         'creator_collab_types', 'creator_rate_card', 'creator_whats_included',
         'creator_turnaround', 'creator_booking_process', 'creator_min_budget',
         'creator_blacklisted_niches', 'creator_fan_dm_response', 'creator_media_kit_link',
+        'creator_followers', 'creator_lead_time', 'creator_revisions',
+        'creator_usage_rights', 'creator_deposit_pct', 'creator_rates_on_request',
     ]
     for field in fields:
         val = getattr(knowledge, field, None)
@@ -8905,12 +9198,30 @@ async def update_product(
     
     if product_update.in_stock is not None:
         update_data["in_stock"] = product_update.in_stock
-    
+
+    if product_update.sub_category is not None:
+        update_data["sub_category"] = product_update.sub_category
+
+    if product_update.variants is not None:
+        update_data["variants"] = product_update.variants
+
+    if product_update.modifier_groups is not None:
+        update_data["modifier_groups"] = product_update.modifier_groups
+
+    if product_update.unit is not None:
+        update_data["unit"] = product_update.unit
+
+    if product_update.moq is not None:
+        update_data["moq"] = product_update.moq
+
+    if product_update.pricing_tiers is not None:
+        update_data["pricing_tiers"] = product_update.pricing_tiers
+
     await db.products.update_one(
         {"_id": product_id},
         {"$set": update_data}
     )
-    
+
     return {"status": "success", "message": "Product updated"}
 
 @api_router.delete("/products/{product_id}")
@@ -9055,11 +9366,11 @@ async def generate_ai_description(
     prompt_template = prompts.get(business_type.lower(), prompts["retail"])
     
     if request.mode == "improve" and request.current_description:
-        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\nCurrent Description: {request.current_description}\n\n{prompt_template}\n\nPlease improve this description to be more professional and appealing."
-        system_prompt = "You are a professional editor. Improve the given description to be more compelling, clear, and effective. Keep the same meaning but enhance the language. Keep it under 200 words."
+        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\nCurrent Description: {request.current_description}\n\n{prompt_template}\n\nImprove this description. Return ONLY the description text, no labels or quotes."
+        system_prompt = "You are a professional copywriter. Improve the description to be more appealing. Keep it to 1-2 short sentences, max 30 words. Return ONLY the description text."
     else:
-        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\n\n{prompt_template}"
-        system_prompt = "You are a professional marketing copywriter. Write compelling, accurate descriptions that help customers understand the value and make informed decisions. Keep descriptions under 200 words and focus on benefits."
+        user_prompt = f"Product Name: {request.product_name}\nCategory: {request.category or 'General'}\n\n{prompt_template}\n\nReturn ONLY the description text, no labels, no quotes, no extra explanation."
+        system_prompt = "You are a professional copywriter. Write a short, punchy product description. Max 2 sentences, max 30 words. Focus on taste/benefit. Return ONLY the description text."
     
     try:
         # Build the prompt as a string for the AI service

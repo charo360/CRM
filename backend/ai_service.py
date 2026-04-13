@@ -724,8 +724,7 @@ Output ONLY the reply. Nothing else."""
                 logger.error(error_msg)
                 raise Exception(error_msg)
             
-        print(f"DEBUG: Routing to {client_type} (model: {model_name})...", flush=True)
-        logging.info(f"DEBUG: Routing to {client_type} (model: {model_name})...")
+        logging.info(f"[LLM] Routing to {client_type} (model: {model_name})")
         
         try:
             if client_type == 'claude':
@@ -735,7 +734,6 @@ Output ONLY the reply. Nothing else."""
                 return await self._call_openai_compatible(client, model_name, prompt)
         except Exception as e:
             logger.error(f"Primary model {model_name} failed: {e}")
-            print(f"ERROR: {model_name} failed, trying fallback...", flush=True)
             
             # Fallback to default provider (skip if already using it)
             fb_type, fb_model, fb_client = self._get_default_client_and_model()
@@ -783,7 +781,7 @@ Output ONLY the reply. Nothing else."""
                 # GPT-5: Do NOT send max_tokens or max_completion_tokens
                 pass
             else:
-                kwargs["max_tokens"] = 500
+                kwargs["max_tokens"] = 300
                 kwargs["temperature"] = 0.9
                 kwargs["presence_penalty"] = 0.6   # pushes away from repeating topics
                 kwargs["frequency_penalty"] = 0.4  # pushes away from repeating exact phrases
@@ -825,7 +823,7 @@ Output ONLY the reply. Nothing else."""
         
         payload = {
             "model": model_name,
-            "max_tokens": 400,
+            "max_tokens": 300,
             "system": system_msg,
             "messages": [
                 {"role": "user", "content": user_msg}

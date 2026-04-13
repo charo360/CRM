@@ -4,13 +4,23 @@ import { useAuth } from './AuthContext';
 
 export type BusinessType =
   | 'retail'
-  | 'salon'
-  | 'services'
-  | 'fitness'
+  | 'wholesale'
   | 'restaurant'
+  | 'food'
+  | 'bakery'
+  | 'grocery'
+  | 'salon'
+  | 'spa'
+  | 'services'
+  | 'repair'
+  | 'cleaning'
+  | 'fitness'
+  | 'events'
   | 'healthcare'
-  | 'creator'
   | 'rental'
+  | 'hotel'
+  | 'support'
+  | 'creator'
   | 'general'
   | '';
 
@@ -106,14 +116,105 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     staffLabel: '', customerLabel: 'Guest',
     showCheckinCheckout: true,
   },
+  hotel: {
+    catalogLabel: 'Rooms', catalogItemLabel: 'Room',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Revenue',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'rental', bookingLabel: 'Reservation',
+    staffLabel: '', customerLabel: 'Guest',
+    showCheckinCheckout: true,
+  },
+  support: {
+    // Customer support / care agent — catalog holds FAQ articles & known answers
+    catalogLabel: 'Knowledge Base', catalogItemLabel: 'Article',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: false, salesTabLabel: 'Activity',
+    dashboardMode: 'hybrid', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Ticket',
+    staffLabel: 'Agent', customerLabel: 'Customer',
+    showCheckinCheckout: false,
+  },
   general: {
-    // Fintech, NGO, info, assistant-only — no bookings, just chat & broadcast
+    // Flexible — can have products, services, or both
     catalogLabel: 'Resources', catalogItemLabel: 'Resource',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Sales',
+    dashboardMode: 'hybrid', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Booking',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
+  },
+  wholesale: {
+    catalogLabel: 'Products', catalogItemLabel: 'Product',
+    showDuration: false, showStock: true,
+    bookingsTabVisible: false, salesTabLabel: 'Sales',
+    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Client',
+    showCheckinCheckout: false,
+  },
+  food: {
+    catalogLabel: 'Menu', catalogItemLabel: 'Item',
     showDuration: false, showStock: false,
     bookingsTabVisible: false, salesTabLabel: 'Sales',
     dashboardMode: 'sales', primaryColor: '#25D366',
-    bookingMode: 'none', bookingLabel: 'Appointment',
+    bookingMode: 'none', bookingLabel: 'Order',
     staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
+  },
+  bakery: {
+    catalogLabel: 'Menu', catalogItemLabel: 'Item',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: false, salesTabLabel: 'Sales',
+    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
+  },
+  grocery: {
+    catalogLabel: 'Products', catalogItemLabel: 'Product',
+    showDuration: false, showStock: true,
+    bookingsTabVisible: false, salesTabLabel: 'Sales',
+    dashboardMode: 'sales', primaryColor: '#25D366',
+    bookingMode: 'none', bookingLabel: 'Order',
+    staffLabel: '', customerLabel: 'Customer',
+    showCheckinCheckout: false,
+  },
+  spa: {
+    catalogLabel: 'Treatments', catalogItemLabel: 'Treatment',
+    showDuration: true, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Sales',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Therapist', customerLabel: 'Client',
+    showCheckinCheckout: false,
+  },
+  repair: {
+    catalogLabel: 'Services', catalogItemLabel: 'Service',
+    showDuration: true, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Sales',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Technician', customerLabel: 'Client',
+    showCheckinCheckout: false,
+  },
+  cleaning: {
+    catalogLabel: 'Packages', catalogItemLabel: 'Package',
+    showDuration: true, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Sales',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Booking',
+    staffLabel: '', customerLabel: 'Client',
+    showCheckinCheckout: false,
+  },
+  events: {
+    catalogLabel: 'Packages', catalogItemLabel: 'Package',
+    showDuration: false, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Revenue',
+    dashboardMode: 'hybrid', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Booking',
+    staffLabel: 'Photographer', customerLabel: 'Client',
     showCheckinCheckout: false,
   },
 };
@@ -158,8 +259,8 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { load(); }, [load]);
 
   const config = TYPE_CONFIGS[businessType] ?? DEFAULT_CONFIG;
-  const isServiceBusiness = ['salon', 'services', 'fitness', 'healthcare', 'rental'].includes(businessType);
-  const isRetailBusiness  = ['retail', 'restaurant', 'creator', 'general'].includes(businessType);
+  const isServiceBusiness = ['salon', 'spa', 'services', 'repair', 'cleaning', 'fitness', 'events', 'healthcare', 'rental', 'hotel', 'support'].includes(businessType);
+  const isRetailBusiness  = ['retail', 'wholesale', 'restaurant', 'food', 'bakery', 'grocery', 'creator', 'general'].includes(businessType);
 
   return (
     <BusinessContext.Provider value={{

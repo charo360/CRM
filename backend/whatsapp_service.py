@@ -52,17 +52,17 @@ BROADCAST_COOLDOWN_HOURS = 24  # Min hours between broadcasts
 # These make automated messages look human to WhatsApp's detection systems.
 # All delays are in seconds. Ranges are (min, max) for random selection.
 
-# Typing speed: fast typer on phone, ~8-15 chars/sec
-TYPING_CHARS_PER_SECOND = (8, 15)
+# Typing speed: fast typer with predictive text, ~25-40 chars/sec
+TYPING_CHARS_PER_SECOND = (25, 40)
 
 # Read delay: time between receiving a message and starting to type
-AUTO_REPLY_READ_DELAY = (2, 8)      # For auto-replies (AI responses)
-ORDER_CONFIRM_READ_DELAY = (1, 4)   # For order confirmations
-MANUAL_SEND_READ_DELAY = (0.5, 1.5) # For manual sends from app (user is waiting)
+AUTO_REPLY_READ_DELAY = (1, 3)      # For auto-replies (AI responses)
+ORDER_CONFIRM_READ_DELAY = (0.5, 2) # For order confirmations
+MANUAL_SEND_READ_DELAY = (0.3, 1.0) # For manual sends from app (user is waiting)
 
 # Typing pause: humans pause mid-typing (thinking, correcting)
-TYPING_PAUSE_CHANCE = 0.3           # 30% chance of a pause per slot
-TYPING_PAUSE_DURATION = (0.5, 1.5)  # How long each pause lasts
+TYPING_PAUSE_CHANCE = 0.2           # 20% chance of a pause per slot
+TYPING_PAUSE_DURATION = (0.3, 0.8)  # How long each pause lasts
 
 # Broadcast delays: time between each broadcast message
 BROADCAST_DELAY = (2, 5)            # Random delay between broadcast sends
@@ -454,8 +454,8 @@ class WhatsAppService:
         # Calculate typing time based on message length
         chars_per_sec = random.uniform(*TYPING_CHARS_PER_SECOND)
         base_typing_time = msg_len / chars_per_sec
-        base_typing_time = min(base_typing_time, 55)  # Cap at ~1 min
-        base_typing_time = max(base_typing_time, 1.5)  # Min so it's not instant
+        base_typing_time = min(base_typing_time, 8)   # Cap at 8s — no one waits longer than this
+        base_typing_time = max(base_typing_time, 1.0)  # Min so it's not instant
 
         # Determine pause slots for longer messages
         num_pauses = 0
@@ -477,13 +477,13 @@ class WhatsAppService:
                     schedule.append(("paused", pause_dur))
 
         # Execute the typing schedule
+        _PRESENCE_REFRESH = 5  # WhatsApp drops typing indicator after ~10s; refresh every 5s to keep it alive
         for action, duration in schedule:
             await self._send_presence(instance_name, to_number, action)
             if action == "composing":
-                # WhatsApp resets typing after ~25s, re-send if needed
                 remaining = duration
                 while remaining > 0:
-                    wait = min(remaining, MAX_TYPING_DURATION - 1)
+                    wait = min(remaining, _PRESENCE_REFRESH)
                     await asyncio.sleep(wait)
                     remaining -= wait
                     if remaining > 0:

@@ -127,10 +127,75 @@ const RENTAL_CATEGORIES = [
     'Other'
 ];
 
+const SUPPORT_CATEGORIES = [
+    'Billing & Payments',
+    'Technical Issues',
+    'Account Management',
+    'Orders & Delivery',
+    'Returns & Refunds',
+    'Getting Started',
+    'Policies & Terms',
+    'FAQs',
+    'Complaints',
+    'Other',
+];
+
+const HOTEL_CATEGORIES = [
+    'Standard Room',
+    'Deluxe Room',
+    'Superior Room',
+    'Junior Suite',
+    'Suite',
+    'Executive Suite',
+    'Villa',
+    'Penthouse',
+    'Family Room',
+    'Twin Room',
+];
+
+// Spa-specific categories
+const SPA_CATEGORIES = [
+    'Swedish Massage',
+    'Deep Tissue Massage',
+    'Hot Stone Massage',
+    'Facial',
+    'Body Scrub',
+    'Body Wrap',
+    'Aromatherapy',
+    'Couples Treatment',
+    'Manicure & Pedicure',
+    'Other'
+];
+
+// Cleaning-specific categories
+const CLEANING_CATEGORIES = [
+    'Deep Clean',
+    'Regular Clean',
+    'Move In/Out Clean',
+    'Office Cleaning',
+    'Post-Construction',
+    'Carpet & Upholstery',
+    'Window Cleaning',
+    'Other'
+];
+
+// Events & Photography categories
+const EVENTS_CATEGORIES = [
+    'Wedding',
+    'Birthday Party',
+    'Corporate Event',
+    'Graduation',
+    'Baby Shower',
+    'Product Launch',
+    'Conference',
+    'Portrait Session',
+    'Other'
+];
+
 // Retail categories (physical products)
 const RETAIL_CATEGORIES = [
     'Electronics',
-    'Clothing', 
+    'Clothing',
     'Food & Beverages',
     'Home & Garden',
     'Beauty & Health',
@@ -141,6 +206,95 @@ const RETAIL_CATEGORIES = [
     'Other'
 ];
 
+// Food business categories (cloud kitchens, home cooks, small eateries, food trucks)
+const FOOD_CATEGORIES = [
+    "Today's Special",
+    'Rice Dishes',
+    'Stews & Soups',
+    'Grilled & BBQ',
+    'Breakfast',
+    'Snacks & Light Bites',
+    'Combo Meals',
+    'Beverages',
+    'Salads & Sides',
+    'Other'
+];
+
+// Bakery-specific categories
+const BAKERY_CATEGORIES = [
+    'Cakes',
+    'Bread & Loaves',
+    'Pastries & Croissants',
+    'Cookies & Biscuits',
+    'Cupcakes & Muffins',
+    'Pies & Tarts',
+    'Custom Orders',
+    'Beverages',
+    'Seasonal Specials',
+    'Other'
+];
+
+// Grocery-specific categories
+const GROCERY_CATEGORIES = [
+    'Fresh Produce',
+    'Dairy & Eggs',
+    'Meat & Seafood',
+    'Beverages',
+    'Grains & Cereals',
+    'Cooking Essentials',
+    'Snacks & Confectionery',
+    'Household & Cleaning',
+    'Personal Care',
+    'Baby & Kids',
+    'Other'
+];
+
+const GROCERY_UNITS = [
+    'per piece', 'per kg', 'per g', 'per packet',
+    'per bottle', 'per litre', 'per dozen', 'per bundle', 'per box', 'per bag',
+];
+
+// Wholesale-specific categories
+const WHOLESALE_CATEGORIES = [
+    'Food & Beverages',
+    'Electronics & Appliances',
+    'Clothing & Textiles',
+    'Beauty & Personal Care',
+    'Household Products',
+    'Industrial & Hardware',
+    'Stationery & Office',
+    'Agricultural Products',
+    'Pharmaceutical',
+    'Other'
+];
+
+const WHOLESALE_UNITS = [
+    'per carton', 'per case', 'per dozen', 'per pallet',
+    'per kg', 'per bag', 'per box', 'per bundle', 'per piece',
+];
+
+interface Variant {
+    name: string;
+    price: number;
+}
+
+interface PricingTier {
+    min_qty: number;
+    price: number;
+}
+
+interface ModifierOption {
+    name: string;
+    price_delta: number;
+}
+
+interface ModifierGroup {
+    name: string;
+    required: boolean;
+    multi_select: boolean;
+    options: ModifierOption[];
+}
+
 interface Product {
     id: string;
     name: string;
@@ -149,9 +303,15 @@ interface Product {
     image_url: string;
     images: string[];
     category: string;
+    sub_category?: string;
     description?: string;
     in_stock: boolean;
     stock_quantity?: number;
+    variants?: Variant[];
+    modifier_groups?: ModifierGroup[];
+    unit?: string;
+    moq?: number;
+    pricing_tiers?: PricingTier[];
     created_at: string;
 }
 
@@ -181,6 +341,7 @@ export default function ProductCatalogModal({
     const [editDiscountPrice, setEditDiscountPrice] = useState('');
     const [editDescription, setEditDescription] = useState('');
     const [editCategory, setEditCategory] = useState('');
+    const [editSubCategory, setEditSubCategory] = useState('');
     const [editStockQuantity, setEditStockQuantity] = useState('');
     const [editInStock, setEditInStock] = useState(true);
     const [editImages, setEditImages] = useState<string[]>([]);
@@ -192,35 +353,75 @@ export default function ProductCatalogModal({
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
     const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
     const [subscriptionPlan, setSubscriptionPlan] = useState('free');
-    
+
+    // Variants state
+    const [editVariants, setEditVariants] = useState<Variant[]>([]);
+    const [newVariantName, setNewVariantName] = useState('');
+    const [newVariantPrice, setNewVariantPrice] = useState('');
+
+    // Modifier groups state
+    const [editModifierGroups, setEditModifierGroups] = useState<ModifierGroup[]>([]);
+    const [newGroupName, setNewGroupName] = useState('');
+    const [newGroupRequired, setNewGroupRequired] = useState(false);
+    const [newGroupMulti, setNewGroupMulti] = useState(false);
+    const [newGroupOptions, setNewGroupOptions] = useState<ModifierOption[]>([]);
+    const [newOptionName, setNewOptionName] = useState('');
+    const [newOptionPrice, setNewOptionPrice] = useState('');
+    const [showAddGroup, setShowAddGroup] = useState(false);
+
     // Ref for description TextInput to control scroll position
     const descriptionInputRef = useRef<TextInput>(null);
 
-    const { config } = useBusiness();
+    const [editUnit, setEditUnit] = useState('');
+    const [editMoq, setEditMoq] = useState('');
+    const [editPricingTiers, setEditPricingTiers] = useState<PricingTier[]>([]);
+    const [newTierMinQty, setNewTierMinQty] = useState('');
+    const [newTierPrice, setNewTierPrice] = useState('');
+
+    const { config, businessType } = useBusiness();
     const catalogLabel = config.catalogLabel;
     const itemLabel = config.catalogItemLabel;
     const showStock = config.showStock;
-    const isCreator = config.customerLabel === 'Fan'; // Creator detection
-    const isRestaurant = catalogLabel === 'Menu';
-    const isRental = catalogLabel === 'Listings';
-    const isHealthcare = config.customerLabel === 'Patient';
-    const isFitness = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
-    const isServices = config.customerLabel === 'Client' && config.staffLabel === 'Technician';
-    const isSalon = config.customerLabel === 'Client' && config.staffLabel === 'Stylist';
+    const isCreator    = businessType === 'creator';
+    const isRestaurant = businessType === 'restaurant';
+    const isFood       = businessType === 'food';
+    const isBakery     = businessType === 'bakery';
+    const isGrocery    = businessType === 'grocery';
+    const isWholesale  = businessType === 'wholesale';
+    const isMenuBusiness = isRestaurant || isFood || isBakery;
+    const isRental     = businessType === 'rental';
+    const isHotel      = businessType === 'hotel';
+    const isSupport    = businessType === 'support';
+    const isHealthcare = businessType === 'healthcare' || businessType === 'clinic';
+    const isFitness    = businessType === 'fitness' || businessType === 'gym';
+    const isServices   = businessType === 'services' || businessType === 'repair';
+    const isSalon      = businessType === 'salon' || businessType === 'beauty';
+    const isSpa        = businessType === 'spa';
+    const isCleaning   = businessType === 'cleaning';
+    const isEvents     = businessType === 'events' || businessType === 'photography';
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
 
     // Get appropriate categories based on business type
     const getAppropriateCategories = () => {
-        if (isCreator) return CREATOR_CATEGORIES;
-        if (isRestaurant) return RESTAURANT_CATEGORIES;
-        if (isHealthcare) return HEALTHCARE_CATEGORIES;
-        if (isFitness) return FITNESS_CATEGORIES;
-        if (isServices) return SERVICES_CATEGORIES;
-        if (isSalon) return SALON_CATEGORIES;
-        if (isRental) return RENTAL_CATEGORIES;
-        return RETAIL_CATEGORIES; // Default for retail/general
+        if (isCreator)     return CREATOR_CATEGORIES;
+        if (isRestaurant)  return RESTAURANT_CATEGORIES;
+        if (isFood)        return FOOD_CATEGORIES;
+        if (isBakery)      return BAKERY_CATEGORIES;
+        if (isGrocery)     return GROCERY_CATEGORIES;
+        if (isWholesale)   return WHOLESALE_CATEGORIES;
+        if (isHealthcare)  return HEALTHCARE_CATEGORIES;
+        if (isFitness)     return FITNESS_CATEGORIES;
+        if (isServices)    return SERVICES_CATEGORIES;
+        if (isSalon)       return SALON_CATEGORIES;
+        if (isRental)      return RENTAL_CATEGORIES;
+        if (isHotel)       return HOTEL_CATEGORIES;
+        if (isSupport)     return SUPPORT_CATEGORIES;
+        if (isSpa)         return SPA_CATEGORIES;
+        if (isCleaning)    return CLEANING_CATEGORIES;
+        if (isEvents)      return EVENTS_CATEGORIES;
+        return RETAIL_CATEGORIES;
     };
 
     useEffect(() => {
@@ -283,7 +484,7 @@ export default function ProductCatalogModal({
 
     const handleUploadProducts = async (source: 'library' | 'camera' = 'library') => {
         if (maxProducts !== null && products.length >= maxProducts) {
-            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} products. Upgrade to add more.`);
+            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} ${itemLabel.toLowerCase()}s. Upgrade to add more.`);
             return;
         }
         try {
@@ -339,7 +540,7 @@ export default function ProductCatalogModal({
                             // Non-blocking hint about the other products
                             setTimeout(() => {
                                 Alert.alert(
-                                    `${response.products.length} Products Uploaded`,
+                                    `${response.products.length} ${catalogLabel} Items Uploaded`,
                                     'Reviewing the first one — go back to the catalog to check the rest.',
                                     [{ text: 'OK' }]
                                 );
@@ -348,7 +549,7 @@ export default function ProductCatalogModal({
                     }
                 } catch (error) {
                     console.error('Upload error:', error);
-                    Alert.alert('Upload Failed', 'Could not upload products. Please try again.');
+                    Alert.alert('Upload Failed', `Could not upload ${itemLabel.toLowerCase()}s. Please try again.`);
                 } finally {
                     setUploading(false);
                 }
@@ -401,6 +602,8 @@ export default function ProductCatalogModal({
         if (isCreator) return 'creator';
         if (isRestaurant) return 'restaurant';
         if (isRental) return 'rental';
+        if (isHotel) return 'hotel';
+        if (isSupport) return 'support';
         if (isHealthcare) return 'healthcare';
         if (isFitness) return 'fitness';
         if (isServices) return 'services';
@@ -498,9 +701,22 @@ export default function ProductCatalogModal({
         setEditPrice(product.price.toString());
         setEditDiscountPrice(product.discount_price?.toString() || '');
         setEditCategory(product.category || 'Other');
+        setEditSubCategory(product.sub_category || '');
+        setEditUnit((product as any).unit || '');
+        setEditMoq((product as any).moq ? String((product as any).moq) : '');
+        setEditPricingTiers((product as any).pricing_tiers || []);
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
         setEditStockQuantity(product.stock_quantity?.toString() || '');
+        setEditVariants(product.variants || []);
+        setNewVariantName('');
+        setNewVariantPrice('');
+        setEditModifierGroups(product.modifier_groups || []);
+        setNewGroupName('');
+        setNewGroupRequired(false);
+        setNewGroupMulti(false);
+        setNewGroupOptions([]);
+        setShowAddGroup(false);
         setSelectedProduct(product);
         setEditMode(true);
         setDetailVisible(true);
@@ -509,16 +725,31 @@ export default function ProductCatalogModal({
 
     const startAddProduct = () => {
         if (maxProducts !== null && products.length >= maxProducts) {
-            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} products. Upgrade to add more.`);
+            Alert.alert('Plan Limit Reached', `Your ${subscriptionPlan} plan allows ${maxProducts} ${itemLabel.toLowerCase()}s. Upgrade to add more.`);
             return;
         }
         setEditName('');
         setEditPrice('');
         setEditDiscountPrice('');
         setEditCategory('Other');
+        setEditSubCategory('');
+        setEditUnit('');
+        setEditMoq('');
+        setEditPricingTiers([]);
+        setNewTierMinQty('');
+        setNewTierPrice('');
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
+        setEditVariants([]);
+        setNewVariantName('');
+        setNewVariantPrice('');
+        setEditModifierGroups([]);
+        setNewGroupName('');
+        setNewGroupRequired(false);
+        setNewGroupMulti(false);
+        setNewGroupOptions([]);
+        setShowAddGroup(false);
         setAddMode(true);
         setDetailVisible(true);
         setSelectedProduct(null);
@@ -551,6 +782,9 @@ export default function ProductCatalogModal({
 
             let createdProductId = '';
 
+            const variantsToSave = editVariants.filter(v => v.name.trim());
+            const modifierGroupsToSave = editModifierGroups.filter(g => g.name.trim() && g.options.length > 0);
+
             if (addMode) {
                 const productData: any = {
                     name: editName.trim(),
@@ -559,6 +793,12 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    variants: variantsToSave.length > 0 ? variantsToSave : undefined,
+                    modifier_groups: modifierGroupsToSave.length > 0 ? modifierGroupsToSave : undefined,
+                    sub_category: editSubCategory.trim() || undefined,
+                    unit: editUnit.trim() || undefined,
+                    moq: editMoq ? parseInt(editMoq) : undefined,
+                    pricing_tiers: editPricingTiers.length > 0 ? editPricingTiers : undefined,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -578,6 +818,12 @@ export default function ProductCatalogModal({
                     description: editDescription.trim() || undefined,
                     in_stock: editInStock,
                     stock_quantity: stockQuantity,
+                    variants: variantsToSave,
+                    modifier_groups: modifierGroupsToSave,
+                    sub_category: editSubCategory.trim() || undefined,
+                    unit: editUnit.trim() || undefined,
+                    moq: editMoq ? parseInt(editMoq) : undefined,
+                    pricing_tiers: editPricingTiers,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -732,7 +978,7 @@ export default function ProductCatalogModal({
                                 <Text style={styles.originalPrice}>{currency} {product.price.toLocaleString()}</Text>
                             </>
                         ) : (
-                            <Text style={styles.productPrice}>{currency} {product.price.toLocaleString()}</Text>
+                            <Text style={styles.productPrice}>{currency} {product.price.toLocaleString()}{(product as any).unit ? ` / ${(product as any).unit.replace('per ', '')}` : ''}</Text>
                         )}
                     </View>
                     <View style={styles.productMeta}>
@@ -741,6 +987,66 @@ export default function ProductCatalogModal({
                         </View>
                         <View style={[styles.stockDot, isOutOfStock ? styles.stockDotRed : styles.stockDotGreen]} />
                     </View>
+                </View>
+            </TouchableOpacity>
+        );
+    };
+
+    // ============ RESTAURANT LIST ROW ============
+    const EMOJI_NUMS = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+
+    const renderMenuRow = (product: Product, index: number) => {
+        const imageUri = getImageUri(product);
+        const isOutOfStock = product.in_stock === false;
+        const num = EMOJI_NUMS[index] ?? `${index + 1}.`;
+
+        return (
+            <TouchableOpacity
+                key={product.id}
+                style={styles.menuRow}
+                onPress={() => openProductDetail(product)}
+                activeOpacity={0.75}
+            >
+                {/* Number badge */}
+                <Text style={styles.menuNum}>{num}</Text>
+
+                {/* Thumbnail */}
+                {imageUri ? (
+                    <Image source={{ uri: imageUri }} style={styles.menuThumb} resizeMode="cover" />
+                ) : (
+                    <View style={[styles.menuThumb, styles.noImagePlaceholder]}>
+                        <Ionicons name="image-outline" size={22} color="#3A4A5C" />
+                    </View>
+                )}
+
+                {/* Info */}
+                <View style={styles.menuInfo}>
+                    <Text style={styles.menuName} numberOfLines={1}>{product.name}</Text>
+                    {product.description ? (
+                        <Text style={styles.menuDesc} numberOfLines={2}>{product.description}</Text>
+                    ) : null}
+                    <View style={styles.menuBottom}>
+                        <View style={[styles.availBadge, isOutOfStock ? styles.availBadgeOff : styles.availBadgeOn]}>
+                            <Text style={[styles.availText, isOutOfStock ? styles.availTextOff : styles.availTextOn]}>
+                                {isOutOfStock ? 'Unavailable' : 'Available'}
+                            </Text>
+                        </View>
+                        {product.sub_category ? (
+                            <Text style={styles.menuSubCat}>{product.sub_category}</Text>
+                        ) : null}
+                    </View>
+                </View>
+
+                {/* Price */}
+                <View style={styles.menuPriceCol}>
+                    {product.discount_price ? (
+                        <>
+                            <Text style={styles.menuDiscountPrice}>{currency} {product.discount_price.toLocaleString()}</Text>
+                            <Text style={styles.menuOriginalPrice}>{currency} {product.price.toLocaleString()}</Text>
+                        </>
+                    ) : (
+                        <Text style={styles.menuPrice}>{currency} {product.price.toLocaleString()}</Text>
+                    )}
                 </View>
             </TouchableOpacity>
         );
@@ -785,14 +1091,24 @@ export default function ProductCatalogModal({
                                     value={editName}
                                     onChangeText={setEditName}
                                     placeholder={
-                                        isCreator ? "e.g. Instagram Reel Package" :
+                                        isCreator    ? "e.g. Instagram Reel Package" :
                                         isRestaurant ? "e.g. Caesar Salad" :
-                                        isRental ? "e.g. 2BR Apartment Downtown" :
-                                        isHealthcare ? "e.g. General Consultation" :
-                                        isFitness ? "e.g. Yoga Class" :
-                                        isServices ? "e.g. Computer Repair" :
-                                        isSalon ? "e.g. Haircut & Style" :
-                                        "e.g. Chocolate Cake"
+                                        isFood       ? "e.g. Pilau, Nyama Choma, Ugali & Stew" :
+                                        isBakery     ? "e.g. Chocolate Fudge Cake, Sourdough Loaf" :
+                                        isGrocery    ? "e.g. Tomatoes, Unga Jogoo 2kg, Fresh Milk" :
+                                        isWholesale  ? "e.g. Washing Powder (carton), Sugar 50kg bag" :
+                                        businessType === 'retail' ? "e.g. Samsung TV 43\", Leather Handbag" :
+                                        isRental     ? "e.g. 2BR Apartment Downtown" :
+                                        isHotel      ? "e.g. Deluxe King Room, Garden Villa" :
+                                        isSupport    ? "e.g. How do I reset my password?" :
+                                        isHealthcare ? "e.g. General Consultation, Blood Test Panel" :
+                                        isFitness    ? "e.g. Morning Yoga Class, Monthly Membership" :
+                                        isServices   ? "e.g. Phone Screen Repair, Appliance Service" :
+                                        isSalon      ? "e.g. Haircut & Blow-dry, Box Braids" :
+                                        isSpa        ? "e.g. Swedish Massage 60min, Detox Facial" :
+                                        isCleaning   ? "e.g. Regular Home Clean, Deep Clean" :
+                                        isEvents     ? "e.g. Wedding Photography Package, Birthday Coverage" :
+                                        "e.g. Product or Service Name"
                                     }
                                     placeholderTextColor="#555"
                                 />
@@ -829,14 +1145,24 @@ export default function ProductCatalogModal({
                                     value={editCategory}
                                     onChangeText={setEditCategory}
                                     placeholder={
-                                        isCreator ? "e.g. Instagram Reel, Sponsored Post" :
+                                        isCreator    ? "e.g. Instagram Reel, Sponsored Post" :
                                         isRestaurant ? "e.g. Main Course, Appetizers" :
-                                        isRental ? "e.g. Apartment, Car, Equipment" :
-                                        isHealthcare ? "e.g. Consultation, Check-up" :
-                                        isFitness ? "e.g. Yoga, Cardio, Strength" :
-                                        isServices ? "e.g. Repair, Installation, Maintenance" :
-                                        isSalon ? "e.g. Hair, Nails, Facial" :
-                                        "e.g. Cakes, Electronics, Clothing"
+                                        isFood       ? "e.g. Rice Dishes, Stews, Breakfast" :
+                                        isBakery     ? "e.g. Cakes, Bread, Pastries, Cookies" :
+                                        isGrocery    ? "e.g. Fresh Produce, Dairy & Eggs, Beverages" :
+                                        isWholesale  ? "e.g. Food & Beverages, Household Products" :
+                                        businessType === 'retail' ? "e.g. Electronics, Clothing, Beauty & Health" :
+                                        isRental     ? "e.g. Apartment, Car, Equipment" :
+                                        isHotel      ? "e.g. Standard Room, Suite, Villa" :
+                                        isSupport    ? "e.g. Billing & Payments, Technical Issues" :
+                                        isHealthcare ? "e.g. Consultation, Treatment, Diagnostic" :
+                                        isFitness    ? "e.g. Yoga, Cardio, Membership Plans" :
+                                        isServices   ? "e.g. Repair, Installation, Maintenance" :
+                                        isSalon      ? "e.g. Hair, Nails, Facial, Packages" :
+                                        isSpa        ? "e.g. Massage, Facial, Body Treatment" :
+                                        isCleaning   ? "e.g. Regular Clean, Deep Clean, Office" :
+                                        isEvents     ? "e.g. Wedding, Birthday, Corporate, Add-ons" :
+                                        "e.g. Category Name"
                                     }
                                     placeholderTextColor="#555"
                                 />
@@ -856,6 +1182,112 @@ export default function ProductCatalogModal({
                                     </View>
                                 </View>
                             </View>
+
+                            {(isRestaurant || isFood || isBakery) && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Sub-category <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editSubCategory}
+                                    onChangeText={setEditSubCategory}
+                                    placeholder={
+                                        isBakery ? "e.g. Birthday Cakes, Wedding Cakes, Sourdough" :
+                                        isFood ? "e.g. Beef, Chicken, Vegetarian" :
+                                        "e.g. Pizza, Burgers, Rice Dishes, Cocktails"
+                                    }
+                                    placeholderTextColor="#555"
+                                />
+                                <Text style={styles.stockHint}>Groups items under a category — e.g. {isBakery ? 'Cakes → Birthday Cakes' : isFood ? 'Stews → Beef Stew' : 'Main Course → Pizza'}</Text>
+                            </View>
+                            )}
+
+                            {(isGrocery || isWholesale) && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Unit <Text style={{ color: '#555', fontWeight: '400' }}>(how it's sold)</Text></Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editUnit}
+                                    onChangeText={setEditUnit}
+                                    placeholder={isWholesale ? "e.g. per carton, per dozen, per pallet" : "e.g. per kg, per piece, per packet"}
+                                    placeholderTextColor="#555"
+                                />
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                                    {(isWholesale ? WHOLESALE_UNITS : GROCERY_UNITS).slice(0, 6).map(u => (
+                                        <TouchableOpacity
+                                            key={u}
+                                            onPress={() => setEditUnit(u)}
+                                            style={[styles.suggestionChip, editUnit === u && { backgroundColor: '#0d3321', borderColor: '#25D366' }]}
+                                        >
+                                            <Text style={[styles.suggestionChipText, editUnit === u && { color: '#25D366' }]}>{u}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </View>
+                                <Text style={styles.stockHint}>Helps customers know exactly what they're ordering</Text>
+                            </View>
+                            )}
+
+                            {isWholesale && (
+                            <>
+                              <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Minimum Order Qty <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editMoq}
+                                    onChangeText={setEditMoq}
+                                    placeholder="e.g. 5 (minimum 5 cartons)"
+                                    placeholderTextColor="#555"
+                                    keyboardType="numeric"
+                                />
+                                <Text style={styles.stockHint}>Customer cannot order less than this quantity</Text>
+                              </View>
+
+                              <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Bulk Pricing Tiers <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <Text style={styles.stockHint}>Set lower prices for higher quantities — e.g. 1–10 cartons: KES 500, 11+: KES 450</Text>
+                                {editPricingTiers.map((tier, idx) => (
+                                    <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 8 }}>
+                                        <Text style={{ color: '#ccc', fontSize: 13, flex: 1 }}>
+                                            {tier.min_qty}+ {editUnit ? editUnit.replace('per ', '') : 'units'} → {currency} {tier.price.toLocaleString()}
+                                        </Text>
+                                        <TouchableOpacity onPress={() => setEditPricingTiers(editPricingTiers.filter((_, i) => i !== idx))}>
+                                            <Ionicons name="close-circle" size={20} color="#FF4444" />
+                                        </TouchableOpacity>
+                                    </View>
+                                ))}
+                                <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1 }]}
+                                        value={newTierMinQty}
+                                        onChangeText={setNewTierMinQty}
+                                        placeholder="Min qty"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1 }]}
+                                        value={newTierPrice}
+                                        onChangeText={setNewTierPrice}
+                                        placeholder={`Price (${currency})`}
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <TouchableOpacity
+                                        style={{ backgroundColor: '#25D366', borderRadius: 8, paddingHorizontal: 12, justifyContent: 'center' }}
+                                        onPress={() => {
+                                            const minQty = parseInt(newTierMinQty);
+                                            const price = parseFloat(newTierPrice);
+                                            if (!minQty || !price) return;
+                                            setEditPricingTiers(prev => [...prev, { min_qty: minQty, price }].sort((a, b) => a.min_qty - b.min_qty));
+                                            setNewTierMinQty('');
+                                            setNewTierPrice('');
+                                        }}
+                                    >
+                                        <Text style={{ color: '#000', fontWeight: '700' }}>+ Add</Text>
+                                    </TouchableOpacity>
+                                </View>
+                              </View>
+                            </>
+                            )}
 
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
@@ -890,14 +1322,23 @@ export default function ProductCatalogModal({
                                     value={editDescription}
                                     onChangeText={setEditDescription}
                                     placeholder={
-                                        isCreator ? "Describe what brands get with this content package..." :
+                                        isCreator    ? "Describe what brands/fans get with this package..." :
                                         isRestaurant ? "Describe ingredients, preparation, allergens..." :
-                                        isRental ? "Describe amenities, location, terms..." :
-                                        isHealthcare ? "Describe procedure, duration, what to expect..." :
-                                        isFitness ? "Describe class format, intensity, equipment needed..." :
-                                        isServices ? "Describe service scope, timeline, requirements..." :
-                                        isSalon ? "Describe treatment, duration, aftercare..." :
-                                        "Describe your product..."
+                                        isFood       ? "Describe ingredients, portion size, what's included..." :
+                                        isBakery     ? "Describe flavour, size, customisation options..." :
+                                        isGrocery    ? "Describe the item, brand, weight/quantity..." :
+                                        isWholesale  ? "Describe the product, packaging, specs..." :
+                                        isRental     ? "Describe amenities, location, terms..." :
+                                        isHotel      ? "Describe room size, bed type, view, amenities included..." :
+                                        isSupport    ? "Write the full answer the AI should give when this question is asked..." :
+                                        isHealthcare ? "Describe the procedure, duration, what to expect..." :
+                                        isFitness    ? "Describe class format, intensity, what's included..." :
+                                        isServices   ? "Describe scope, what's included, typical timeline..." :
+                                        isSalon      ? "Describe the service, duration, what's included..." :
+                                        isSpa        ? "Describe the treatment, benefits, duration..." :
+                                        isCleaning   ? "Describe what's covered, number of rooms/hrs..." :
+                                        isEvents     ? "Describe what's included — hours, deliverables, extras..." :
+                                        "Describe your product or service..."
                                     }
                                     placeholderTextColor="#555"
                                     multiline
@@ -914,6 +1355,220 @@ export default function ProductCatalogModal({
                                     </TouchableOpacity>
                                 )}
                             </View>
+
+                            {/* ── Creator: Deliverables field ── */}
+                            {isCreator && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>What's Included <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <TextInput
+                                    style={[styles.formInput, { minHeight: 60, textAlignVertical: 'top' }]}
+                                    value={editUnit}
+                                    onChangeText={setEditUnit}
+                                    placeholder="e.g. 1 Instagram Reel + 3 Stories + link in bio for 7 days"
+                                    placeholderTextColor="#555"
+                                    multiline
+                                />
+                                <Text style={styles.stockHint}>Shown to brands so they know exactly what they're getting</Text>
+                            </View>
+                            )}
+
+                            {/* ── Variants Section ── */}
+                            {!isSupport && <View style={styles.formGroup}>
+                                <View style={styles.formLabelRow}>
+                                    <Text style={styles.formLabel}>{isCreator ? 'Package Tiers / Options (Optional)' : 'Sizes / Versions (Optional)'}</Text>
+                                    <Text style={styles.stockHint}>Enter the full price a customer pays for each option — the price shown to customer when they choose that size or version</Text>
+                                </View>
+
+                                {editVariants.map((v, idx) => (
+                                    <View key={idx} style={styles.variantRow}>
+                                        <Text style={styles.variantName}>{v.name}</Text>
+                                        <Text style={styles.variantPrice}>{currency} {v.price.toLocaleString()}</Text>
+                                        <TouchableOpacity onPress={() => setEditVariants(editVariants.filter((_, i) => i !== idx))}>
+                                            <Ionicons name="close-circle" size={20} color="#e05252" />
+                                        </TouchableOpacity>
+                                    </View>
+                                ))}
+
+                                <View style={styles.variantAddRow}>
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 2, marginRight: 6 }]}
+                                        value={newVariantName}
+                                        onChangeText={setNewVariantName}
+                                        placeholder={isCreator ? "e.g. Basic, Standard, Premium" : "e.g. Small, Regular, Family, 500ml"}
+                                        placeholderTextColor="#555"
+                                    />
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1, marginRight: 6 }]}
+                                        value={newVariantPrice}
+                                        onChangeText={setNewVariantPrice}
+                                        placeholder="Full price (e.g. 750)"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <TouchableOpacity
+                                        style={styles.variantAddBtn}
+                                        onPress={() => {
+                                            if (!newVariantName.trim()) return;
+                                            const price = parseFloat(newVariantPrice) || parseFloat(editPrice) || 0;
+                                            setEditVariants([...editVariants, { name: newVariantName.trim(), price }]);
+                                            setNewVariantName('');
+                                            setNewVariantPrice('');
+                                        }}
+                                    >
+                                        <Ionicons name="add" size={20} color="#fff" />
+                                    </TouchableOpacity>
+                                </View>
+                            </View>}
+
+                            {/* ── Modifier Groups Section (restaurant & food only for spice/extras; hidden for grocery/wholesale/creator) ── */}
+                            {!isGrocery && !isWholesale && !isCreator && !isHotel && !isRental && !isSupport && (
+                            <View style={styles.formGroup}>
+                                <View style={styles.formLabelRow}>
+                                    <Text style={styles.formLabel}>Modifier Groups (Optional)</Text>
+                                    <Text style={styles.stockHint}>
+                                        {(isRestaurant || isFood) ? "e.g. Spice Level · Extras · Cooking Style" :
+                                         isBakery ? "e.g. Frosting Type · Filling · Decoration" :
+                                         businessType === 'retail' ? "e.g. Gift Wrap · Color · Engraving" :
+                                         "e.g. Add-on · Customization"}
+                                    </Text>
+                                </View>
+
+                                {editModifierGroups.map((group, gi) => (
+                                    <View key={gi} style={styles.modifierGroupCard}>
+                                        <View style={styles.modifierGroupHeader}>
+                                            <Text style={styles.modifierGroupName}>{group.name}</Text>
+                                            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                                                <Text style={styles.modifierGroupBadge}>
+                                                    {group.required ? 'Required' : 'Optional'}
+                                                    {group.multi_select ? ' · Multi' : ''}
+                                                </Text>
+                                                <TouchableOpacity onPress={() => setEditModifierGroups(editModifierGroups.filter((_, i) => i !== gi))}>
+                                                    <Ionicons name="close-circle" size={18} color="#e05252" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        </View>
+                                        {group.options.map((opt, oi) => (
+                                            <View key={oi} style={styles.modifierOptionRow}>
+                                                <Text style={styles.modifierOptionName}>{opt.name}</Text>
+                                                {opt.price_delta > 0 && (
+                                                    <Text style={styles.modifierOptionPrice}>+{currency} {opt.price_delta.toLocaleString()}</Text>
+                                                )}
+                                                <TouchableOpacity onPress={() => {
+                                                    const updated = [...editModifierGroups];
+                                                    updated[gi] = { ...updated[gi], options: updated[gi].options.filter((_, i) => i !== oi) };
+                                                    setEditModifierGroups(updated);
+                                                }}>
+                                                    <Ionicons name="remove-circle-outline" size={16} color="#888" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        ))}
+                                    </View>
+                                ))}
+
+                                {!showAddGroup ? (
+                                    <TouchableOpacity style={styles.addGroupBtn} onPress={() => setShowAddGroup(true)}>
+                                        <Ionicons name="add-circle-outline" size={16} color="#25D366" />
+                                        <Text style={styles.addGroupBtnText}>Add modifier group</Text>
+                                    </TouchableOpacity>
+                                ) : (
+                                    <View style={styles.modifierGroupCard}>
+                                        <TextInput
+                                            style={[styles.formInput, { marginBottom: 8 }]}
+                                            value={newGroupName}
+                                            onChangeText={setNewGroupName}
+                                            placeholder={
+                                                (isRestaurant || isFood) ? "Group name (e.g. Spice Level)" :
+                                                isBakery ? "Group name (e.g. Frosting Type)" :
+                                                businessType === 'retail' ? "Group name (e.g. Gift Wrap)" :
+                                                "Group name (e.g. Add-on)"
+                                            }
+                                            placeholderTextColor="#555"
+                                        />
+                                        <View style={{ flexDirection: 'row', gap: 16, marginBottom: 10 }}>
+                                            <TouchableOpacity
+                                                style={[styles.modifierToggleBtn, newGroupRequired && styles.modifierToggleBtnActive]}
+                                                onPress={() => setNewGroupRequired(!newGroupRequired)}
+                                            >
+                                                <Text style={[styles.modifierToggleText, newGroupRequired && styles.modifierToggleTextActive]}>Required</Text>
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                                style={[styles.modifierToggleBtn, newGroupMulti && styles.modifierToggleBtnActive]}
+                                                onPress={() => setNewGroupMulti(!newGroupMulti)}
+                                            >
+                                                <Text style={[styles.modifierToggleText, newGroupMulti && styles.modifierToggleTextActive]}>Multi-select</Text>
+                                            </TouchableOpacity>
+                                        </View>
+
+                                        {newGroupOptions.map((opt, oi) => (
+                                            <View key={oi} style={styles.modifierOptionRow}>
+                                                <Text style={styles.modifierOptionName}>{opt.name}</Text>
+                                                {opt.price_delta > 0 && <Text style={styles.modifierOptionPrice}>+{currency} {opt.price_delta.toLocaleString()}</Text>}
+                                                <TouchableOpacity onPress={() => setNewGroupOptions(newGroupOptions.filter((_, i) => i !== oi))}>
+                                                    <Ionicons name="remove-circle-outline" size={16} color="#888" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        ))}
+
+                                        <View style={styles.variantAddRow}>
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 2, marginRight: 6 }]}
+                                                value={newOptionName}
+                                                onChangeText={setNewOptionName}
+                                                placeholder="Option (e.g. Mild)"
+                                                placeholderTextColor="#555"
+                                            />
+                                            <TextInput
+                                                style={[styles.formInput, { flex: 1, marginRight: 6 }]}
+                                                value={newOptionPrice}
+                                                onChangeText={setNewOptionPrice}
+                                                placeholder="+Price"
+                                                placeholderTextColor="#555"
+                                                keyboardType="numeric"
+                                            />
+                                            <TouchableOpacity
+                                                style={styles.variantAddBtn}
+                                                onPress={() => {
+                                                    if (!newOptionName.trim()) return;
+                                                    setNewGroupOptions([...newGroupOptions, { name: newOptionName.trim(), price_delta: parseFloat(newOptionPrice) || 0 }]);
+                                                    setNewOptionName('');
+                                                    setNewOptionPrice('');
+                                                }}
+                                            >
+                                                <Ionicons name="add" size={20} color="#fff" />
+                                            </TouchableOpacity>
+                                        </View>
+
+                                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                                            <TouchableOpacity
+                                                style={[styles.variantAddBtn, { flex: 1, height: 36 }]}
+                                                onPress={() => {
+                                                    if (!newGroupName.trim() || newGroupOptions.length === 0) return;
+                                                    setEditModifierGroups([...editModifierGroups, {
+                                                        name: newGroupName.trim(),
+                                                        required: newGroupRequired,
+                                                        multi_select: newGroupMulti,
+                                                        options: newGroupOptions,
+                                                    }]);
+                                                    setNewGroupName('');
+                                                    setNewGroupRequired(false);
+                                                    setNewGroupMulti(false);
+                                                    setNewGroupOptions([]);
+                                                    setShowAddGroup(false);
+                                                }}
+                                            >
+                                                <Text style={{ color: '#fff', fontWeight: '600', fontSize: 13 }}>Save Group</Text>
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                                style={[styles.variantAddBtn, { flex: 1, height: 36, backgroundColor: '#333' }]}
+                                                onPress={() => { setShowAddGroup(false); setNewGroupName(''); setNewGroupOptions([]); }}
+                                            >
+                                                <Text style={{ color: '#aaa', fontWeight: '600', fontSize: 13 }}>Cancel</Text>
+                                            </TouchableOpacity>
+                                        </View>
+                                    </View>
+                                )}
+                            </View>
+                            )}
 
                             {showStock && (
                             <View style={styles.formGroup}>
@@ -1193,7 +1848,10 @@ export default function ProductCatalogModal({
                             placeholder={
                                 isCreator ? "Search content packages..." :
                                 isRestaurant ? "Search menu items..." :
+                                isFood ? "Search menu items..." :
                                 isRental ? "Search listings..." :
+                                isHotel ? "Search rooms..." :
+                                isSupport ? "Search knowledge base..." :
                                 isHealthcare ? "Search services..." :
                                 isFitness ? "Search classes..." :
                                 isServices ? "Search services..." :
@@ -1269,9 +1927,15 @@ export default function ProductCatalogModal({
                     </View>
                 ) : filteredProducts.length > 0 ? (
                     <ScrollView style={styles.content} contentContainerStyle={styles.gridContainer}>
-                        <View style={styles.productGrid}>
-                            {filteredProducts.map(renderProductCard)}
-                        </View>
+                        {isMenuBusiness ? (
+                            <View style={styles.menuList}>
+                                {filteredProducts.map((p, i) => renderMenuRow(p, i))}
+                            </View>
+                        ) : (
+                            <View style={styles.productGrid}>
+                                {filteredProducts.map(renderProductCard)}
+                            </View>
+                        )}
                     </ScrollView>
                 ) : products.length > 0 ? (
                     <View style={styles.emptyState}>
@@ -1469,6 +2133,85 @@ const styles = StyleSheet.create({
         paddingTop: 16,
         paddingBottom: 100,
     },
+
+    // ── Restaurant menu list ──
+    menuList: {
+        gap: 1,
+    },
+    menuRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#1A2535',
+        borderRadius: 12,
+        marginBottom: 8,
+        padding: 10,
+        gap: 10,
+    },
+    menuNum: {
+        fontSize: 16,
+        width: 28,
+        textAlign: 'center',
+    },
+    menuThumb: {
+        width: 70,
+        height: 70,
+        borderRadius: 8,
+        backgroundColor: '#243447',
+    },
+    menuInfo: {
+        flex: 1,
+        gap: 3,
+    },
+    menuName: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#FFFFFF',
+    },
+    menuDesc: {
+        fontSize: 12,
+        color: '#8899AA',
+        lineHeight: 16,
+    },
+    menuBottom: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 2,
+    },
+    availBadge: {
+        borderRadius: 4,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+    },
+    availBadgeOn: { backgroundColor: '#0d3321' },
+    availBadgeOff: { backgroundColor: '#3a1a1a' },
+    availText: { fontSize: 11, fontWeight: '600' },
+    availTextOn: { color: '#25D366' },
+    availTextOff: { color: '#e05252' },
+    menuSubCat: {
+        fontSize: 11,
+        color: '#556677',
+    },
+    menuPriceCol: {
+        alignItems: 'flex-end',
+        minWidth: 60,
+    },
+    menuPrice: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#25D366',
+    },
+    menuDiscountPrice: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#25D366',
+    },
+    menuOriginalPrice: {
+        fontSize: 11,
+        color: '#556677',
+        textDecorationLine: 'line-through',
+    },
+
     productGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
@@ -2034,5 +2777,119 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#25D366',
         fontWeight: '500',
+    },
+    variantRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#1A2535',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        marginBottom: 6,
+        gap: 8,
+    },
+    variantName: {
+        flex: 1,
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '500',
+    },
+    variantPrice: {
+        color: '#25D366',
+        fontSize: 13,
+        fontWeight: '600',
+        marginRight: 4,
+    },
+    variantAddRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 4,
+    },
+    variantAddBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 8,
+        backgroundColor: '#25D366',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    modifierGroupCard: {
+        backgroundColor: '#111D2B',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: '#1E3050',
+        padding: 12,
+        marginBottom: 10,
+    },
+    modifierGroupHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 8,
+    },
+    modifierGroupName: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '700',
+        flex: 1,
+    },
+    modifierGroupBadge: {
+        color: '#25D366',
+        fontSize: 11,
+        fontWeight: '600',
+        backgroundColor: '#1A3A2A',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 10,
+    },
+    modifierOptionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 5,
+        borderTopWidth: 1,
+        borderTopColor: '#1E3050',
+        gap: 8,
+    },
+    modifierOptionName: {
+        flex: 1,
+        color: '#ccc',
+        fontSize: 13,
+    },
+    modifierOptionPrice: {
+        color: '#25D366',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    addGroupBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingVertical: 10,
+        paddingHorizontal: 4,
+    },
+    addGroupBtnText: {
+        color: '#25D366',
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    modifierToggleBtn: {
+        paddingHorizontal: 14,
+        paddingVertical: 6,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: '#333',
+        backgroundColor: '#111',
+    },
+    modifierToggleBtnActive: {
+        borderColor: '#25D366',
+        backgroundColor: '#1A3A2A',
+    },
+    modifierToggleText: {
+        color: '#888',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    modifierToggleTextActive: {
+        color: '#25D366',
     },
 });
