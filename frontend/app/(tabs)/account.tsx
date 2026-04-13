@@ -172,6 +172,18 @@ export default function AccountScreen() {
   const [servicesDepositRequired, setServicesDepositRequired] = useState(false);
   const [servicesTurnaround, setServicesTurnaround] = useState('');
   const [servicesCancellationPolicy, setServicesCancellationPolicy] = useState('');
+  // Hotel
+  const [hotelCheckinTime, setHotelCheckinTime] = useState('2:00 PM');
+  const [hotelCheckoutTime, setHotelCheckoutTime] = useState('11:00 AM');
+  const [hotelMinNights, setHotelMinNights] = useState('');
+  const [hotelDepositRequired, setHotelDepositRequired] = useState(true);
+  const [hotelDepositPct, setHotelDepositPct] = useState('30');
+  const [hotelHasMealPlans, setHotelHasMealPlans] = useState(false);
+  const [hotelMealPlanOptions, setHotelMealPlanOptions] = useState('');
+  const [hotelHasAirportTransfer, setHotelHasAirportTransfer] = useState(false);
+  const [hotelHasSpa, setHotelHasSpa] = useState(false);
+  const [hotelHasPool, setHotelHasPool] = useState(false);
+  const [hotelCancellationPolicy, setHotelCancellationPolicy] = useState('');
   // Rental
   const [rentalType, setRentalType] = useState('property');
   const [rentalDepositRequired, setRentalDepositRequired] = useState(true);
@@ -298,6 +310,17 @@ export default function AccountScreen() {
         setServicesDepositRequired(!!bk.services_deposit_required);
         setServicesTurnaround(bk.services_turnaround || '');
         setServicesCancellationPolicy(bk.services_cancellation_policy || '');
+        setHotelCheckinTime(bk.hotel_checkin_time || '2:00 PM');
+        setHotelCheckoutTime(bk.hotel_checkout_time || '11:00 AM');
+        setHotelMinNights(String(bk.hotel_min_nights || ''));
+        setHotelDepositRequired(bk.hotel_deposit_required !== false);
+        setHotelDepositPct(String(bk.hotel_deposit_pct || 30));
+        setHotelHasMealPlans(!!bk.hotel_has_meal_plans);
+        setHotelMealPlanOptions(bk.hotel_meal_plan_options || '');
+        setHotelHasAirportTransfer(!!bk.hotel_has_airport_transfer);
+        setHotelHasSpa(!!bk.hotel_has_spa);
+        setHotelHasPool(!!bk.hotel_has_pool);
+        setHotelCancellationPolicy(bk.hotel_cancellation_policy || '');
         setRentalType(bk.rental_type || 'property');
         setRentalDepositRequired(bk.rental_deposit_required !== false);
         setRentalDepositPct(String(bk.rental_deposit_pct || 30));
@@ -959,7 +982,7 @@ export default function AccountScreen() {
                     services: 'Services / Freelance', repair: 'Repair & Maintenance',
                     cleaning: 'Cleaning Services', fitness: 'Gym & Fitness',
                     events: 'Events & Photography', healthcare: 'Healthcare / Clinic',
-                    rental: 'Rental / Airbnb', creator: 'Creator / Digital',
+                    rental: 'Rental / Airbnb', hotel: 'Hotel / Hospitality', creator: 'Creator / Digital',
                     general: 'General / Other',
                   } as any)[businessType] || businessType}
                 </Text>
@@ -1111,6 +1134,23 @@ export default function AccountScreen() {
                   {jSwitchRow('Require Deposit', 'Deposit needed to confirm booking', servicesDepositRequired, (v) => { setServicesDepositRequired(v); saveJourneySettings({ services_deposit_required: v }); })}
                   {jTextField('Typical Turnaround', 'Shown to customers when scoping work', servicesTurnaround, setServicesTurnaround, () => saveJourneySettings({ services_turnaround: servicesTurnaround }), 'e.g. 3–5 business days')}
                   {jTextField('Cancellation Policy', '', servicesCancellationPolicy, setServicesCancellationPolicy, () => saveJourneySettings({ services_cancellation_policy: servicesCancellationPolicy }), 'e.g. 48hrs notice required')}
+                </View>
+              );
+
+              if (businessType === 'hotel') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🏨 Hotel Settings</Text>
+                  {jTextField('Check-in Time', '', hotelCheckinTime, setHotelCheckinTime, () => saveJourneySettings({ hotel_checkin_time: hotelCheckinTime }), 'e.g. 2:00 PM')}
+                  {jTextField('Check-out Time', '', hotelCheckoutTime, setHotelCheckoutTime, () => saveJourneySettings({ hotel_checkout_time: hotelCheckoutTime }), 'e.g. 11:00 AM')}
+                  {jTextField('Minimum Nights', 'Leave blank if no minimum', hotelMinNights, setHotelMinNights, () => saveJourneySettings({ hotel_min_nights: parseInt(hotelMinNights) || 0 }), 'e.g. 2')}
+                  {jSwitchRow('Require Deposit', 'AI will request deposit to confirm reservation', hotelDepositRequired, (v) => { setHotelDepositRequired(v); saveJourneySettings({ hotel_deposit_required: v }); })}
+                  {hotelDepositRequired && jTextField('Deposit %', '', hotelDepositPct, setHotelDepositPct, () => saveJourneySettings({ hotel_deposit_pct: parseInt(hotelDepositPct) || 30 }), 'e.g. 30')}
+                  {jSwitchRow('Meal Plans', 'AI will ask guests to choose a meal plan', hotelHasMealPlans, (v) => { setHotelHasMealPlans(v); saveJourneySettings({ hotel_has_meal_plans: v }); })}
+                  {hotelHasMealPlans && jTextField('Meal Plan Options', 'Comma-separated', hotelMealPlanOptions, setHotelMealPlanOptions, () => saveJourneySettings({ hotel_meal_plan_options: hotelMealPlanOptions }), 'e.g. Room Only, B&B, Half Board, Full Board')}
+                  {jSwitchRow('Airport Transfer', 'AI will offer and collect flight details', hotelHasAirportTransfer, (v) => { setHotelHasAirportTransfer(v); saveJourneySettings({ hotel_has_airport_transfer: v }); })}
+                  {jSwitchRow('Spa', 'Mention spa as an amenity during booking', hotelHasSpa, (v) => { setHotelHasSpa(v); saveJourneySettings({ hotel_has_spa: v }); })}
+                  {jSwitchRow('Swimming Pool', 'Mention pool as an amenity during booking', hotelHasPool, (v) => { setHotelHasPool(v); saveJourneySettings({ hotel_has_pool: v }); })}
+                  {jTextField('Cancellation Policy', '', hotelCancellationPolicy, setHotelCancellationPolicy, () => saveJourneySettings({ hotel_cancellation_policy: hotelCancellationPolicy }), 'e.g. Free cancellation 48hrs before check-in')}
                 </View>
               );
 
@@ -1457,7 +1497,8 @@ export default function AccountScreen() {
                   { id: 'fitness',    icon: '🏋️',  label: 'Gym & Fitness',        desc: 'Memberships, classes & training' },
                   { id: 'events',     icon: '📸',   label: 'Events & Photography', desc: 'Events, shoots & productions' },
                   { id: 'healthcare', icon: '🏥',   label: 'Healthcare / Clinic',  desc: 'Consultations & medical services' },
-                  { id: 'rental',     icon: '�',   label: 'Rental / Airbnb',      desc: 'Properties, cars & equipment' },
+                  { id: 'rental',     icon: '🏠',   label: 'Rental / Airbnb',      desc: 'Properties, cars & equipment' },
+                  { id: 'hotel',      icon: '🏨',   label: 'Hotel / Hospitality',   desc: 'Hotels, lodges, guesthouses & resorts' },
                   { id: 'creator',    icon: '�',   label: 'Creator / Digital',    desc: 'Courses, content & digital products' },
                   { id: 'general',    icon: '💬',   label: 'General / Other',      desc: 'Fintech, NGO, info & assistant' },
                 ].map((bt, idx, arr) => (

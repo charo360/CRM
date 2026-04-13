@@ -29,7 +29,7 @@ _ITEM_LABEL_MAP: dict = {
     "salon":      "services",     "spa":  "treatments",   "services": "services",
     "repair":     "services",     "cleaning": "packages", "fitness": "classes",
     "gym":        "classes",      "events": "packages",   "photography": "packages",
-    "healthcare": "services",     "clinic": "services",   "rental": "listings",
+    "healthcare": "services",     "clinic": "services",   "rental": "listings",  "hotel": "rooms",
     "creator":    "content",      "wholesale": "products", "grocery": "products",
 }
 
@@ -245,7 +245,7 @@ _RF_ORDER_TYPES      = {"retail", "wholesale", "food", "bakery", "grocery", "cre
 _RF_BOOKING_TYPES    = {"salon", "beauty", "spa", "services", "repair", "cleaning",
                         "fitness", "gym", "events", "photography", "healthcare", "clinic"}
 _RF_RESTAURANT_TYPES = {"restaurant"}
-_RF_RENTAL_TYPES     = {"rental"}
+_RF_RENTAL_TYPES     = {"rental", "hotel"}
 # general gets everything
 
 _RF_SCHEMA = """\
@@ -785,6 +785,137 @@ def _build_rental_instructions(bc: dict) -> str:
         if check_in_time: times.append(f"Check-in: {check_in_time}")
         if check_out_time: times.append(f"Check-out: {check_out_time}")
         lines.append(f"- Always communicate timing: {' | '.join(times)}.")
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_hotel_instructions(bc: dict) -> str:
+    """Build full hotel autoreply instructions."""
+    check_in_time        = bc.get("hotel_checkin_time", "2:00 PM")
+    check_out_time       = bc.get("hotel_checkout_time", "11:00 AM")
+    min_nights           = int(bc.get("hotel_min_nights", 1) or 1)
+    deposit_required     = bc.get("hotel_deposit_required", True)
+    deposit_pct          = int(bc.get("hotel_deposit_pct", 30) or 30)
+    has_meal_plans       = bc.get("hotel_has_meal_plans", False)
+    meal_plan_options    = bc.get("hotel_meal_plan_options", "")   # e.g. "B&B, Half Board, Full Board"
+    has_airport_transfer = bc.get("hotel_has_airport_transfer", False)
+    has_spa              = bc.get("hotel_has_spa", False)
+    has_pool             = bc.get("hotel_has_pool", False)
+    cancellation_policy  = bc.get("hotel_cancellation_policy", "")
+    extra_info           = bc.get("delivery_info", "") or bc.get("business_hours", "")
+
+    lines = [
+        "HOTEL RESERVATION FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Warm, professional, and hospitable. Guests are planning a stay — make them feel welcomed from the first message.",
+        "- Always refer to guests as 'Guest' and bookings as 'Reservation'.",
+        "",
+        "STEP 1 — ROOM BROWSING:",
+        "- Show available room types as a numbered menu with rate per night and key highlights.",
+        "  Format: '1️⃣ Deluxe King Room – KES 8,500/night  🛏️ King bed | AC | Sea view | Free WiFi'",
+        "- ALWAYS add '0️⃣ View all room photos' as last option.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all room photos", "price": 0, "type": "catalog"}}',
+        "- When guest picks 0 → send send_catalog_images + resend menu.",
+        "- When guest picks a number → send send_product_image (if has image) + confirm room details.",
+        "",
+        "STEP 2 — DATES:",
+        "- Ask for check-in date. Set flow_step=awaiting_date.",
+        "- Then ask for check-out date. Set flow_step=awaiting_checkout.",
+    ]
+
+    if min_nights > 1:
+        lines.append(f"- Minimum stay is {min_nights} nights. If guest's dates are shorter → inform politely and ask to adjust.")
+
+    lines += [
+        "",
+        "STEP 3 — GUEST DETAILS:",
+        "- Ask: 'How many guests will be staying?' (to confirm room capacity).",
+        "- Ask for the lead guest's full name.",
+        "- Ask: 'Are you celebrating anything special?' — note this in booking for staff.",
+        "",
+        "STEP 4 — MEAL PLAN:",
+    ]
+
+    if has_meal_plans:
+        options = meal_plan_options if meal_plan_options else "Room Only, Bed & Breakfast, Half Board, Full Board"
+        lines += [
+            f"- Ask: 'Which meal plan would you prefer?'",
+            f"  Options: {options}",
+            "- Add meal plan selection to booking notes and adjust total if prices differ.",
+        ]
+    else:
+        lines.append("- Meals are not included. Mention restaurant/dining options if available in business info.")
+
+    amenity_lines = []
+    if has_pool:    amenity_lines.append("swimming pool")
+    if has_spa:     amenity_lines.append("spa")
+    if has_airport_transfer: amenity_lines.append("airport transfer")
+
+    if amenity_lines:
+        lines += [
+            "",
+            "AMENITIES & EXTRAS:",
+            f"- Proactively mention available amenities: {', '.join(amenity_lines)}.",
+        ]
+        if has_airport_transfer:
+            lines += [
+                "- If guest wants airport transfer → ask for flight details (arrival date, time, flight number) and add to booking notes.",
+            ]
+
+    lines += [
+        "",
+        "STEP 5 — BOOKING SUMMARY:",
+        "- Before confirming, show a clear summary:",
+        f"  '🏨 *Reservation Summary:*",
+        f"   🛏️ Room: [room name]",
+        f"   📅 Check-in: [date] at {check_in_time}",
+        f"   📅 Check-out: [date] at {check_out_time}",
+        "   👥 Guests: [N]",
+        "   🍽️ Meal Plan: [plan]" if has_meal_plans else "   🍽️ Meals: Not included",
+        "   💰 Total: KES [amount]'",
+        "- Ask: 'Shall I confirm this reservation?'",
+        "- Fire create_booking with is_rental=true, checkin_date='[date]', checkout_date='[date]', notes='[guest name] | [N guests] | [meal plan] | [special requests]'.",
+        "",
+        "STEP 6 — PAYMENT:",
+    ]
+
+    if deposit_required:
+        lines += [
+            f"- A {deposit_pct}% deposit is required to confirm the reservation.",
+            "- Show payment details EXACTLY as configured. Ask for guest name + deposit amount.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+            "  → Reply: 'Your reservation is confirmed! ✅ We look forward to hosting you. We'll send check-in instructions closer to your arrival date.'",
+        ]
+    else:
+        lines += [
+            "- Full payment required to confirm. Show payment details. Ask for name + amount paid.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+            "  → Reply: 'Your reservation is confirmed! ✅ We look forward to welcoming you!'",
+        ]
+
+    if cancellation_policy:
+        lines += [
+            "",
+            f"CANCELLATION POLICY: {cancellation_policy}",
+            "- Always share this after confirming a reservation.",
+        ]
+
+    lines += [
+        "",
+        "RESERVATION MANAGEMENT:",
+        "- 'my booking' / 'my reservation' / 'check-in details' → show full reservation summary.",
+        "- Date change request → check availability for new dates, recalculate total, confirm with guest, fire notify_owner.",
+        "- Cancel → state cancellation policy clearly + fire cancel_booking + notify_owner.",
+        "- Early check-in / late check-out request → fire notify_owner, tell guest the team will confirm availability.",
+        "",
+        "IMPORTANT RULES:",
+        "- ALWAYS use is_rental=true with checkin_date and checkout_date — never use time-slot booking fields.",
+        "- NEVER confirm a reservation without both check-in AND check-out dates confirmed.",
+        f"- Always communicate check-in time ({check_in_time}) and check-out time ({check_out_time}) at confirmation.",
+        "- Never invent room availability — only confirm rooms that are in_stock=true in the catalog.",
+        "- Keep tone warm and hospitable throughout — the guest experience starts here.",
+    ]
 
     return "\n".join(l for l in lines if l is not None)
 
@@ -2741,6 +2872,8 @@ def build_system_prompt(
         instructions = _build_services_instructions(bc)
     elif btype == "rental":
         instructions = _build_rental_instructions(bc)
+    elif btype == "hotel":
+        instructions = _build_hotel_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")
@@ -2751,7 +2884,7 @@ def build_system_prompt(
                     "fitness", "gym", "events", "photography", "healthcare", "clinic"}
 
     parts.append(_SHARED_ALWAYS)
-    if btype == "rental":
+    if btype in ("rental", "hotel"):
         parts.append(_SHARED_RENTAL_BLOCK)
     elif btype in _BT_BOOKING:
         parts.append(_SHARED_BOOKING_BLOCK)

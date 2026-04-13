@@ -127,6 +127,19 @@ const RENTAL_CATEGORIES = [
     'Other'
 ];
 
+const HOTEL_CATEGORIES = [
+    'Standard Room',
+    'Deluxe Room',
+    'Superior Room',
+    'Junior Suite',
+    'Suite',
+    'Executive Suite',
+    'Villa',
+    'Penthouse',
+    'Family Room',
+    'Twin Room',
+];
+
 // Spa-specific categories
 const SPA_CATEGORIES = [
     'Swedish Massage',
@@ -364,6 +377,7 @@ export default function ProductCatalogModal({
     const isWholesale  = businessType === 'wholesale';
     const isMenuBusiness = isRestaurant || isFood || isBakery;
     const isRental     = businessType === 'rental';
+    const isHotel      = businessType === 'hotel';
     const isHealthcare = businessType === 'healthcare' || businessType === 'clinic';
     const isFitness    = businessType === 'fitness' || businessType === 'gym';
     const isServices   = businessType === 'services' || businessType === 'repair';
@@ -388,6 +402,7 @@ export default function ProductCatalogModal({
         if (isServices)    return SERVICES_CATEGORIES;
         if (isSalon)       return SALON_CATEGORIES;
         if (isRental)      return RENTAL_CATEGORIES;
+        if (isHotel)       return HOTEL_CATEGORIES;
         if (isSpa)         return SPA_CATEGORIES;
         if (isCleaning)    return CLEANING_CATEGORIES;
         if (isEvents)      return EVENTS_CATEGORIES;
@@ -572,6 +587,7 @@ export default function ProductCatalogModal({
         if (isCreator) return 'creator';
         if (isRestaurant) return 'restaurant';
         if (isRental) return 'rental';
+        if (isHotel) return 'hotel';
         if (isHealthcare) return 'healthcare';
         if (isFitness) return 'fitness';
         if (isServices) return 'services';
@@ -1067,6 +1083,7 @@ export default function ProductCatalogModal({
                                         isWholesale  ? "e.g. Washing Powder (carton), Sugar 50kg bag" :
                                         businessType === 'retail' ? "e.g. Samsung TV 43\", Leather Handbag" :
                                         isRental     ? "e.g. 2BR Apartment Downtown" :
+                                        isHotel      ? "e.g. Deluxe King Room, Garden Villa" :
                                         isHealthcare ? "e.g. General Consultation, Blood Test Panel" :
                                         isFitness    ? "e.g. Morning Yoga Class, Monthly Membership" :
                                         isServices   ? "e.g. Phone Screen Repair, Appliance Service" :
@@ -1119,6 +1136,7 @@ export default function ProductCatalogModal({
                                         isWholesale  ? "e.g. Food & Beverages, Household Products" :
                                         businessType === 'retail' ? "e.g. Electronics, Clothing, Beauty & Health" :
                                         isRental     ? "e.g. Apartment, Car, Equipment" :
+                                        isHotel      ? "e.g. Standard Room, Suite, Villa" :
                                         isHealthcare ? "e.g. Consultation, Treatment, Diagnostic" :
                                         isFitness    ? "e.g. Yoga, Cardio, Membership Plans" :
                                         isServices   ? "e.g. Repair, Installation, Maintenance" :
@@ -1293,6 +1311,7 @@ export default function ProductCatalogModal({
                                         isGrocery    ? "Describe the item, brand, weight/quantity..." :
                                         isWholesale  ? "Describe the product, packaging, specs..." :
                                         isRental     ? "Describe amenities, location, terms..." :
+                                        isHotel      ? "Describe room size, bed type, view, amenities included..." :
                                         isHealthcare ? "Describe the procedure, duration, what to expect..." :
                                         isFitness    ? "Describe class format, intensity, what's included..." :
                                         isServices   ? "Describe scope, what's included, typical timeline..." :
@@ -1812,6 +1831,7 @@ export default function ProductCatalogModal({
                                 isRestaurant ? "Search menu items..." :
                                 isFood ? "Search menu items..." :
                                 isRental ? "Search listings..." :
+                                isHotel ? "Search rooms..." :
                                 isHealthcare ? "Search services..." :
                                 isFitness ? "Search classes..." :
                                 isServices ? "Search services..." :
