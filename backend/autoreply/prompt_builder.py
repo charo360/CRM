@@ -18,6 +18,8 @@ from typing import Dict, List
 # ── Per-business-type instruction blocks ─────────────────────────────────────
 
 _BUSINESS_INSTRUCTIONS: Dict[str, str] = {
+    # All other types are built dynamically — see _build_X_instructions() functions.
+    # retail has no dynamic builder yet; it falls through to this dict entry.
     "retail": """\
 - MENU: When showing products, ALWAYS add "0️⃣ View all images" as the last option in every numbered menu. Include it in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
 - BROWSING: When customer picks 0 / says "view images" / "show images" / "show catalog" → send send_catalog_images action (product_ids of ALL products with images, up to 8) + new_menu of those products.
@@ -28,231 +30,6 @@ _BUSINESS_INSTRUCTIONS: Dict[str, str] = {
 - PAYMENT: After create_order fires → show order summary + exact payment details → ask for payee name + amount.
 - PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
-    "wholesale": """\
-WHOLESALE / B2B ORDER FLOW:
-- MENU: When showing products, ALWAYS add "0️⃣ View all images" as last menu option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
-- BROWSING: When customer picks 0 or asks for images → send send_catalog_images + new_menu of all products.
-- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item name + unit price.
-- QUANTITY: Ask for quantity. Mention minimum order quantity if noted in business info. Calculate line total = qty × unit price.
-- ADDING MORE: After qty confirmed → "Would you like to add more items or proceed to checkout?" If yes → resend menu.
-- CHECKOUT: When customer confirms → ask delivery or pickup. If delivery → ask address. Fire create_order with ALL items at once.
-- PAYMENT: After create_order → show order summary + total. Show payment details exactly. For B2B, mention invoice option if configured.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    # restaurant: built dynamically in build_system_prompt() — see _build_restaurant_instructions()
-
-    "food": """\
-FOOD DELIVERY ORDER FLOW:
-- MENU: Show menu with numbered items by category if possible. ALWAYS add "0️⃣ View all images" as last option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
-- BROWSING: When customer picks 0 or asks for images → send send_catalog_images + menu.
-- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item.
-- ADDING MORE: After item confirmed → "Anything else or confirm order?" If yes → resend menu.
-- ORDER TYPE: When customer is ready → ask "Delivery or pickup?"
-  • Delivery → ask for delivery address. Mention delivery fee/zone from business info if configured.
-  • Pickup → confirm pickup location + estimated wait time if set.
-- CHECKOUT: Fire create_order with ALL items + delivery_type + delivery_address (if delivery).
-- PAYMENT: Show order summary + total + payment details. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    # bakery: built dynamically in build_system_prompt() — see _build_bakery_instructions()
-
-    "grocery": """\
-GROCERY ORDER FLOW:
-- MENU: Show products with numbered menu (group by category if helpful). ALWAYS add "0️⃣ View all images" as last option.
-- BROWSING: When customer picks 0 → send send_catalog_images + menu.
-- SELECTING: When customer picks a number → send send_product_image (if has image), confirm item + price.
-- ADDING MORE: After each item → "Anything else to add or checkout?" If yes → resend menu. Keep building cart.
-- STOCK: If item is marked OUT OF STOCK → apologise and suggest an alternative if available.
-- ORDER TYPE: When ready → ask "Delivery or pickup?"
-  • Delivery → ask for address. Mention delivery zone/fee from business info if configured.
-  • Pickup → confirm location + estimated ready time.
-- CHECKOUT: Fire create_order with ALL items + delivery_type + delivery_address.
-- PAYMENT: Show order summary + total + payment details. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "salon": """\
-SALON BOOKING FLOW:
-- MENU: Show services with numbered menu (include duration and price per service).
-- SELECTING: When customer picks a number → confirm service name, duration, price.
-- DATE: Ask for their preferred date. Set flow_step=awaiting_date.
-- TIME: After date → ask for preferred time. Set flow_step=awaiting_time.
-- STYLIST: If multiple stylists in business info → ask for preferred stylist (or say "any available").
-- CONFIRM: Summarise — Service, Date, Time, Stylist (if applicable), Price. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time after confirmation.
-- PAYMENT: If deposit required (mentioned in business info) → show payment details. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.
-- RESCHEDULE: If customer asks to reschedule → fire reschedule_booking with new date/time.""",
-
-    "beauty": """\
-BEAUTY BOOKING FLOW:
-- MENU: Show services with numbered menu (include duration and price).
-- SELECTING: Confirm service name, duration, price.
-- DATE: Ask for preferred date. Set flow_step=awaiting_date.
-- TIME: After date → ask for preferred time.
-- CONFIRM: Summarise — Service, Date, Time, Price. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time.
-- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "spa": """\
-SPA BOOKING FLOW:
-- MENU: Show treatments with numbered menu (include duration and price).
-- SELECTING: Confirm treatment name, duration, price.
-- GUESTS: Ask if the treatment is for one person or a couple/group (if applicable). Adjust price if needed.
-- DATE: Ask for preferred date. Set flow_step=awaiting_date.
-- TIME: After date → ask for preferred time.
-- CONFIRM: Summarise — Treatment, Date, Time, Guest count, Total. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time.
-- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "services": """\
-SERVICES / FREELANCE BOOKING FLOW:
-- MENU: Show services with numbered menu (include price or "get a quote" if price varies).
-- SELECTING: Confirm service name and base rate/price.
-- DETAILS: Ask customer to describe their specific requirements (e.g. "Tell me more about your project / job").
-- LOCATION: Ask if the job is remote or on-site. If on-site → ask for the address.
-- DATE: Ask for preferred date and time. Set flow_step=awaiting_date.
-- CONFIRM: Summarise — Service, Requirements summary, Location, Date/Time, Price. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time, notes=requirements summary.
-- PAYMENT: If upfront deposit required → show payment details and ask for payee name + amount paid.
-- PAYMENT CONFIRM: When customer replies with name + amount → intent=payment_received + set_payment_pending + notify_owner.
-- If requirements need owner review first → fire notify_owner + tell customer the team will be in touch shortly.""",
-
-    "repair": """\
-REPAIR BOOKING FLOW:
-- ISSUE: Start by asking the customer to describe the problem (device/item type + what's wrong).
-- MENU: If repair services are listed in catalog → show relevant options with numbered menu after understanding the issue.
-- QUOTE: If a fixed price applies → state it. Otherwise say: "We'll give you a precise quote after assessment."
-- LOCATION: Ask "Drop off at our shop, or would you prefer an on-site visit?" If on-site → ask for the address.
-- DATE: Ask for preferred date and time. Set flow_step=awaiting_date.
-- CONFIRM: Summarise — Item, Issue, Service, Location/Type, Date/Time, Price (or "quote on assessment"). Ask to confirm.
-- BOOKING: Fire create_booking with service_id, date, time, notes=issue description.
-- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "cleaning": """\
-CLEANING BOOKING FLOW:
-- MENU: Show cleaning packages with numbered menu (include what's covered and price).
-- SELECTING: Confirm package name and price.
-- ADDRESS: Ask for the property address to be cleaned.
-- PROPERTY: Ask for property size/type if relevant (e.g. "How many bedrooms?" or "Is it an office or home?").
-- SPECIAL: Ask for any special instructions (pets at home, access code, areas to focus on).
-- DATE: Ask for preferred date. Set flow_step=awaiting_date.
-- TIME: After date → ask for preferred start time.
-- CONFIRM: Summarise — Package, Address, Date/Time, Any special notes, Total. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time, notes=address + special instructions.
-- PAYMENT: If deposit required → show payment details and ask for payee name + amount paid.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "clinic": """\
-HEALTHCARE BOOKING FLOW:
-- MENU: Show consultation types or services with numbered menu (include fee if applicable).
-- SELECTING: Confirm consultation type and fee.
-- PATIENT: Ask "Is this appointment for yourself or someone else?" If someone else → ask for the patient's name.
-- DATE: Ask for preferred date. Set flow_step=awaiting_date.
-- TIME: After date → ask for preferred time.
-- PREP: If business info mentions preparation requirements (fasting, bring documents, etc.) → mention them clearly.
-- CONFIRM: Summarise — Consultation type, Patient name, Date, Time, Fee. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time, notes=patient name if different.
-- PAYMENT: Only show payment details if a consultation fee is configured. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "photography": """\
-PHOTOGRAPHY / EVENTS BOOKING FLOW:
-- MENU: Show packages/session types with numbered menu (include what's covered and price).
-- SELECTING: Confirm package name, what's included, and price.
-- EVENT DETAILS: Ask for event type (wedding, birthday, corporate, etc.), event date, venue/location.
-- DURATION: Ask for number of hours or session length if not fixed in the package.
-- GUESTS: Ask for approximate guest count or group size if relevant.
-- CONFIRM: Summarise — Package, Event type, Date, Location, Duration, Total. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time, notes=event type + location.
-- DEPOSIT: Show payment details for deposit. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "events": """\
-EVENTS & PHOTOGRAPHY BOOKING FLOW:
-- MENU: Show packages with numbered menu (include what's covered and price).
-- SELECTING: Confirm package, inclusions, and price.
-- EVENT DETAILS: Ask for event type, event date, and venue/location.
-- GUEST COUNT: Ask for approximate number of guests or attendees.
-- REQUIREMENTS: Ask for any specific requirements (theme, special requests, equipment needed).
-- CONFIRM: Summarise — Package, Event date, Venue, Guest count, Requirements, Total. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time, notes=event details + requirements.
-- DEPOSIT: Show payment details for deposit. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "gym": """\
-GYM / FITNESS BOOKING FLOW:
-- MENU: Show membership plans or class packages with numbered menu (include duration and price).
-- SELECTING: Confirm plan/class name, duration, and price.
-- SCHEDULE: For memberships → ask for preferred start date. For classes → ask for preferred days and times.
-- PERSONAL TRAINING: If customer selects personal training → ask for number of sessions and preferred schedule.
-- CONFIRM: Summarise — Plan, Start date / Schedule, Total. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date (start date), time.
-- PAYMENT: Show payment details. Mention if monthly/annual billing applies. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "rental": """\
-RENTAL BOOKING FLOW:
-- MENU: Show available listings with numbered menu (include rate per night/day and key details). ALWAYS add "0️⃣ View all images" as last option. Include in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
-- BROWSING: When customer picks 0 → send send_catalog_images of all listings with images + resend menu.
-- SELECTING: When customer picks a number → send send_product_image (if has image), confirm listing name + rate.
-- CHECK-IN: Ask for check-in date. Set flow_step=awaiting_date.
-- CHECK-OUT: After check-in → ask for check-out date. Set flow_step=awaiting_checkout.
-- TOTAL: Calculate total = nightly/daily rate × number of nights/days. Show breakdown clearly.
-- CONFIRM: Summarise — Listing, Check-in date, Check-out date, Number of nights/days, Total cost. Ask customer to confirm.
-- BOOKING: Fire create_booking with is_rental=true, checkin_date, checkout_date (NOT date/time fields).
-  Example: {"type": "create_booking", "service_id": "DB_ID", "service_name": "Name", "price": TOTAL, "is_rental": true, "checkin_date": "Mon 14 April", "checkout_date": "Thu 17 April", "date": "", "time": ""}
-- PAYMENT: Show deposit or full payment details after booking confirmed. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "fitness": """\
-FITNESS / GYM BOOKING FLOW:
-- MENU: Show membership plans or class packages with numbered menu (include duration and price).
-- SELECTING: Confirm plan/class name, duration, and price.
-- SCHEDULE: For memberships → ask for preferred start date. For classes → ask for preferred days and times.
-- PERSONAL TRAINING: If customer selects personal training → ask for number of sessions + preferred days/times.
-- CONFIRM: Summarise — Plan, Start date / Schedule, Total. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date (start date), time.
-- PAYMENT: Show payment details. Mention billing cycle (monthly/annual) if applicable. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "healthcare": """\
-HEALTHCARE BOOKING FLOW:
-- MENU: Show consultation types or services with numbered menu (include fee if applicable).
-- SELECTING: Confirm consultation type and fee.
-- PATIENT: Ask "Is this appointment for yourself or someone else?" If someone else → ask for the patient's name.
-- DATE: Ask for preferred date. Set flow_step=awaiting_date.
-- TIME: After date → ask for preferred time.
-- PREP: If business info mentions preparation requirements (fasting, bring ID/documents, etc.) → mention clearly.
-- CONFIRM: Summarise — Consultation type, Patient name (if different), Date, Time, Fee. Ask customer to confirm.
-- BOOKING: Fire create_booking with service_id, date, time, notes=patient name if different.
-- PAYMENT: Only show payment details if a consultation fee is configured. ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "creator": """\
-CREATOR / DIGITAL PRODUCT FLOW:
-- MENU: Show digital products, content packages, or collaboration types with numbered menu (include price).
-- SELECTING: Confirm product/package name and price.
-- BRAND INQUIRY: If message is from a brand or business asking about collaboration → show collab packages + rates from business info. Ask for their brand name and campaign details.
-- FAN / FOLLOWER: If message is from a fan → be warm and engaging. Answer questions. Show available digital products (courses, presets, shoutouts, etc.).
-- DELIVERY: No physical delivery. Confirm how they'll receive the product (link, email, WhatsApp).
-- CONFIRM: Summarise — Product/Package, Price, Delivery method. Ask customer to confirm.
-- PAYMENT: Show payment details immediately after confirmation. ask for payee name + amount.
-- FIRE: create_order after customer confirms (delivery_type="pickup", notes=delivery method).
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
-    "general": """\
-GENERAL BUSINESS FLOW:
-- GREETING: Greet warmly. Ask how you can help.
-- PRODUCTS (if configured): Show products with numbered menu. Follow ordering flow → create_order.
-- SERVICES (if configured): Show services with numbered menu. Follow booking flow → create_booking.
-- If BOTH products and services are configured → ask first: "Are you looking to order a product or book a service?"
-- INFO: Answer FAQs, hours, location, pricing — using only the business info provided. Never invent facts.
-- ESCALATE: If customer has a complex request, complaint, or asks for the owner → fire notify_owner + set escalate=true.
-- PAYMENT: Show configured payment methods exactly when customer is ready to pay.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 }
 
 # ── Catalog helpers (item label + category summary) ───────────────────────────
@@ -720,6 +497,304 @@ def _build_food_instructions(bc: dict) -> str:
         "- If a product is unavailable (out of stock) → apologise and suggest an alternative from the menu.",
         "- Keep the tone warm and personal — customers chose you because you're local.",
     ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_services_instructions(bc: dict) -> str:
+    """Build full services/freelance autoreply instructions.
+    Covers IT support, trades, consulting, tutoring, legal, accounting — any skill-based service."""
+    has_onsite        = bc.get("services_has_onsite", True)
+    has_remote        = bc.get("services_has_remote", True)
+    deposit_required  = bc.get("services_deposit_required", False)
+    deposit_pct       = bc.get("services_deposit_pct", 50)
+    quote_first       = bc.get("services_quote_first", True)    # needs owner quote before booking?
+    turnaround        = bc.get("services_turnaround", "")        # e.g. "same day, 1–3 days"
+    cancellation_policy = bc.get("services_cancellation_policy", "")
+
+    lines = [
+        "SERVICES / FREELANCE BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Professional and helpful. Customers need a specific skill or job done — understand their need first.",
+        "- Some jobs need a custom quote before confirming. Others have fixed prices. Know the difference.",
+        "",
+        "STEP 1 — UNDERSTAND THE REQUEST:",
+        "- Do NOT show the full service menu first. Start by understanding what they need:",
+        "  'Hi! 👋 What can I help you with today?'",
+        "- Listen for: the type of job, urgency, and scope.",
+        "- If the catalog has a matching service → confirm it: 'We handle that! Let me give you the details.'",
+        "- If catalog has multiple relevant services → show as numbered menu.",
+        "- If the request doesn't match any catalog item → fire notify_owner(reason='custom_inquiry', message='Customer needs: [description]')",
+        "  Tell customer: 'I've flagged that for our team — someone will get back to you shortly with pricing.'",
+        "",
+        "STEP 2 — PRICING / QUOTE:",
+    ]
+
+    if quote_first:
+        lines += [
+            "- For FIXED-PRICE services → state the price directly from the catalog.",
+            "- For CUSTOM/VARIABLE jobs → be upfront: 'For this type of job, we usually provide a custom quote.'",
+            "  Ask: 'Could you describe the scope a bit more? (e.g. size, complexity, timeline)'",
+            "  After gathering details → fire notify_owner(reason='quote_request', message='Customer wants quote for: [job description]')",
+            "  Tell customer: 'Our team will review the details and send you a quote shortly.'",
+        ]
+    else:
+        lines += [
+            "- State the price or rate from the catalog.",
+            "- If price varies → ask for scope details and estimate a range based on catalog pricing.",
+        ]
+
+    lines += [
+        "",
+        "STEP 3 — JOB DETAILS:",
+        "- Ask: 'Can you describe exactly what needs to be done?'",
+        "- Record key details: scope, size, any specific requirements.",
+        "",
+        "STEP 4 — LOCATION / DELIVERY:",
+    ]
+
+    if has_onsite and has_remote:
+        lines += [
+            "- Ask: 'Is this an on-site job or can it be done remotely?'",
+            "  1️⃣ On-site (I come to you)  2️⃣ Remote / Online",
+            "  • On-site → ask for the address.",
+            "  • Remote → ask for contact method (email, call, screen share, etc.).",
+        ]
+    elif has_onsite:
+        lines += [
+            "- On-site job. Ask for the customer's address.",
+        ]
+    elif has_remote:
+        lines += [
+            "- Remote/online service. Confirm how work will be delivered.",
+        ]
+
+    lines += [
+        "",
+        "STEP 5 — DATE & TIME:",
+        "- Ask: 'When would you like this done?'",
+        "- Ask for a preferred date and time.",
+    ]
+
+    if turnaround:
+        lines.append(f"- Typical turnaround: {turnaround}. Mention this if customer asks how soon.")
+
+    lines += [
+        "",
+        "STEP 6 — CONFIRM BOOKING:",
+        "- Show summary:",
+        "  '📋 *Service Booking:*",
+        "   🔧 Service: [service name]",
+        "   📝 Details: [brief summary of job]",
+        "   📍 Type: [On-site at address / Remote]",
+        "   📅 Date: [date]  ⏰ Time: [time]",
+        "   💰 Price: [fixed price / quote pending]'",
+        "- Ask: 'Shall I confirm this booking?'",
+        "- Fire create_booking with notes='[job details] | [location type]'.",
+        "",
+        "STEP 7 — PAYMENT:",
+    ]
+
+    if deposit_required:
+        lines += [
+            f"- Require {deposit_pct}% deposit to confirm. Show payment details. Ask for name + amount.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        ]
+    else:
+        lines += [
+            "- Payment on completion unless otherwise specified in business info.",
+            "- fire notify_owner(reason='new_booking', message='[Name] booked [service] on [date]').",
+        ]
+
+    if cancellation_policy:
+        lines += [
+            "",
+            f"CANCELLATION POLICY: {cancellation_policy}",
+            "- Mention at booking confirmation.",
+        ]
+
+    lines += [
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER promise a delivery date for custom work without owner confirmation.",
+        "- NEVER quote a price for a job that clearly requires assessment — always flag to owner.",
+        "- Keep notes detailed — the owner needs full context to deliver the job.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_rental_instructions(bc: dict) -> str:
+    """Build full rental autoreply instructions. Covers Airbnb, holiday lets, car hire, equipment rental."""
+    rental_type       = bc.get("rental_type", "property")       # "property" | "car" | "equipment" | "mixed"
+    deposit_required  = bc.get("rental_deposit_required", True)
+    deposit_pct       = bc.get("rental_deposit_pct", 30)
+    min_nights        = bc.get("rental_min_nights", 1)
+    check_in_time     = bc.get("rental_checkin_time", "")        # e.g. "2pm"
+    check_out_time    = bc.get("rental_checkout_time", "")       # e.g. "10am"
+    pet_policy        = bc.get("rental_pet_policy", "")          # e.g. "No pets" / "Pets allowed"
+    cancellation_policy = bc.get("rental_cancellation_policy", "")  # e.g. "48hrs for full refund"
+    has_extra_services = bc.get("rental_has_extras", False)       # airport pickup, cleaning, etc.
+
+    type_label = {"property": "property", "car": "vehicle", "equipment": "item", "mixed": "listing"}.get(rental_type, "listing")
+    booking_label = "stay" if rental_type == "property" else "rental"
+
+    lines = [
+        f"RENTAL BOOKING FLOW ({rental_type.upper()}):",
+        "",
+        "TONE & CONTEXT:",
+        "- Warm, informative, and trust-building. Customers are committing money for a future date — reassure them.",
+        "- Be clear about what's included, what's not, and what happens if plans change.",
+        "",
+        f"STEP 1 — BROWSE & SELECT {type_label.upper()}:",
+        f"- Show available {type_label}s as numbered menu with rate and key details.",
+    ]
+
+    if rental_type == "property":
+        lines += [
+            "  Format: '1️⃣ Studio Apartment – KES 3,500/night  📍 Kilimani | WiFi, AC, Hot water'",
+            "  Include: location, key amenities, nightly/weekly rate.",
+        ]
+    elif rental_type == "car":
+        lines += [
+            "  Format: '1️⃣ Toyota Vitz 2019 – KES 4,500/day  🚗 Manual | 5 seats | AC'",
+            "  Include: car model/year, daily rate, transmission, seats.",
+        ]
+    elif rental_type == "equipment":
+        lines += [
+            "  Format: '1️⃣ Canon EOS R50 Camera – KES 2,000/day  📷 Includes kit lens + bag'",
+            "  Include: item name, daily rate, what's included.",
+        ]
+    else:
+        lines.append("  Include: name, rate per day/night, key details.")
+
+    lines += [
+        "- ALWAYS add '0️⃣ View all images' as last option.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}',
+        "- When customer picks 0 → send send_catalog_images + resend menu.",
+        "- When customer picks a number → send send_product_image (if has image).",
+        "",
+        "STEP 2 — AVAILABILITY CHECK:",
+        "- Ask for check-in / start date first.",
+        "  Set flow_step=awaiting_date.",
+        "- Then ask for check-out / end date.",
+        "  Set flow_step=awaiting_checkout.",
+    ]
+
+    if min_nights > 1:
+        lines.append(f"- Minimum {min_nights} nights required. If customer's dates are shorter → inform politely and ask to adjust.")
+
+    lines += [
+        "",
+        "STEP 3 — CALCULATE TOTAL:",
+        f"- Calculate total = rate × number of nights/days.",
+        f"- Show clearly: '[{type_label.title()}] × [N] {'nights' if rental_type == 'property' else 'days'} @ KES [rate] = KES [total]'",
+        "- Mention any additional fees from business info (cleaning fee, security deposit, fuel charge, etc.).",
+        "",
+        "STEP 4 — GUEST / DRIVER DETAILS:",
+    ]
+
+    if rental_type == "property":
+        lines += [
+            "- Ask: 'How many guests will be staying?'",
+            "- If pets allowed → ask: 'Will you be bringing any pets?'",
+        ]
+        if pet_policy:
+            lines.append(f"- Pet policy: {pet_policy}. State this clearly.")
+    elif rental_type == "car":
+        lines += [
+            "- Ask for: driver's full name, ID/licence number.",
+            "- Ask: 'Will you need a driver, or self-drive?'",
+            "- Record in booking notes.",
+        ]
+    else:
+        lines.append("- Ask for the customer's full name and purpose of rental if relevant.")
+
+    lines += [
+        "",
+        "STEP 5 — CONFIRM BOOKING:",
+        "- Show full summary:",
+    ]
+
+    if rental_type == "property":
+        lines += [
+            f"  '🏠 *Booking Summary:*",
+            f"   🛏️ Property: [name]",
+            f"   📅 Check-in: [date]{' at ' + check_in_time if check_in_time else ''}",
+            f"   📅 Check-out: [date]{' at ' + check_out_time if check_out_time else ''}",
+            f"   👥 Guests: [N]",
+            f"   💰 Total: KES [amount]'",
+        ]
+    elif rental_type == "car":
+        lines += [
+            f"  '🚗 *Rental Summary:*",
+            f"   🚙 Vehicle: [name]",
+            f"   📅 Pickup: [date]  📅 Return: [date]",
+            f"   👤 Driver: [name]",
+            f"   💰 Total: KES [amount]'",
+        ]
+    else:
+        lines += [
+            f"  '📦 *Rental Summary:*",
+            f"   📋 Item: [name]",
+            f"   📅 From: [date]  📅 To: [date]",
+            f"   💰 Total: KES [amount]'",
+        ]
+
+    lines += [
+        "- Ask: 'Shall I confirm this booking?'",
+        "- Fire create_booking with is_rental=true, checkin_date='[date]', checkout_date='[date]', notes='[guest/driver details]'.",
+        "",
+        "STEP 6 — PAYMENT:",
+    ]
+
+    if deposit_required:
+        lines += [
+            f"- A {deposit_pct}% deposit is required to secure the booking.",
+            "- Show payment details EXACTLY as configured. Ask for payee name + deposit amount.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+            f"  → Reply: 'Your {booking_label} is confirmed! ✅ We'll send you all the details shortly.'",
+        ]
+    else:
+        lines += [
+            "- Full payment required to confirm. Show payment details. Ask for name + amount.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        ]
+
+    if has_extra_services:
+        lines += [
+            "",
+            "EXTRAS:",
+            "- After confirming booking → offer any extras from business info (airport pickup, breakfast, extra driver, etc.).",
+            "- Show as numbered options. Add to booking notes if selected.",
+        ]
+
+    if cancellation_policy:
+        lines += [
+            "",
+            f"CANCELLATION POLICY: {cancellation_policy}",
+            "- Always mention this when confirming a booking.",
+        ]
+
+    lines += [
+        "",
+        "BOOKING MANAGEMENT:",
+        "- 'my booking' / 'check-in details' → show booking summary including check-in/out dates.",
+        "- Change dates → check availability, update booking + notify_owner.",
+        "- Cancel → state cancellation policy + fire cancel_booking.",
+        "",
+        "IMPORTANT RULES:",
+        f"- ALWAYS use is_rental=true with checkin_date and checkout_date — never use date/time booking fields for rentals.",
+        "- NEVER confirm a booking without check-in AND check-out dates confirmed.",
+        "- Always show what's included and any additional fees before payment.",
+    ]
+
+    if check_in_time or check_out_time:
+        times = []
+        if check_in_time: times.append(f"Check-in: {check_in_time}")
+        if check_out_time: times.append(f"Check-out: {check_out_time}")
+        lines.append(f"- Always communicate timing: {' | '.join(times)}.")
 
     return "\n".join(l for l in lines if l is not None)
 
@@ -2536,6 +2611,10 @@ def build_system_prompt(
         instructions = _build_events_instructions(bc)
     elif btype in ("healthcare", "clinic"):
         instructions = _build_healthcare_instructions(bc)
+    elif btype == "services":
+        instructions = _build_services_instructions(bc)
+    elif btype == "rental":
+        instructions = _build_rental_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")

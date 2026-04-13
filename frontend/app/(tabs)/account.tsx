@@ -161,6 +161,23 @@ export default function AccountScreen() {
   const [repairDiagnosisFree, setRepairDiagnosisFree] = useState(true);
   const [repairTurnaround, setRepairTurnaround] = useState('');
   const [repairWarranty, setRepairWarranty] = useState('');
+  // Services / Freelance
+  const [servicesHasOnsite, setServicesHasOnsite] = useState(true);
+  const [servicesHasRemote, setServicesHasRemote] = useState(true);
+  const [servicesQuoteFirst, setServicesQuoteFirst] = useState(false);
+  const [servicesDepositRequired, setServicesDepositRequired] = useState(false);
+  const [servicesTurnaround, setServicesTurnaround] = useState('');
+  const [servicesCancellationPolicy, setServicesCancellationPolicy] = useState('');
+  // Rental
+  const [rentalType, setRentalType] = useState('property');
+  const [rentalDepositRequired, setRentalDepositRequired] = useState(true);
+  const [rentalDepositPct, setRentalDepositPct] = useState('30');
+  const [rentalMinNights, setRentalMinNights] = useState('');
+  const [rentalCheckinTime, setRentalCheckinTime] = useState('');
+  const [rentalCheckoutTime, setRentalCheckoutTime] = useState('');
+  const [rentalPetPolicy, setRentalPetPolicy] = useState('');
+  const [rentalCancellationPolicy, setRentalCancellationPolicy] = useState('');
+  const [rentalHasExtras, setRentalHasExtras] = useState(false);
   // Cleaning
   const [cleaningHasRecurring, setCleaningHasRecurring] = useState(true);
   const [cleaningHasCommercial, setCleaningHasCommercial] = useState(false);
@@ -268,6 +285,21 @@ export default function AccountScreen() {
         setRepairDiagnosisFree(bk.repair_diagnosis_free !== false);
         setRepairTurnaround(bk.repair_turnaround || '');
         setRepairWarranty(bk.repair_warranty || '');
+        setServicesHasOnsite(bk.services_has_onsite !== false);
+        setServicesHasRemote(bk.services_has_remote !== false);
+        setServicesQuoteFirst(!!bk.services_quote_first);
+        setServicesDepositRequired(!!bk.services_deposit_required);
+        setServicesTurnaround(bk.services_turnaround || '');
+        setServicesCancellationPolicy(bk.services_cancellation_policy || '');
+        setRentalType(bk.rental_type || 'property');
+        setRentalDepositRequired(bk.rental_deposit_required !== false);
+        setRentalDepositPct(String(bk.rental_deposit_pct || 30));
+        setRentalMinNights(String(bk.rental_min_nights || ''));
+        setRentalCheckinTime(bk.rental_checkin_time || '');
+        setRentalCheckoutTime(bk.rental_checkout_time || '');
+        setRentalPetPolicy(bk.rental_pet_policy || '');
+        setRentalCancellationPolicy(bk.rental_cancellation_policy || '');
+        setRentalHasExtras(!!bk.rental_has_extras);
         setCleaningHasRecurring(bk.cleaning_has_recurring !== false);
         setCleaningHasCommercial(!!bk.cleaning_has_commercial);
         setCleaningSuppliesIncluded(bk.cleaning_supplies_included !== false);
@@ -1050,15 +1082,43 @@ export default function AccountScreen() {
                 </View>
               );
 
-              if (businessType === 'repair' || businessType === 'services') return (
+              if (businessType === 'repair') return (
                 <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
-                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🔧 Repair / Services Settings</Text>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🛠️ Repair Settings</Text>
                   {sharedFields}
                   {jSwitchRow('On-site Visits', 'AI will offer on-site repair option', repairHasOnsite, (v) => { setRepairHasOnsite(v); saveJourneySettings({ repair_has_onsite: v }); })}
                   {jSwitchRow('Drop-off at Shop', 'AI will offer drop-off option', repairHasDropoff, (v) => { setRepairHasDropoff(v); saveJourneySettings({ repair_has_dropoff: v }); })}
                   {jSwitchRow('Free Diagnosis', 'Initial diagnosis is free — no commitment', repairDiagnosisFree, (v) => { setRepairDiagnosisFree(v); saveJourneySettings({ repair_diagnosis_free: v }); })}
                   {jTextField('Typical Turnaround', '', repairTurnaround, setRepairTurnaround, () => saveJourneySettings({ repair_turnaround: repairTurnaround }), 'e.g. Same day to 3 days')}
                   {jTextField('Warranty Policy', 'AI will mention this after booking', repairWarranty, setRepairWarranty, () => saveJourneySettings({ repair_warranty: repairWarranty }), 'e.g. 3-month warranty on parts')}
+                </View>
+              );
+
+              if (businessType === 'services') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🔧 Services / Freelance Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('On-site / Field Work', 'AI will offer on-site or field visits', servicesHasOnsite, (v) => { setServicesHasOnsite(v); saveJourneySettings({ services_has_onsite: v }); })}
+                  {jSwitchRow('Remote Work', 'AI will offer remote / online delivery', servicesHasRemote, (v) => { setServicesHasRemote(v); saveJourneySettings({ services_has_remote: v }); })}
+                  {jSwitchRow('Quote First', 'AI collects requirements then notifies owner before confirming price', servicesQuoteFirst, (v) => { setServicesQuoteFirst(v); saveJourneySettings({ services_quote_first: v }); })}
+                  {jSwitchRow('Require Deposit', 'Deposit needed to confirm booking', servicesDepositRequired, (v) => { setServicesDepositRequired(v); saveJourneySettings({ services_deposit_required: v }); })}
+                  {jTextField('Typical Turnaround', 'Shown to customers when scoping work', servicesTurnaround, setServicesTurnaround, () => saveJourneySettings({ services_turnaround: servicesTurnaround }), 'e.g. 3–5 business days')}
+                  {jTextField('Cancellation Policy', '', servicesCancellationPolicy, setServicesCancellationPolicy, () => saveJourneySettings({ services_cancellation_policy: servicesCancellationPolicy }), 'e.g. 48hrs notice required')}
+                </View>
+              );
+
+              if (businessType === 'rental') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🏠 Rental Settings</Text>
+                  {jTextField('Rental Type', 'Helps AI use the right language', rentalType, setRentalType, () => saveJourneySettings({ rental_type: rentalType }), 'property / car / equipment / mixed')}
+                  {jSwitchRow('Require Deposit', 'AI will collect deposit to confirm booking', rentalDepositRequired, (v) => { setRentalDepositRequired(v); saveJourneySettings({ rental_deposit_required: v }); })}
+                  {rentalDepositRequired && jTextField('Deposit %', '', rentalDepositPct, setRentalDepositPct, () => saveJourneySettings({ rental_deposit_pct: parseInt(rentalDepositPct) || 30 }), 'e.g. 30')}
+                  {jTextField('Minimum Nights / Days', 'Leave blank if no minimum', rentalMinNights, setRentalMinNights, () => saveJourneySettings({ rental_min_nights: parseInt(rentalMinNights) || 0 }), 'e.g. 2')}
+                  {jTextField('Check-in Time', '', rentalCheckinTime, setRentalCheckinTime, () => saveJourneySettings({ rental_checkin_time: rentalCheckinTime }), 'e.g. 2:00 PM')}
+                  {jTextField('Check-out Time', '', rentalCheckoutTime, setRentalCheckoutTime, () => saveJourneySettings({ rental_checkout_time: rentalCheckoutTime }), 'e.g. 11:00 AM')}
+                  {jTextField('Pet Policy', 'Shown when customers ask about pets', rentalPetPolicy, setRentalPetPolicy, () => saveJourneySettings({ rental_pet_policy: rentalPetPolicy }), 'e.g. No pets / Pets allowed with KES 1,000 deposit')}
+                  {jTextField('Cancellation Policy', '', rentalCancellationPolicy, setRentalCancellationPolicy, () => saveJourneySettings({ rental_cancellation_policy: rentalCancellationPolicy }), 'e.g. Full refund if cancelled 7 days before check-in')}
+                  {jSwitchRow('Extras / Add-ons Available', 'AI will mention extras like breakfast, airport pickup, etc.', rentalHasExtras, (v) => { setRentalHasExtras(v); saveJourneySettings({ rental_has_extras: v }); })}
                 </View>
               );
 
