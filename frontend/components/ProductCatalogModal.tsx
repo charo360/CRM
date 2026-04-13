@@ -214,8 +214,32 @@ const GROCERY_UNITS = [
     'per bottle', 'per litre', 'per dozen', 'per bundle', 'per box', 'per bag',
 ];
 
+// Wholesale-specific categories
+const WHOLESALE_CATEGORIES = [
+    'Food & Beverages',
+    'Electronics & Appliances',
+    'Clothing & Textiles',
+    'Beauty & Personal Care',
+    'Household Products',
+    'Industrial & Hardware',
+    'Stationery & Office',
+    'Agricultural Products',
+    'Pharmaceutical',
+    'Other'
+];
+
+const WHOLESALE_UNITS = [
+    'per carton', 'per case', 'per dozen', 'per pallet',
+    'per kg', 'per bag', 'per box', 'per bundle', 'per piece',
+];
+
 interface Variant {
     name: string;
+    price: number;
+}
+
+interface PricingTier {
+    min_qty: number;
     price: number;
 }
 
@@ -246,6 +270,8 @@ interface Product {
     variants?: Variant[];
     modifier_groups?: ModifierGroup[];
     unit?: string;
+    moq?: number;
+    pricing_tiers?: PricingTier[];
     created_at: string;
 }
 
@@ -307,6 +333,10 @@ export default function ProductCatalogModal({
     const descriptionInputRef = useRef<TextInput>(null);
 
     const [editUnit, setEditUnit] = useState('');
+    const [editMoq, setEditMoq] = useState('');
+    const [editPricingTiers, setEditPricingTiers] = useState<PricingTier[]>([]);
+    const [newTierMinQty, setNewTierMinQty] = useState('');
+    const [newTierPrice, setNewTierPrice] = useState('');
 
     const { config, businessType } = useBusiness();
     const catalogLabel = config.catalogLabel;
@@ -316,6 +346,7 @@ export default function ProductCatalogModal({
     const isRestaurant = catalogLabel === 'Menu' && businessType === 'restaurant';
     const isBakery     = businessType === 'bakery';
     const isGrocery    = businessType === 'grocery';
+    const isWholesale  = businessType === 'wholesale';
     const isRental     = catalogLabel === 'Listings';
     const isHealthcare = config.customerLabel === 'Patient';
     const isFitness    = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
@@ -334,6 +365,7 @@ export default function ProductCatalogModal({
         if (isRestaurant)  return RESTAURANT_CATEGORIES;
         if (isBakery)      return BAKERY_CATEGORIES;
         if (isGrocery)     return GROCERY_CATEGORIES;
+        if (isWholesale)   return WHOLESALE_CATEGORIES;
         if (isHealthcare)  return HEALTHCARE_CATEGORIES;
         if (isFitness)     return FITNESS_CATEGORIES;
         if (isServices)    return SERVICES_CATEGORIES;
@@ -622,6 +654,8 @@ export default function ProductCatalogModal({
         setEditCategory(product.category || 'Other');
         setEditSubCategory(product.sub_category || '');
         setEditUnit((product as any).unit || '');
+        setEditMoq((product as any).moq ? String((product as any).moq) : '');
+        setEditPricingTiers((product as any).pricing_tiers || []);
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
         setEditStockQuantity(product.stock_quantity?.toString() || '');
@@ -651,6 +685,10 @@ export default function ProductCatalogModal({
         setEditCategory('Other');
         setEditSubCategory('');
         setEditUnit('');
+        setEditMoq('');
+        setEditPricingTiers([]);
+        setNewTierMinQty('');
+        setNewTierPrice('');
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
@@ -710,6 +748,8 @@ export default function ProductCatalogModal({
                     modifier_groups: modifierGroupsToSave.length > 0 ? modifierGroupsToSave : undefined,
                     sub_category: editSubCategory.trim() || undefined,
                     unit: editUnit.trim() || undefined,
+                    moq: editMoq ? parseInt(editMoq) : undefined,
+                    pricing_tiers: editPricingTiers.length > 0 ? editPricingTiers : undefined,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -733,6 +773,8 @@ export default function ProductCatalogModal({
                     modifier_groups: modifierGroupsToSave,
                     sub_category: editSubCategory.trim() || undefined,
                     unit: editUnit.trim() || undefined,
+                    moq: editMoq ? parseInt(editMoq) : undefined,
+                    pricing_tiers: editPricingTiers,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -1086,18 +1128,18 @@ export default function ProductCatalogModal({
                             </View>
                             )}
 
-                            {isGrocery && (
+                            {(isGrocery || isWholesale) && (
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Unit <Text style={{ color: '#555', fontWeight: '400' }}>(how it's sold)</Text></Text>
                                 <TextInput
                                     style={styles.formInput}
                                     value={editUnit}
                                     onChangeText={setEditUnit}
-                                    placeholder="e.g. per kg, per piece, per packet"
+                                    placeholder={isWholesale ? "e.g. per carton, per dozen, per pallet" : "e.g. per kg, per piece, per packet"}
                                     placeholderTextColor="#555"
                                 />
                                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                                    {GROCERY_UNITS.slice(0, 6).map(u => (
+                                    {(isWholesale ? WHOLESALE_UNITS : GROCERY_UNITS).slice(0, 6).map(u => (
                                         <TouchableOpacity
                                             key={u}
                                             onPress={() => setEditUnit(u)}
@@ -1109,6 +1151,69 @@ export default function ProductCatalogModal({
                                 </View>
                                 <Text style={styles.stockHint}>Helps customers know exactly what they're ordering</Text>
                             </View>
+                            )}
+
+                            {isWholesale && (
+                            <>
+                              <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Minimum Order Qty <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editMoq}
+                                    onChangeText={setEditMoq}
+                                    placeholder="e.g. 5 (minimum 5 cartons)"
+                                    placeholderTextColor="#555"
+                                    keyboardType="numeric"
+                                />
+                                <Text style={styles.stockHint}>Customer cannot order less than this quantity</Text>
+                              </View>
+
+                              <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Bulk Pricing Tiers <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <Text style={styles.stockHint}>Set lower prices for higher quantities — e.g. 1–10 cartons: KES 500, 11+: KES 450</Text>
+                                {editPricingTiers.map((tier, idx) => (
+                                    <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 8 }}>
+                                        <Text style={{ color: '#ccc', fontSize: 13, flex: 1 }}>
+                                            {tier.min_qty}+ {editUnit ? editUnit.replace('per ', '') : 'units'} → {currency} {tier.price.toLocaleString()}
+                                        </Text>
+                                        <TouchableOpacity onPress={() => setEditPricingTiers(editPricingTiers.filter((_, i) => i !== idx))}>
+                                            <Ionicons name="close-circle" size={20} color="#FF4444" />
+                                        </TouchableOpacity>
+                                    </View>
+                                ))}
+                                <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1 }]}
+                                        value={newTierMinQty}
+                                        onChangeText={setNewTierMinQty}
+                                        placeholder="Min qty"
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <TextInput
+                                        style={[styles.formInput, { flex: 1 }]}
+                                        value={newTierPrice}
+                                        onChangeText={setNewTierPrice}
+                                        placeholder={`Price (${currency})`}
+                                        placeholderTextColor="#555"
+                                        keyboardType="numeric"
+                                    />
+                                    <TouchableOpacity
+                                        style={{ backgroundColor: '#25D366', borderRadius: 8, paddingHorizontal: 12, justifyContent: 'center' }}
+                                        onPress={() => {
+                                            const minQty = parseInt(newTierMinQty);
+                                            const price = parseFloat(newTierPrice);
+                                            if (!minQty || !price) return;
+                                            setEditPricingTiers(prev => [...prev, { min_qty: minQty, price }].sort((a, b) => a.min_qty - b.min_qty));
+                                            setNewTierMinQty('');
+                                            setNewTierPrice('');
+                                        }}
+                                    >
+                                        <Text style={{ color: '#000', fontWeight: '700' }}>+ Add</Text>
+                                    </TouchableOpacity>
+                                </View>
+                              </View>
+                            </>
                             )}
 
                             <View style={styles.formGroup}>

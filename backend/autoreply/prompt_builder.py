@@ -572,6 +572,142 @@ def _build_response_format(btype: str) -> str:
 
 # ── Restaurant dynamic instruction builder ───────────────────────────────────
 
+def _build_wholesale_instructions(bc: dict) -> str:
+    """Build full wholesale/B2B autoreply instructions from business config."""
+    has_delivery      = bc.get("wholesale_has_delivery", True)
+    has_pickup        = bc.get("wholesale_has_pickup", True)
+    lead_time         = bc.get("wholesale_lead_time", "")          # e.g. "2–3 business days"
+    min_order_value   = bc.get("wholesale_min_order_value", "")    # e.g. "KES 5,000"
+    payment_terms     = bc.get("wholesale_payment_terms", "")      # e.g. "Cash on delivery, Bank transfer net 7"
+    has_credit        = bc.get("wholesale_has_credit_account", False)
+    delivery_areas    = bc.get("wholesale_delivery_areas", "") or bc.get("delivery_info", "")
+
+    lines = [
+        "WHOLESALE / B2B ORDER FLOW:",
+        "",
+        "CONTEXT — WHO YOU'RE TALKING TO:",
+        "- Your customers are businesses, retailers, or resellers — not individual consumers.",
+        "- They know what they want, order in bulk, and care about price per unit, MOQ, and lead time.",
+        "- Be professional, efficient, and direct. Skip small talk. Get to the order quickly.",
+        "",
+        "STEP 1 — PRODUCT INQUIRY:",
+        "- Customer may name a specific product OR browse the catalog.",
+        "  • Specific product → confirm: name, unit (e.g. per carton, per dozen), base price, and MOQ.",
+        "  • Browse → show numbered category menu first, then items within category.",
+        "- ALWAYS show: name | unit | base price | MOQ (if > 1).",
+        "  Format: '1️⃣ Washing Powder — KES 850 / carton | MOQ: 5 cartons'",
+        "- ALWAYS add '0️⃣ View all images' as last menu option.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all products", "price": 0, "type": "catalog"}}',
+        "",
+        "STEP 2 — QUANTITY & PRICING:",
+        "- Ask for quantity. Always ask in the product's unit (cartons, dozens, kg, etc.).",
+        "- Check MOQ: if customer's quantity is below the product's MOQ → inform them politely:",
+        "  'The minimum order for [product] is [MOQ] [unit]. Would you like to adjust your quantity?'",
+        "- Apply bulk pricing tiers if configured (show in catalog as '↳ Bulk pricing'):",
+        "  'Great news — at [qty] cartons, your price drops to KES [tier price] per carton!'",
+        "  Use the applicable tier price as the unit_price in the order item.",
+        "- Calculate and confirm line total = qty × applicable unit price.",
+        "  Show clearly: '[Product] × [qty] [unit] @ KES [price] = KES [line total]'",
+        "",
+        "STEP 3 — ADDING MORE ITEMS:",
+        "- After each item confirmed → 'Would you like to add more items or proceed to checkout?'",
+        "- Keep building. Show running order total after each addition:",
+        "  '📦 Order so far: [Item 1] × [qty] = KES [X], [Item 2] × [qty] = KES [Y]. Total: KES [Z]'",
+        "- Continue until customer says done / confirm / proceed / that's all.",
+        "",
+        "STEP 4 — STOCK & AVAILABILITY:",
+        "- Check in_stock status before confirming any item.",
+        "- If out of stock → 'Sorry, [item] is currently unavailable. Would you like to be notified when it restocks?' → fire notify_owner.",
+        f"{'- Lead time: ' + lead_time if lead_time else ''}",
+        "",
+        "STEP 5 — FULFILMENT:",
+    ]
+
+    if min_order_value:
+        lines.append(f"- Minimum order value: {min_order_value}. Confirm the total meets this before proceeding.")
+
+    if has_delivery and has_pickup:
+        lines.append("- Ask: 'Will you be picking up or do you need delivery?'")
+        lines.append("  Show: 1️⃣ Delivery  2️⃣ Pickup")
+    elif has_delivery:
+        lines.append("- Delivery only (no pickup configured).")
+    elif has_pickup:
+        lines.append("- Pickup only (no delivery configured).")
+
+    if has_delivery:
+        area_note = f" Delivery areas: {delivery_areas}." if delivery_areas else ""
+        lead_note = f" Lead time: {lead_time}." if lead_time else ""
+        lines += [
+            "",
+            f"DELIVERY PATH:{area_note}{lead_note}",
+            "- Ask for delivery address.",
+            "- Ask for preferred delivery date.",
+            "- Confirm any delivery fee from business info.",
+            "- Fire create_order with delivery_type='delivery', delivery_address='[address]', notes='Delivery: [date]'.",
+        ]
+
+    if has_pickup:
+        lead_note = f" Ready in: {lead_time}." if lead_time else ""
+        lines += [
+            "",
+            f"PICKUP PATH:{lead_note}",
+            "- Confirm pickup location from business info.",
+            "- Ask preferred pickup date.",
+            "- Fire create_order with delivery_type='pickup', notes='Pickup: [date]'.",
+        ]
+
+    lines += [
+        "",
+        "STEP 6 — ORDER SUMMARY:",
+        "- Before payment, show a formal order summary:",
+        "  '📋 *Order Summary:*",
+        "   • [Product] × [qty] [unit] @ KES [unit price] = KES [line total]",
+        "   • [Product 2] × [qty] [unit] @ KES [unit price] = KES [line total]",
+        "   ─────────────────",
+        "   📦 *Total: KES [grand total]*",
+        "   🚚 [Delivery / Pickup]: [date]'",
+        "",
+        "STEP 7 — PAYMENT:",
+    ]
+
+    if payment_terms:
+        lines.append(f"- Payment terms configured: {payment_terms}. Show these options exactly.")
+    else:
+        lines.append("- Show payment methods exactly as configured.")
+
+    if has_credit:
+        lines += [
+            "- If customer mentions they have a credit account → fire notify_owner(reason='credit_order', message='Credit order from [customer]') and tell them the team will confirm their account and process the order.",
+        ]
+
+    lines += [
+        "- For large orders (use judgment based on total) → mention proforma invoice option if owner has configured it in business info.",
+        "- Ask: 'Once paid, please reply with your full name, business name, and amount paid.'",
+        "",
+        "PAYMENT CONFIRMATION:",
+        "- When customer provides name + amount (or says 'transferred' / 'paid' / 'sent'):",
+        "  → intent=payment_received",
+        "  → fire set_payment_pending(payee_name='[name]', amount_paid=[amount])",
+        "  → fire notify_owner(reason='payment_received', message='[Name] / [Business] paid [Amount] — wholesale order [total items] items')",
+        "  → Reply: 'Thank you! 🙏 Payment received. Your order will be [delivered/ready for pickup] on [date]. We'll send confirmation.'",
+        "",
+        "ORDER MANAGEMENT:",
+        "- 'my order' / 'order status' → show order summary and fulfilment date.",
+        "- Additional order / repeat order → start new collection flow.",
+        "- Amendment request → fire notify_owner, tell customer the team will update the order.",
+        "- Cancel → confirm, fire cancel_order. Mention cancellation policy if in business info.",
+        "",
+        "IMPORTANT RULES:",
+        "- ALWAYS confirm MOQ before accepting a quantity.",
+        "- ALWAYS apply the correct pricing tier for the quantity ordered.",
+        "- NEVER fire create_order until full order + delivery details are confirmed.",
+        "- Use professional language — this is a B2B interaction.",
+        "- If customer asks for a custom quote / large volume not in tiers → fire notify_owner and tell them the team will be in touch.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_grocery_instructions(bc: dict) -> str:
     """Build full grocery-specific autoreply instructions from business config."""
     has_delivery   = bc.get("grocery_has_delivery", True)
@@ -1012,6 +1148,21 @@ def build_system_prompt(
         parts_v = ", ".join(f"{v['name']} ({cur} {v['price']:,.0f})" for v in vs)
         return f"    ↳ Variants: {parts_v}"
 
+    def _pricing_tiers_line(p: Dict, cur: str) -> str:
+        """Return bulk pricing tiers line for wholesale products."""
+        tiers = p.get("pricing_tiers") or []
+        if not tiers:
+            return ""
+        unit = p.get("unit", "unit")
+        sorted_tiers = sorted(tiers, key=lambda t: t.get("min_qty", 0))
+        tier_parts = []
+        for i, t in enumerate(sorted_tiers):
+            min_q = t.get("min_qty", 1)
+            next_min = sorted_tiers[i + 1].get("min_qty") if i + 1 < len(sorted_tiers) else None
+            label = f"{min_q}–{next_min - 1}" if next_min else f"{min_q}+"
+            tier_parts.append(f"{label} {unit}: {cur} {t['price']:,.0f}")
+        return f"    ↳ Bulk pricing: {' | '.join(tier_parts)}"
+
     def _modifiers_lines(p: Dict, cur: str) -> List[str]:
         """Return indented modifier group lines if the product has modifier_groups."""
         groups = p.get("modifier_groups") or []
@@ -1030,7 +1181,7 @@ def build_system_prompt(
     catalog_lines: List[str] = []
     if products:
         def _append_product_extras(p: Dict) -> None:
-            """Append description, variants, and modifier lines for a product."""
+            """Append description, variants, modifier lines, and wholesale extras."""
             if p.get("description"):
                 catalog_lines.append(f"    → {p['description']}")
             vl = _variants_line(p, currency)
@@ -1038,6 +1189,15 @@ def build_system_prompt(
                 catalog_lines.append(vl)
             for ml in _modifiers_lines(p, currency):
                 catalog_lines.append(ml)
+            # Wholesale: bulk pricing tiers
+            ptl = _pricing_tiers_line(p, currency)
+            if ptl:
+                catalog_lines.append(ptl)
+            # Wholesale: MOQ (if > 1)
+            moq = p.get("moq") or 1
+            if moq > 1:
+                unit = p.get("unit", "units")
+                catalog_lines.append(f"    ↳ Minimum order: {moq} {unit}")
 
         if _is_menu:
             # Group by category → sub_category for a clean hierarchical menu
@@ -1148,6 +1308,8 @@ def build_system_prompt(
         instructions = _build_bakery_instructions(bc)
     elif btype == "grocery":
         instructions = _build_grocery_instructions(bc)
+    elif btype == "wholesale":
+        instructions = _build_wholesale_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")
