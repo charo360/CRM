@@ -66,6 +66,9 @@ interface Order {
   items?: any[];
   fulfillment_status?: string;
   assigned_to?: string;
+  payee_name?: string;
+  amount_paid?: number;
+  payment_received_at?: string;
 }
 
 interface StaffMember {
@@ -2173,6 +2176,34 @@ export default function SalesScreen() {
                     <View style={styles.detailsRow}>
                       <Text style={styles.detailsLabel}>Notes</Text>
                       <Text style={styles.detailsValue}>{selectedOrder.notes}</Text>
+                    </View>
+                  </>
+                )}
+
+                {(!!selectedOrder.payee_name || !!selectedOrder.amount_paid) && (
+                  <>
+                    <View style={styles.detailsDivider} />
+                    <View style={{ backgroundColor: '#0d3321', borderRadius: 10, padding: 12, marginTop: 4 }}>
+                      <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginBottom: 6 }}>💰 Payment Confirmation</Text>
+                      {!!selectedOrder.payee_name && (
+                        <View style={styles.detailsRow}>
+                          <Text style={styles.detailsLabel}>Paid by</Text>
+                          <Text style={[styles.detailsValue, { fontWeight: '700' }]}>{selectedOrder.payee_name}</Text>
+                        </View>
+                      )}
+                      {!!selectedOrder.amount_paid && (
+                        <View style={styles.detailsRow}>
+                          <Text style={styles.detailsLabel}>Amount</Text>
+                          <Text style={[styles.detailsValue, { fontWeight: '700', color: '#25D366' }]}>{currency} {selectedOrder.amount_paid.toLocaleString()}</Text>
+                        </View>
+                      )}
+                      {!!selectedOrder.payment_received_at && (
+                        <View style={styles.detailsRow}>
+                          <Text style={styles.detailsLabel}>Received at</Text>
+                          <Text style={styles.detailsValue}>{new Date(selectedOrder.payment_received_at).toLocaleString()}</Text>
+                        </View>
+                      )}
+                      <Text style={{ color: '#556677', fontSize: 11, marginTop: 6 }}>Verify against your payment records before confirming.</Text>
                     </View>
                   </>
                 )}
