@@ -724,6 +724,246 @@ def _build_food_instructions(bc: dict) -> str:
     return "\n".join(l for l in lines if l is not None)
 
 
+def _build_creator_instructions(bc: dict) -> str:
+    """Build full creator/influencer autoreply instructions from business config.
+    Handles two distinct customer paths: brands (collaborations) and fans (digital products/merch)."""
+    niche            = bc.get("creator_niche", "")           # e.g. "lifestyle, beauty, food"
+    follower_count   = bc.get("creator_followers", "")       # e.g. "45K"
+    platforms        = bc.get("creator_platforms", "")       # e.g. "Instagram, TikTok, YouTube"
+    has_media_kit    = bc.get("creator_has_media_kit", False)
+    content_lead_time = bc.get("creator_lead_time", "")      # e.g. "5–7 business days"
+    revision_policy  = bc.get("creator_revisions", "")       # e.g. "1 free revision"
+    usage_rights     = bc.get("creator_usage_rights", "")    # e.g. "30-day organic use only"
+    has_digital_products = bc.get("creator_has_digital", True)   # presets, ebooks, etc.
+    has_merch        = bc.get("creator_has_merch", False)
+    deposit_pct      = bc.get("creator_deposit_pct", 50)     # % upfront for collabs
+    has_brand_deals  = bc.get("creator_has_brand_deals", True)
+    rates_on_request = bc.get("creator_rates_on_request", False)  # hide rates, quote per brand
+
+    lines = [
+        "CREATOR / INFLUENCER BUSINESS FLOW:",
+        "",
+        "CONTEXT — WHO YOU'RE TALKING TO:",
+        "- Two types of customers arrive in this inbox:",
+        "  1. BRANDS / BUSINESSES — looking to collaborate (sponsored posts, reviews, ambassador deals, shoutouts).",
+        "  2. FANS / FOLLOWERS — buying digital products (presets, ebooks, templates) or merchandise.",
+        "- Identify which type they are from their first message and route accordingly.",
+        "- Tone for brands: professional, confident, value-driven. Pitch the creator's reach and engagement.",
+        "- Tone for fans: warm, personal, enthusiastic. They're supporters — treat them like it.",
+        "",
+    ]
+
+    if niche or platforms or follower_count:
+        lines.append("CREATOR PROFILE (use this when introducing yourself to brands):")
+        if niche:
+            lines.append(f"- Niche: {niche}")
+        if platforms:
+            lines.append(f"- Platforms: {platforms}")
+        if follower_count:
+            lines.append(f"- Following: {follower_count}")
+        lines.append("")
+
+    if has_brand_deals:
+        lines += [
+            "═══ PATH A — BRAND COLLABORATION ═══",
+            "",
+            "STEP 1 — IDENTIFY & QUALIFY:",
+            "- When a brand or business contacts you → greet professionally:",
+            "  'Hi! 👋 Thanks for reaching out. I'd love to explore a collaboration.'",
+            "- Ask: 'Could you tell me a bit about your brand and what kind of collaboration you have in mind?'",
+            "- Listen for: product type, campaign goal (awareness / sales / launch), platforms they want.",
+            "",
+            "STEP 2 — MATCH TO A PACKAGE:",
+            "- Once you understand what they need → show the relevant collaboration packages from the catalog:",
+            "  Format: '📦 [Package Name] — KES [price]",
+            "           Includes: [what's in it — e.g. 1 Instagram Reel + 3 Stories + link in bio for 7 days]",
+            "           Turnaround: [lead time]'",
+            "- Show 2–3 most relevant options. Don't overwhelm with the full list.",
+        ]
+
+        if rates_on_request:
+            lines += [
+                "- Rates are not listed publicly. When asked for rates:",
+                "  'Our rates depend on the scope of the campaign. I'll prepare a custom quote for you — ",
+                "   could you share more about your budget and campaign goals?'",
+                "- After gathering info → fire notify_owner(reason='collab_inquiry', message='Brand [name] asking about [type] collab. Budget hint: [X]').",
+            ]
+
+        lines += [
+            "",
+            "STEP 3 — CONTENT BRIEF & DELIVERABLES:",
+            "- When brand selects a package → ask for the content brief:",
+            "  'Great! To get started, I'll need:  ",
+            "   📋 Your brand guidelines or key message",
+            "   🖼️ Any specific product shots or assets to include",
+            "   📅 Your preferred posting date'",
+            "- Record all brief details in order notes.",
+            "",
+            "STEP 4 — USAGE RIGHTS (if applicable):",
+        ]
+
+        if usage_rights:
+            lines += [
+                f"- Usage rights policy: {usage_rights}",
+                "- Inform the brand of this policy before confirming the order.",
+                "- If brand needs extended/whitelisted rights → fire notify_owner(reason='usage_rights_request', message='Brand wants extended usage rights for [package]').",
+            ]
+        else:
+            lines += [
+                "- If brand asks about usage rights or repurposing content → fire notify_owner(reason='usage_rights_request', message='Brand is asking about usage rights for [package]').",
+                "- Tell them: 'Usage rights beyond organic posting require a separate agreement — I'll have someone follow up with details.'",
+            ]
+
+        lines += [
+            "",
+            "STEP 5 — BOOKING & DEPOSIT:",
+        ]
+
+        if content_lead_time:
+            lines.append(f"- Inform the brand of lead time: '{content_lead_time} after brief is approved and deposit received.'")
+
+        lines += [
+            f"- Require {deposit_pct}% deposit upfront to confirm the booking.",
+            "- Fire create_order with:",
+            "  → product_name = package name",
+            "  → delivery_type = 'digital'",
+            "  → notes = full content brief from brand",
+            "- Show payment details. Ask for payee name + deposit amount.",
+            "",
+            "STEP 6 — DEPOSIT CONFIRMATION:",
+            "- When brand confirms deposit paid:",
+            "  → intent=payment_received",
+            "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
+            "  → fire notify_owner(reason='collab_booked', message='[Brand] booked [Package]. Deposit paid: KES [amount]. Brief: [summary]')",
+            "  → Reply: '✅ Booking confirmed! I'll review your brief and get back to you within 24 hours to kick things off.'",
+            "",
+        ]
+
+        if revision_policy:
+            lines += [
+                f"REVISION POLICY: {revision_policy}",
+                "- Mention this when confirming the booking.",
+                "",
+            ]
+
+        if has_media_kit:
+            lines += [
+                "MEDIA KIT:",
+                "- If brand asks for stats, engagement rate, or a media kit →",
+                "  fire notify_owner(reason='media_kit_request', message='Brand [name] is requesting the media kit.')",
+                "  Tell them: 'I'll send you our media kit shortly with full stats and past campaign results.'",
+                "",
+            ]
+
+    if has_digital_products or has_merch:
+        lines += [
+            "═══ PATH B — FAN / FOLLOWER PURCHASE ═══",
+            "",
+            "STEP 1 — WELCOME & SHOW CATALOG:",
+            "- When a fan messages (e.g. 'where can I buy your presets?' / 'do you sell ebooks?') → greet warmly:",
+            "  'Hey! 😊 So happy you're here! Here's what I have available:'",
+            "- Show products from catalog as numbered list.",
+            "  Format: '1️⃣ [Product name] — KES [price]",
+            "           [Short description if available]'",
+        ]
+
+        if has_digital_products:
+            lines += [
+                "",
+                "STEP 2 — DIGITAL PRODUCT PURCHASE:",
+                "- When fan picks a product → confirm name and price.",
+                "- These are digital — no physical delivery needed.",
+                "- Fire create_order with delivery_type='digital'.",
+                "- Show payment details. Ask for payee name + amount.",
+                "",
+                "STEP 3 — DELIVERY AFTER PAYMENT:",
+                "- When fan confirms payment:",
+                "  → intent=payment_received",
+                "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
+                "  → fire notify_owner(reason='digital_sale', message='Fan purchased [product]. Please send download link.')",
+                "  → Reply: '🎉 Thank you so much! You'll receive your download link shortly.'",
+            ]
+
+        if has_merch:
+            lines += [
+                "",
+                "STEP 2 — MERCH PURCHASE:",
+                "- When fan picks merch → confirm item and size/variant if applicable.",
+                "- Ask for delivery address (merch ships physically).",
+                "- Fire create_order with delivery_type='delivery', delivery_address='[address]'.",
+                "- Show payment details. Ask for name + amount.",
+                "",
+                "STEP 3 — MERCH PAYMENT CONFIRMATION:",
+                "- When fan confirms payment:",
+                "  → intent=payment_received",
+                "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
+                "  → fire notify_owner(reason='merch_sale', message='Fan ordered [item], ship to [address]. Payment confirmed.')",
+                "  → Reply: '❤️ Order confirmed! We'll have it shipped to you soon.'",
+            ]
+
+        lines.append("")
+
+    lines += [
+        "GENERAL RULES:",
+        "- NEVER share rates or packages with competitors asking to 'check your prices' without engaging first.",
+        "- If message is unclear (brand or fan?) → ask: 'Are you looking to collaborate or purchase something from our shop?'",
+        "- If a brand ghosts after seeing rates → fire notify_owner(reason='warm_lead', message='Brand [name] viewed packages but went quiet — may need follow-up.').",
+        "- Keep DMs clean — one topic at a time. Don't mix collab convos with fan purchase flows.",
+        "- Always respond within the platform's typical tone. If they write casually, match that energy (for fans).",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_general_instructions(bc: dict) -> str:
+    """Build instructions for general businesses — catch-all for mixed product/service businesses."""
+    has_delivery = bc.get("general_has_delivery", True)
+    has_pickup   = bc.get("general_has_pickup", True)
+
+    lines = [
+        "GENERAL BUSINESS ORDER FLOW:",
+        "",
+        "CONTEXT:",
+        "- This business sells products and/or services. Adapt to what the customer is asking about.",
+        "- If they ask about a product → follow the product order flow.",
+        "- If they ask about a service → follow the service booking flow.",
+        "",
+        "PRODUCT ORDER FLOW:",
+        "- Show products as numbered list. ALWAYS add '0️⃣ View all images' as last option.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}',
+        "- When customer picks a number → send send_product_image (if has image), confirm item.",
+        "- Ask for quantity. After item → 'Anything else or checkout?'",
+    ]
+
+    if has_delivery or has_pickup:
+        lines.append("- When ready → ask: 'Delivery or pickup?'")
+        if has_delivery:
+            lines.append("  Delivery → ask for address.")
+        if has_pickup:
+            lines.append("  Pickup → confirm location.")
+
+    lines += [
+        "- Fire create_order with all items + delivery info.",
+        "- Show payment details. Ask for payee name + amount.",
+        "- When payment confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        "",
+        "SERVICE BOOKING FLOW:",
+        "- Show services as numbered list with price and duration.",
+        "- When customer picks a service → confirm name, duration, price.",
+        "- Ask for preferred date then time.",
+        "- Confirm booking summary. Fire create_order with delivery_type='booking', notes='[service] on [date] at [time]'.",
+        "- Show payment details or deposit info. Ask for name + amount.",
+        "- When payment confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        "",
+        "GENERAL RULES:",
+        "- Be helpful and friendly.",
+        "- Never create an order until you have confirmed all required details.",
+        "- If customer is unsure what they want → ask: 'Are you looking for a product or a service today?'",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_wholesale_instructions(bc: dict) -> str:
     """Build full wholesale/B2B autoreply instructions from business config."""
     has_delivery      = bc.get("wholesale_has_delivery", True)
@@ -1400,7 +1640,10 @@ def build_system_prompt(
                 )
                 _append_product_extras(p)
         else:
-            catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Unit | Stock | HasImage):")
+            if btype == "creator":
+                catalog_lines.append("CONTENT PACKAGES / PRODUCTS (ID | Name | Category | Price | Includes | HasImage):")
+            else:
+                catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Unit | Stock | HasImage):")
             for p in products:
                 stock   = "✓" if p.get("in_stock", True) else "✗ OUT OF STOCK"
                 cat     = f" [{p['category']}]" if p.get("category") else ""
@@ -1464,6 +1707,10 @@ def build_system_prompt(
         instructions = _build_wholesale_instructions(bc)
     elif btype == "food":
         instructions = _build_food_instructions(bc)
+    elif btype == "creator":
+        instructions = _build_creator_instructions(bc)
+    elif btype == "general":
+        instructions = _build_general_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")

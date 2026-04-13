@@ -169,7 +169,7 @@ export default function SalesScreen() {
   const [productPickerVisible, setProductPickerVisible] = useState(false);
   const [productPickerSearch, setProductPickerSearch] = useState('');
   // Delivery type
-  const [orderDeliveryType, setOrderDeliveryType] = useState<'pickup' | 'delivery' | 'dine_in'>('pickup');
+  const [orderDeliveryType, setOrderDeliveryType] = useState<'pickup' | 'delivery' | 'dine_in' | 'digital'>('pickup');
   const [orderDeliveryAddress, setOrderDeliveryAddress] = useState('');
   const [orderTableNumber, setOrderTableNumber] = useState('');
 
@@ -470,7 +470,7 @@ export default function SalesScreen() {
       setOrderDueDate('');
       setSelectedCatalogProduct(null);
       setSelectedVariant(null);
-      setOrderDeliveryType('pickup');
+      setOrderDeliveryType(businessType === 'creator' ? 'digital' : 'pickup');
       setOrderDeliveryAddress('');
       setOrderTableNumber('');
       fetchData();
@@ -1524,7 +1524,7 @@ export default function SalesScreen() {
                 {/* Order Form */}
                 {/* Customer Selection */}
                 <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Customer *</Text>
+                  <Text style={styles.formLabel}>{businessType === 'creator' ? 'Brand / Fan *' : 'Customer *'}</Text>
                   <TouchableOpacity
                     style={styles.customerSelect}
                     onPress={() => setCustomerSelectVisible(true)}
@@ -1573,12 +1573,16 @@ export default function SalesScreen() {
                   </View>
                 ) : (
                   <View style={styles.formGroup}>
-                    <Text style={styles.formLabel}>Product *</Text>
+                    <Text style={styles.formLabel}>{businessType === 'creator' ? 'Package / Item *' : 'Product *'}</Text>
                     <TextInput
                       style={styles.formInput}
                       value={orderProduct}
                       onChangeText={setOrderProduct}
-                      placeholder="e.g., Laptop, Phone, etc."
+                      placeholder={
+                        businessType === 'creator'
+                          ? 'e.g., Instagram Reel Package, LUTs Preset Pack'
+                          : 'e.g., Laptop, Phone, etc.'
+                      }
                       placeholderTextColor="#666"
                     />
                   </View>
@@ -1661,7 +1665,10 @@ export default function SalesScreen() {
                   <View style={styles.formGroup}>
                     <Text style={styles.formLabel}>Order Type</Text>
                     <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                      {(['pickup', 'delivery', ...(orderConfig.dineIn ? ['dine_in'] : [])] as const).map(dt => (
+                      {(businessType === 'creator'
+                        ? ['digital', 'delivery'] as const
+                        : ['pickup', 'delivery', ...(orderConfig.dineIn ? ['dine_in'] : [])] as const
+                      ).map(dt => (
                         <TouchableOpacity
                           key={dt}
                           onPress={() => setOrderDeliveryType(dt as any)}
@@ -1676,7 +1683,7 @@ export default function SalesScreen() {
                           }}
                         >
                           <Text style={{ color: orderDeliveryType === dt ? '#25D366' : '#888', fontSize: 13, fontWeight: orderDeliveryType === dt ? '700' : '400' }}>
-                            {dt === 'pickup' ? 'Pickup' : dt === 'delivery' ? 'Delivery' : 'Dine-in'}
+                            {dt === 'pickup' ? 'Pickup' : dt === 'delivery' ? (businessType === 'creator' ? 'Merch' : 'Delivery') : dt === 'dine_in' ? 'Dine-in' : 'Digital'}
                           </Text>
                         </TouchableOpacity>
                       ))}
@@ -1714,12 +1721,22 @@ export default function SalesScreen() {
 
                 {/* ── Notes + Due Date ── */}
                 <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Notes (Optional)</Text>
+                  <Text style={styles.formLabel}>
+                    {businessType === 'creator'
+                      ? orderDeliveryType === 'digital'
+                        ? 'Content Brief / Brand Info (Optional)'
+                        : 'Order Notes (Optional)'
+                      : 'Notes (Optional)'}
+                  </Text>
                   <TextInput
                     style={[styles.formInput, styles.receiptMessageInput]}
                     value={orderNotes}
                     onChangeText={setOrderNotes}
-                    placeholder="e.g., Extra napkins, no onions"
+                    placeholder={
+                      businessType === 'creator' && orderDeliveryType === 'digital'
+                        ? 'e.g., Brand name, campaign goal, posting date, key message...'
+                        : 'e.g., Extra napkins, no onions'
+                    }
                     placeholderTextColor="#666"
                     multiline
                     numberOfLines={3}

@@ -1298,10 +1298,26 @@ export default function ProductCatalogModal({
                                 )}
                             </View>
 
+                            {/* ── Creator: Deliverables field ── */}
+                            {isCreator && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>What's Included <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
+                                <TextInput
+                                    style={[styles.formInput, { minHeight: 60, textAlignVertical: 'top' }]}
+                                    value={editUnit}
+                                    onChangeText={setEditUnit}
+                                    placeholder="e.g. 1 Instagram Reel + 3 Stories + link in bio for 7 days"
+                                    placeholderTextColor="#555"
+                                    multiline
+                                />
+                                <Text style={styles.stockHint}>Shown to brands so they know exactly what they're getting</Text>
+                            </View>
+                            )}
+
                             {/* ── Variants Section ── */}
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
-                                    <Text style={styles.formLabel}>Sizes / Versions (Optional)</Text>
+                                    <Text style={styles.formLabel}>{isCreator ? 'Package Tiers / Options (Optional)' : 'Sizes / Versions (Optional)'}</Text>
                                     <Text style={styles.stockHint}>Enter the full price a customer pays for each option — the price shown to customer when they choose that size or version</Text>
                                 </View>
 
@@ -1320,7 +1336,7 @@ export default function ProductCatalogModal({
                                         style={[styles.formInput, { flex: 2, marginRight: 6 }]}
                                         value={newVariantName}
                                         onChangeText={setNewVariantName}
-                                        placeholder="e.g. Small, Regular, Family, 500ml"
+                                        placeholder={isCreator ? "e.g. Basic, Standard, Premium" : "e.g. Small, Regular, Family, 500ml"}
                                         placeholderTextColor="#555"
                                     />
                                     <TextInput
