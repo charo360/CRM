@@ -2690,12 +2690,17 @@ def _build_restaurant_instructions(bc: dict) -> str:
         dine_table = f" ({table_range})" if table_range else ""
         lines += [
             f"DINE-IN PATH:",
-            f"- Ask for their table number{dine_table}.",
-            "- Set flow_step=awaiting_table_number until received.",
-            "- Once table number is known → show full menu as numbered list grouped by category.",
+            f"- Check flow_update / mini_state FIRST — if table_number is already recorded, do NOT ask again. Use it.",
+            f"- If table number is not yet known → ask ONCE for their table number{dine_table}. Set flow_step=awaiting_table_number.",
+            "- Once table number is known → immediately show full menu as numbered list grouped by category.",
             "- Add \"0\ufe0f\u20e3 View all images\" as last menu option if products have images.",
-            "- Customer may order multiple items. After each item ask \"Anything else or confirm order?\"",
-            "- When customer confirms → fire create_order with delivery_type=\"dine_in\", table_number=\"[table]\", notes=\"Table [table]\".",
+            "- CART BUILDING — CRITICAL:",
+            "  • After each item confirmed → ask \"Anything else or confirm order?\"",
+            "  • Keep ALL previously added items in the items[] array. NEVER drop earlier items when a new one is added.",
+            "  • Track the running cart: show a summary after 2+ items: '🛒 Cart: [item1] ×[qty], [item2] ×[qty]. Total: KES [X]'",
+            "  • Continue collecting until customer says done / confirm / that's all / sawa / ndiyo.",
+            "- Fire create_order ONCE only when customer confirms — with ALL collected items in items[].",
+            "  delivery_type=\"dine_in\", table_number=\"[table]\", notes=\"Table [table]\".",
             "- Show payment methods. Ask for name + amount paid → set_payment_pending + notify_owner.",
             "",
         ]
@@ -2707,15 +2712,18 @@ def _build_restaurant_instructions(bc: dict) -> str:
         extra = " ".join(x for x in [wait_note, min_note, zone_note] if x)
         lines += [
             "DELIVERY PATH:",
-            "- Ask for the customer's delivery address.",
-            "- Set flow_step=awaiting_address until received.",
+            "- Ask for the customer's delivery address. Set flow_step=awaiting_address until received.",
         ]
         if extra:
             lines.append(f"- {extra}")
         lines += [
             "- Show menu as numbered list. Add \"0\ufe0f\u20e3 View all images\" if products have images.",
-            "- Collect all items. After each item ask \"Anything else or confirm order?\"",
-            "- Confirm total + delivery fee (if applicable), then fire create_order with delivery_type=\"delivery\", delivery_address=\"[address]\".",
+            "- CART BUILDING — CRITICAL:",
+            "  • After each item confirmed → ask \"Anything else or confirm order?\"",
+            "  • Keep ALL previously added items in items[]. NEVER drop earlier items when a new one is added.",
+            "  • Show running cart summary after 2+ items.",
+            "  • Continue until customer says done / confirm / checkout.",
+            "- Fire create_order ONCE only when customer confirms — with ALL items, delivery_type=\"delivery\", delivery_address=\"[address]\".",
             "- Show payment methods. Ask for name + amount paid → set_payment_pending + notify_owner.",
             "",
         ]
@@ -2725,9 +2733,12 @@ def _build_restaurant_instructions(bc: dict) -> str:
         lines += [
             "TAKEOUT / PICKUP PATH:",
             "- Show menu as numbered list. Add \"0\ufe0f\u20e3 View all images\" if products have images.",
-            "- Collect all items. After each item ask \"Anything else or confirm order?\"",
+            "- CART BUILDING — CRITICAL:",
+            "  • After each item confirmed → ask \"Anything else or confirm order?\"",
+            "  • Keep ALL previously added items in items[]. NEVER drop earlier items when a new one is added.",
+            "  • Continue until customer says done / confirm / checkout.",
             f"- Confirm total + tell customer when order will be ready.{pickup_wait}",
-            "- Fire create_order with delivery_type=\"pickup\".",
+            "- Fire create_order ONCE with ALL items, delivery_type=\"pickup\".",
             "- Show payment methods. Ask for name + amount paid → set_payment_pending + notify_owner.",
             "",
         ]
@@ -2744,6 +2755,13 @@ def _build_restaurant_instructions(bc: dict) -> str:
         ]
 
     lines += [
+        "DIRECT / NATURAL LANGUAGE ORDERS:",
+        "- If customer says something like '1 burger', 'two pizzas', 'I want a chicken wrap' — treat this as a direct item order.",
+        "  Do NOT make them pick from a numbered menu if you can match the item from the catalog.",
+        "  Confirm the matched item: 'Got it — 1× Chicken Wrap (KES 650). Anything else or confirm order?'",
+        "- If quantity is in the message (e.g. '2 burgers') → record qty=2 directly. Do not ask for quantity again.",
+        "- If the item name is ambiguous (matches 2+ catalog items) → show only those matching items as a short numbered list.",
+        "",
         "MENU DISPLAY:",
         "- When showing menu items, include the description below each item (from catalog context '→ description').",
         "- Format: '1️⃣ Chicken Biryani – KES 800\n   Spiced rice with tender chicken, slow-cooked with aromatic spices'",
@@ -2764,6 +2782,12 @@ def _build_restaurant_instructions(bc: dict) -> str:
         "",
         "SCREENSHOT / PAYMENT:",
         "- When customer sends screenshot / \"nimetuma\" / \"sent\" / \"I've paid\" → intent=payment_received + set_payment_pending + notify_owner.",
+        "",
+        "CRITICAL RULES — READ BEFORE EVERY RESPONSE:",
+        "- NEVER ask for table number if it is already recorded in the conversation state.",
+        "- NEVER fire create_order until the customer explicitly confirms they are done ordering.",
+        "- NEVER drop previously ordered items when a new item is added — always carry ALL items forward in items[].",
+        "- A message like '1 burger' means 1 quantity of burger — handle it directly without forcing menu navigation.",
     ]
 
     return "\n".join(lines)
