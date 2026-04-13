@@ -18,6 +18,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import { useBusiness } from '../../context/BusinessContext';
 import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/api';
@@ -260,6 +261,108 @@ export default function AccountScreen() {
 
   const [currency, setCurrency] = useState('USD');
 
+  const fetchJourneySettings = useCallback(async () => {
+    try {
+      const bk = await settingsAPI.getBusinessKnowledge() as any;
+      setJourneyDeliveryInfo(bk.delivery_info || '');
+      setJourneyBusinessHours(bk.business_hours || '');
+      setRetailHasCustomOrders(!!bk.retail_has_custom_orders);
+      setRetailCustomLeadTime(bk.retail_custom_lead_time || '');
+      setRetailReturnPolicy(bk.retail_return_policy || '');
+      setRestaurantAvgWait(bk.restaurant_avg_wait || '');
+      setRestaurantMinDelivery(bk.restaurant_min_delivery || '');
+      setRestaurantTableRange(bk.restaurant_table_range || '');
+      setBakeryAdvanceDays(String(bk.bakery_advance_days ?? 3));
+      setBakeryDepositRequired(!!bk.bakery_deposit_required);
+      setBakeryDepositPct(String(bk.bakery_deposit_pct ?? 50));
+      setGroceryDeliverySlots(bk.grocery_delivery_slots || '');
+      setGroceryMinOrder(bk.grocery_min_order || '');
+      setGroceryAllowSubs(bk.grocery_allow_substitutions !== false);
+      setWholesaleLeadTime(bk.wholesale_lead_time || '');
+      setWholesaleMinOrderValue(bk.wholesale_min_order_value || '');
+      setWholesalePaymentTerms(bk.wholesale_payment_terms || '');
+      setWholesaleHasCredit(!!bk.wholesale_has_credit_account);
+      setSalonMultipleStylists(!!bk.salon_multiple_stylists);
+      setSalonStylistNames(bk.salon_stylist_names || '');
+      setSalonDepositRequired(!!bk.salon_deposit_required);
+      setSalonDepositPct(String(bk.salon_deposit_pct ?? 50));
+      setSalonCancellationPolicy(bk.salon_cancellation_policy || '');
+      setSpaHasCouples(bk.spa_has_couples !== false);
+      setSpaDepositRequired(bk.spa_deposit_required !== false);
+      setSpaDepositPct(String(bk.spa_deposit_pct ?? 50));
+      setSpaCancellationHours(String(bk.spa_cancellation_hours ?? 24));
+      setRepairHasOnsite(bk.repair_has_onsite !== false);
+      setRepairHasDropoff(bk.repair_has_dropoff !== false);
+      setRepairDiagnosisFree(bk.repair_diagnosis_free !== false);
+      setRepairTurnaround(bk.repair_turnaround || '');
+      setRepairWarranty(bk.repair_warranty || '');
+      setServicesHasOnsite(bk.services_has_onsite !== false);
+      setServicesHasRemote(bk.services_has_remote !== false);
+      setServicesQuoteFirst(!!bk.services_quote_first);
+      setServicesDepositRequired(!!bk.services_deposit_required);
+      setServicesTurnaround(bk.services_turnaround || '');
+      setServicesCancellationPolicy(bk.services_cancellation_policy || '');
+      setSupportResponseSla(bk.support_response_sla || '');
+      setSupportHasLiveHandoff(!!bk.support_has_live_handoff);
+      setSupportHasBilling(bk.support_has_billing_support !== false);
+      setSupportHasTechnical(bk.support_has_technical_support !== false);
+      setSupportHasComplaints(bk.support_has_complaints !== false);
+      setSupportEscalationPolicy(bk.support_escalation_policy || '');
+      setSupportRefundPolicy(bk.support_refund_policy || '');
+      setSupportTicketPrefix(bk.support_ticket_prefix || 'TKT');
+      setHotelCheckinTime(bk.hotel_checkin_time || '2:00 PM');
+      setHotelCheckoutTime(bk.hotel_checkout_time || '11:00 AM');
+      setHotelMinNights(String(bk.hotel_min_nights || ''));
+      setHotelDepositRequired(bk.hotel_deposit_required !== false);
+      setHotelDepositPct(String(bk.hotel_deposit_pct || 30));
+      setHotelHasMealPlans(!!bk.hotel_has_meal_plans);
+      setHotelMealPlanOptions(bk.hotel_meal_plan_options || '');
+      setHotelHasAirportTransfer(!!bk.hotel_has_airport_transfer);
+      setHotelHasSpa(!!bk.hotel_has_spa);
+      setHotelHasPool(!!bk.hotel_has_pool);
+      setHotelCancellationPolicy(bk.hotel_cancellation_policy || '');
+      setRentalType(bk.rental_type || 'property');
+      setRentalDepositRequired(bk.rental_deposit_required !== false);
+      setRentalDepositPct(String(bk.rental_deposit_pct || 30));
+      setRentalMinNights(String(bk.rental_min_nights || ''));
+      setRentalCheckinTime(bk.rental_checkin_time || '');
+      setRentalCheckoutTime(bk.rental_checkout_time || '');
+      setRentalPetPolicy(bk.rental_pet_policy || '');
+      setRentalCancellationPolicy(bk.rental_cancellation_policy || '');
+      setRentalHasExtras(!!bk.rental_has_extras);
+      setCleaningHasRecurring(bk.cleaning_has_recurring !== false);
+      setCleaningHasCommercial(!!bk.cleaning_has_commercial);
+      setCleaningSuppliesIncluded(bk.cleaning_supplies_included !== false);
+      setFitnessHasClasses(bk.fitness_has_classes !== false);
+      setFitnessHasMemberships(bk.fitness_has_memberships !== false);
+      setFitnessHasPT(!!bk.fitness_has_personal_training);
+      setFitnessHasTrial(bk.fitness_has_trial !== false);
+      setFitnessClassSchedule(bk.fitness_class_schedule || '');
+      setEventsDepositPct(String(bk.events_deposit_pct ?? 50));
+      setEventsLeadTime(bk.events_lead_time || '');
+      setEventsDeliveryDays(bk.events_delivery_days || '');
+      setHcConsultationFee(bk.hc_consultation_fee || '');
+      setHcHasLabTests(!!bk.hc_has_lab_tests);
+      setHcHasHomeVisit(!!bk.hc_has_home_visit);
+      setHcPrepInstructions(bk.hc_prep_instructions || '');
+      setHcInsuranceAccepted(bk.hc_insurance_accepted || '');
+      setCreatorNiche(bk.creator_niche || '');
+      setCreatorPlatforms(bk.creator_platforms || '');
+      setCreatorFollowers(bk.creator_followers || '');
+      setCreatorLeadTime(bk.creator_lead_time || '');
+      setCreatorRevisions(bk.creator_revisions || '');
+      setCreatorUsageRights(bk.creator_usage_rights || '');
+      setCreatorDepositPct(String(bk.creator_deposit_pct ?? 50));
+      setCreatorRatesOnRequest(!!bk.creator_rates_on_request);
+    } catch (e) {}
+  }, []);
+
+  // Re-sync journey settings every time the account tab gains focus
+  // (keeps them in sync with BusinessKnowledgeModal which writes to the same keys)
+  useFocusEffect(useCallback(() => {
+    fetchJourneySettings();
+  }, [fetchJourneySettings]));
+
   const fetchData = async () => {
     try {
       const [plansRes, statsRes, settingsRes] = await Promise.all([
@@ -279,99 +382,7 @@ export default function AccountScreen() {
       setRestaurantHasReservations(settingsRes.data.restaurant_has_reservations || false);
 
       // Journey settings — load from business-knowledge
-      try {
-        const bk = await settingsAPI.getBusinessKnowledge() as any;
-        setJourneyDeliveryInfo(bk.delivery_info || '');
-        setJourneyBusinessHours(bk.business_hours || '');
-        setRetailHasCustomOrders(!!bk.retail_has_custom_orders);
-        setRetailCustomLeadTime(bk.retail_custom_lead_time || '');
-        setRetailReturnPolicy(bk.retail_return_policy || '');
-        setRestaurantAvgWait(bk.restaurant_avg_wait || '');
-        setRestaurantMinDelivery(bk.restaurant_min_delivery || '');
-        setRestaurantTableRange(bk.restaurant_table_range || '');
-        setBakeryAdvanceDays(String(bk.bakery_advance_days ?? 3));
-        setBakeryDepositRequired(!!bk.bakery_deposit_required);
-        setBakeryDepositPct(String(bk.bakery_deposit_pct ?? 50));
-        setGroceryDeliverySlots(bk.grocery_delivery_slots || '');
-        setGroceryMinOrder(bk.grocery_min_order || '');
-        setGroceryAllowSubs(bk.grocery_allow_substitutions !== false);
-        setWholesaleLeadTime(bk.wholesale_lead_time || '');
-        setWholesaleMinOrderValue(bk.wholesale_min_order_value || '');
-        setWholesalePaymentTerms(bk.wholesale_payment_terms || '');
-        setWholesaleHasCredit(!!bk.wholesale_has_credit_account);
-        setSalonMultipleStylists(!!bk.salon_multiple_stylists);
-        setSalonStylistNames(bk.salon_stylist_names || '');
-        setSalonDepositRequired(!!bk.salon_deposit_required);
-        setSalonDepositPct(String(bk.salon_deposit_pct ?? 50));
-        setSalonCancellationPolicy(bk.salon_cancellation_policy || '');
-        setSpaHasCouples(bk.spa_has_couples !== false);
-        setSpaDepositRequired(bk.spa_deposit_required !== false);
-        setSpaDepositPct(String(bk.spa_deposit_pct ?? 50));
-        setSpaCancellationHours(String(bk.spa_cancellation_hours ?? 24));
-        setRepairHasOnsite(bk.repair_has_onsite !== false);
-        setRepairHasDropoff(bk.repair_has_dropoff !== false);
-        setRepairDiagnosisFree(bk.repair_diagnosis_free !== false);
-        setRepairTurnaround(bk.repair_turnaround || '');
-        setRepairWarranty(bk.repair_warranty || '');
-        setServicesHasOnsite(bk.services_has_onsite !== false);
-        setServicesHasRemote(bk.services_has_remote !== false);
-        setServicesQuoteFirst(!!bk.services_quote_first);
-        setServicesDepositRequired(!!bk.services_deposit_required);
-        setServicesTurnaround(bk.services_turnaround || '');
-        setServicesCancellationPolicy(bk.services_cancellation_policy || '');
-        setSupportResponseSla(bk.support_response_sla || '');
-        setSupportHasLiveHandoff(!!bk.support_has_live_handoff);
-        setSupportHasBilling(bk.support_has_billing_support !== false);
-        setSupportHasTechnical(bk.support_has_technical_support !== false);
-        setSupportHasComplaints(bk.support_has_complaints !== false);
-        setSupportEscalationPolicy(bk.support_escalation_policy || '');
-        setSupportRefundPolicy(bk.support_refund_policy || '');
-        setSupportTicketPrefix(bk.support_ticket_prefix || 'TKT');
-        setHotelCheckinTime(bk.hotel_checkin_time || '2:00 PM');
-        setHotelCheckoutTime(bk.hotel_checkout_time || '11:00 AM');
-        setHotelMinNights(String(bk.hotel_min_nights || ''));
-        setHotelDepositRequired(bk.hotel_deposit_required !== false);
-        setHotelDepositPct(String(bk.hotel_deposit_pct || 30));
-        setHotelHasMealPlans(!!bk.hotel_has_meal_plans);
-        setHotelMealPlanOptions(bk.hotel_meal_plan_options || '');
-        setHotelHasAirportTransfer(!!bk.hotel_has_airport_transfer);
-        setHotelHasSpa(!!bk.hotel_has_spa);
-        setHotelHasPool(!!bk.hotel_has_pool);
-        setHotelCancellationPolicy(bk.hotel_cancellation_policy || '');
-        setRentalType(bk.rental_type || 'property');
-        setRentalDepositRequired(bk.rental_deposit_required !== false);
-        setRentalDepositPct(String(bk.rental_deposit_pct || 30));
-        setRentalMinNights(String(bk.rental_min_nights || ''));
-        setRentalCheckinTime(bk.rental_checkin_time || '');
-        setRentalCheckoutTime(bk.rental_checkout_time || '');
-        setRentalPetPolicy(bk.rental_pet_policy || '');
-        setRentalCancellationPolicy(bk.rental_cancellation_policy || '');
-        setRentalHasExtras(!!bk.rental_has_extras);
-        setCleaningHasRecurring(bk.cleaning_has_recurring !== false);
-        setCleaningHasCommercial(!!bk.cleaning_has_commercial);
-        setCleaningSuppliesIncluded(bk.cleaning_supplies_included !== false);
-        setFitnessHasClasses(bk.fitness_has_classes !== false);
-        setFitnessHasMemberships(bk.fitness_has_memberships !== false);
-        setFitnessHasPT(!!bk.fitness_has_personal_training);
-        setFitnessHasTrial(bk.fitness_has_trial !== false);
-        setFitnessClassSchedule(bk.fitness_class_schedule || '');
-        setEventsDepositPct(String(bk.events_deposit_pct ?? 50));
-        setEventsLeadTime(bk.events_lead_time || '');
-        setEventsDeliveryDays(bk.events_delivery_days || '');
-        setHcConsultationFee(bk.hc_consultation_fee || '');
-        setHcHasLabTests(!!bk.hc_has_lab_tests);
-        setHcHasHomeVisit(!!bk.hc_has_home_visit);
-        setHcPrepInstructions(bk.hc_prep_instructions || '');
-        setHcInsuranceAccepted(bk.hc_insurance_accepted || '');
-        setCreatorNiche(bk.creator_niche || '');
-        setCreatorPlatforms(bk.creator_platforms || '');
-        setCreatorFollowers(bk.creator_followers || '');
-        setCreatorLeadTime(bk.creator_lead_time || '');
-        setCreatorRevisions(bk.creator_revisions || '');
-        setCreatorUsageRights(bk.creator_usage_rights || '');
-        setCreatorDepositPct(String(bk.creator_deposit_pct ?? 50));
-        setCreatorRatesOnRequest(!!bk.creator_rates_on_request);
-      } catch (e) {}
+      await fetchJourneySettings();
 
       try {
         const staffRes = await apiClient.get('/settings/staff');
