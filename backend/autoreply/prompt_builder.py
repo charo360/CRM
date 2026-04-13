@@ -25,8 +25,8 @@ _BUSINESS_INSTRUCTIONS: Dict[str, str] = {
 - ADDING MORE: After qty confirmed, ask "Anything else or checkout?" If yes → send catalog menu again (with 0️⃣ View all images option).
 - CHECKOUT: When customer says checkout/done/confirm → ask delivery or pickup. If delivery → ask address. Then fire create_order with ALL collected items + delivery info at once.
 - ORDER MANAGEMENT: When customer asks "my order" → show order details + 1️⃣ Update 2️⃣ Cancel options.
-- PAYMENT: After create_order fires → show order summary + exact payment details → ask for screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: After create_order fires → show order summary + exact payment details → ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "wholesale": """\
 WHOLESALE / B2B ORDER FLOW:
@@ -37,7 +37,7 @@ WHOLESALE / B2B ORDER FLOW:
 - ADDING MORE: After qty confirmed → "Would you like to add more items or proceed to checkout?" If yes → resend menu.
 - CHECKOUT: When customer confirms → ask delivery or pickup. If delivery → ask address. Fire create_order with ALL items at once.
 - PAYMENT: After create_order → show order summary + total. Show payment details exactly. For B2B, mention invoice option if configured.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     # restaurant: built dynamically in build_system_prompt() — see _build_restaurant_instructions()
 
@@ -51,8 +51,8 @@ FOOD DELIVERY ORDER FLOW:
   • Delivery → ask for delivery address. Mention delivery fee/zone from business info if configured.
   • Pickup → confirm pickup location + estimated wait time if set.
 - CHECKOUT: Fire create_order with ALL items + delivery_type + delivery_address (if delivery).
-- PAYMENT: Show order summary + total + payment details. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Show order summary + total + payment details. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "bakery": """\
 BAKERY ORDER FLOW:
@@ -66,8 +66,8 @@ BAKERY ORDER FLOW:
   • Pickup → ask preferred pickup date and time.
   • Delivery → ask delivery address + preferred delivery date/time.
 - CHECKOUT: Fire create_order with ALL items + delivery_type + notes="Pickup/Delivery: [date/time]".
-- PAYMENT: Show order summary + total + payment details. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Show order summary + total + payment details. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "grocery": """\
 GROCERY ORDER FLOW:
@@ -80,8 +80,8 @@ GROCERY ORDER FLOW:
   • Delivery → ask for address. Mention delivery zone/fee from business info if configured.
   • Pickup → confirm location + estimated ready time.
 - CHECKOUT: Fire create_order with ALL items + delivery_type + delivery_address.
-- PAYMENT: Show order summary + total + payment details. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Show order summary + total + payment details. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "salon": """\
 SALON BOOKING FLOW:
@@ -92,8 +92,8 @@ SALON BOOKING FLOW:
 - STYLIST: If multiple stylists in business info → ask for preferred stylist (or say "any available").
 - CONFIRM: Summarise — Service, Date, Time, Stylist (if applicable), Price. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time after confirmation.
-- PAYMENT: If deposit required (mentioned in business info) → show payment details. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.
+- PAYMENT: If deposit required (mentioned in business info) → show payment details. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.
 - RESCHEDULE: If customer asks to reschedule → fire reschedule_booking with new date/time.""",
 
     "beauty": """\
@@ -105,7 +105,7 @@ BEAUTY BOOKING FLOW:
 - CONFIRM: Summarise — Service, Date, Time, Price. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time.
 - PAYMENT: If deposit required → show payment details and request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "spa": """\
 SPA BOOKING FLOW:
@@ -117,7 +117,7 @@ SPA BOOKING FLOW:
 - CONFIRM: Summarise — Treatment, Date, Time, Guest count, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time.
 - PAYMENT: If deposit required → show payment details and request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "services": """\
 SERVICES / FREELANCE BOOKING FLOW:
@@ -142,7 +142,7 @@ REPAIR BOOKING FLOW:
 - CONFIRM: Summarise — Item, Issue, Service, Location/Type, Date/Time, Price (or "quote on assessment"). Ask to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=issue description.
 - PAYMENT: If deposit required → show payment details and request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "cleaning": """\
 CLEANING BOOKING FLOW:
@@ -156,7 +156,7 @@ CLEANING BOOKING FLOW:
 - CONFIRM: Summarise — Package, Address, Date/Time, Any special notes, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=address + special instructions.
 - PAYMENT: If deposit required → show payment details and request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "clinic": """\
 HEALTHCARE BOOKING FLOW:
@@ -168,8 +168,8 @@ HEALTHCARE BOOKING FLOW:
 - PREP: If business info mentions preparation requirements (fasting, bring documents, etc.) → mention them clearly.
 - CONFIRM: Summarise — Consultation type, Patient name, Date, Time, Fee. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=patient name if different.
-- PAYMENT: Only show payment details if a consultation fee is configured. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Only show payment details if a consultation fee is configured. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "photography": """\
 PHOTOGRAPHY / EVENTS BOOKING FLOW:
@@ -180,8 +180,8 @@ PHOTOGRAPHY / EVENTS BOOKING FLOW:
 - GUESTS: Ask for approximate guest count or group size if relevant.
 - CONFIRM: Summarise — Package, Event type, Date, Location, Duration, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=event type + location.
-- DEPOSIT: Show payment details for deposit. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- DEPOSIT: Show payment details for deposit. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "events": """\
 EVENTS & PHOTOGRAPHY BOOKING FLOW:
@@ -192,8 +192,8 @@ EVENTS & PHOTOGRAPHY BOOKING FLOW:
 - REQUIREMENTS: Ask for any specific requirements (theme, special requests, equipment needed).
 - CONFIRM: Summarise — Package, Event date, Venue, Guest count, Requirements, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=event details + requirements.
-- DEPOSIT: Show payment details for deposit. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- DEPOSIT: Show payment details for deposit. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "gym": """\
 GYM / FITNESS BOOKING FLOW:
@@ -203,8 +203,8 @@ GYM / FITNESS BOOKING FLOW:
 - PERSONAL TRAINING: If customer selects personal training → ask for number of sessions and preferred schedule.
 - CONFIRM: Summarise — Plan, Start date / Schedule, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date (start date), time.
-- PAYMENT: Show payment details. Mention if monthly/annual billing applies. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Show payment details. Mention if monthly/annual billing applies. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "rental": """\
 RENTAL BOOKING FLOW:
@@ -217,8 +217,8 @@ RENTAL BOOKING FLOW:
 - CONFIRM: Summarise — Listing, Check-in date, Check-out date, Number of nights/days, Total cost. Ask customer to confirm.
 - BOOKING: Fire create_booking with is_rental=true, checkin_date, checkout_date (NOT date/time fields).
   Example: {"type": "create_booking", "service_id": "DB_ID", "service_name": "Name", "price": TOTAL, "is_rental": true, "checkin_date": "Mon 14 April", "checkout_date": "Thu 17 April", "date": "", "time": ""}
-- PAYMENT: Show deposit or full payment details after booking confirmed. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Show deposit or full payment details after booking confirmed. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "fitness": """\
 FITNESS / GYM BOOKING FLOW:
@@ -228,8 +228,8 @@ FITNESS / GYM BOOKING FLOW:
 - PERSONAL TRAINING: If customer selects personal training → ask for number of sessions + preferred days/times.
 - CONFIRM: Summarise — Plan, Start date / Schedule, Total. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date (start date), time.
-- PAYMENT: Show payment details. Mention billing cycle (monthly/annual) if applicable. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Show payment details. Mention billing cycle (monthly/annual) if applicable. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "healthcare": """\
 HEALTHCARE BOOKING FLOW:
@@ -241,8 +241,8 @@ HEALTHCARE BOOKING FLOW:
 - PREP: If business info mentions preparation requirements (fasting, bring ID/documents, etc.) → mention clearly.
 - CONFIRM: Summarise — Consultation type, Patient name (if different), Date, Time, Fee. Ask customer to confirm.
 - BOOKING: Fire create_booking with service_id, date, time, notes=patient name if different.
-- PAYMENT: Only show payment details if a consultation fee is configured. Request screenshot.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT: Only show payment details if a consultation fee is configured. ask for payee name + amount.
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "creator": """\
 CREATOR / DIGITAL PRODUCT FLOW:
@@ -252,9 +252,9 @@ CREATOR / DIGITAL PRODUCT FLOW:
 - FAN / FOLLOWER: If message is from a fan → be warm and engaging. Answer questions. Show available digital products (courses, presets, shoutouts, etc.).
 - DELIVERY: No physical delivery. Confirm how they'll receive the product (link, email, WhatsApp).
 - CONFIRM: Summarise — Product/Package, Price, Delivery method. Ask customer to confirm.
-- PAYMENT: Show payment details immediately after confirmation. Request screenshot.
+- PAYMENT: Show payment details immediately after confirmation. ask for payee name + amount.
 - FIRE: create_order after customer confirms (delivery_type="pickup", notes=delivery method).
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 
     "general": """\
 GENERAL BUSINESS FLOW:
@@ -265,7 +265,7 @@ GENERAL BUSINESS FLOW:
 - INFO: Answer FAQs, hours, location, pricing — using only the business info provided. Never invent facts.
 - ESCALATE: If customer has a complex request, complaint, or asks for the owner → fire notify_owner + set escalate=true.
 - PAYMENT: Show configured payment methods exactly when customer is ready to pay.
-- SCREENSHOT: intent=payment_received + set_payment_pending + notify_owner.""",
+- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
 }
 
 # ── Catalog helpers (item label + category summary) ───────────────────────────
