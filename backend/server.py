@@ -4348,36 +4348,49 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         update_ops["notes"] = notes
     
     if update_ops:
-        await db.orders.update_one(
-            {"_id": order_id},
-            {"$set": update_ops}
-        )
-        # Refresh order data
-        order = await db.orders.find_one({"_id": order_id})
-    
+        await db.orders.update_one({"_id": order["_id"]}, {"$set": update_ops})
+        order = await db.orders.find_one({"_id": order["_id"]})
+
     # Get customer info
-    if order["customer_id"] == "walk-in":
+    if order.get("customer_id") == "walk-in":
         customer_name = "Walk-in Customer"
         customer_phone = "N/A"
     else:
-        customer = await db.customers.find_one({"_id": order["customer_id"]})
+        customer = await db.customers.find_one({"_id": order.get("customer_id")})
         customer_name = customer["name"] if customer else "Unknown"
         customer_phone = customer["phone_number"] if customer else "N/A"
-    
+
+    # Handle both autoreply orders (product_name/items) and manual orders (product)
+    items = order.get("items") or []
+    product_label = (
+        order.get("product")
+        or order.get("product_name")
+        or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
+    )
+    quantity = order.get("quantity") or (items[0].get("quantity", 1) if items else 1)
+    unit_price = order.get("price") or (items[0].get("unit_price", 0) if items else 0)
+    total = order.get("total_amount") or order.get("total") or 0
+
     return OrderResponse(
-        id=order["_id"],
-        customer_id=order["customer_id"],
+        id=str(order["_id"]),
+        customer_id=str(order.get("customer_id", "")),
         customer_name=customer_name,
         customer_phone=customer_phone,
-        product=order["product"],
-        quantity=order["quantity"],
-        price=order["price"],
-        total_amount=order["total_amount"],
-        payment_status=order["payment_status"],
-        delivery_status=order["delivery_status"],
+        product=product_label,
+        quantity=quantity,
+        price=unit_price,
+        total_amount=total,
+        payment_status=order.get("payment_status", "unpaid"),
+        delivery_status=order.get("delivery_status", order.get("status", "pending")),
         notes=order.get("notes"),
         due_date=order.get("due_date"),
-        created_at=order["created_at"].isoformat()
+        created_at=order["created_at"].isoformat(),
+        order_number=order.get("order_number"),
+        delivery_type=order.get("delivery_type"),
+        delivery_address=order.get("delivery_address"),
+        items=items if items else None,
+        status=order.get("status"),
+        created_by=order.get("created_by"),
     )
 
 @api_router.patch("/orders/{order_id}/progress")
