@@ -92,17 +92,17 @@ export default function SalesScreen() {
   const { config, isRetailBusiness, businessType } = useBusiness();
 
   // Per-business-type order form config
-  const BUSINESS_ORDER_CONFIG: Record<string, { productPicker: boolean; variants: boolean; modifiers: boolean; dineIn: boolean; delivery: boolean }> = {
-    restaurant: { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true },
-    food:       { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true },
-    bakery:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true },
-    grocery:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true },
-    retail:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true },
-    wholesale:  { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true },
-    creator:    { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true },
-    general:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true },
+  const BUSINESS_ORDER_CONFIG: Record<string, { productPicker: boolean; variants: boolean; modifiers: boolean; dineIn: boolean; delivery: boolean; dueDate: boolean }> = {
+    restaurant: { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true, dueDate: false },
+    food:       { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true, dueDate: false },
+    bakery:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    grocery:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: false },
+    retail:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    wholesale:  { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    creator:    { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true  },
+    general:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true  },
   };
-  const orderConfig = BUSINESS_ORDER_CONFIG[businessType] ?? { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true };
+  const orderConfig = BUSINESS_ORDER_CONFIG[businessType] ?? { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true, dueDate: true };
   const showOrdersTab = isRetailBusiness;   // only order-capable businesses (retail, food, etc.) show Orders tab
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
@@ -1727,44 +1727,46 @@ export default function SalesScreen() {
                   />
                 </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Due Date (Optional)</Text>
-                  <TouchableOpacity
-                    style={styles.formInput}
-                    onPress={() => {
-                      setTempOrderDueDate(orderDueDate ? new Date(orderDueDate) : new Date());
-                      setShowOrderDueDatePicker(true);
-                    }}
-                  >
-                    <Text style={!!orderDueDate ? styles.dateText : styles.datePlaceholder}>
-                      {orderDueDate ? new Date(orderDueDate).toLocaleDateString() : 'Select due date'}
-                    </Text>
-                  </TouchableOpacity>
-
-                  {showOrderDueDatePicker && (
-                    <DateTimePicker
-                      value={tempOrderDueDate}
-                      mode="date"
-                      display="default"
-                      onChange={(event, selectedDate) => {
-                        setShowOrderDueDatePicker(false);
-                        if (event.type === 'set' && selectedDate) {
-                          setOrderDueDate(selectedDate.toISOString());
-                        }
-                      }}
-                      minimumDate={new Date()}
-                    />
-                  )}
-
-                  {!!orderDueDate && (
+                {orderConfig.dueDate && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Due Date (Optional)</Text>
                     <TouchableOpacity
-                      onPress={() => setOrderDueDate('')}
-                      style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                      style={styles.formInput}
+                      onPress={() => {
+                        setTempOrderDueDate(orderDueDate ? new Date(orderDueDate) : new Date());
+                        setShowOrderDueDatePicker(true);
+                      }}
                     >
-                      <Text style={{ color: '#FF4444', fontSize: 12 }}>Clear Due Date</Text>
+                      <Text style={!!orderDueDate ? styles.dateText : styles.datePlaceholder}>
+                        {orderDueDate ? new Date(orderDueDate).toLocaleDateString() : 'Select due date'}
+                      </Text>
                     </TouchableOpacity>
-                  )}
-                </View>
+
+                    {showOrderDueDatePicker && (
+                      <DateTimePicker
+                        value={tempOrderDueDate}
+                        mode="date"
+                        display="default"
+                        onChange={(event, selectedDate) => {
+                          setShowOrderDueDatePicker(false);
+                          if (event.type === 'set' && selectedDate) {
+                            setOrderDueDate(selectedDate.toISOString());
+                          }
+                        }}
+                        minimumDate={new Date()}
+                      />
+                    )}
+
+                    {!!orderDueDate && (
+                      <TouchableOpacity
+                        onPress={() => setOrderDueDate('')}
+                        style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                      >
+                        <Text style={{ color: '#FF4444', fontSize: 12 }}>Clear Due Date</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
               </>
             )}
           </ScrollView>
