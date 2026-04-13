@@ -4399,6 +4399,32 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         customer_name = customer.get("name", "Unknown") if customer else "Unknown"
         customer_phone = customer.get("phone_number", "N/A") if customer else "N/A"
 
+    # Send WhatsApp confirmation when owner marks order as Paid
+    if payment_status == "Paid" and customer_phone and customer_phone != "N/A":
+        try:
+            ws = get_whatsapp_service(db)
+            order_number = order.get("order_number", "")
+            total = float(order.get("total_amount") or order.get("total") or 0)
+            user_settings = user.get("settings") or {}
+            currency_code = user_settings.get("currency", "")
+            total_str = f"{currency_code} {total:,.0f}".strip() if total else ""
+            order_ref = f" for order *{order_number}*" if order_number else ""
+            amount_line = f"\n💰 Amount: *{total_str}*" if total_str else ""
+            msg = (
+                f"✅ *Payment Confirmed!*\n\n"
+                f"Hi {customer_name}! Your payment{order_ref} has been confirmed.{amount_line}\n\n"
+                f"We're processing your order now. Thank you! 🙏"
+            )
+            business_id = user.get("business_id", user["_id"])
+            await ws.send_message(
+                user_id=business_id,
+                to_number=customer_phone,
+                message=msg,
+                send_context="payment_confirmed",
+            )
+        except Exception as e:
+            logging.warning(f"[update_order] Failed to send payment confirmation WhatsApp: {e}")
+
     # Handle both autoreply orders (product_name/items) and manual orders (product)
     items = order.get("items") or []
     product_label = (
@@ -4464,6 +4490,42 @@ async def update_order_progress(
     if update:
         await db.orders.update_one({"_id": raw_id}, {"$set": update})
     order = await db.orders.find_one({"_id": raw_id})
+
+    # Send WhatsApp notification on fulfillment_status change
+    new_status = update.get("fulfillment_status")
+    if new_status:
+        try:
+            customer_id = order.get("customer_id")
+            if customer_id and customer_id != "walk-in":
+                customer = await db.customers.find_one({"_id": customer_id})
+                customer_phone = customer.get("phone_number") if customer else None
+                customer_name = customer.get("name", "there") if customer else "there"
+                if customer_phone:
+                    order_number = order.get("order_number", "")
+                    order_ref = f" *#{order_number}*" if order_number else ""
+                    delivery_type = order.get("delivery_type", "")
+                    delivery_address = order.get("delivery_address", "")
+                    status_messages = {
+                        "Confirmed": f"✅ Your order{order_ref} has been *confirmed*! We're getting it ready for you.",
+                        "Preparing": f"👨‍🍳 Your order{order_ref} is now being *prepared*. We'll let you know when it's ready!",
+                        "Ready": (
+                            f"🎉 Your order{order_ref} is *ready*!\n\n"
+                            + (f"🚗 We'll be delivering to: *{delivery_address}*" if delivery_type == "Delivery" and delivery_address else "Please come pick it up at your earliest convenience. 🏃")
+                        ),
+                        "Done": f"✔️ Your order{order_ref} is *complete*. Thank you for your business! 🙏",
+                    }
+                    msg = status_messages.get(new_status)
+                    if msg:
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=business_id,
+                            to_number=customer_phone,
+                            message=f"Hi {customer_name}! {msg}",
+                            send_context="order_progress",
+                        )
+        except Exception as e:
+            logging.warning(f"[update_order_progress] Failed to send progress WhatsApp: {e}")
+
     return {"fulfillment_status": order.get("fulfillment_status", "New"), "assigned_to": order.get("assigned_to")}
 
 
