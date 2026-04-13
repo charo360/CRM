@@ -856,6 +856,66 @@ export default function ProductCatalogModal({
         );
     };
 
+    // ============ RESTAURANT LIST ROW ============
+    const EMOJI_NUMS = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+
+    const renderMenuRow = (product: Product, index: number) => {
+        const imageUri = getImageUri(product);
+        const isOutOfStock = product.in_stock === false;
+        const num = EMOJI_NUMS[index] ?? `${index + 1}.`;
+
+        return (
+            <TouchableOpacity
+                key={product.id}
+                style={styles.menuRow}
+                onPress={() => openProductDetail(product)}
+                activeOpacity={0.75}
+            >
+                {/* Number badge */}
+                <Text style={styles.menuNum}>{num}</Text>
+
+                {/* Thumbnail */}
+                {imageUri ? (
+                    <Image source={{ uri: imageUri }} style={styles.menuThumb} resizeMode="cover" />
+                ) : (
+                    <View style={[styles.menuThumb, styles.noImagePlaceholder]}>
+                        <Ionicons name="image-outline" size={22} color="#3A4A5C" />
+                    </View>
+                )}
+
+                {/* Info */}
+                <View style={styles.menuInfo}>
+                    <Text style={styles.menuName} numberOfLines={1}>{product.name}</Text>
+                    {product.description ? (
+                        <Text style={styles.menuDesc} numberOfLines={2}>{product.description}</Text>
+                    ) : null}
+                    <View style={styles.menuBottom}>
+                        <View style={[styles.availBadge, isOutOfStock ? styles.availBadgeOff : styles.availBadgeOn]}>
+                            <Text style={[styles.availText, isOutOfStock ? styles.availTextOff : styles.availTextOn]}>
+                                {isOutOfStock ? 'Unavailable' : 'Available'}
+                            </Text>
+                        </View>
+                        {product.sub_category ? (
+                            <Text style={styles.menuSubCat}>{product.sub_category}</Text>
+                        ) : null}
+                    </View>
+                </View>
+
+                {/* Price */}
+                <View style={styles.menuPriceCol}>
+                    {product.discount_price ? (
+                        <>
+                            <Text style={styles.menuDiscountPrice}>{currency} {product.discount_price.toLocaleString()}</Text>
+                            <Text style={styles.menuOriginalPrice}>{currency} {product.price.toLocaleString()}</Text>
+                        </>
+                    ) : (
+                        <Text style={styles.menuPrice}>{currency} {product.price.toLocaleString()}</Text>
+                    )}
+                </View>
+            </TouchableOpacity>
+        );
+    };
+
     // ============ PRODUCT DETAIL MODAL ============
 
     const renderDetailModal = () => (
@@ -1579,9 +1639,15 @@ export default function ProductCatalogModal({
                     </View>
                 ) : filteredProducts.length > 0 ? (
                     <ScrollView style={styles.content} contentContainerStyle={styles.gridContainer}>
-                        <View style={styles.productGrid}>
-                            {filteredProducts.map(renderProductCard)}
-                        </View>
+                        {isRestaurant ? (
+                            <View style={styles.menuList}>
+                                {filteredProducts.map((p, i) => renderMenuRow(p, i))}
+                            </View>
+                        ) : (
+                            <View style={styles.productGrid}>
+                                {filteredProducts.map(renderProductCard)}
+                            </View>
+                        )}
                     </ScrollView>
                 ) : products.length > 0 ? (
                     <View style={styles.emptyState}>
@@ -1779,6 +1845,85 @@ const styles = StyleSheet.create({
         paddingTop: 16,
         paddingBottom: 100,
     },
+
+    // ── Restaurant menu list ──
+    menuList: {
+        gap: 1,
+    },
+    menuRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#1A2535',
+        borderRadius: 12,
+        marginBottom: 8,
+        padding: 10,
+        gap: 10,
+    },
+    menuNum: {
+        fontSize: 16,
+        width: 28,
+        textAlign: 'center',
+    },
+    menuThumb: {
+        width: 70,
+        height: 70,
+        borderRadius: 8,
+        backgroundColor: '#243447',
+    },
+    menuInfo: {
+        flex: 1,
+        gap: 3,
+    },
+    menuName: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#FFFFFF',
+    },
+    menuDesc: {
+        fontSize: 12,
+        color: '#8899AA',
+        lineHeight: 16,
+    },
+    menuBottom: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 2,
+    },
+    availBadge: {
+        borderRadius: 4,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+    },
+    availBadgeOn: { backgroundColor: '#0d3321' },
+    availBadgeOff: { backgroundColor: '#3a1a1a' },
+    availText: { fontSize: 11, fontWeight: '600' },
+    availTextOn: { color: '#25D366' },
+    availTextOff: { color: '#e05252' },
+    menuSubCat: {
+        fontSize: 11,
+        color: '#556677',
+    },
+    menuPriceCol: {
+        alignItems: 'flex-end',
+        minWidth: 60,
+    },
+    menuPrice: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#25D366',
+    },
+    menuDiscountPrice: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#25D366',
+    },
+    menuOriginalPrice: {
+        fontSize: 11,
+        color: '#556677',
+        textDecorationLine: 'line-through',
+    },
+
     productGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
