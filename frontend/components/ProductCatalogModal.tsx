@@ -356,21 +356,21 @@ export default function ProductCatalogModal({
     const catalogLabel = config.catalogLabel;
     const itemLabel = config.catalogItemLabel;
     const showStock = config.showStock;
-    const isCreator    = config.customerLabel === 'Fan';
+    const isCreator    = businessType === 'creator';
     const isRestaurant = businessType === 'restaurant';
     const isFood       = businessType === 'food';
     const isBakery     = businessType === 'bakery';
     const isGrocery    = businessType === 'grocery';
     const isWholesale  = businessType === 'wholesale';
     const isMenuBusiness = isRestaurant || isFood || isBakery;
-    const isRental     = catalogLabel === 'Listings';
-    const isHealthcare = config.customerLabel === 'Patient';
-    const isFitness    = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
-    const isServices   = config.customerLabel === 'Client' && config.staffLabel === 'Technician';
-    const isSalon      = config.customerLabel === 'Client' && config.staffLabel === 'Stylist';
-    const isSpa        = config.catalogLabel === 'Treatments';
-    const isCleaning   = config.catalogLabel === 'Packages' && config.staffLabel === '';
-    const isEvents     = config.staffLabel === 'Photographer';
+    const isRental     = businessType === 'rental';
+    const isHealthcare = businessType === 'healthcare' || businessType === 'clinic';
+    const isFitness    = businessType === 'fitness' || businessType === 'gym';
+    const isServices   = businessType === 'services' || businessType === 'repair';
+    const isSalon      = businessType === 'salon' || businessType === 'beauty';
+    const isSpa        = businessType === 'spa';
+    const isCleaning   = businessType === 'cleaning';
+    const isEvents     = businessType === 'events' || businessType === 'photography';
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
@@ -1067,10 +1067,13 @@ export default function ProductCatalogModal({
                                         isWholesale  ? "e.g. Washing Powder (carton), Sugar 50kg bag" :
                                         businessType === 'retail' ? "e.g. Samsung TV 43\", Leather Handbag" :
                                         isRental     ? "e.g. 2BR Apartment Downtown" :
-                                        isHealthcare ? "e.g. General Consultation" :
-                                        isFitness    ? "e.g. Yoga Class" :
-                                        isServices   ? "e.g. Computer Repair" :
-                                        isSalon      ? "e.g. Haircut & Style" :
+                                        isHealthcare ? "e.g. General Consultation, Blood Test Panel" :
+                                        isFitness    ? "e.g. Morning Yoga Class, Monthly Membership" :
+                                        isServices   ? "e.g. Phone Screen Repair, Appliance Service" :
+                                        isSalon      ? "e.g. Haircut & Blow-dry, Box Braids" :
+                                        isSpa        ? "e.g. Swedish Massage 60min, Detox Facial" :
+                                        isCleaning   ? "e.g. Regular Home Clean, Deep Clean" :
+                                        isEvents     ? "e.g. Wedding Photography Package, Birthday Coverage" :
                                         "e.g. Product or Service Name"
                                     }
                                     placeholderTextColor="#555"
@@ -1116,10 +1119,13 @@ export default function ProductCatalogModal({
                                         isWholesale  ? "e.g. Food & Beverages, Household Products" :
                                         businessType === 'retail' ? "e.g. Electronics, Clothing, Beauty & Health" :
                                         isRental     ? "e.g. Apartment, Car, Equipment" :
-                                        isHealthcare ? "e.g. Consultation, Check-up" :
-                                        isFitness    ? "e.g. Yoga, Cardio, Strength" :
+                                        isHealthcare ? "e.g. Consultation, Treatment, Diagnostic" :
+                                        isFitness    ? "e.g. Yoga, Cardio, Membership Plans" :
                                         isServices   ? "e.g. Repair, Installation, Maintenance" :
-                                        isSalon      ? "e.g. Hair, Nails, Facial" :
+                                        isSalon      ? "e.g. Hair, Nails, Facial, Packages" :
+                                        isSpa        ? "e.g. Massage, Facial, Body Treatment" :
+                                        isCleaning   ? "e.g. Regular Clean, Deep Clean, Office" :
+                                        isEvents     ? "e.g. Wedding, Birthday, Corporate, Add-ons" :
                                         "e.g. Category Name"
                                     }
                                     placeholderTextColor="#555"
@@ -1280,15 +1286,21 @@ export default function ProductCatalogModal({
                                     value={editDescription}
                                     onChangeText={setEditDescription}
                                     placeholder={
-                                        isCreator ? "Describe what brands get with this content package..." :
+                                        isCreator    ? "Describe what brands/fans get with this package..." :
                                         isRestaurant ? "Describe ingredients, preparation, allergens..." :
-                                        isFood ? "Describe ingredients, portion size, what's included..." :
-                                        isRental ? "Describe amenities, location, terms..." :
-                                        isHealthcare ? "Describe procedure, duration, what to expect..." :
-                                        isFitness ? "Describe class format, intensity, equipment needed..." :
-                                        isServices ? "Describe service scope, timeline, requirements..." :
-                                        isSalon ? "Describe treatment, duration, aftercare..." :
-                                        "Describe your product..."
+                                        isFood       ? "Describe ingredients, portion size, what's included..." :
+                                        isBakery     ? "Describe flavour, size, customisation options..." :
+                                        isGrocery    ? "Describe the item, brand, weight/quantity..." :
+                                        isWholesale  ? "Describe the product, packaging, specs..." :
+                                        isRental     ? "Describe amenities, location, terms..." :
+                                        isHealthcare ? "Describe the procedure, duration, what to expect..." :
+                                        isFitness    ? "Describe class format, intensity, what's included..." :
+                                        isServices   ? "Describe scope, what's included, typical timeline..." :
+                                        isSalon      ? "Describe the service, duration, what's included..." :
+                                        isSpa        ? "Describe the treatment, benefits, duration..." :
+                                        isCleaning   ? "Describe what's covered, number of rooms/hrs..." :
+                                        isEvents     ? "Describe what's included — hours, deliverables, extras..." :
+                                        "Describe your product or service..."
                                     }
                                     placeholderTextColor="#555"
                                     multiline

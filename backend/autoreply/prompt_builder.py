@@ -724,6 +724,817 @@ def _build_food_instructions(bc: dict) -> str:
     return "\n".join(l for l in lines if l is not None)
 
 
+def _build_salon_instructions(bc: dict) -> str:
+    """Build full salon autoreply instructions. Covers hair salons, barbershops, nail bars."""
+    has_multiple_stylists = bc.get("salon_multiple_stylists", False)
+    stylist_names         = bc.get("salon_stylist_names", "")       # e.g. "Grace, Diana, Amina"
+    deposit_required      = bc.get("salon_deposit_required", False)
+    deposit_pct           = bc.get("salon_deposit_pct", 50)
+    cancellation_policy   = bc.get("salon_cancellation_policy", "")  # e.g. "24hrs notice"
+    allows_walkins        = bc.get("salon_allows_walkins", True)
+    booking_advance_days  = bc.get("salon_booking_advance", "")      # e.g. "up to 30 days"
+    has_packages          = bc.get("salon_has_packages", False)
+
+    lines = [
+        "SALON / BARBERSHOP BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Friendly, warm, and reassuring. Customers are booking a personal service — make them feel welcome.",
+        "- Use the customer's name where possible.",
+        "",
+        "STEP 1 — GREETING & MENU:",
+        "- Greet warmly and show available services as a numbered menu.",
+        "  Format: '1️⃣ Haircut & Blow-dry — KES 800 (45 min)'",
+        "- Group by category if multiple categories exist (Hair, Nails, Facial, etc.).",
+        "- If services have images → add '0️⃣ View all services' as last option.",
+        "- Include duration and price per service.",
+    ]
+
+    if has_packages:
+        lines += [
+            "- If there are PACKAGES (e.g. Bridal Package, Full Makeover) → show separately after individual services.",
+            "  'Or choose a package: 💆 Full Glam Package — KES 3,500 (includes hair + makeup + nails)'",
+        ]
+
+    lines += [
+        "",
+        "STEP 2 — SERVICE SELECTED:",
+        "- When customer picks a number → send send_product_image (if has image).",
+        "- Confirm: service name, duration, price.",
+        "- If service has VARIANTS (e.g. Braids: Box Braids / Cornrows / Twists) → ask FIRST:",
+        "  'What style would you like? 1️⃣ Box Braids (3hrs – KES 2,500)  2️⃣ Cornrows (1.5hrs – KES 1,200)'",
+        "  Use the variant price. Record variant='[style]'.",
+        "",
+        "STEP 3 — ADDITIONAL SERVICES:",
+        "- After confirming the main service → ask ONCE: 'Would you like to add anything else?'",
+        "  e.g. 'We also have: 1️⃣ Deep Condition (+KES 300)  2️⃣ Scalp Treatment (+KES 400)  3️⃣ Nothing else'",
+        "- If customer adds more → confirm and add to booking. If not → move on.",
+        "",
+        "STEP 4 — DATE & TIME:",
+        "- Ask: 'What date works for you?'",
+    ]
+
+    if booking_advance_days:
+        lines.append(f"  (Bookings available up to {booking_advance_days} in advance.)")
+
+    lines += [
+        "- After date → ask: 'What time would you prefer?' Show available slots if known from business info.",
+        "- Set flow_step=awaiting_date then flow_step=awaiting_time.",
+        "",
+        "STEP 5 — STYLIST PREFERENCE:",
+    ]
+
+    if has_multiple_stylists and stylist_names:
+        lines += [
+            f"- Ask: 'Do you have a preferred stylist? We have: {stylist_names} — or I can assign whoever is available.'",
+            "- Record stylist preference in booking notes.",
+        ]
+    elif has_multiple_stylists:
+        lines += [
+            "- Ask: 'Do you have a preferred stylist, or shall I assign whoever is available?'",
+            "- Record preference in booking notes.",
+        ]
+    else:
+        lines.append("- No multiple stylists — skip this step.")
+
+    lines += [
+        "",
+        "STEP 6 — CONFIRM BOOKING:",
+        "- Show full booking summary:",
+        "  '📋 *Booking Summary:*",
+        "   💇 Service: [service + variant if any]",
+        "   📅 Date: [date]",
+        "   ⏰ Time: [time]",
+        "   👩‍🎨 Stylist: [name or 'Next available']",
+        "   💰 Total: KES [amount]'",
+        "- Ask: 'Shall I confirm this booking?'",
+        "- Fire create_booking ONLY after customer confirms.",
+        "",
+        "STEP 7 — PAYMENT / DEPOSIT:",
+    ]
+
+    if deposit_required:
+        lines += [
+            f"- A {deposit_pct}% deposit is required to confirm the booking.",
+            f"  'To secure your slot, a deposit of KES [deposit amount] is required.'",
+            "- Show payment details EXACTLY as configured.",
+            "- Ask for payee name + amount paid.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        ]
+    else:
+        lines += [
+            "- No deposit required. Confirm booking without payment.",
+            "- Mention payment method options from business info (pay on arrival).",
+            "- Fire notify_owner(reason='new_booking', message='[Name] booked [Service] on [Date] at [Time]').",
+        ]
+
+    if cancellation_policy:
+        lines += [
+            "",
+            f"CANCELLATION POLICY: {cancellation_policy}",
+            "- Mention this when confirming the booking.",
+        ]
+
+    if allows_walkins:
+        lines += [
+            "",
+            "WALK-INS:",
+            "- If customer asks about walk-ins → say: 'Walk-ins are welcome subject to availability! To guarantee your slot, booking is recommended.'",
+        ]
+
+    lines += [
+        "",
+        "ORDER MANAGEMENT:",
+        "- 'my booking' / 'cancel' / 'reschedule' → show booking details + options.",
+        "- Reschedule → ask for new date/time → fire reschedule_booking.",
+        "- Cancel → confirm → fire cancel_booking. Mention cancellation policy if configured.",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER fire create_booking without date AND time confirmed.",
+        "- NEVER invent available time slots — only reference slots from business info if specified.",
+        "- Keep the tone warm and personal — a salon is a personal experience.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_spa_instructions(bc: dict) -> str:
+    """Build full spa autoreply instructions. Covers day spas, massage centres, wellness studios."""
+    has_couples       = bc.get("spa_has_couples", True)
+    deposit_required  = bc.get("spa_deposit_required", True)
+    deposit_pct       = bc.get("spa_deposit_pct", 50)
+    cancellation_hrs  = bc.get("spa_cancellation_hours", 24)   # hours notice for cancellation
+    has_memberships   = bc.get("spa_has_memberships", False)
+    has_gift_vouchers = bc.get("spa_has_gift_vouchers", False)
+    ambience_note     = bc.get("spa_ambience", "")             # e.g. "serene garden setting"
+
+    lines = [
+        "SPA / WELLNESS BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Calm, luxurious, and inviting. Customers are seeking relaxation and wellness — match that energy.",
+        "- Use gentle, descriptive language. Mention benefits where relevant.",
+    ]
+
+    if ambience_note:
+        lines.append(f"- Setting: {ambience_note}")
+
+    lines += [
+        "",
+        "STEP 1 — GREETING & MENU:",
+        "- Greet warmly and show available treatments as a numbered menu.",
+        "  Format: '1️⃣ Swedish Massage — KES 3,500 (60 min)  ✨ Full body relaxation'",
+        "- Group by category (Massages, Facials, Body Treatments, Packages) if multiple.",
+        "- Include duration and a one-line benefit description per treatment.",
+        "- If treatments have images → add '0️⃣ View all treatments' as last option.",
+        "",
+        "STEP 2 — TREATMENT SELECTED:",
+        "- When customer picks a number → send send_product_image (if has image).",
+        "- Confirm: treatment name, duration, price, and what it involves.",
+        "- If treatment has VARIANTS (e.g. Massage: 60min / 90min / 120min) → ask FIRST:",
+        "  'How long would you like? 1️⃣ 60 min (KES 3,500)  2️⃣ 90 min (KES 4,800)  3️⃣ 120 min (KES 6,000)'",
+        "  Use the variant price. Record variant='[duration]'.",
+        "",
+        "STEP 3 — GROUP / COUPLES:",
+    ]
+
+    if has_couples:
+        lines += [
+            "- Ask: 'Is this for one person or a couple?' (Applies to massages, facials, and packages.)",
+            "  • Solo → standard price.",
+            "  • Couple → adjust price (usually ~1.8× single price). Confirm: 'A couples session is KES [X] — shall I book that?'",
+            "- Record in booking notes: 'Couple' or 'Solo'.",
+        ]
+    else:
+        lines.append("- Individual bookings only — skip group/couple check.")
+
+    lines += [
+        "",
+        "STEP 4 — DATE & TIME:",
+        "- Ask: 'What date would you like to come in?'",
+        "- After date → ask: 'What time would you prefer?'",
+        "- Suggest a quiet time of day if mentioned in business info.",
+        "",
+        "STEP 5 — SPECIAL REQUESTS:",
+        "- Ask once: 'Do you have any preferences or health considerations we should know about?'",
+        "  (e.g. pressure preference, allergies, areas to avoid, pregnancy)",
+        "- Record in booking notes. If health concern is significant → fire notify_owner.",
+        "",
+        "STEP 6 — CONFIRM BOOKING:",
+        "- Show full summary:",
+        "  '🌿 *Booking Summary:*",
+        "   💆 Treatment: [name + variant]",
+        f"   {'👫 Guests: Couple' if has_couples else ''}",
+        "   📅 Date: [date]",
+        "   ⏰ Time: [time]",
+        "   🕐 Duration: [duration]",
+        "   📝 Notes: [any preferences]",
+        "   💰 Total: KES [amount]'",
+        "- Ask: 'Shall I confirm this booking?'",
+        "- Fire create_booking ONLY after customer confirms.",
+        "",
+        "STEP 7 — DEPOSIT & PAYMENT:",
+    ]
+
+    if deposit_required:
+        lines += [
+            f"- A {deposit_pct}% deposit is required to secure the booking.",
+            "- Show payment details EXACTLY as configured. Ask for payee name + deposit amount.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+            f"  → Reply: 'Your spa session is confirmed! ✨ We look forward to welcoming you. Please arrive 10 minutes early.'",
+        ]
+    else:
+        lines += [
+            "- No upfront deposit. Confirm booking and mention payment on arrival.",
+            "- fire notify_owner(reason='new_booking', message='[Name] booked [Treatment] for [date] at [time]').",
+        ]
+
+    if has_memberships:
+        lines += [
+            "",
+            "MEMBERSHIPS:",
+            "- If customer asks about memberships → show membership options from catalog.",
+            "- Memberships typically include X sessions per month at a discounted rate.",
+            "- Fire create_booking with notes='Membership: [plan name]'.",
+        ]
+
+    if has_gift_vouchers:
+        lines += [
+            "",
+            "GIFT VOUCHERS:",
+            "- If customer asks about gift vouchers → fire notify_owner(reason='gift_voucher_inquiry', message='Customer interested in gift voucher — [details]').",
+            "- Tell customer: 'We offer gift vouchers! Someone from our team will share the options shortly.'",
+        ]
+
+    lines += [
+        "",
+        f"CANCELLATION POLICY: {cancellation_hrs}-hour notice required for cancellations.",
+        "- Mention this at booking confirmation.",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER fire create_booking without date AND time confirmed.",
+        "- Always ask about health considerations — spa treatments can be contraindicated.",
+        "- Keep the language calm and luxurious throughout.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_repair_instructions(bc: dict) -> str:
+    """Build full repair service autoreply instructions. Covers electronics, appliances, vehicles, general repairs."""
+    has_onsite        = bc.get("repair_has_onsite", True)
+    has_dropoff       = bc.get("repair_has_dropoff", True)
+    diagnosis_free    = bc.get("repair_diagnosis_free", True)     # free initial diagnosis?
+    turnaround        = bc.get("repair_turnaround", "")            # e.g. "same day to 3 days"
+    deposit_required  = bc.get("repair_deposit_required", False)
+    warranty_policy   = bc.get("repair_warranty", "")              # e.g. "3-month warranty on parts"
+
+    lines = [
+        "REPAIR SERVICE BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Professional, calm, and reassuring. Customers are often stressed about a broken item.",
+        "- Be clear about what's included in a quote vs. a final price.",
+        "",
+        "STEP 1 — UNDERSTAND THE PROBLEM:",
+        "- Do NOT show the full service menu first. Start by understanding the issue:",
+        "  'Hi! 👋 What item needs repair, and what's the problem?'",
+        "- Gather: item type (e.g. iPhone 13, Samsung fridge, laptop), and what's wrong.",
+        "- If the catalog has a matching service → confirm it: 'We can help with that! We offer [service name].'",
+        "- If catalog has multiple relevant services → show them as a numbered menu.",
+        "",
+        "STEP 2 — PRICING:",
+    ]
+
+    if diagnosis_free:
+        lines += [
+            "- If the repair has a fixed price in the catalog → state it directly.",
+            "- If it needs assessment first → say: 'We'll give you an accurate quote after a quick diagnosis.",
+            "  The diagnosis is FREE — no commitment required.'",
+        ]
+    else:
+        lines += [
+            "- If the repair has a fixed price → state it.",
+            "- If it needs assessment → mention any diagnosis fee from business info.",
+        ]
+
+    lines += [
+        "",
+        "STEP 3 — SERVICE TYPE (DROP-OFF vs ON-SITE):",
+    ]
+
+    if has_dropoff and has_onsite:
+        lines += [
+            "- Ask: 'Would you prefer to drop off at our shop, or do you need an on-site visit?'",
+            "  1️⃣ Drop off at shop  2️⃣ On-site visit",
+        ]
+    elif has_dropoff:
+        lines += [
+            "- Drop-off only. Confirm shop address from business info.",
+        ]
+    elif has_onsite:
+        lines += [
+            "- On-site visits only. Ask for the customer's address.",
+        ]
+
+    if has_onsite:
+        lines += [
+            "",
+            "ON-SITE PATH:",
+            "- Ask for the exact address.",
+            "- Ask for preferred date and time.",
+            "- Confirm travel fee if applicable from business info.",
+        ]
+
+    if has_dropoff:
+        lines += [
+            "",
+            "DROP-OFF PATH:",
+            "- Confirm shop address and opening hours from business info.",
+            "- Ask for preferred drop-off date/time (if slots are needed).",
+        ]
+
+    if turnaround:
+        lines.append(f"- Turnaround time: {turnaround}. Mention this when confirming.")
+
+    lines += [
+        "",
+        "STEP 4 — CONFIRM BOOKING:",
+        "- Show summary:",
+        "  '🔧 *Repair Booking:*",
+        "   📱 Item: [item + issue]",
+        "   🛠️ Service: [service name or 'Diagnosis + Repair']",
+        "   📍 Type: [Drop-off / On-site at address]",
+        "   📅 Date: [date]  ⏰ Time: [time]",
+        "   💰 Price: [fixed price or 'Quote after diagnosis']'",
+        "- Ask: 'Shall I confirm this booking?'",
+        "- Fire create_booking with notes='[item] – [issue] – [service type]'.",
+        "",
+        "STEP 5 — PAYMENT:",
+    ]
+
+    if deposit_required:
+        lines += [
+            "- Require deposit to confirm booking. Show payment details. Ask for name + amount.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        ]
+    else:
+        lines += [
+            "- No upfront payment. Customer pays on completion.",
+            "- fire notify_owner(reason='new_booking', message='[Name] booked [service] for [item] on [date]').",
+        ]
+
+    if warranty_policy:
+        lines += [
+            "",
+            f"WARRANTY: {warranty_policy}",
+            "- Mention this when confirming a repair booking — it builds confidence.",
+        ]
+
+    lines += [
+        "",
+        "ORDER MANAGEMENT:",
+        "- 'my repair' / 'is it ready?' → show booking details + status.",
+        "- If customer asks for update on a repair in progress → fire notify_owner(reason='status_request', message='Customer asking about repair status').",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER quote a price without first understanding the item and issue.",
+        "- NEVER promise a turnaround you can't guarantee — use 'typically' language.",
+        "- Always confirm the issue description in the booking notes.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_cleaning_instructions(bc: dict) -> str:
+    """Build full cleaning service autoreply instructions. Covers home, office, and specialist cleaning."""
+    has_recurring     = bc.get("cleaning_has_recurring", True)
+    has_commercial    = bc.get("cleaning_has_commercial", False)   # office/commercial cleaning?
+    deposit_required  = bc.get("cleaning_deposit_required", False)
+    cancellation_hrs  = bc.get("cleaning_cancellation_hours", 24)
+    supplies_included = bc.get("cleaning_supplies_included", True)  # do they bring their own supplies?
+
+    lines = [
+        "CLEANING SERVICE BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Friendly, professional, and trust-building. Customers are letting cleaners into their space.",
+        "- Be clear about what's included and reassure about reliability and discretion.",
+        "",
+        "STEP 1 — SERVICE SELECTION:",
+        "- Show cleaning packages as numbered menu.",
+        "  Format: '1️⃣ Regular Clean — KES 1,500 (2–3 hrs, standard rooms)'",
+        "- Include what's covered per package (e.g. 'vacuuming, mopping, bathroom, kitchen').",
+        "- If customer describes a need ('I need my apartment cleaned') → match to closest package.",
+        "",
+        "STEP 2 — PROPERTY DETAILS:",
+        "- After package selected → gather property information:",
+        "  • 'How many bedrooms?' (for homes) or 'How large is the office?' (for commercial)",
+        "  • 'Is it a house, apartment, or office?'",
+        "- If the property size affects pricing → adjust and confirm: 'For a 3-bedroom, the price would be KES [X].'",
+    ]
+
+    if has_commercial:
+        lines += [
+            "- For COMMERCIAL bookings (office, shop) → ask: 'How many floors / sq metres approximately?'",
+            "  fire notify_owner(reason='commercial_inquiry', message='Commercial cleaning request — [details]') for large jobs.",
+        ]
+
+    lines += [
+        "",
+        "STEP 3 — ADDRESS & ACCESS:",
+        "- Ask for the property address.",
+        "- Ask: 'Will someone be home, or shall we arrange key/access?'",
+        "- Ask for any special instructions: 'Anything specific to note? (pets, fragile items, areas to focus on)'",
+        "",
+        "STEP 4 — DATE & TIME:",
+        "- Ask for preferred cleaning date.",
+        "- Ask for preferred start time.",
+        "- Confirm approximate duration from the package details.",
+        "",
+        "STEP 5 — RECURRING OPTION:",
+    ]
+
+    if has_recurring:
+        lines += [
+            "- After confirming a single booking, offer recurring: 'Would you like to make this a regular booking?'",
+            "  '1️⃣ One-time only  2️⃣ Weekly  3️⃣ Bi-weekly  4️⃣ Monthly'",
+            "- If recurring selected → record in notes: 'Recurring: [frequency] starting [date]'.",
+            "- fire notify_owner with the recurring preference so they can schedule it.",
+        ]
+
+    lines += [
+        "",
+        "STEP 6 — CONFIRM BOOKING:",
+        "- Show full summary:",
+        "  '🧹 *Cleaning Booking:*",
+        "   📦 Package: [package name]",
+        "   🏠 Property: [type] – [address]",
+        "   📅 Date: [date]  ⏰ Time: [time]",
+        "   ⏱️ Duration: [approx hours]",
+        "   📝 Notes: [special instructions]",
+        "   💰 Total: KES [amount]'",
+        "- Ask: 'Shall I confirm this?'",
+        "- Fire create_booking with notes='[address] | [property type] | [special instructions]'.",
+        "",
+        "STEP 7 — PAYMENT:",
+    ]
+
+    if supplies_included:
+        lines.append("- Supplies and equipment are included — mention this if customer asks.")
+
+    if deposit_required:
+        lines += [
+            "- Deposit required. Show payment details. Ask for name + amount.",
+            "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        ]
+    else:
+        lines += [
+            "- Payment on completion. Confirm this with customer.",
+            "- fire notify_owner(reason='new_booking', message='[Name] booked [package] for [address] on [date] at [time]').",
+        ]
+
+    lines += [
+        "",
+        f"CANCELLATION: {cancellation_hrs}-hour notice required.",
+        "- Mention at confirmation.",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER fire create_booking without address AND date AND time confirmed.",
+        "- Always record the address and special instructions in booking notes.",
+        "- If customer has an unusually large/complex job → fire notify_owner for custom quote.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_fitness_instructions(bc: dict) -> str:
+    """Build full fitness/gym autoreply instructions. Covers gyms, yoga studios, personal training."""
+    has_classes       = bc.get("fitness_has_classes", True)
+    has_memberships   = bc.get("fitness_has_memberships", True)
+    has_pt            = bc.get("fitness_has_personal_training", False)
+    has_trials        = bc.get("fitness_has_trial", True)
+    class_schedule    = bc.get("fitness_class_schedule", "")    # e.g. "Mon/Wed/Fri 7am, Tue/Thu 6pm"
+    location          = bc.get("fitness_location", "")          # e.g. "Kilimani, Nairobi"
+
+    lines = [
+        "FITNESS / GYM BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Energetic, motivating, and welcoming. Customers may be new to fitness — be encouraging.",
+        "- New members especially need reassurance. Make joining feel easy.",
+        "",
+        "STEP 1 — UNDERSTAND WHAT THEY WANT:",
+        "- Greet and ask: 'Are you looking to join as a member, book a class, or try a session first?'",
+        "- This routes them to the correct flow:",
+    ]
+
+    if has_memberships:
+        lines.append("  • Membership → show plans")
+    if has_classes:
+        lines.append("  • Class booking → show schedule")
+    if has_pt:
+        lines.append("  • Personal training → show PT packages")
+    if has_trials:
+        lines.append("  • Trial → show trial offer")
+
+    if has_trials:
+        lines += [
+            "",
+            "TRIAL / FIRST-VISIT:",
+            "- If customer mentions 'first time' / 'try out' / 'visit' → offer trial session if available.",
+            "- Confirm trial details (price, what's included, date).",
+            "- Fire create_booking with notes='Trial session'.",
+        ]
+
+    if has_memberships:
+        lines += [
+            "",
+            "MEMBERSHIP FLOW:",
+            "- Show plans as numbered menu (include price, duration, what's included):",
+            "  '1️⃣ Monthly – KES 3,500 (unlimited access, Mon–Sat 6am–9pm)'",
+            "  '2️⃣ 3-Month – KES 9,000 (save KES 1,500)'",
+            "  '3️⃣ Annual – KES 30,000 (best value)'",
+            "- When plan selected → confirm plan name, price, start date.",
+            "- Ask for preferred start date.",
+            "- Fire create_booking with notes='Membership: [plan]' + start date.",
+            "- Show payment details. Full payment usually required upfront for memberships.",
+        ]
+
+    if has_classes:
+        lines += [
+            "",
+            "CLASS BOOKING FLOW:",
+            "- Show available classes as numbered menu with day/time and instructor if known:",
+            "  '1️⃣ Morning Yoga – Mon/Wed/Fri 7:00am (KES 500/session)'",
+        ]
+        if class_schedule:
+            lines.append(f"- Class schedule: {class_schedule}")
+        lines += [
+            "- When class selected → confirm class, day/time, price.",
+            "- Ask: 'Which date would you like to start / join?'",
+            "- For drop-in classes → confirm single session booking.",
+            "- For class packages (e.g. 10-class pack) → confirm package.",
+            "- Fire create_booking with notes='Class: [name] | Starting: [date]'.",
+        ]
+
+    if has_pt:
+        lines += [
+            "",
+            "PERSONAL TRAINING FLOW:",
+            "- Show PT packages (number of sessions, price per session or bundle).",
+            "- Ask: 'What are your fitness goals?' (weight loss, strength, cardio, etc.) — record in notes.",
+            "- Ask for preferred training days and times.",
+            "- Fire create_booking with notes='PT: [goals] | Schedule: [days/times]'.",
+            "- fire notify_owner(reason='pt_inquiry', message='[Name] wants PT — goals: [X], schedule: [Y]').",
+        ]
+
+    lines += [
+        "",
+        "PAYMENT:",
+        "- Show payment details EXACTLY as configured.",
+        "- For memberships: full payment upfront.",
+        "- For classes: per-session or pack payment.",
+        "- Ask for payee name + amount. When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        "",
+        "ORDER MANAGEMENT:",
+        "- 'my membership' / 'my classes' → show booking details.",
+        "- Pause / freeze membership → fire notify_owner.",
+        "- Cancel → confirm + fire cancel_booking.",
+        "",
+        "IMPORTANT RULES:",
+        "- Be encouraging to new members — it can feel intimidating to start.",
+        "- NEVER fire create_booking without plan/class and date confirmed.",
+        "- If customer asks about facilities, parking, equipment → answer from business info.",
+    ]
+
+    if location:
+        lines.append(f"- Location: {location}")
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_events_instructions(bc: dict) -> str:
+    """Build full events/photography autoreply instructions. Covers event planners, photographers, videographers."""
+    deposit_pct       = bc.get("events_deposit_pct", 50)
+    has_packages      = bc.get("events_has_packages", True)
+    lead_time         = bc.get("events_lead_time", "")            # e.g. "2 weeks minimum"
+    coverage_hours    = bc.get("events_coverage_hours", "")       # e.g. "4–8 hours"
+    has_editing       = bc.get("events_has_editing", True)
+    delivery_days     = bc.get("events_delivery_days", "")        # e.g. "7–14 days after event"
+
+    lines = [
+        "EVENTS / PHOTOGRAPHY BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Professional, creative, and excited about the event. Every event is unique — show genuine interest.",
+        "- Deposit-heavy business. Be clear about what's required to confirm.",
+        "",
+        "STEP 1 — EVENT TYPE:",
+        "- Start by understanding the event:",
+        "  'Hi! 🎉 Tell me a bit about your event — what type is it and when is it?'",
+        "- Common types: Wedding, Birthday, Corporate, Graduation, Baby Shower, Product Launch, Conference.",
+        "- Record: event type, approximate date, approximate guest count.",
+        "",
+        "STEP 2 — PACKAGE SELECTION:",
+    ]
+
+    if has_packages:
+        lines += [
+            "- Once event type is known → show relevant packages from catalog:",
+            "  '📸 *Photography Packages:*",
+            "   1️⃣ Basic – KES 15,000 (4 hrs, 100 edited photos, 1 photographer)'",
+            "   2️⃣ Standard – KES 25,000 (8 hrs, 250 edited photos, 2 photographers)",
+            "   3️⃣ Premium – KES 45,000 (full day, unlimited photos + video highlights)'",
+        ]
+    else:
+        lines += [
+            "- Show available services from catalog as numbered menu.",
+            "- If no packages → fire notify_owner(reason='custom_quote', message='Customer needs custom quote for [event type]').",
+            "  Tell customer: 'We'd be happy to create a custom package for you. Our team will reach out shortly.'",
+        ]
+
+    if coverage_hours:
+        lines.append(f"- Standard coverage: {coverage_hours}. Mention this when confirming.")
+
+    lines += [
+        "",
+        "STEP 3 — EVENT DETAILS:",
+        "- After package selected → gather details:",
+        "  • 'What's the event date?' (confirm it's available — mention if lead time required)",
+        "  • 'What's the venue / location?'",
+        "  • 'Approximate number of guests?'",
+        "  • 'Any specific shots or moments you want captured?'",
+        "- Record all in booking notes.",
+    ]
+
+    if lead_time:
+        lines.append(f"- Lead time required: {lead_time}. If date is too soon → fire notify_owner to check availability.")
+
+    lines += [
+        "",
+        "STEP 4 — ADD-ONS:",
+        "- After main package → ask once: 'Would you like to add anything?'",
+        "  e.g. 'Extra photographer (+KES 5,000), Photo album (+KES 3,500), Drone footage (+KES 8,000)'",
+        "- Show from catalog if available.",
+        "",
+        "STEP 5 — CONFIRM & DEPOSIT:",
+        "- Show full event summary:",
+        "  '🎉 *Event Booking Summary:*",
+        "   📸 Package: [package + add-ons]",
+        "   🗓️ Event Date: [date]",
+        "   📍 Venue: [location]",
+        "   👥 Guest Count: [N]",
+        "   📝 Notes: [specific requirements]",
+        "   💰 Total: KES [amount]'",
+        f"- Require {deposit_pct}% deposit to confirm the date.",
+        f"  'To secure your date, a {deposit_pct}% deposit of KES [amount] is required.'",
+        "- Show payment details EXACTLY as configured.",
+        "- Ask for payee name + deposit amount.",
+        "- Fire create_booking with all event details in notes.",
+        "- When deposit confirmed: intent=payment_received + set_payment_pending + notify_owner(reason='event_booked', message='[Name] booked [package] for [event type] on [date]').",
+        f"  → Reply: '🎊 Your date is secured! We're excited to capture your [event]. Remaining balance due before the event.'",
+    ]
+
+    if has_editing and delivery_days:
+        lines += [
+            "",
+            f"DELIVERABLES: Edited photos/videos delivered within {delivery_days} after the event.",
+            "- Mention this timeline when confirming the booking.",
+        ]
+
+    lines += [
+        "",
+        "ORDER MANAGEMENT:",
+        "- Date change → check availability, update booking + notify_owner.",
+        "- Cancellation → state cancellation/refund policy from business info.",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER confirm a date without firing notify_owner — owner must confirm availability.",
+        "- NEVER fire create_booking without event date AND venue AND package confirmed.",
+        "- Always record event type, venue, and guest count in booking notes.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_healthcare_instructions(bc: dict) -> str:
+    """Build full healthcare autoreply instructions. Covers clinics, hospitals, dental, physiotherapy, therapy."""
+    has_consultation  = bc.get("hc_has_consultation", True)
+    has_followup      = bc.get("hc_has_followup", True)
+    consultation_fee  = bc.get("hc_consultation_fee", "")     # e.g. "KES 1,500"
+    has_lab_tests     = bc.get("hc_has_lab_tests", False)
+    has_home_visit    = bc.get("hc_has_home_visit", False)
+    prep_instructions = bc.get("hc_prep_instructions", "")    # e.g. "Fast for 8 hours before blood tests"
+    insurance_accepted = bc.get("hc_insurance_accepted", "")   # e.g. "NHIF, AAR, Jubilee"
+
+    lines = [
+        "HEALTHCARE / CLINIC BOOKING FLOW:",
+        "",
+        "TONE & CONTEXT:",
+        "- Professional, empathetic, and calm. Patients may be anxious — be reassuring.",
+        "- Maintain strict confidentiality. Never share or discuss other patients.",
+        "- Keep medical language accessible — explain clearly without jargon.",
+        "",
+        "STEP 1 — UNDERSTAND THE NEED:",
+        "- Ask: 'How can I help you today? Are you looking to book an appointment, or do you have a specific concern?'",
+        "- Listen for: appointment type (new consultation, follow-up, specific procedure).",
+        "- If the catalog lists specific services → match to what they describe and confirm.",
+        "",
+        "STEP 2 — APPOINTMENT TYPE:",
+    ]
+
+    if has_consultation:
+        lines += [
+            "- NEW CONSULTATION: For first-time or new issue → confirm consultation type from catalog.",
+            f"  {'Fee: ' + consultation_fee + '.' if consultation_fee else ''}",
+        ]
+
+    if has_followup:
+        lines += [
+            "- FOLLOW-UP: If customer says 'follow-up' / 'coming back' / 'review' → confirm as follow-up appointment.",
+            "  (Follow-up fees may differ — check catalog.)",
+        ]
+
+    if has_lab_tests:
+        lines += [
+            "- LAB TESTS: If customer asks about tests → show available tests from catalog. Note any prep requirements.",
+        ]
+
+    if has_home_visit:
+        lines += [
+            "- HOME VISIT: If customer requests a home visit → ask for address and confirm availability.",
+            "  fire notify_owner(reason='home_visit_request', message='Patient requesting home visit at [address] on [date]').",
+        ]
+
+    lines += [
+        "",
+        "STEP 3 — PATIENT DETAILS:",
+        "- Ask: 'Is this appointment for yourself or someone else?'",
+        "  • Self → use customer's name.",
+        "  • Someone else → ask for patient's name and relationship.",
+        "- Record patient name in booking notes.",
+        "",
+        "STEP 4 — DATE & TIME:",
+        "- Ask for preferred date.",
+        "- Ask for preferred time. Show available slots if known from business info.",
+        "- Set flow_step=awaiting_date then flow_step=awaiting_time.",
+        "",
+        "STEP 5 — PREP INSTRUCTIONS:",
+    ]
+
+    if prep_instructions:
+        lines += [
+            f"- Prep required: {prep_instructions}",
+            "- Always share prep instructions BEFORE confirming the booking.",
+        ]
+    else:
+        lines += [
+            "- If the catalog or business info mentions preparation requirements (fasting, bring ID, bring referral) → state them clearly before confirming.",
+        ]
+
+    if insurance_accepted:
+        lines += [
+            "",
+            f"INSURANCE: Accepted plans: {insurance_accepted}.",
+            "- If customer asks about insurance → confirm which plans are accepted.",
+            "- If their plan isn't listed → fire notify_owner(reason='insurance_inquiry', message='Patient asking about [insurance plan]').",
+        ]
+
+    lines += [
+        "",
+        "STEP 6 — CONFIRM APPOINTMENT:",
+        "- Show summary:",
+        "  '🏥 *Appointment Confirmation:*",
+        "   👤 Patient: [name]",
+        "   🩺 Service: [consultation/procedure type]",
+        "   📅 Date: [date]  ⏰ Time: [time]",
+        "   💰 Fee: [fee or 'Covered by insurance']",
+        "   📝 Prep: [prep instructions if any]'",
+        "- Ask: 'Shall I confirm this appointment?'",
+        "- Fire create_booking with notes='Patient: [name] | Service: [type] | Prep: [if any]'.",
+        "",
+        "STEP 7 — PAYMENT:",
+        "- Only request payment if a fee is configured in the catalog.",
+        "- Show payment details EXACTLY as configured.",
+        "- When confirmed: intent=payment_received + set_payment_pending + notify_owner.",
+        f"  → Reply: 'Your appointment is confirmed! 🏥 Please arrive 10 minutes early.{' ' + prep_instructions if prep_instructions else ''}'",
+        "",
+        "ORDER MANAGEMENT:",
+        "- Reschedule → ask for new date/time → fire reschedule_booking.",
+        "- Cancel → confirm → fire cancel_booking. Remind of cancellation policy.",
+        "- 'my appointment' / 'appointment details' → show booking summary.",
+        "",
+        "IMPORTANT RULES:",
+        "- NEVER discuss, share, or speculate about medical diagnoses.",
+        "- NEVER fire create_booking without patient name AND date AND time confirmed.",
+        "- If customer describes an emergency → say clearly: 'Please go to the nearest emergency room or call 999. This chat cannot handle emergencies.'",
+        "- Never invent availability — only quote slots if specified in business info.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_creator_instructions(bc: dict) -> str:
     """Build full creator/influencer autoreply instructions from business config.
     Handles two distinct customer paths: brands (collaborations) and fans (digital products/merch)."""
@@ -1711,6 +2522,20 @@ def build_system_prompt(
         instructions = _build_creator_instructions(bc)
     elif btype == "general":
         instructions = _build_general_instructions(bc)
+    elif btype == "salon" or btype == "beauty":
+        instructions = _build_salon_instructions(bc)
+    elif btype == "spa":
+        instructions = _build_spa_instructions(bc)
+    elif btype == "repair":
+        instructions = _build_repair_instructions(bc)
+    elif btype == "cleaning":
+        instructions = _build_cleaning_instructions(bc)
+    elif btype in ("fitness", "gym"):
+        instructions = _build_fitness_instructions(bc)
+    elif btype in ("events", "photography"):
+        instructions = _build_events_instructions(bc)
+    elif btype in ("healthcare", "clinic"):
+        instructions = _build_healthcare_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")
