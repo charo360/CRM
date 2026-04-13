@@ -4505,14 +4505,20 @@ async def update_order_progress(
                     order_ref = f" *#{order_number}*" if order_number else ""
                     delivery_type = order.get("delivery_type", "")
                     delivery_address = order.get("delivery_address", "")
+                    if delivery_type == "Delivery" and delivery_address:
+                        ready_msg = f"🎉 Your order{order_ref} is *ready* and on its way!\n\n🚗 Delivering to: *{delivery_address}*"
+                    elif delivery_type in ("Dine In", "Dine-In", "dine_in"):
+                        ready_msg = f"🍽️ Your order{order_ref} is *ready*! Enjoy your meal 😊"
+                    else:
+                        ready_msg = f"🎉 Your order{order_ref} is *ready* for pickup! Come grab it whenever you're ready 🏃"
                     status_messages = {
                         "Confirmed": f"✅ Your order{order_ref} has been *confirmed*! We're getting it ready for you.",
-                        "Preparing": f"👨‍🍳 Your order{order_ref} is now being *prepared*. We'll let you know when it's ready!",
-                        "Ready": (
-                            f"🎉 Your order{order_ref} is *ready*!\n\n"
-                            + (f"🚗 We'll be delivering to: *{delivery_address}*" if delivery_type == "Delivery" and delivery_address else "Please come pick it up at your earliest convenience. 🏃")
+                        "Preparing": f"👨‍🍳 Your order{order_ref} is now being *prepared*. Won't be long!",
+                        "Ready": ready_msg,
+                        "Done": (
+                            f"Thank you so much for visiting us! 🙏\n\n"
+                            f"We really appreciate your support and hope to see you again soon. Have a wonderful day! 😊"
                         ),
-                        "Done": f"✔️ Your order{order_ref} is *complete*. Thank you for your business! 🙏",
                     }
                     msg = status_messages.get(new_status)
                     if msg:
@@ -4520,7 +4526,7 @@ async def update_order_progress(
                         await ws.send_message(
                             user_id=business_id,
                             to_number=customer_phone,
-                            message=f"Hi {customer_name}! {msg}",
+                            message=msg,
                             send_context="order_progress",
                         )
         except Exception as e:
