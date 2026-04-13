@@ -1488,6 +1488,98 @@ class BusinessKnowledge(BaseModel):
     restaurant_table_range: Optional[str] = None   # e.g. "Tables 1–20"
     restaurant_avg_wait: Optional[str] = None       # e.g. "15–20 minutes"
     restaurant_min_delivery: Optional[str] = None   # e.g. "$10 minimum order"
+    # Retail-specific fields
+    retail_has_custom_orders: Optional[bool] = None
+    retail_custom_lead_time: Optional[str] = None
+    retail_return_policy: Optional[str] = None
+    # Bakery-specific fields
+    bakery_advance_days: Optional[int] = None
+    bakery_deposit_required: Optional[bool] = None
+    bakery_deposit_pct: Optional[int] = None
+    # Grocery-specific fields
+    grocery_delivery_slots: Optional[str] = None
+    grocery_min_order: Optional[str] = None
+    grocery_allow_substitutions: Optional[bool] = None
+    # Wholesale-specific fields
+    wholesale_lead_time: Optional[str] = None
+    wholesale_min_order_value: Optional[str] = None
+    wholesale_payment_terms: Optional[str] = None
+    wholesale_has_credit_account: Optional[bool] = None
+    # Salon-specific fields
+    salon_multiple_stylists: Optional[bool] = None
+    salon_stylist_names: Optional[str] = None
+    salon_deposit_required: Optional[bool] = None
+    salon_deposit_pct: Optional[int] = None
+    salon_cancellation_policy: Optional[str] = None
+    # Spa-specific fields
+    spa_has_couples: Optional[bool] = None
+    spa_deposit_required: Optional[bool] = None
+    spa_deposit_pct: Optional[int] = None
+    spa_cancellation_hours: Optional[int] = None
+    # Repair-specific fields
+    repair_has_onsite: Optional[bool] = None
+    repair_has_dropoff: Optional[bool] = None
+    repair_diagnosis_free: Optional[bool] = None
+    repair_turnaround: Optional[str] = None
+    repair_warranty: Optional[str] = None
+    # Services-specific fields
+    services_has_onsite: Optional[bool] = None
+    services_has_remote: Optional[bool] = None
+    services_quote_first: Optional[bool] = None
+    services_deposit_required: Optional[bool] = None
+    services_turnaround: Optional[str] = None
+    services_cancellation_policy: Optional[str] = None
+    # Support-specific fields
+    support_ticket_prefix: Optional[str] = None
+    support_response_sla: Optional[str] = None
+    support_has_billing_support: Optional[bool] = None
+    support_has_technical_support: Optional[bool] = None
+    support_has_complaints: Optional[bool] = None
+    support_has_live_handoff: Optional[bool] = None
+    support_escalation_policy: Optional[str] = None
+    support_refund_policy: Optional[str] = None
+    # Hotel-specific fields
+    hotel_checkin_time: Optional[str] = None
+    hotel_checkout_time: Optional[str] = None
+    hotel_min_nights: Optional[int] = None
+    hotel_deposit_required: Optional[bool] = None
+    hotel_deposit_pct: Optional[int] = None
+    hotel_has_meal_plans: Optional[bool] = None
+    hotel_meal_plan_options: Optional[str] = None
+    hotel_has_airport_transfer: Optional[bool] = None
+    hotel_has_spa: Optional[bool] = None
+    hotel_has_pool: Optional[bool] = None
+    hotel_cancellation_policy: Optional[str] = None
+    # Rental-specific fields
+    rental_type: Optional[str] = None
+    rental_deposit_required: Optional[bool] = None
+    rental_deposit_pct: Optional[int] = None
+    rental_min_nights: Optional[int] = None
+    rental_checkin_time: Optional[str] = None
+    rental_checkout_time: Optional[str] = None
+    rental_pet_policy: Optional[str] = None
+    rental_cancellation_policy: Optional[str] = None
+    rental_has_extras: Optional[bool] = None
+    # Cleaning-specific fields
+    cleaning_has_recurring: Optional[bool] = None
+    cleaning_has_commercial: Optional[bool] = None
+    cleaning_supplies_included: Optional[bool] = None
+    # Fitness-specific fields
+    fitness_has_memberships: Optional[bool] = None
+    fitness_has_classes: Optional[bool] = None
+    fitness_has_personal_training: Optional[bool] = None
+    fitness_has_trial: Optional[bool] = None
+    fitness_class_schedule: Optional[str] = None
+    # Events-specific fields
+    events_deposit_pct: Optional[int] = None
+    events_lead_time: Optional[str] = None
+    events_delivery_days: Optional[str] = None
+    # Healthcare-specific fields
+    hc_consultation_fee: Optional[str] = None
+    hc_has_lab_tests: Optional[bool] = None
+    hc_has_home_visit: Optional[bool] = None
+    hc_prep_instructions: Optional[str] = None
+    hc_insurance_accepted: Optional[str] = None
     # Creator-specific fields
     creator_niche: Optional[str] = None
     creator_platforms: Optional[str] = None
@@ -1501,6 +1593,12 @@ class BusinessKnowledge(BaseModel):
     creator_blacklisted_niches: Optional[str] = None
     creator_fan_dm_response: Optional[str] = None
     creator_media_kit_link: Optional[str] = None
+    creator_followers: Optional[str] = None
+    creator_lead_time: Optional[str] = None
+    creator_revisions: Optional[str] = None
+    creator_usage_rights: Optional[str] = None
+    creator_deposit_pct: Optional[int] = None
+    creator_rates_on_request: Optional[bool] = None
 
 # Product Catalog Models
 class Product(BaseModel):
@@ -7880,27 +7978,10 @@ async def get_business_knowledge(user = Depends(get_current_user)):
         m if isinstance(m, dict) else {"name": m, "details": ""}
         for m in raw_pm
     ]
+    # Return all stored fields plus normalized payment_methods and a safe default for business_type
     return {
-        "products_services": knowledge.get('products_services', ''),
-        "pricing_info": knowledge.get('pricing_info', ''),
-        "business_hours": knowledge.get('business_hours', ''),
-        "delivery_info": knowledge.get('delivery_info', ''),
-        "faqs": knowledge.get('faqs', ''),
-        "special_offers": knowledge.get('special_offers', ''),
-        "business_description": knowledge.get('business_description', ''),
+        **knowledge,
         "business_type": knowledge.get('business_type', 'general'),
-        "creator_niche": knowledge.get('creator_niche', ''),
-        "creator_platforms": knowledge.get('creator_platforms', ''),
-        "creator_audience_size": knowledge.get('creator_audience_size', ''),
-        "creator_collab_types": knowledge.get('creator_collab_types', ''),
-        "creator_rate_card": knowledge.get('creator_rate_card', ''),
-        "creator_whats_included": knowledge.get('creator_whats_included', ''),
-        "creator_turnaround": knowledge.get('creator_turnaround', ''),
-        "creator_booking_process": knowledge.get('creator_booking_process', ''),
-        "creator_min_budget": knowledge.get('creator_min_budget', ''),
-        "creator_blacklisted_niches": knowledge.get('creator_blacklisted_niches', ''),
-        "creator_fan_dm_response": knowledge.get('creator_fan_dm_response', ''),
-        "creator_media_kit_link": knowledge.get('creator_media_kit_link', ''),
         "payment_methods": payment_methods,
     }
 
@@ -7909,14 +7990,58 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     """Update business knowledge for AI to use in conversations"""
     update_data = {}
     fields = [
+        # Core fields
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
         'faqs', 'special_offers', 'business_description', 'business_type',
+        # Restaurant
         'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
         'restaurant_table_range', 'restaurant_avg_wait', 'restaurant_min_delivery',
+        # Retail
+        'retail_has_custom_orders', 'retail_custom_lead_time', 'retail_return_policy',
+        # Bakery
+        'bakery_advance_days', 'bakery_deposit_required', 'bakery_deposit_pct',
+        # Grocery
+        'grocery_delivery_slots', 'grocery_min_order', 'grocery_allow_substitutions',
+        # Wholesale
+        'wholesale_lead_time', 'wholesale_min_order_value', 'wholesale_payment_terms', 'wholesale_has_credit_account',
+        # Salon
+        'salon_multiple_stylists', 'salon_stylist_names', 'salon_deposit_required', 'salon_deposit_pct', 'salon_cancellation_policy',
+        # Spa
+        'spa_has_couples', 'spa_deposit_required', 'spa_deposit_pct', 'spa_cancellation_hours',
+        # Repair
+        'repair_has_onsite', 'repair_has_dropoff', 'repair_diagnosis_free', 'repair_turnaround', 'repair_warranty',
+        # Services
+        'services_has_onsite', 'services_has_remote', 'services_quote_first', 'services_deposit_required',
+        'services_turnaround', 'services_cancellation_policy',
+        # Support
+        'support_ticket_prefix', 'support_response_sla', 'support_has_billing_support',
+        'support_has_technical_support', 'support_has_complaints', 'support_has_live_handoff',
+        'support_escalation_policy', 'support_refund_policy',
+        # Hotel
+        'hotel_checkin_time', 'hotel_checkout_time', 'hotel_min_nights', 'hotel_deposit_required',
+        'hotel_deposit_pct', 'hotel_has_meal_plans', 'hotel_meal_plan_options',
+        'hotel_has_airport_transfer', 'hotel_has_spa', 'hotel_has_pool', 'hotel_cancellation_policy',
+        # Rental
+        'rental_type', 'rental_deposit_required', 'rental_deposit_pct', 'rental_min_nights',
+        'rental_checkin_time', 'rental_checkout_time', 'rental_pet_policy',
+        'rental_cancellation_policy', 'rental_has_extras',
+        # Cleaning
+        'cleaning_has_recurring', 'cleaning_has_commercial', 'cleaning_supplies_included',
+        # Fitness
+        'fitness_has_memberships', 'fitness_has_classes', 'fitness_has_personal_training',
+        'fitness_has_trial', 'fitness_class_schedule',
+        # Events
+        'events_deposit_pct', 'events_lead_time', 'events_delivery_days',
+        # Healthcare
+        'hc_consultation_fee', 'hc_has_lab_tests', 'hc_has_home_visit',
+        'hc_prep_instructions', 'hc_insurance_accepted',
+        # Creator
         'creator_niche', 'creator_platforms', 'creator_audience_size',
         'creator_collab_types', 'creator_rate_card', 'creator_whats_included',
         'creator_turnaround', 'creator_booking_process', 'creator_min_budget',
         'creator_blacklisted_niches', 'creator_fan_dm_response', 'creator_media_kit_link',
+        'creator_followers', 'creator_lead_time', 'creator_revisions',
+        'creator_usage_rights', 'creator_deposit_pct', 'creator_rates_on_request',
     ]
     for field in fields:
         val = getattr(knowledge, field, None)
