@@ -89,7 +89,20 @@ const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Sala
 
 export default function SalesScreen() {
   const router = useRouter();
-  const { config, isRetailBusiness } = useBusiness();
+  const { config, isRetailBusiness, businessType } = useBusiness();
+
+  // Per-business-type order form config
+  const BUSINESS_ORDER_CONFIG: Record<string, { productPicker: boolean; variants: boolean; modifiers: boolean; dineIn: boolean; delivery: boolean }> = {
+    restaurant: { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true },
+    food:       { productPicker: true,  variants: true,  modifiers: true,  dineIn: true,  delivery: true },
+    bakery:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true },
+    grocery:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true },
+    retail:     { productPicker: true,  variants: true,  modifiers: false, dineIn: false, delivery: true },
+    wholesale:  { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true },
+    creator:    { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true },
+    general:    { productPicker: true,  variants: false, modifiers: false, dineIn: false, delivery: true },
+  };
+  const orderConfig = BUSINESS_ORDER_CONFIG[businessType] ?? { productPicker: false, variants: false, modifiers: false, dineIn: false, delivery: true };
   const showOrdersTab = isRetailBusiness;   // only order-capable businesses (retail, food, etc.) show Orders tab
   const [viewMode, setViewMode] = useState<'sales' | 'expenses' | 'orders'>('sales');
   const [sales, setSales] = useState<Sale[]>([]);
@@ -149,6 +162,16 @@ export default function SalesScreen() {
   const [orderDueDate, setOrderDueDate] = useState('');
   const [showOrderDueDatePicker, setShowOrderDueDatePicker] = useState(false);
   const [tempOrderDueDate, setTempOrderDueDate] = useState<Date>(new Date());
+  // Product picker for order form
+  const [catalogProducts, setCatalogProducts] = useState<any[]>([]);
+  const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<any | null>(null);
+  const [selectedVariant, setSelectedVariant] = useState<any | null>(null);
+  const [productPickerVisible, setProductPickerVisible] = useState(false);
+  const [productPickerSearch, setProductPickerSearch] = useState('');
+  // Delivery type
+  const [orderDeliveryType, setOrderDeliveryType] = useState<'pickup' | 'delivery' | 'dine_in'>('pickup');
+  const [orderDeliveryAddress, setOrderDeliveryAddress] = useState('');
+  const [orderTableNumber, setOrderTableNumber] = useState('');
 
   // Currency
   const [currency, setCurrency] = useState('USD');
@@ -353,12 +376,16 @@ export default function SalesScreen() {
   };
 
   const handleCreateOrder = async () => {
-    // Validate
     if (!isWalkInCustomer && !selectedCustomer) {
       Alert.alert('Error', 'Please select a customer or choose Walk-in Customer');
       return;
     }
-    if (!orderProduct.trim()) {
+    // Product validation
+    if (orderConfig.productPicker && !selectedCatalogProduct) {
+      Alert.alert('Error', 'Please select a product');
+      return;
+    }
+    if (!orderConfig.productPicker && !orderProduct.trim()) {
       Alert.alert('Error', 'Please enter the product name');
       return;
     }
@@ -373,33 +400,59 @@ export default function SalesScreen() {
 
     setSaving(true);
     try {
-      const totalAmount = parseInt(orderQuantity) * parseFloat(orderPrice);
-      const response = await apiClient.post('/orders', {
+      const qty = parseInt(orderQuantity);
+      const unitPrice = parseFloat(orderPrice);
+      const totalAmount = qty * unitPrice;
+
+      const productName = orderConfig.productPicker
+        ? selectedCatalogProduct!.name
+        : orderProduct.trim();
+
+      const itemEntry: any = {
+        product_name: productName,
+        product_id: selectedCatalogProduct?.id || '',
+        quantity: qty,
+        unit_price: unitPrice,
+        price: totalAmount,
+      };
+      if (selectedVariant) itemEntry.variant = selectedVariant.name;
+
+      const payload: any = {
         customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
-        product: orderProduct.trim(),
-        quantity: parseInt(orderQuantity),
-        price: parseFloat(orderPrice),
+        product: productName,
+        product_name: productName,
+        quantity: qty,
+        price: unitPrice,
         total_amount: totalAmount,
         payment_status: 'Pending',
         delivery_status: 'Processing',
         notes: orderNotes.trim() || undefined,
         due_date: orderDueDate || undefined,
-      });
+        delivery_type: orderDeliveryType,
+        delivery_address: orderDeliveryType === 'delivery' ? orderDeliveryAddress.trim() || undefined : undefined,
+        table_number: orderDeliveryType === 'dine_in' ? orderTableNumber.trim() || undefined : undefined,
+        items: [itemEntry],
+      };
 
-      // Optimistically add to local state immediately (works online and offline)
+      const response = await apiClient.post('/orders', payload);
+
       const newOrder: Order = {
         id: response.data?.id || `temp_${Date.now()}`,
         customer_id: isWalkInCustomer ? 'walk-in' : selectedCustomer!.id,
         customer_name: isWalkInCustomer ? 'Walk-in Customer' : selectedCustomer!.name,
         customer_phone: isWalkInCustomer ? '' : (selectedCustomer?.phone_number || ''),
-        product: orderProduct.trim(),
-        quantity: parseInt(orderQuantity),
-        price: parseFloat(orderPrice),
+        product: productName,
+        quantity: qty,
+        price: unitPrice,
         total_amount: totalAmount,
         payment_status: 'Pending',
         delivery_status: 'Processing',
         notes: orderNotes.trim() || undefined,
         due_date: orderDueDate || undefined,
+        delivery_type: orderDeliveryType,
+        delivery_address: orderDeliveryType === 'delivery' ? orderDeliveryAddress.trim() : undefined,
+        table_number: orderDeliveryType === 'dine_in' ? orderTableNumber.trim() : undefined,
+        items: [itemEntry],
         created_at: new Date().toISOString(),
       };
       setOrders(prev => [newOrder, ...prev]);
@@ -407,7 +460,7 @@ export default function SalesScreen() {
       setModalVisible(false);
       Alert.alert('Success', 'Order created successfully!');
 
-      // Reset form
+      // Reset order form
       setSelectedCustomer(null);
       setIsWalkInCustomer(false);
       setOrderProduct('');
@@ -415,6 +468,11 @@ export default function SalesScreen() {
       setOrderPrice('');
       setOrderNotes('');
       setOrderDueDate('');
+      setSelectedCatalogProduct(null);
+      setSelectedVariant(null);
+      setOrderDeliveryType('pickup');
+      setOrderDeliveryAddress('');
+      setOrderTableNumber('');
       fetchData();
     } catch (error: any) {
       console.error('Error creating order:', error);
@@ -1129,7 +1187,12 @@ export default function SalesScreen() {
       {/* WhatsApp-style Floating Action Button */}
       <TouchableOpacity
         style={styles.fab}
-        onPress={() => setModalVisible(true)}
+        onPress={() => {
+          setModalVisible(true);
+          if (viewMode === 'orders' && catalogProducts.length === 0) {
+            apiClient.get('/products').then(r => setCatalogProducts(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+          }
+        }}
         activeOpacity={0.8}
       >
         <Ionicons name="add" size={22} color="#FFFFFF" />
@@ -1494,17 +1557,71 @@ export default function SalesScreen() {
                   </TouchableOpacity>
                 </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Product *</Text>
-                  <TextInput
-                    style={styles.formInput}
-                    value={orderProduct}
-                    onChangeText={setOrderProduct}
-                    placeholder="e.g., Laptop, Phone, etc."
-                    placeholderTextColor="#666"
-                  />
-                </View>
+                {/* ── Product selection ── */}
+                {orderConfig.productPicker ? (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Product *</Text>
+                    <TouchableOpacity
+                      style={[styles.formInput, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
+                      onPress={() => setProductPickerVisible(true)}
+                    >
+                      <Text style={selectedCatalogProduct ? { color: '#fff', fontSize: 15 } : { color: '#666', fontSize: 15 }}>
+                        {selectedCatalogProduct ? selectedCatalogProduct.name : 'Select a product'}
+                      </Text>
+                      <Ionicons name="chevron-down" size={18} color="#888" />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Product *</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderProduct}
+                      onChangeText={setOrderProduct}
+                      placeholder="e.g., Laptop, Phone, etc."
+                      placeholderTextColor="#666"
+                    />
+                  </View>
+                )}
 
+                {/* ── Variant selector (only if product has variants) ── */}
+                {orderConfig.variants && selectedCatalogProduct && (selectedCatalogProduct.variants || []).length > 0 && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Size / Version</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
+                      {(selectedCatalogProduct.variants || []).map((v: any) => {
+                        const isSelected = selectedVariant?.name === v.name;
+                        return (
+                          <TouchableOpacity
+                            key={v.name}
+                            onPress={() => {
+                              setSelectedVariant(v);
+                              setOrderPrice(String(v.price));
+                            }}
+                            style={{
+                              borderWidth: 1.5,
+                              borderColor: isSelected ? '#25D366' : '#333',
+                              borderRadius: 8,
+                              paddingHorizontal: 14,
+                              paddingVertical: 8,
+                              marginRight: 8,
+                              backgroundColor: isSelected ? '#0d3321' : '#1a1a1a',
+                            }}
+                          >
+                            <Text style={{ color: isSelected ? '#25D366' : '#ccc', fontSize: 13, fontWeight: isSelected ? '700' : '400' }}>
+                              {v.name}
+                            </Text>
+                            <Text style={{ color: '#aaa', fontSize: 11, marginTop: 2 }}>
+                              {currency} {parseFloat(v.price).toLocaleString()}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                )}
+
+                {/* ── Quantity + Price ── */}
                 <View style={styles.formRow}>
                   <View style={[styles.formGroup, { flex: 1, marginRight: 8 }]}>
                     <Text style={styles.formLabel}>Quantity *</Text>
@@ -1539,13 +1656,70 @@ export default function SalesScreen() {
                   </View>
                 ) : null}
 
+                {/* ── Delivery type ── */}
+                {orderConfig.delivery && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Order Type</Text>
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                      {(['pickup', 'delivery', ...(orderConfig.dineIn ? ['dine_in'] : [])] as const).map(dt => (
+                        <TouchableOpacity
+                          key={dt}
+                          onPress={() => setOrderDeliveryType(dt as any)}
+                          style={{
+                            flex: 1,
+                            paddingVertical: 10,
+                            borderRadius: 8,
+                            borderWidth: 1.5,
+                            borderColor: orderDeliveryType === dt ? '#25D366' : '#333',
+                            backgroundColor: orderDeliveryType === dt ? '#0d3321' : '#1a1a1a',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Text style={{ color: orderDeliveryType === dt ? '#25D366' : '#888', fontSize: 13, fontWeight: orderDeliveryType === dt ? '700' : '400' }}>
+                            {dt === 'pickup' ? 'Pickup' : dt === 'delivery' ? 'Delivery' : 'Dine-in'}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                )}
+
+                {/* ── Delivery address ── */}
+                {orderDeliveryType === 'delivery' && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Delivery Address</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderDeliveryAddress}
+                      onChangeText={setOrderDeliveryAddress}
+                      placeholder="e.g., 14 Moi Ave, Nairobi"
+                      placeholderTextColor="#666"
+                    />
+                  </View>
+                )}
+
+                {/* ── Table number ── */}
+                {orderDeliveryType === 'dine_in' && (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.formLabel}>Table Number</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={orderTableNumber}
+                      onChangeText={setOrderTableNumber}
+                      placeholder="e.g., Table 5"
+                      placeholderTextColor="#666"
+                    />
+                  </View>
+                )}
+
+                {/* ── Notes + Due Date ── */}
                 <View style={styles.formGroup}>
                   <Text style={styles.formLabel}>Notes (Optional)</Text>
                   <TextInput
                     style={[styles.formInput, styles.receiptMessageInput]}
                     value={orderNotes}
                     onChangeText={setOrderNotes}
-                    placeholder="e.g., Customer requested blue color"
+                    placeholder="e.g., Extra napkins, no onions"
                     placeholderTextColor="#666"
                     multiline
                     numberOfLines={3}
@@ -1594,6 +1768,70 @@ export default function SalesScreen() {
               </>
             )}
           </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Product Picker Modal */}
+      <Modal visible={productPickerVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setProductPickerVisible(false)}>
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setProductPickerVisible(false)}>
+              <Ionicons name="close" size={28} color="#888" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Select Product</Text>
+            <View style={{ width: 28 }} />
+          </View>
+          <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+            <TextInput
+              style={[styles.formInput, { marginTop: 0 }]}
+              value={productPickerSearch}
+              onChangeText={setProductPickerSearch}
+              placeholder="Search products..."
+              placeholderTextColor="#666"
+              autoFocus
+            />
+          </View>
+          <FlatList
+            data={catalogProducts.filter(p =>
+              !productPickerSearch || p.name?.toLowerCase().includes(productPickerSearch.toLowerCase())
+            )}
+            keyExtractor={p => p.id || p._id || p.name}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }}
+            renderItem={({ item: p }) => (
+              <TouchableOpacity
+                style={{
+                  paddingVertical: 14,
+                  paddingHorizontal: 4,
+                  borderBottomWidth: 1,
+                  borderBottomColor: '#222',
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+                onPress={() => {
+                  setSelectedCatalogProduct(p);
+                  setSelectedVariant(null);
+                  // Auto-fill price: use base price if no variants, else wait for variant selection
+                  const hasVariants = orderConfig.variants && (p.variants || []).length > 0;
+                  if (!hasVariants) setOrderPrice(String(p.price || 0));
+                  else setOrderPrice('');
+                  setProductPickerSearch('');
+                  setProductPickerVisible(false);
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600' }}>{p.name}</Text>
+                  {!!p.category && <Text style={{ color: '#888', fontSize: 12, marginTop: 2 }}>{p.category}{p.sub_category ? ` › ${p.sub_category}` : ''}</Text>}
+                </View>
+                <Text style={{ color: '#25D366', fontSize: 15, fontWeight: '700', marginLeft: 12 }}>
+                  {orderConfig.variants && (p.variants || []).length > 0
+                    ? `from ${currency} ${Math.min(...(p.variants || []).map((v: any) => parseFloat(v.price) || 0)).toLocaleString()}`
+                    : `${currency} ${(p.price || 0).toLocaleString()}`}
+                </Text>
+              </TouchableOpacity>
+            )}
+            ListEmptyComponent={<Text style={{ color: '#666', textAlign: 'center', marginTop: 40 }}>No products found</Text>}
+          />
         </SafeAreaView>
       </Modal>
 

@@ -894,14 +894,19 @@ class SaleResponse(BaseModel):
 # Order Models
 class OrderCreate(BaseModel):
     customer_id: str
-    product: str
+    product: Optional[str] = None
+    product_name: Optional[str] = None
     quantity: int = 1
-    price: float
-    total_amount: float
+    price: float = 0
+    total_amount: float = 0
     payment_status: str = "Pending"  # Pending, Partial, Paid
     delivery_status: str = "Processing"  # Processing, Shipped, Delivered
     notes: Optional[str] = None
     due_date: Optional[str] = None
+    delivery_type: Optional[str] = "pickup"
+    delivery_address: Optional[str] = None
+    table_number: Optional[str] = None
+    items: Optional[list] = None
 
 class OrderResponse(BaseModel):
     id: str
@@ -4218,49 +4223,83 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
         }
     
     order_id = str(uuid.uuid4())
-    
+
+    # Resolve product label from items array or fallback to product/product_name field
+    items = order.items or []
+    product_label = (
+        order.product
+        or order.product_name
+        or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
+    )
+    quantity = order.quantity or (items[0].get("quantity", 1) if items else 1)
+    price = order.price or (items[0].get("unit_price", 0) if items else 0)
+    total_amount = order.total_amount or sum(it.get("price", 0) for it in items) or round(quantity * price, 2)
+
     order_doc = {
         "_id": order_id,
         "user_id": business_id,
         "recorded_by": user["_id"],
         "customer_id": order.customer_id,
-        "product": order.product,
-        "quantity": order.quantity,
-        "price": order.price,
-        "total_amount": order.total_amount,
+        "product": product_label,
+        "product_name": product_label,
+        "quantity": quantity,
+        "price": price,
+        "total_amount": total_amount,
+        "total": total_amount,
         "payment_status": order.payment_status,
         "delivery_status": order.delivery_status,
+        "status": "pending",
         "notes": order.notes,
         "due_date": order.due_date,
-        "created_at": datetime.utcnow()
+        "delivery_type": order.delivery_type or "pickup",
+        "delivery_address": order.delivery_address or "",
+        "table_number": order.table_number or "",
+        "items": items,
+        "created_at": datetime.utcnow(),
+        "created_by": "staff",
     }
-    
-    # Reduce stock if matching product is found and quantity is tracked
-    await db.products.update_one(
-        {
-            "user_id": business_id, 
-            "name": order.product, 
-            "stock_quantity": {"$exists": True, "$ne": None},
-            "stock_quantity": {"$gte": order.quantity}
-        },
-        {"$inc": {"stock_quantity": -order.quantity}}
-    )
+
+    # Reduce stock for each item if stock is tracked
+    for it in items:
+        if it.get("product_id"):
+            await db.products.update_one(
+                {"_id": it["product_id"], "user_id": business_id, "stock_quantity": {"$gte": it.get("quantity", 1)}},
+                {"$inc": {"stock_quantity": -it.get("quantity", 1)}}
+            )
+        elif it.get("product_name"):
+            await db.products.update_one(
+                {"user_id": business_id, "name": it["product_name"], "stock_quantity": {"$gte": it.get("quantity", 1)}},
+                {"$inc": {"stock_quantity": -it.get("quantity", 1)}}
+            )
+
+    if not items and product_label:
+        # Single-item legacy path: deduct stock by product name
+        await db.products.update_one(
+            {"user_id": business_id, "name": product_label, "stock_quantity": {"$gte": quantity}},
+            {"$inc": {"stock_quantity": -quantity}}
+        )
 
     await db.orders.insert_one(order_doc)
-    
+
     return OrderResponse(
         id=order_id,
         customer_id=order.customer_id,
-        customer_name=customer["name"],
-        customer_phone=customer["phone_number"],
-        product=order.product,
-        quantity=order.quantity,
-        price=order.price,
-        total_amount=order.total_amount,
+        customer_name=customer.get("name", "Unknown"),
+        customer_phone=customer.get("phone_number", "N/A"),
+        product=product_label,
+        quantity=int(quantity),
+        price=float(price),
+        total_amount=float(total_amount),
         payment_status=order.payment_status,
         delivery_status=order.delivery_status,
         notes=order.notes,
         due_date=order.due_date,
+        delivery_type=order.delivery_type,
+        delivery_address=order.delivery_address,
+        table_number=order.table_number,
+        items=items if items else None,
+        status="pending",
+        created_by="staff",
         created_at=order_doc["created_at"].isoformat()
     )
 
