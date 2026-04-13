@@ -127,6 +127,10 @@ export default function AccountScreen() {
   // Shared
   const [journeyDeliveryInfo, setJourneyDeliveryInfo] = useState('');
   const [journeyBusinessHours, setJourneyBusinessHours] = useState('');
+  // Retail
+  const [retailHasCustomOrders, setRetailHasCustomOrders] = useState(false);
+  const [retailCustomLeadTime, setRetailCustomLeadTime] = useState('');
+  const [retailReturnPolicy, setRetailReturnPolicy] = useState('');
   // Restaurant / food
   const [restaurantAvgWait, setRestaurantAvgWait] = useState('');
   const [restaurantMinDelivery, setRestaurantMinDelivery] = useState('');
@@ -258,6 +262,9 @@ export default function AccountScreen() {
         const bk = await settingsAPI.getBusinessKnowledge() as any;
         setJourneyDeliveryInfo(bk.delivery_info || '');
         setJourneyBusinessHours(bk.business_hours || '');
+        setRetailHasCustomOrders(!!bk.retail_has_custom_orders);
+        setRetailCustomLeadTime(bk.retail_custom_lead_time || '');
+        setRetailReturnPolicy(bk.retail_return_policy || '');
         setRestaurantAvgWait(bk.restaurant_avg_wait || '');
         setRestaurantMinDelivery(bk.restaurant_min_delivery || '');
         setRestaurantTableRange(bk.restaurant_table_range || '');
@@ -1180,8 +1187,17 @@ export default function AccountScreen() {
                 </View>
               );
 
-              // retail / general / wholesale shared delivery fields only
-              if (['retail', 'general'].includes(businessType)) return (
+              if (businessType === 'retail') return (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🛍️ Retail Settings</Text>
+                  {sharedFields}
+                  {jSwitchRow('Custom / Made-to-Order Items', 'AI will collect custom specs and confirm lead time', retailHasCustomOrders, (v) => { setRetailHasCustomOrders(v); saveJourneySettings({ retail_has_custom_orders: v }); })}
+                  {retailHasCustomOrders && jTextField('Custom Order Lead Time', 'Shown to customers when ordering custom items', retailCustomLeadTime, setRetailCustomLeadTime, () => saveJourneySettings({ retail_custom_lead_time: retailCustomLeadTime }), 'e.g. 5–7 business days')}
+                  {jTextField('Return / Exchange Policy', 'Shown when customers ask about returns', retailReturnPolicy, setRetailReturnPolicy, () => saveJourneySettings({ retail_return_policy: retailReturnPolicy }), 'e.g. Exchange within 7 days with receipt')}
+                </View>
+              );
+
+              if (businessType === 'general') return (
                 <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
                   <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>⚙️ Order Settings</Text>
                   {sharedFields}

@@ -18,18 +18,8 @@ from typing import Dict, List
 # ── Per-business-type instruction blocks ─────────────────────────────────────
 
 _BUSINESS_INSTRUCTIONS: Dict[str, str] = {
-    # All other types are built dynamically — see _build_X_instructions() functions.
-    # retail has no dynamic builder yet; it falls through to this dict entry.
-    "retail": """\
-- MENU: When showing products, ALWAYS add "0️⃣ View all images" as the last option in every numbered menu. Include it in new_menu as {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}.
-- BROWSING: When customer picks 0 / says "view images" / "show images" / "show catalog" → send send_catalog_images action (product_ids of ALL products with images, up to 8) + new_menu of those products.
-- SELECTING: When customer picks a number (1,2,3…), send send_product_image action (if has image), confirm item, ask quantity.
-- ADDING MORE: After qty confirmed, ask "Anything else or checkout?" If yes → send catalog menu again (with 0️⃣ View all images option).
-- CHECKOUT: When customer says checkout/done/confirm → ask delivery or pickup. If delivery → ask address. Then fire create_order with ALL collected items + delivery info at once.
-- ORDER MANAGEMENT: When customer asks "my order" → show order details + 1️⃣ Update 2️⃣ Cancel options.
-- PAYMENT: After create_order fires → show order summary + exact payment details → ask for payee name + amount.
-- PAYMENT CONFIRM: intent=payment_received + set_payment_pending + notify_owner.""",
-
+    # All types are now built dynamically — see _build_X_instructions() functions.
+    # This dict is kept as a fallback for unknown/future types only.
 }
 
 # ── Catalog helpers (item label + category summary) ───────────────────────────
@@ -2107,6 +2097,140 @@ def _build_grocery_instructions(bc: dict) -> str:
     return "\n".join(l for l in lines if l is not None)
 
 
+def _build_retail_instructions(bc: dict) -> str:
+    """Build full retail-specific autoreply instructions from business config."""
+    has_delivery      = bc.get("retail_has_delivery", True)
+    has_pickup        = bc.get("retail_has_pickup", True)
+    delivery_info     = bc.get("delivery_info", "")
+    return_policy     = bc.get("retail_return_policy", "")
+    has_custom_orders = bc.get("retail_has_custom_orders", False)   # made-to-order / personalised
+    custom_lead_time  = bc.get("retail_custom_lead_time", "")       # e.g. "5–7 business days"
+    business_hours    = bc.get("business_hours", "")
+
+    lines = [
+        "RETAIL ORDER FLOW:",
+        "",
+        "CONTEXT — WHO YOU'RE TALKING TO:",
+        "- Your customers are individual shoppers browsing for products they want to buy.",
+        "- They may be looking for a specific item, a specific size/colour, or just browsing.",
+        "- Be warm, helpful, and product-focused. Make it easy to find and order.",
+        "",
+        "STEP 1 — GREETING & INTENT:",
+        "- Greet the customer. Ask what they're looking for or invite them to browse.",
+        "- If they name a specific product → jump straight to that item in the catalog.",
+        "- If they want to browse → show numbered category menu (if 2+ categories), then items within.",
+        "",
+        "STEP 2 — BROWSING & PRODUCT DISPLAY:",
+        "- Use numbered menu (1️⃣ 2️⃣ 3️⃣) for listings.",
+        "- Show: item name, key variant info (e.g. sizes/colours available), price.",
+        "  Format: '1️⃣ Linen Tote Bag — KES 1,200 | Colours: Black, Tan, Olive'",
+        "- ALWAYS add '0️⃣ View all images' as last menu option when products have images.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all images", "price": 0, "type": "catalog"}}',
+        "- When customer picks 0 or says 'show images' / 'view catalog' → send send_catalog_images + resend menu.",
+        "- When customer picks a numbered item → send send_product_image (if has image) + confirm item details.",
+        "",
+        "STEP 3 — VARIANTS (SIZE / COLOUR / STYLE):",
+        "- If the product has variants → ALWAYS ask before confirming the item:",
+        "  'Which size / colour / style would you like? Available: [list from catalog]'",
+        "- Once variant selected → confirm: product name, variant chosen, price.",
+        "- If a specific variant is out of stock → say so and offer available alternatives.",
+        "",
+        "STEP 4 — QUANTITY & CART:",
+        "- Ask for quantity.",
+        "- After each item → 'Would you like to add anything else or proceed to checkout?'",
+        "- If adding more → resend category menu (with 0️⃣ View all images).",
+        "- Show running cart total after 2+ items:",
+        "  '🛍️ Cart so far: [Item 1] × [qty] = KES [X], [Item 2] × [qty] = KES [Y]. Total: KES [Z]'",
+        "- Continue until customer says done / checkout / confirm / that's all.",
+        "",
+    ]
+
+    if has_custom_orders:
+        lead_note = f" Lead time: {custom_lead_time}." if custom_lead_time else " We'll confirm the exact timeline."
+        lines += [
+            "CUSTOM / MADE-TO-ORDER ITEMS:",
+            "- If customer asks about a personalised or custom item → collect details: what they want, any specific text/design/measurements.",
+            f"- Inform them about the lead time.{lead_note}",
+            "- Confirm details + total, then proceed to deposit/payment.",
+            "- Fire create_order with notes containing all custom requirements.",
+            "",
+        ]
+
+    lines += [
+        "STEP 5 — FULFILMENT:",
+        "- When customer is ready → ask: 'How would you like to receive your order?'",
+    ]
+
+    if has_pickup and has_delivery:
+        lines.append("  Show: 1️⃣ Delivery  2️⃣ Pickup")
+    elif has_delivery:
+        lines.append("  Delivery only.")
+    elif has_pickup:
+        lines.append("  Pickup only.")
+
+    if has_delivery:
+        zone_note = f" {delivery_info}" if delivery_info else ""
+        lines += [
+            "",
+            f"DELIVERY PATH:{zone_note}",
+            "- Ask for delivery address.",
+            "- Confirm any delivery fee from business info.",
+            "- Fire create_order with delivery_type='delivery', delivery_address='[address]'.",
+        ]
+
+    if has_pickup:
+        hours_note = f" Pickup hours: {business_hours}." if business_hours else ""
+        lines += [
+            "",
+            f"PICKUP PATH:{hours_note}",
+            "- Confirm pickup location from business info.",
+            "- Ask preferred pickup date/time.",
+            "- Fire create_order with delivery_type='pickup', notes='Pickup: [date/time]'.",
+        ]
+
+    lines += [
+        "",
+        "STEP 6 — ORDER SUMMARY & PAYMENT:",
+        "- Show a clear summary before payment:",
+        "  '🛍️ *Your Order:*",
+        "   • [Product] ([variant]) × [qty] = KES [line total]",
+        "   • ...",
+        "   💰 *Total: KES [total]*",
+        "   📦 *[Delivery / Pickup]: [detail]*'",
+        "- Show payment details EXACTLY as configured.",
+        "- Ask: 'Once paid, please reply with your full name and the amount paid.'",
+        "- Fire create_order ONCE with ALL items in the items[] array.",
+        "",
+        "PAYMENT CONFIRMATION:",
+        "- When customer provides name + amount (or says 'paid' / 'sent' / 'nimetuma'):",
+        "  → intent=payment_received",
+        "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
+        "  → fire notify_owner(reason='payment_received', message='[Name] paid [Amount] — retail order')",
+        "  → Reply: 'Thank you [name]! 🙏 Payment received. Your order will be [delivered/ready for pickup] as arranged.'",
+        "",
+        "ORDER MANAGEMENT:",
+        "- 'my order' / 'order status' → show order summary + fulfilment details.",
+        "- Cancel → confirm, fire cancel_order.",
+        "- Exchange / return request:",
+    ]
+
+    if return_policy:
+        lines.append(f"  → Share policy: '{return_policy}'")
+    else:
+        lines.append("  → Fire notify_owner and tell customer the team will be in touch.")
+
+    lines += [
+        "",
+        "IMPORTANT RULES:",
+        "- ALWAYS ask for variant (size/colour/style) before adding item to cart — never assume.",
+        "- NEVER fire create_order before delivery/pickup details are confirmed.",
+        "- NEVER invent stock levels — only confirm items that are in_stock=true in the catalog.",
+        "- Keep tone warm and personal — this is a retail shopper, not a B2B buyer.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_bakery_instructions(bc: dict) -> str:
     """Build full bakery-specific autoreply instructions from business config."""
     has_delivery      = bc.get("bakery_has_delivery", True)
@@ -2585,6 +2709,8 @@ def build_system_prompt(
     # ── Business-type instructions ──
     if btype == "restaurant":
         instructions = _build_restaurant_instructions(bc)
+    elif btype == "retail":
+        instructions = _build_retail_instructions(bc)
     elif btype == "bakery":
         instructions = _build_bakery_instructions(bc)
     elif btype == "grocery":
