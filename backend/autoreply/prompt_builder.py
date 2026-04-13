@@ -371,9 +371,11 @@ CATALOG BROWSING:
 
 SIZES / VERSIONS — CRITICAL:
 - If a catalog item shows "↳ Variants:" → ask for size/version FIRST before anything else.
-  Ask naturally: "What size would you like?" then show options as a numbered menu.
-  new_menu: {"1": {"id": "mod_Small", "name": "Small", "price": 400, "type": "modifier"}, ...}
-- Use the VARIANT price as the item base price. Record variant="Small" in the OrderItem.
+  Ask naturally: "What size would you like?" then show each size with its FULL price:
+  "1️⃣ Small — KES 750  2️⃣ Medium — KES 900  3️⃣ Large — KES 1050"
+  new_menu: {"1": {"id": "mod_Small", "name": "Small", "price": 750, "type": "modifier"}, ...}
+- The variant price IS the full price the customer pays for that size (not an add-on).
+- Use the variant price as the unit_price in the OrderItem. Record variant="Small".
 
 MODIFIERS — STEP-BY-STEP AFTER ITEM IS SELECTED:
 - If a catalog item shows "↳ [Group] (required/optional)" → ask for each modifier group IN ORDER:

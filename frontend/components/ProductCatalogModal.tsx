@@ -1103,7 +1103,7 @@ export default function ProductCatalogModal({
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
                                     <Text style={styles.formLabel}>Sizes / Versions (Optional)</Text>
-                                    <Text style={styles.stockHint}>e.g. Small · Medium · Large or 250ml · 500ml</Text>
+                                    <Text style={styles.stockHint}>Enter the full price a customer pays for each size — e.g. Small = 750, Medium = 900, Large = 1050</Text>
                                 </View>
 
                                 {editVariants.map((v, idx) => (
@@ -1121,14 +1121,14 @@ export default function ProductCatalogModal({
                                         style={[styles.formInput, { flex: 2, marginRight: 6 }]}
                                         value={newVariantName}
                                         onChangeText={setNewVariantName}
-                                        placeholder="e.g. Small, Medium, Large"
+                                        placeholder="Size name (e.g. Small)"
                                         placeholderTextColor="#555"
                                     />
                                     <TextInput
                                         style={[styles.formInput, { flex: 1, marginRight: 6 }]}
                                         value={newVariantPrice}
                                         onChangeText={setNewVariantPrice}
-                                        placeholder="Price"
+                                        placeholder="Full price (e.g. 750)"
                                         placeholderTextColor="#555"
                                         keyboardType="numeric"
                                     />
