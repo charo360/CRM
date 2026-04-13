@@ -2816,6 +2816,8 @@ def build_system_prompt(
 
     # ── Operating details ──
     details: List[str] = [f"Currency: {currency}"]
+    if bc.get("business_location"):
+        details.append(f"Location/Address: {bc['business_location']}")
     if bc.get("business_hours"):
         details.append(f"Hours: {bc['business_hours']}")
     if bc.get("delivery_info"):

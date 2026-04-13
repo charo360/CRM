@@ -259,6 +259,7 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "currency":           currency,
         "payment_methods":    payment_methods,
         "business_hours":     _sanitize(bk.get("business_hours", "")),
+        "business_location":  _sanitize(bk.get("business_location", "")),
         "delivery_info":      _sanitize(bk.get("delivery_info", "")),
         "about":              _sanitize(bk.get("business_description", "")),
         "products_services":  _sanitize(bk.get("products_services", "")),

@@ -196,6 +196,7 @@ export default function BusinessKnowledgeModal({
     const [businessType, setBusinessType] = useState('general');
     const [knowledge, setKnowledge] = useState({
         business_description: '',
+        business_location: '',
         products_services: '',
         pricing_info: '',
         business_hours: '',
@@ -254,6 +255,7 @@ export default function BusinessKnowledgeModal({
             if (data) {
                 setKnowledge({
                     business_description: data.business_description || '',
+                    business_location: data.business_location || '',
                     products_services: data.products_services || '',
                     pricing_info: data.pricing_info || '',
                     business_hours: data.business_hours || '',
@@ -881,6 +883,19 @@ export default function BusinessKnowledgeModal({
                                 />
                             </View>
                         )}
+
+                        {/* Location / Address */}
+                        <View style={styles.field}>
+                            <Text style={styles.label}>Location / Address</Text>
+                            <Text style={styles.hint}>AI shares this when customers ask "where are you located?"</Text>
+                            <TextInput
+                                style={styles.input}
+                                placeholder="e.g. Westlands, Nairobi — Shop 4, ABC Mall"
+                                placeholderTextColor="#555"
+                                value={knowledge.business_location}
+                                onChangeText={(text) => setKnowledge({ ...knowledge, business_location: text })}
+                            />
+                        </View>
 
                         {/* Business Hours */}
                         <View style={styles.field}>

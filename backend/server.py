@@ -1479,6 +1479,8 @@ class BusinessKnowledge(BaseModel):
     faqs: Optional[str] = None
     special_offers: Optional[str] = None
     business_description: Optional[str] = None
+    # General
+    business_location: Optional[str] = None  # physical address / area
     # Business type
     business_type: Optional[str] = None  # 'general', 'retail', 'creator', 'restaurant', 'service'
     # Restaurant-specific fields
@@ -8002,7 +8004,7 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     fields = [
         # Core fields
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
-        'faqs', 'special_offers', 'business_description', 'business_type',
+        'faqs', 'special_offers', 'business_description', 'business_location', 'business_type',
         # Restaurant
         'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
         'restaurant_table_range', 'restaurant_avg_wait', 'restaurant_min_delivery',

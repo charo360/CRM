@@ -128,6 +128,7 @@ export default function AccountScreen() {
   // Shared
   const [journeyDeliveryInfo, setJourneyDeliveryInfo] = useState('');
   const [journeyBusinessHours, setJourneyBusinessHours] = useState('');
+  const [journeyLocation, setJourneyLocation] = useState('');
   // Retail
   const [retailHasCustomOrders, setRetailHasCustomOrders] = useState(false);
   const [retailCustomLeadTime, setRetailCustomLeadTime] = useState('');
@@ -266,6 +267,7 @@ export default function AccountScreen() {
       const bk = await settingsAPI.getBusinessKnowledge() as any;
       setJourneyDeliveryInfo(bk.delivery_info || '');
       setJourneyBusinessHours(bk.business_hours || '');
+      setJourneyLocation(bk.business_location || '');
       setRetailHasCustomOrders(!!bk.retail_has_custom_orders);
       setRetailCustomLeadTime(bk.retail_custom_lead_time || '');
       setRetailReturnPolicy(bk.retail_return_policy || '');
@@ -1071,8 +1073,9 @@ export default function AccountScreen() {
 
               const sharedFields = (
                 <>
-                  {jTextField('Delivery Info', 'Zones, fees, estimated times — shared in AI replies', journeyDeliveryInfo, setJourneyDeliveryInfo, () => saveJourneySettings({ delivery_info: journeyDeliveryInfo }), 'e.g. Free delivery within CBD, KES 200 outside')}
+                  {jTextField('Location / Address', 'Shared when customers ask where you are', journeyLocation, setJourneyLocation, () => saveJourneySettings({ business_location: journeyLocation }), 'e.g. Westlands, Nairobi — Shop 4, ABC Mall')}
                   {jTextField('Business Hours', 'When you are open — AI will quote these', journeyBusinessHours, setJourneyBusinessHours, () => saveJourneySettings({ business_hours: journeyBusinessHours }), 'e.g. Mon–Sat 8am–8pm, Sun 10am–4pm')}
+                  {jTextField('Delivery Info', 'Zones, fees, estimated times — shared in AI replies', journeyDeliveryInfo, setJourneyDeliveryInfo, () => saveJourneySettings({ delivery_info: journeyDeliveryInfo }), 'e.g. Free delivery within CBD, KES 200 outside')}
                 </>
               );
 
