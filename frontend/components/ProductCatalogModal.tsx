@@ -1402,7 +1402,7 @@ export default function ProductCatalogModal({
                             </View>
 
                             {/* ── Modifier Groups Section (restaurant & food only for spice/extras; hidden for grocery/wholesale/creator) ── */}
-                            {!isGrocery && !isWholesale && !isCreator && (
+                            {!isGrocery && !isWholesale && !isCreator && !isHotel && !isRental && (
                             <View style={styles.formGroup}>
                                 <View style={styles.formLabelRow}>
                                     <Text style={styles.formLabel}>Modifier Groups (Optional)</Text>
