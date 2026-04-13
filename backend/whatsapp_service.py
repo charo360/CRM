@@ -477,13 +477,13 @@ class WhatsAppService:
                     schedule.append(("paused", pause_dur))
 
         # Execute the typing schedule
+        _PRESENCE_REFRESH = 5  # WhatsApp drops typing indicator after ~10s; refresh every 5s to keep it alive
         for action, duration in schedule:
             await self._send_presence(instance_name, to_number, action)
             if action == "composing":
-                # WhatsApp resets typing after ~25s, re-send if needed
                 remaining = duration
                 while remaining > 0:
-                    wait = min(remaining, MAX_TYPING_DURATION - 1)
+                    wait = min(remaining, _PRESENCE_REFRESH)
                     await asyncio.sleep(wait)
                     remaining -= wait
                     if remaining > 0:
