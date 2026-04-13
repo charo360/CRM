@@ -4357,8 +4357,8 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         customer_phone = "N/A"
     else:
         customer = await db.customers.find_one({"_id": order.get("customer_id")})
-        customer_name = customer["name"] if customer else "Unknown"
-        customer_phone = customer["phone_number"] if customer else "N/A"
+        customer_name = customer.get("name", "Unknown") if customer else "Unknown"
+        customer_phone = customer.get("phone_number", "N/A") if customer else "N/A"
 
     # Handle both autoreply orders (product_name/items) and manual orders (product)
     items = order.get("items") or []
@@ -4367,9 +4367,12 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         or order.get("product_name")
         or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
     )
-    quantity = order.get("quantity") or (items[0].get("quantity", 1) if items else 1)
-    unit_price = order.get("price") or (items[0].get("unit_price", 0) if items else 0)
-    total = order.get("total_amount") or order.get("total") or 0
+    quantity = int(order.get("quantity") or (items[0].get("quantity", 1) if items else 1))
+    unit_price = float(order.get("price") or (items[0].get("unit_price", 0) if items else 0))
+    total = float(order.get("total_amount") or order.get("total") or 0)
+
+    created_at_raw = order.get("created_at")
+    created_at_str = created_at_raw.isoformat() if hasattr(created_at_raw, "isoformat") else str(created_at_raw or "")
 
     return OrderResponse(
         id=str(order["_id"]),
@@ -4384,7 +4387,7 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         delivery_status=order.get("delivery_status", order.get("status", "pending")),
         notes=order.get("notes"),
         due_date=order.get("due_date"),
-        created_at=order["created_at"].isoformat(),
+        created_at=created_at_str,
         order_number=order.get("order_number"),
         delivery_type=order.get("delivery_type"),
         delivery_address=order.get("delivery_address"),
