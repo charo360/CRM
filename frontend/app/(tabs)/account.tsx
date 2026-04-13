@@ -130,6 +130,10 @@ export default function AccountScreen() {
   const [journeyBusinessHours, setJourneyBusinessHours] = useState('');
   const [journeyLocation, setJourneyLocation] = useState('');
   // Retail
+  const [retailHasDelivery, setRetailHasDelivery] = useState(true);
+  const [retailHasPickup, setRetailHasPickup] = useState(true);
+  const [retailDeliveryFee, setRetailDeliveryFee] = useState('');
+  const [retailFreeDeliveryAbove, setRetailFreeDeliveryAbove] = useState('');
   const [retailHasCustomOrders, setRetailHasCustomOrders] = useState(false);
   const [retailCustomLeadTime, setRetailCustomLeadTime] = useState('');
   const [retailReturnPolicy, setRetailReturnPolicy] = useState('');
@@ -268,6 +272,10 @@ export default function AccountScreen() {
       setJourneyDeliveryInfo(bk.delivery_info || '');
       setJourneyBusinessHours(bk.business_hours || '');
       setJourneyLocation(bk.business_location || '');
+      setRetailHasDelivery(bk.retail_has_delivery !== false);
+      setRetailHasPickup(bk.retail_has_pickup !== false);
+      setRetailDeliveryFee(bk.retail_delivery_fee || '');
+      setRetailFreeDeliveryAbove(bk.retail_free_delivery_above || '');
       setRetailHasCustomOrders(!!bk.retail_has_custom_orders);
       setRetailCustomLeadTime(bk.retail_custom_lead_time || '');
       setRetailReturnPolicy(bk.retail_return_policy || '');
@@ -1277,6 +1285,10 @@ export default function AccountScreen() {
                 <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
                   <Text style={{ color: '#25D366', fontWeight: '700', fontSize: 13, marginTop: 8, marginBottom: 4 }}>🛍️ Retail Settings</Text>
                   {sharedFields}
+                  {jSwitchRow('Offer Delivery', 'AI will ask for delivery address and add fee', retailHasDelivery, (v) => { setRetailHasDelivery(v); saveJourneySettings({ retail_has_delivery: v }); })}
+                  {jSwitchRow('Offer Pickup', 'AI will offer pickup from your location', retailHasPickup, (v) => { setRetailHasPickup(v); saveJourneySettings({ retail_has_pickup: v }); })}
+                  {retailHasDelivery && jTextField('Delivery Fee', 'Fixed fee added to every delivery order', retailDeliveryFee, setRetailDeliveryFee, () => saveJourneySettings({ retail_delivery_fee: retailDeliveryFee }), 'e.g. 200')}
+                  {retailHasDelivery && jTextField('Free Delivery Above', 'Order total threshold — AI waives fee automatically', retailFreeDeliveryAbove, setRetailFreeDeliveryAbove, () => saveJourneySettings({ retail_free_delivery_above: retailFreeDeliveryAbove }), 'e.g. 2000')}
                   {jSwitchRow('Custom / Made-to-Order Items', 'AI will collect custom specs and confirm lead time', retailHasCustomOrders, (v) => { setRetailHasCustomOrders(v); saveJourneySettings({ retail_has_custom_orders: v }); })}
                   {retailHasCustomOrders && jTextField('Custom Order Lead Time', 'Shown to customers when ordering custom items', retailCustomLeadTime, setRetailCustomLeadTime, () => saveJourneySettings({ retail_custom_lead_time: retailCustomLeadTime }), 'e.g. 5–7 business days')}
                   {jTextField('Return / Exchange Policy', 'Shown when customers ask about returns', retailReturnPolicy, setRetailReturnPolicy, () => saveJourneySettings({ retail_return_policy: retailReturnPolicy }), 'e.g. Exchange within 7 days with receipt')}

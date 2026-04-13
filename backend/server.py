@@ -1491,6 +1491,10 @@ class BusinessKnowledge(BaseModel):
     restaurant_avg_wait: Optional[str] = None       # e.g. "15–20 minutes"
     restaurant_min_delivery: Optional[str] = None   # e.g. "$10 minimum order"
     # Retail-specific fields
+    retail_has_delivery: Optional[bool] = None
+    retail_has_pickup: Optional[bool] = None
+    retail_delivery_fee: Optional[str] = None
+    retail_free_delivery_above: Optional[str] = None
     retail_has_custom_orders: Optional[bool] = None
     retail_custom_lead_time: Optional[str] = None
     retail_return_policy: Optional[str] = None
@@ -8009,6 +8013,8 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
         'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
         'restaurant_table_range', 'restaurant_avg_wait', 'restaurant_min_delivery',
         # Retail
+        'retail_has_delivery', 'retail_has_pickup',
+        'retail_delivery_fee', 'retail_free_delivery_above',
         'retail_has_custom_orders', 'retail_custom_lead_time', 'retail_return_policy',
         # Bakery
         'bakery_advance_days', 'bakery_deposit_required', 'bakery_deposit_pct',

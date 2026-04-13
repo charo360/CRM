@@ -2379,13 +2379,15 @@ def _build_grocery_instructions(bc: dict) -> str:
 
 def _build_retail_instructions(bc: dict) -> str:
     """Build full retail-specific autoreply instructions from business config."""
-    has_delivery      = bc.get("retail_has_delivery", True)
-    has_pickup        = bc.get("retail_has_pickup", True)
-    delivery_info     = bc.get("delivery_info", "")
-    return_policy     = bc.get("retail_return_policy", "")
-    has_custom_orders = bc.get("retail_has_custom_orders", False)   # made-to-order / personalised
-    custom_lead_time  = bc.get("retail_custom_lead_time", "")       # e.g. "5–7 business days"
-    business_hours    = bc.get("business_hours", "")
+    has_delivery          = bc.get("retail_has_delivery", True)
+    has_pickup            = bc.get("retail_has_pickup", True)
+    delivery_info         = bc.get("delivery_info", "")
+    delivery_fee          = bc.get("retail_delivery_fee", "")          # e.g. "200"
+    free_delivery_above   = bc.get("retail_free_delivery_above", "")   # e.g. "2000"
+    return_policy         = bc.get("retail_return_policy", "")
+    has_custom_orders     = bc.get("retail_has_custom_orders", False)
+    custom_lead_time      = bc.get("retail_custom_lead_time", "")
+    business_hours        = bc.get("business_hours", "")
 
     lines = [
         "RETAIL ORDER FLOW:",
@@ -2450,11 +2452,25 @@ def _build_retail_instructions(bc: dict) -> str:
 
     if has_delivery:
         zone_note = f" {delivery_info}" if delivery_info else ""
+        currency  = bc.get("currency", "KES")
+        # Build fee instruction from structured fields
+        if delivery_fee and free_delivery_above:
+            fee_note = (
+                f"- Delivery fee: {currency} {delivery_fee}. "
+                f"FREE delivery on orders above {currency} {free_delivery_above} — apply automatically."
+            )
+        elif delivery_fee:
+            fee_note = f"- Delivery fee: {currency} {delivery_fee} — add to order total."
+        elif free_delivery_above:
+            fee_note = f"- Free delivery on orders above {currency} {free_delivery_above}. No delivery fee below that threshold."
+        else:
+            fee_note = "- Confirm any delivery fee from business info."
         lines += [
             "",
             f"DELIVERY PATH:{zone_note}",
             "- Ask for delivery address.",
-            "- Confirm any delivery fee from business info.",
+            fee_note,
+            "- Show updated order total (products + delivery fee) in the summary.",
             "- Fire create_order with delivery_type='delivery', delivery_address='[address]'.",
         ]
 
@@ -2475,8 +2491,9 @@ def _build_retail_instructions(bc: dict) -> str:
         "  '🛍️ *Your Order:*",
         "   • [Product] ([variant]) × [qty] = KES [line total]",
         "   • ...",
-        "   💰 *Total: KES [total]*",
-        "   📦 *[Delivery / Pickup]: [detail]*'",
+        "   📦 *[Delivery / Pickup]: [detail]*",
+        "   🚚 *Delivery fee: KES [fee]* (omit line if pickup or free delivery applies)",
+        "   💰 *Total: KES [products + delivery fee]*'",
         "- Show payment details EXACTLY as configured.",
         "- Ask: 'Once paid, please reply with your full name and the amount paid.'",
         "- Fire create_order ONCE with ALL items in the items[] array.",
