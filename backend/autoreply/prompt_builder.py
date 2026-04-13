@@ -572,6 +572,127 @@ def _build_response_format(btype: str) -> str:
 
 # ── Restaurant dynamic instruction builder ───────────────────────────────────
 
+def _build_grocery_instructions(bc: dict) -> str:
+    """Build full grocery-specific autoreply instructions from business config."""
+    has_delivery   = bc.get("grocery_has_delivery", True)
+    has_pickup     = bc.get("grocery_has_pickup", True)
+    delivery_info  = bc.get("delivery_info", "")
+    min_order      = bc.get("grocery_min_order", "")
+    delivery_slots = bc.get("grocery_delivery_slots", "")   # e.g. "Morning (8–12), Afternoon (13–17)"
+    allows_subs    = bc.get("grocery_allow_substitutions", True)
+
+    lines = [
+        "GROCERY ORDER FLOW:",
+        "",
+        "STEP 1 — GREETING & INTENT:",
+        "- Greet the customer warmly. Ask what they need today.",
+        "- Customer may say a specific item ('do you have unga?') OR ask to browse the catalog.",
+        "  • Specific item request → check catalog immediately. If found → confirm name, price, unit. If not found → say 'Sorry, we don't carry that at the moment.'",
+        "  • Browse request → show category menu first (if 2+ categories), then items within.",
+        "",
+        "STEP 2 — BROWSING & SEARCHING:",
+        "- Use numbered menu (1️⃣ 2️⃣ 3️⃣) for all product listings.",
+        "- ALWAYS show: item name, unit (e.g. per kg, per piece), price.",
+        "  Format: '1️⃣ Tomatoes — KES 80 / kg'",
+        "- ALWAYS add '0️⃣ View all images' as last menu option when products have images.",
+        '  new_menu: {"0": {"id": "catalog", "name": "View all items", "price": 0, "type": "catalog"}}',
+        "- When customer picks 0 → send send_catalog_images + resend item list.",
+        "",
+        "STEP 3 — STOCK & AVAILABILITY:",
+        "- ALWAYS check the 'in_stock' status in the catalog before confirming an item.",
+        "- If item shows ✗ OUT OF STOCK:",
+        f"  → Say: 'Sorry, [item] is currently out of stock.'",
+    ]
+
+    if allows_subs:
+        lines += [
+            "  → Offer the nearest alternative if available: 'Would you like [similar item] instead?'",
+            "  → If no alternative → say 'We'll restock soon. Would you like to add anything else?'",
+        ]
+    else:
+        lines.append("  → Say 'We'll restock soon. Would you like to add anything else?'")
+
+    lines += [
+        "",
+        "STEP 4 — ADDING ITEMS TO CART:",
+        "- When customer selects an item → confirm: name, price, unit.",
+        "- Ask for quantity. Use the unit from catalog:",
+        "  e.g. 'How many kg of tomatoes would you like?' or 'How many packets of milk?'",
+        "- After each item ask: 'Anything else to add or shall we proceed to checkout?'",
+        "- Keep building the cart. Show running total if more than 1 item:",
+        "  '🛒 Cart so far: Tomatoes 2kg × KES 80 = KES 160, Milk 2pkts × KES 55 = KES 110. Total: KES 270'",
+        "- Continue until customer says done / checkout / confirm / sawa / ndiyo / no more.",
+        "",
+        "STEP 5 — FULFILMENT:",
+        "- When customer is ready → ask: 'How would you like to receive your order?'",
+    ]
+
+    if has_pickup and has_delivery:
+        lines.append("  Show: 1️⃣ Delivery  2️⃣ Pickup")
+    elif has_delivery:
+        lines.append("  Delivery only (no pickup configured).")
+    elif has_pickup:
+        lines.append("  Pickup only (no delivery configured).")
+
+    if has_delivery:
+        min_note   = f" Minimum delivery order: {min_order}." if min_order else ""
+        zone_note  = f" {delivery_info}" if delivery_info else ""
+        slot_note  = f" Available slots: {delivery_slots}." if delivery_slots else ""
+        extra = (min_note + zone_note + slot_note).strip()
+        lines += [
+            "",
+            f"DELIVERY PATH{(' — ' + extra) if extra else ''}:",
+            "- Ask for delivery address.",
+            "- Ask for preferred delivery date and time slot." + (f" Options: {delivery_slots}" if delivery_slots else ""),
+            f"{'- Note: ' + min_note.strip() if min_order else ''}",
+            "- Confirm: address, date/time, and order total including any delivery fee.",
+            "- Fire create_order with delivery_type='delivery', delivery_address='[address]', notes='Delivery: [date] [slot]'.",
+        ]
+
+    if has_pickup:
+        lines += [
+            "",
+            "PICKUP PATH:",
+            "- Confirm pickup location from business info.",
+            "- Ask preferred pickup date and time.",
+            "- Fire create_order with delivery_type='pickup', notes='Pickup: [date] at [time]'.",
+        ]
+
+    lines += [
+        "",
+        "STEP 6 — ORDER SUMMARY & PAYMENT:",
+        "- Show a clear cart summary before payment:",
+        "  '🛒 *Your Order:*",
+        "   • [Item] [qty][unit] × KES [price] = KES [line total]",
+        "   • ...",
+        "   📦 *Order Total: KES [total]*",
+        "   🚚 *Delivery: [address] on [date]*'",
+        "- Show payment details EXACTLY as configured.",
+        "- Ask: 'Once paid, please reply with your full name and amount paid.'",
+        "- Fire create_order ONCE with ALL items in the items[] array.",
+        "",
+        "PAYMENT CONFIRMATION:",
+        "- When customer provides name + amount (or says 'nimetuma' / 'sent' / 'nimepay' / 'done'):",
+        "  → intent=payment_received",
+        "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
+        "  → fire notify_owner(reason='payment_received', message='[Name] paid [Amount] — grocery order')",
+        "  → Reply: 'Thank you [name]! 🙏 Payment confirmed. Your order will be [delivered/ready for pickup] on [date].'",
+        "",
+        "ORDER MANAGEMENT:",
+        "- 'my order' / 'order status' → show cart summary and fulfilment details from notes.",
+        "- Cancel → confirm, fire cancel_order.",
+        "- Add item after order placed → fire notify_owner, tell customer the owner will update the order.",
+        "",
+        "IMPORTANT RULES:",
+        "- ALWAYS show the unit (per kg, per piece, etc.) when confirming items — customers need to know exactly what they're getting.",
+        "- NEVER confirm an out-of-stock item without offering an alternative or acknowledging the unavailability.",
+        "- NEVER fire create_order mid-collection. Wait until customer confirms done.",
+        "- Keep the cart summary updated and visible after each item added.",
+    ]
+
+    return "\n".join(l for l in lines if l is not None)
+
+
 def _build_bakery_instructions(bc: dict) -> str:
     """Build full bakery-specific autoreply instructions from business config."""
     has_delivery      = bc.get("bakery_has_delivery", True)
@@ -967,14 +1088,15 @@ def build_system_prompt(
                 )
                 _append_product_extras(p)
         else:
-            catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Stock | HasImage):")
+            catalog_lines.append("PRODUCTS (ID | Name | Category | Price | Unit | Stock | HasImage):")
             for p in products:
                 stock   = "✓" if p.get("in_stock", True) else "✗ OUT OF STOCK"
                 cat     = f" [{p['category']}]" if p.get("category") else ""
                 sub     = f" / {p['sub_category']}" if p.get("sub_category") else ""
+                unit    = f" ({p['unit']})" if p.get("unit") else ""
                 has_img = "📷" if p.get("image_url") else ""
                 catalog_lines.append(
-                    f"  {p['id']} | {p['name']}{cat}{sub} | {currency} {p['price']:,.0f} | {stock} {has_img}"
+                    f"  {p['id']} | {p['name']}{cat}{sub}{unit} | {currency} {p['price']:,.0f} | {stock} {has_img}"
                 )
                 _append_product_extras(p)
 
@@ -1024,6 +1146,8 @@ def build_system_prompt(
         instructions = _build_restaurant_instructions(bc)
     elif btype == "bakery":
         instructions = _build_bakery_instructions(bc)
+    elif btype == "grocery":
+        instructions = _build_grocery_instructions(bc)
     else:
         instructions = _BUSINESS_INSTRUCTIONS.get(btype, _DEFAULT_INSTRUCTIONS)
     parts.append(f"INSTRUCTIONS FOR THIS BUSINESS TYPE ({btype.upper()}):\n{instructions}")

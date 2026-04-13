@@ -4933,6 +4933,7 @@ class ProductCreate(BaseModel):
     stock_quantity: Optional[int] = None
     variants: Optional[List[dict]] = None          # [{name, price}]
     modifier_groups: Optional[List[dict]] = None   # [{name, required, multi_select, options:[{name, price_delta}]}]
+    unit: Optional[str] = None                     # e.g. "per kg", "per piece" — used by grocery
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -4947,6 +4948,7 @@ class ProductUpdate(BaseModel):
     stock_quantity: Optional[int] = None
     variants: Optional[List[dict]] = None          # [{name, price}]
     modifier_groups: Optional[List[dict]] = None   # [{name, required, multi_select, options:[{name, price_delta}]}]
+    unit: Optional[str] = None                     # e.g. "per kg", "per piece" — used by grocery
 
 # Plan-based product and image limits
 PLAN_PRODUCT_LIMITS = {
@@ -5019,9 +5021,10 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         "stock_quantity": product.stock_quantity,
         "variants": product.variants or [],
         "modifier_groups": product.modifier_groups or [],
+        "unit": product.unit or "",
         "created_at": datetime.utcnow()
     }
-    
+
     await db.products.insert_one(product_doc)
     
     return ProductResponse(
@@ -8856,6 +8859,9 @@ async def update_product(
 
     if product_update.modifier_groups is not None:
         update_data["modifier_groups"] = product_update.modifier_groups
+
+    if product_update.unit is not None:
+        update_data["unit"] = product_update.unit
 
     await db.products.update_one(
         {"_id": product_id},

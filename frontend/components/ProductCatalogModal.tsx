@@ -169,7 +169,7 @@ const EVENTS_CATEGORIES = [
 // Retail categories (physical products)
 const RETAIL_CATEGORIES = [
     'Electronics',
-    'Clothing', 
+    'Clothing',
     'Food & Beverages',
     'Home & Garden',
     'Beauty & Health',
@@ -178,6 +178,40 @@ const RETAIL_CATEGORIES = [
     'Toys & Games',
     'Automotive',
     'Other'
+];
+
+// Bakery-specific categories
+const BAKERY_CATEGORIES = [
+    'Cakes',
+    'Bread & Loaves',
+    'Pastries & Croissants',
+    'Cookies & Biscuits',
+    'Cupcakes & Muffins',
+    'Pies & Tarts',
+    'Custom Orders',
+    'Beverages',
+    'Seasonal Specials',
+    'Other'
+];
+
+// Grocery-specific categories
+const GROCERY_CATEGORIES = [
+    'Fresh Produce',
+    'Dairy & Eggs',
+    'Meat & Seafood',
+    'Beverages',
+    'Grains & Cereals',
+    'Cooking Essentials',
+    'Snacks & Confectionery',
+    'Household & Cleaning',
+    'Personal Care',
+    'Baby & Kids',
+    'Other'
+];
+
+const GROCERY_UNITS = [
+    'per piece', 'per kg', 'per g', 'per packet',
+    'per bottle', 'per litre', 'per dozen', 'per bundle', 'per box', 'per bag',
 ];
 
 interface Variant {
@@ -211,6 +245,7 @@ interface Product {
     stock_quantity?: number;
     variants?: Variant[];
     modifier_groups?: ModifierGroup[];
+    unit?: string;
     created_at: string;
 }
 
@@ -271,12 +306,16 @@ export default function ProductCatalogModal({
     // Ref for description TextInput to control scroll position
     const descriptionInputRef = useRef<TextInput>(null);
 
-    const { config } = useBusiness();
+    const [editUnit, setEditUnit] = useState('');
+
+    const { config, businessType } = useBusiness();
     const catalogLabel = config.catalogLabel;
     const itemLabel = config.catalogItemLabel;
     const showStock = config.showStock;
     const isCreator    = config.customerLabel === 'Fan';
-    const isRestaurant = catalogLabel === 'Menu';
+    const isRestaurant = catalogLabel === 'Menu' && businessType === 'restaurant';
+    const isBakery     = businessType === 'bakery';
+    const isGrocery    = businessType === 'grocery';
     const isRental     = catalogLabel === 'Listings';
     const isHealthcare = config.customerLabel === 'Patient';
     const isFitness    = config.customerLabel === 'Member' && config.bookingLabel === 'Class';
@@ -293,6 +332,8 @@ export default function ProductCatalogModal({
     const getAppropriateCategories = () => {
         if (isCreator)     return CREATOR_CATEGORIES;
         if (isRestaurant)  return RESTAURANT_CATEGORIES;
+        if (isBakery)      return BAKERY_CATEGORIES;
+        if (isGrocery)     return GROCERY_CATEGORIES;
         if (isHealthcare)  return HEALTHCARE_CATEGORIES;
         if (isFitness)     return FITNESS_CATEGORIES;
         if (isServices)    return SERVICES_CATEGORIES;
@@ -301,7 +342,7 @@ export default function ProductCatalogModal({
         if (isSpa)         return SPA_CATEGORIES;
         if (isCleaning)    return CLEANING_CATEGORIES;
         if (isEvents)      return EVENTS_CATEGORIES;
-        return RETAIL_CATEGORIES; // Default for retail/wholesale/grocery/general
+        return RETAIL_CATEGORIES;
     };
 
     useEffect(() => {
@@ -580,6 +621,7 @@ export default function ProductCatalogModal({
         setEditDiscountPrice(product.discount_price?.toString() || '');
         setEditCategory(product.category || 'Other');
         setEditSubCategory(product.sub_category || '');
+        setEditUnit((product as any).unit || '');
         setEditDescription(product.description || '');
         setEditInStock(product.in_stock);
         setEditStockQuantity(product.stock_quantity?.toString() || '');
@@ -608,6 +650,7 @@ export default function ProductCatalogModal({
         setEditDiscountPrice('');
         setEditCategory('Other');
         setEditSubCategory('');
+        setEditUnit('');
         setEditDescription('');
         setEditInStock(true);
         setEditStockQuantity('');
@@ -666,6 +709,7 @@ export default function ProductCatalogModal({
                     variants: variantsToSave.length > 0 ? variantsToSave : undefined,
                     modifier_groups: modifierGroupsToSave.length > 0 ? modifierGroupsToSave : undefined,
                     sub_category: editSubCategory.trim() || undefined,
+                    unit: editUnit.trim() || undefined,
                 };
                 if (discountPrice !== null) {
                     productData.discount_price = discountPrice;
@@ -688,6 +732,7 @@ export default function ProductCatalogModal({
                     variants: variantsToSave,
                     modifier_groups: modifierGroupsToSave,
                     sub_category: editSubCategory.trim() || undefined,
+                    unit: editUnit.trim() || undefined,
                 };
                 if (discountPrice !== null) {
                     updateData.discount_price = discountPrice;
@@ -842,7 +887,7 @@ export default function ProductCatalogModal({
                                 <Text style={styles.originalPrice}>{currency} {product.price.toLocaleString()}</Text>
                             </>
                         ) : (
-                            <Text style={styles.productPrice}>{currency} {product.price.toLocaleString()}</Text>
+                            <Text style={styles.productPrice}>{currency} {product.price.toLocaleString()}{(product as any).unit ? ` / ${(product as any).unit.replace('per ', '')}` : ''}</Text>
                         )}
                     </View>
                     <View style={styles.productMeta}>
@@ -1027,17 +1072,42 @@ export default function ProductCatalogModal({
                                 </View>
                             </View>
 
-                            {isRestaurant && (
+                            {(isRestaurant || isBakery) && (
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Sub-category <Text style={{ color: '#555', fontWeight: '400' }}>(Optional)</Text></Text>
                                 <TextInput
                                     style={styles.formInput}
                                     value={editSubCategory}
                                     onChangeText={setEditSubCategory}
-                                    placeholder="e.g. Pizza, Burgers, Rice Dishes, Cocktails"
+                                    placeholder={isBakery ? "e.g. Birthday Cakes, Wedding Cakes, Sourdough" : "e.g. Pizza, Burgers, Rice Dishes, Cocktails"}
                                     placeholderTextColor="#555"
                                 />
-                                <Text style={styles.stockHint}>Groups items under a category — e.g. Main Course → Pizza</Text>
+                                <Text style={styles.stockHint}>Groups items under a category — e.g. {isBakery ? 'Cakes → Birthday Cakes' : 'Main Course → Pizza'}</Text>
+                            </View>
+                            )}
+
+                            {isGrocery && (
+                            <View style={styles.formGroup}>
+                                <Text style={styles.formLabel}>Unit <Text style={{ color: '#555', fontWeight: '400' }}>(how it's sold)</Text></Text>
+                                <TextInput
+                                    style={styles.formInput}
+                                    value={editUnit}
+                                    onChangeText={setEditUnit}
+                                    placeholder="e.g. per kg, per piece, per packet"
+                                    placeholderTextColor="#555"
+                                />
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                                    {GROCERY_UNITS.slice(0, 6).map(u => (
+                                        <TouchableOpacity
+                                            key={u}
+                                            onPress={() => setEditUnit(u)}
+                                            style={[styles.suggestionChip, editUnit === u && { backgroundColor: '#0d3321', borderColor: '#25D366' }]}
+                                        >
+                                            <Text style={[styles.suggestionChipText, editUnit === u && { color: '#25D366' }]}>{u}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </View>
+                                <Text style={styles.stockHint}>Helps customers know exactly what they're ordering</Text>
                             </View>
                             )}
 
