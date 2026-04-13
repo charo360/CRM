@@ -4326,9 +4326,15 @@ async def get_orders(user = Depends(get_current_user)):
 @api_router.put("/orders/{order_id}", response_model=OrderResponse)
 async def update_order(order_id: str, payment_status: Optional[str] = None, delivery_status: Optional[str] = None, notes: Optional[str] = None, user = Depends(get_current_user)):
     """Update order payment status, delivery status, or notes"""
+    from bson import ObjectId
     business_id = user.get("business_id", user["_id"])
-    # Verify order exists
+    # Try string _id first (autoreply orders use uuid strings), then ObjectId (manual orders)
     order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+    if not order:
+        try:
+            order = await db.orders.find_one({"_id": ObjectId(order_id), "user_id": business_id})
+        except Exception:
+            pass
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -4445,8 +4451,14 @@ async def remove_staff(staff_id: str, user = Depends(get_current_user)):
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, user = Depends(get_current_user)):
     """Delete an order"""
+    from bson import ObjectId
     business_id = user.get("business_id", user["_id"])
     result = await db.orders.delete_one({"_id": order_id, "user_id": business_id})
+    if result.deleted_count == 0:
+        try:
+            result = await db.orders.delete_one({"_id": ObjectId(order_id), "user_id": business_id})
+        except Exception:
+            pass
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
     return {"message": "Order deleted successfully"}
@@ -4454,9 +4466,14 @@ async def delete_order(order_id: str, user = Depends(get_current_user)):
 @api_router.post("/orders/{order_id}/convert-to-sale", response_model=SaleResponse)
 async def convert_order_to_sale(order_id: str, payment_method: str, user = Depends(get_current_user)):
     """Convert a paid order to a sale"""
+    from bson import ObjectId
     business_id = user.get("business_id", user["_id"])
-    # Verify order exists
     order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+    if not order:
+        try:
+            order = await db.orders.find_one({"_id": ObjectId(order_id), "user_id": business_id})
+        except Exception:
+            pass
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
