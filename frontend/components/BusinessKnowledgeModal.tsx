@@ -233,6 +233,12 @@ export default function BusinessKnowledgeModal({
     const [restaurantAvgWait, setRestaurantAvgWait] = useState('');
     const [restaurantMinDelivery, setRestaurantMinDelivery] = useState('');
 
+    // Retail delivery state
+    const [retailHasDelivery, setRetailHasDelivery] = useState(true);
+    const [retailHasPickup, setRetailHasPickup] = useState(true);
+    const [retailDeliveryFee, setRetailDeliveryFee] = useState('');
+    const [retailFreeDeliveryAbove, setRetailFreeDeliveryAbove] = useState('');
+
     // List states (derived from string fields)
     const [productItems, setProductItems] = useState<string[]>([]);
     const [deliveryItems, setDeliveryItems] = useState<string[]>([]);
@@ -296,6 +302,11 @@ export default function BusinessKnowledgeModal({
                 setRestaurantTableRange(data.restaurant_table_range || '');
                 setRestaurantAvgWait(data.restaurant_avg_wait || '');
                 setRestaurantMinDelivery(data.restaurant_min_delivery || '');
+                // Retail fields
+                setRetailHasDelivery(data.retail_has_delivery !== false);
+                setRetailHasPickup(data.retail_has_pickup !== false);
+                setRetailDeliveryFee(data.retail_delivery_fee || '');
+                setRetailFreeDeliveryAbove(data.retail_free_delivery_above || '');
 
                 setProductItems(stringToItems(data.products_services));
                 setDeliveryItems(stringToItems(data.delivery_info));
@@ -364,6 +375,11 @@ export default function BusinessKnowledgeModal({
             restaurant_table_range:  restaurantTableRange,
             restaurant_avg_wait:     restaurantAvgWait,
             restaurant_min_delivery: restaurantMinDelivery,
+            // Retail fields
+            retail_has_delivery:        retailHasDelivery,
+            retail_has_pickup:          retailHasPickup,
+            retail_delivery_fee:        retailDeliveryFee,
+            retail_free_delivery_above: retailFreeDeliveryAbove,
             ...creator,
             creator_platforms: selectedPlatforms.join(', '),
         };
@@ -450,6 +466,7 @@ export default function BusinessKnowledgeModal({
 
     const isCreator     = businessType === 'creator';
     const isRestaurant  = businessType === 'restaurant';
+    const isRetail      = ['retail', 'wholesale', 'grocery'].includes(businessType);
     const typeConfig = getTypeConfig(businessType);
 
     return (
@@ -666,6 +683,62 @@ export default function BusinessKnowledgeModal({
                                     <Ionicons name="storefront-outline" size={16} color="#6B7D99" />
                                     <Text style={[styles.sectionDividerText, { color: '#6B7D99' }]}>Menu & General Info</Text>
                                 </View>
+                            </>
+                        )}
+
+                        {/* ── RETAIL DELIVERY FIELDS ── */}
+                        {isRetail && (
+                            <>
+                                <View style={styles.sectionDivider}>
+                                    <Ionicons name="car-outline" size={16} color="#25D366" />
+                                    <Text style={styles.sectionDividerText}>Delivery & Shipping</Text>
+                                </View>
+
+                                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 }}>
+                                    <View style={{ flex: 1, marginRight: 12 }}>
+                                        <Text style={{ color: '#ccc', fontSize: 14 }}>Offer Delivery</Text>
+                                        <Text style={{ fontSize: 11, color: '#555', marginTop: 2 }}>AI will collect delivery address and add fee</Text>
+                                    </View>
+                                    <Switch value={retailHasDelivery} onValueChange={setRetailHasDelivery} trackColor={{ false: '#333', true: '#1A3A2A' }} thumbColor={retailHasDelivery ? '#25D366' : '#666'} />
+                                </View>
+
+                                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 }}>
+                                    <View style={{ flex: 1, marginRight: 12 }}>
+                                        <Text style={{ color: '#ccc', fontSize: 14 }}>Offer Pickup</Text>
+                                        <Text style={{ fontSize: 11, color: '#555', marginTop: 2 }}>AI will offer pickup from your location</Text>
+                                    </View>
+                                    <Switch value={retailHasPickup} onValueChange={setRetailHasPickup} trackColor={{ false: '#333', true: '#1A3A2A' }} thumbColor={retailHasPickup ? '#25D366' : '#666'} />
+                                </View>
+
+                                {retailHasDelivery && (
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Delivery Fee</Text>
+                                        <Text style={styles.hint}>Fixed fee added to every delivery order</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            placeholder="e.g. 200"
+                                            placeholderTextColor="#555"
+                                            keyboardType="numeric"
+                                            value={retailDeliveryFee}
+                                            onChangeText={setRetailDeliveryFee}
+                                        />
+                                    </View>
+                                )}
+
+                                {retailHasDelivery && (
+                                    <View style={styles.field}>
+                                        <Text style={styles.label}>Free Delivery Above</Text>
+                                        <Text style={styles.hint}>Order total threshold — fee waived automatically</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            placeholder="e.g. 2000"
+                                            placeholderTextColor="#555"
+                                            keyboardType="numeric"
+                                            value={retailFreeDeliveryAbove}
+                                            onChangeText={setRetailFreeDeliveryAbove}
+                                        />
+                                    </View>
+                                )}
                             </>
                         )}
 
