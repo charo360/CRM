@@ -8072,243 +8072,213 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
 @api_router.post("/ai/draft-message")
 async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
     """Generate AI-drafted follow-up message for a customer"""
-    logging.info(f"DEBUG: draft_ai_message called for customer_id={request.customer_id}")
     try:
         business_id = user.get("business_id", user["_id"])
         customer = await db.customers.find_one({"_id": request.customer_id, "user_id": business_id})
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # Get last 20 messages for rich context
+        # ── v2 context loader: full catalog + structured business config ──
+        from autoreply.context_loader import load_context as _load_ctx
+        ctx         = await _load_ctx(db, business_id, request.customer_id, user)
+        bc          = ctx["business_config"]
+        products    = ctx["products"]
+        services    = ctx["services"]
+        mini_state  = ctx["mini_state"]
+        v2_messages = ctx["messages"]   # last 10, oldest-first (role: customer/assistant)
+
+        user_settings    = user.get("settings", {})
+        model_pref       = user_settings.get("ai_model", "standard")
+        business_name    = bc.get("name") or user.get("business_name", "this business")
+        customer_name    = customer.get("name", "Customer")
+        btype            = bc.get("type", "retail")
+        currency         = bc.get("currency", "KES")
+        custom_direction = request.custom_instructions or ""
+        regenerate_count = request.regenerate_count or 0
+
+        # ── Business context block ──
+        bc_lines = []
+        if bc.get("about"):
+            bc_lines.append(f"About: {bc['about']}")
+        if bc.get("products_services"):
+            bc_lines.append(f"What we sell: {bc['products_services']}")
+        if bc.get("business_location"):
+            bc_lines.append(f"Location: {bc['business_location']}")
+        if bc.get("business_hours"):
+            bc_lines.append(f"Hours: {bc['business_hours']}")
+        if bc.get("delivery_info"):
+            bc_lines.append(f"Delivery: {bc['delivery_info']}")
+        if bc.get("special_offers"):
+            bc_lines.append(f"Current offers: {bc['special_offers']}")
+        if bc.get("payment_methods"):
+            pm_str = ", ".join(bc["payment_methods"][:3])
+            bc_lines.append(f"Payment: {pm_str}")
+        if bc.get("faqs"):
+            bc_lines.append(f"FAQs: {bc['faqs']}")
+
+        # ── Catalog block (structured, with variants & descriptions) ──
+        catalog_lines = []
+        if products:
+            catalog_lines.append("Products/Menu:")
+            for p in products[:20]:
+                stock = "" if p.get("in_stock", True) else " [OUT OF STOCK]"
+                cat   = f" [{p['category']}]" if p.get("category") else ""
+                desc  = f" — {p['description'][:60]}" if p.get("description") else ""
+                price = f"{currency} {p['price']:,.0f}"
+                variants_str = ""
+                if p.get("variants"):
+                    variants_str = " (sizes: " + ", ".join(
+                        f"{v['name']} {currency} {v['price']:,.0f}" for v in p["variants"]
+                    ) + ")"
+                catalog_lines.append(f"  • {p['name']}{cat}{stock} — {price}{variants_str}{desc}")
+        if services:
+            catalog_lines.append("Services:")
+            for s in services[:15]:
+                dur = f" ({s['duration']}min)" if s.get("duration") else ""
+                catalog_lines.append(f"  • {s['name']}{dur} — {currency} {s['price']:,.0f}")
+
+        has_catalog = bool(catalog_lines)
+
+        # ── Raw messages for scenario detection ──
         raw_messages = await db.messages.find({
             "customer_id": request.customer_id,
             "user_id": business_id
         }).sort("created_at", 1).limit(20).to_list(20)
-
-        user_settings = user.get('settings', {})
-        business_name = user.get('business_name', 'Your Business')
-        currency = user_settings.get('currency', 'USD')
-        model_pref = user_settings.get('ai_model', 'standard')
-        customer_name = customer.get('name', 'Customer')
-        custom_direction = request.custom_instructions or ""
-        regenerate_count = request.regenerate_count or 0
-
-        # Build business knowledge string
-        bk_data = user.get('business_knowledge', {})
-        business_type = bk_data.get('business_type', 'general')
-        bk_parts = []
-        if bk_data.get('business_description'):
-            bk_parts.append(f"About: {bk_data['business_description']}")
-
-        if business_type == 'creator':
-            # Creator-specific fields injected with clear labels for the AI
-            if bk_data.get('creator_niche'):
-                bk_parts.append(f"Content niche: {bk_data['creator_niche']}")
-            if bk_data.get('creator_platforms'):
-                bk_parts.append(f"Platforms: {bk_data['creator_platforms']}")
-            if bk_data.get('creator_audience_size'):
-                bk_parts.append(f"Audience size: {bk_data['creator_audience_size']}")
-            if bk_data.get('creator_collab_types'):
-                bk_parts.append(f"Collaboration types offered: {bk_data['creator_collab_types']}")
-            if bk_data.get('creator_rate_card'):
-                bk_parts.append(f"Rate card: {bk_data['creator_rate_card']}")
-            if bk_data.get('creator_whats_included'):
-                bk_parts.append(f"What's included: {bk_data['creator_whats_included']}")
-            if bk_data.get('creator_turnaround'):
-                bk_parts.append(f"Turnaround time: {bk_data['creator_turnaround']}")
-            if bk_data.get('creator_booking_process'):
-                bk_parts.append(f"Booking process: {bk_data['creator_booking_process']}")
-            if bk_data.get('creator_min_budget'):
-                bk_parts.append(f"Minimum budget: {bk_data['creator_min_budget']}")
-            if bk_data.get('creator_blacklisted_niches'):
-                bk_parts.append(f"Brands I don't work with: {bk_data['creator_blacklisted_niches']}")
-            if bk_data.get('creator_media_kit_link'):
-                bk_parts.append(f"Media kit: {bk_data['creator_media_kit_link']}")
-            if bk_data.get('creator_fan_dm_response'):
-                bk_parts.append(f"Fan DM response template: {bk_data['creator_fan_dm_response']}")
-        else:
-            if bk_data.get('products_services'):
-                bk_parts.append(f"Products/Services: {bk_data['products_services']}")
-            if bk_data.get('delivery_info'):
-                bk_parts.append(f"Delivery: {bk_data['delivery_info']}")
-
-        if bk_data.get('pricing_info'):
-            bk_parts.append(f"Payment notes: {bk_data['pricing_info']}")
-        if bk_data.get('business_hours'):
-            bk_parts.append(f"Hours: {bk_data['business_hours']}")
-        if bk_data.get('special_offers'):
-            bk_parts.append(f"Current offers: {bk_data['special_offers']}")
-        if bk_data.get('faqs'):
-            bk_parts.append(f"FAQs: {bk_data['faqs']}")
-        # Inject structured payment methods
-        raw_pm = user.get('payment_methods', [])
-        if raw_pm:
-            pm_lines = []
-            for pm in raw_pm:
-                if isinstance(pm, dict):
-                    line = pm.get('name', '')
-                    if pm.get('details'):
-                        line += f": {pm['details']}"
-                else:
-                    line = str(pm)
-                if line.strip():
-                    pm_lines.append(f"  - {line}")
-            if pm_lines:
-                bk_parts.append("Payment methods accepted:\n" + "\n".join(pm_lines))
-
-        # Inject product catalog
-        user_products = await db.products.find({"user_id": business_id}).to_list(50)
-        if user_products:
-            catalog_lines = ["\nProducts available:"]
-            for p in user_products:
-                if not p.get("in_stock", True):
-                    continue
-                price_str = f"{currency} {p['price']:,.0f}" if p.get('price') is not None else "price on request"
-                desc = f" — {p['description'][:80]}" if p.get("description") else ""
-                catalog_lines.append(f"  • {p['name']}: {price_str}{desc}")
-            bk_parts.append("\n".join(catalog_lines))
-
-        business_knowledge = "\n".join(bk_parts) if bk_parts else ""
-
-        # Build conversation log
         history = [{"direction": m["direction"], "content": m["content"]} for m in raw_messages]
-        conv_lines = []
-        for m in history:
-            role = "Customer" if m["direction"] == "incoming" else "You"
-            conv_lines.append(f"{role}: {m['content']}")
-        conversation_log = "\n".join(conv_lines) if conv_lines else ""
 
-        # Determine scenario
-        last_message = history[-1] if history else None
-        days_since = customer.get("days_since_contact")
-        last_contacted = customer.get("last_contacted")
-        if not days_since and last_contacted:
+        # Human-readable conversation log from v2 context (last 10, oldest first)
+        conv_lines = []
+        for m in v2_messages:
+            role = "Customer" if m["role"] == "customer" else "You"
+            conv_lines.append(f"{role}: {m['content']}")
+
+        last_message    = history[-1] if history else None
+        last_contacted  = customer.get("last_contacted")
+        days_since      = None
+        if last_contacted:
             try:
-                from datetime import timezone as _tz
                 lc = last_contacted if isinstance(last_contacted, datetime) else datetime.fromisoformat(str(last_contacted).replace("Z", "+00:00"))
                 days_since = (datetime.utcnow() - lc.replace(tzinfo=None)).days
             except Exception:
-                days_since = None
+                pass
 
-        is_first_contact = not last_message and not last_contacted
-        is_replying_to_incoming = last_message and last_message["direction"] == "incoming"
+        is_first_contact        = not last_message and not last_contacted
+        is_replying_to_incoming = bool(last_message and last_message["direction"] == "incoming")
 
-        # Anti-repetition: block same opener as last outgoing message
+        # ── Anti-repetition ──
         last_outgoing = next((m["content"] for m in reversed(history) if m["direction"] == "outgoing"), None)
         repetition_block = ""
         if last_outgoing:
             first_words = " ".join(last_outgoing.split()[:4])
-            repetition_block = f'\nCRITICAL: Your last message to them started with "{first_words}" — do NOT open with those words or any variation. Completely different opener.'
+            repetition_block = f'\nCRITICAL: Your last message started with "{first_words}" — use a completely different opener.'
 
-        # Build scenario-specific writing goal
-        has_bk = bool(business_knowledge.strip()) if business_knowledge else False
+        # ── Active conversation flow context ──
+        flow_block = ""
+        if mini_state.get("active_flow"):
+            flow_block = f"\nNOTE: This customer is currently mid-flow ({mini_state['active_flow']}, step: {mini_state.get('flow_step', 'unknown')}) — keep that in mind."
+
+        # ── Customer profile context ──
+        customer_meta_parts = []
+        if customer.get("tags"):
+            customer_meta_parts.append(f"Tags: {', '.join(customer['tags'])}")
+        if customer.get("notes"):
+            customer_meta_parts.append(f"Notes: {customer['notes'][:100]}")
+        if customer.get("total_spent"):
+            customer_meta_parts.append(f"Total spent: {currency} {customer['total_spent']:,.0f}")
+        customer_meta = "  |  ".join(customer_meta_parts) if customer_meta_parts else ""
+
+        # ── Scenario-specific goal block ──
+        catalog_hook = (
+            "Reference a specific product/service name and price from the catalog below."
+            if has_catalog else "Briefly introduce what you offer."
+        )
 
         if is_first_contact:
-            bk_instruction = (
-                "USE the business info below — name at least one specific product or service by its actual name and price. "
-                "Don't say 'we have great products' — say what they actually are."
-            ) if has_bk else "Introduce yourself and your business briefly."
-
             scenario_block = f"""SCENARIO: First-ever message to {customer_name}. They don't know you yet.
-
-GOAL: Write an opener that feels like it came from a real person — not a sales pitch, not a template.
-- {bk_instruction}
-- Introduce in ONE casual sentence — like telling a friend what you do
-- End with a light question or open door — make it easy for them to reply
-- DO NOT start with: "Hi, I'm reaching out", "I wanted to introduce", "Hope this finds you well", "I'm excited to share" — dead giveaways of a mass message"""
+GOAL: Write a personal opener — not a sales pitch, not a template.
+- {catalog_hook}
+- ONE casual sentence introducing what you do — like telling a friend
+- End with a light question that's easy to reply to
+- BANNED openers: "Hi, I'm reaching out", "I wanted to introduce", "Hope this finds you well", "I'm excited to share" """
 
         elif is_replying_to_incoming:
             last_in = last_message["content"]
-            bk_instruction = (
-                "The business info below has real product names and prices — USE them directly in your answer. "
-                "Never say 'let me check' or 'I'll get back to you' when the answer is right there."
-            ) if has_bk else ""
-
             scenario_block = f"""SCENARIO: {customer_name} just messaged you: "{last_in}"
-
 GOAL: Reply directly and naturally to what they said.
 - Answer their actual question — don't dance around it
-- {bk_instruction}
-- Skip the greeting if the conversation is already going
-- Match their energy: casual stays casual, direct stays direct"""
+- {f"Use real product names and prices from the catalog below." if has_catalog else ""}
+- Skip the greeting if conversation is ongoing. Match their energy."""
 
         else:
             days_label = f"{days_since} days" if days_since else "a while"
-            last_preview = last_message["content"][:120] if last_message else "(no prior message on record)"
-            bk_instruction = (
-                "Use the business info below as your hook — reference a specific product, price, offer, or update by name. "
-                "That's a real reason to reply. Vague 'just checking in' gives them nothing to respond to."
-            ) if has_bk else "Give them a real reason to reply — a question, an update, something useful."
+            last_preview = last_message["content"][:120] if last_message else "(no prior message)"
+            scenario_block = f"""SCENARIO: You haven't spoken to {customer_name} in {days_label}. Last said: "{last_preview}"
+GOAL: Re-engage with one short, genuine message.
+- {catalog_hook if has_catalog else "Give them a real reason to reply."}
+- Sound like texting someone you know — not sending a follow-up email
+- BANNED openers: "Just checking in", "I wanted to follow up", "Hope you're doing well", "It's been a while" """
 
-            scenario_block = f"""SCENARIO: You haven't spoken to {customer_name} in {days_label}. Last thing said: "{last_preview}"
-
-GOAL: Re-engage them with one short, genuine message.
-- {bk_instruction}
-- Reference the last topic only if it's still naturally relevant
-- Sound like you're texting someone you actually know, not sending a follow-up email
-- BANNED openers: "Just checking in", "I wanted to follow up", "Hope you're doing well", "It's been a while" — customers tune these out immediately"""
-
-        # Custom direction — clean injection for regenerate
+        # ── Direction for regenerate ──
         direction_block = ""
         if custom_direction.strip():
-            direction_block = f"\n\nDIRECTION FOR THIS VERSION: {custom_direction.strip()}\nApply this while keeping the message natural and WhatsApp-appropriate."
+            direction_block = f"\nDIRECTION: {custom_direction.strip()}\nApply while keeping the message natural and WhatsApp-appropriate."
 
-        # Variety directive — rotates angle each regenerate so every draft is meaningfully different
+        # ── Variety angles (rotate per regenerate attempt) ──
         variety_angles = [
-            "Try a direct question opener — ask them something specific about a product or their needs.",
-            "Lead with a specific product name and price from the business info as the hook.",
-            "Open with a reference to the last conversation topic, then connect it to something in your catalog.",
-            "Try a very short punchy opener — under 8 words, name a specific product or offer.",
-            "Open with a benefit — what does your best product do for them? Name it specifically.",
-            "Be warm and personal — reference something from the conversation history, then offer to help.",
-            "Be ultra-direct — one sentence naming a specific product/price, straight to the point.",
+            "Ask them something specific about a product or their need.",
+            "Lead with a specific product name and price as the hook.",
+            "Reference the last conversation topic, then connect it to something in the catalog.",
+            "Ultra-short punchy opener — under 8 words, name a specific product or offer.",
+            "Lead with a benefit — what does your best product DO for them? Name it.",
+            "Be warm and personal — reference something from conversation history, then offer help.",
+            "Be ultra-direct — one sentence with a specific product/price, straight to the point.",
         ]
         angle = variety_angles[regenerate_count % len(variety_angles)]
-        variety_block = f"\n\nVARIETY NOTE (draft attempt #{regenerate_count + 1}): {angle} Make this version feel distinctly different from any previous draft."
+        variety_block = f"\nVARIETY (attempt #{regenerate_count + 1}): {angle}"
 
-        # Business context — label it clearly as the source of truth
-        bk_block = (
-            f"\n\nYOUR BUSINESS INFO — use specific names and prices from this, do not speak generically:\n{business_knowledge}"
-            if has_bk else f"\n\nBusiness name: {business_name}"
-        )
+        # ── Assemble prompt ──
+        business_block = (
+            "\n\nBUSINESS INFO (use specific names/prices — never be generic):\n" + "\n".join(bc_lines)
+        ) if bc_lines else f"\n\nBusiness: {business_name}"
+        catalog_block = (
+            "\n\nCATALOG (reference specific items when relevant):\n" + "\n".join(catalog_lines)
+        ) if catalog_lines else ""
+        history_block = (
+            "\n\nConversation history:\n" + "\n".join(conv_lines)
+        ) if conv_lines else "\n\n(No prior conversation)"
+        customer_block = f"\nCustomer: {customer_name}" + (f"  |  {customer_meta}" if customer_meta else "")
 
-        # Conversation history
-        history_block = f"\n\nConversation history (most recent at bottom):\n{conversation_log}" if conversation_log else "\n\n(No prior conversation with this customer)"
+        prompt = f"""You are the owner of {business_name} — a real person, not a bot.
+Business type: {btype}{customer_block}
 
-        # Full prompt
-        prompt = f"""You are the owner of {business_name}. You're writing a WhatsApp message to {customer_name}.
+{scenario_block}{business_block}{catalog_block}{history_block}{flow_block}{repetition_block}{direction_block}{variety_block}
 
-You are a real person — not a bot, not a marketing tool. You write the way real business owners text their customers: direct, warm, brief.
-
-{scenario_block}{bk_block}{history_block}{repetition_block}{direction_block}{variety_block}
-
-WRITING RULES (non-negotiable):
-1. Output ONLY the message text. No labels, no "Message:", no quotes around it, no explanation.
-2. 1-3 sentences. Short is better. WhatsApp messages are not emails.
-3. USE REAL SPECIFICS: If business info is provided above, name actual products, actual prices, actual offers. Never say "we have great options" when you know exactly what they are.
-4. BANNED PHRASES — never use: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "I understand your concern", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
-5. LANGUAGE: Write in the same language the customer used in their last message. Mix naturally if they mix — never translate the same thing twice.
-6. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯 — bot emojis.
-7. HONESTY: Only use facts from the business info above. Never invent prices, stock, or promises not listed.
+RULES (non-negotiable):
+1. Output ONLY the message text — no labels, no quotes, no explanation.
+2. 1-3 sentences max. Short is better. WhatsApp is not email.
+3. USE REAL SPECIFICS: name actual products and prices from catalog above. Never say "we have great options".
+4. BANNED PHRASES: "Sure thing", "Absolutely", "Certainly", "Of course", "I'd be happy to", "Feel free to", "Don't hesitate", "I hope this helps", "Thank you for your interest", "Kindly", "Please be advised", "I apologize for any inconvenience", "I'm reaching out", "I wanted to touch base".
+5. LANGUAGE: Match the customer's language. Mix naturally if they mix.
+6. EMOJIS: Only if it genuinely fits. Never: 😊😇🙏✨💯
+7. HONESTY: Only use facts from business info above. Never invent prices or promises.
 
 Message:"""
 
-        # Call LLM directly
         from ai_service import get_drafter
-        ai_service = get_drafter()
-        drafted = await ai_service._call_llm(prompt, model_pref=model_pref)
+        ai = get_drafter()
+        drafted = await ai._call_llm(prompt, model_pref=model_pref)
         drafted = drafted.strip().strip('"').strip("'")
 
-        # Build reason string
         if is_first_contact:
             reason = "First message — introduce your business"
         elif is_replying_to_incoming:
             reason = f"Replying to: {last_message['content'][:60]}..."
         else:
-            reason = f"No contact in {days_label}" if days_since else "Follow-up opportunity"
+            days_label = f"{days_since} days" if days_since else "a while"
+            reason = f"No contact in {days_label}"
 
         return DraftMessageResponse(
-            message=drafted or f"Hi {customer_name}, just checking in — anything I can help you with?",
+            message=drafted or f"Hi {customer_name}, anything I can help you with?",
             confidence=0.9,
             reason=reason
         )
@@ -8316,8 +8286,7 @@ Message:"""
         raise
     except Exception as e:
         import traceback
-        err_msg = f"Error in draft_ai_message: {e}\n{traceback.format_exc()}"
-        logging.error(err_msg)
+        logging.error(f"Error in draft_ai_message: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/ai/send-auto-message")
