@@ -1642,13 +1642,13 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     if not phone or len(phone) < 8:
         raise HTTPException(status_code=400, detail="Valid phone number is required")
 
-    # Rate limit: max 5 attempts per phone per 10 minutes
+    # Rate limit: max 20 attempts per phone per 10 minutes
     import time as _time
     _now = _time.time()
     _window = 600  # 10 minutes
     _attempts = _wa_start_rate.get(phone, [])
     _attempts = [t for t in _attempts if _now - t < _window]
-    if len(_attempts) >= 5:
+    if len(_attempts) >= 20:
         raise HTTPException(status_code=429, detail="Too many login attempts. Please wait 10 minutes before trying again.")
     _attempts.append(_now)
     _wa_start_rate[phone] = _attempts
