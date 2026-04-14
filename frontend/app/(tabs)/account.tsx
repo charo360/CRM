@@ -26,14 +26,7 @@ import { apiClient, settingsAPI, whatsappAPI, accountAPI } from '../../context/a
 import { NotificationHandler } from '../../utils/notification-handler';
 import TeamManagementModal from '../../components/TeamManagementModal';
 import SubscriptionModal from '../../components/SubscriptionModal';
-// IAP stubs — real react-native-iap is linked only in native production builds
-type ProductPurchase = { purchaseToken?: string; transactionId?: string };
-type PurchaseError = { code?: string; message?: string };
-const initConnection = async () => {};
-const requestPurchase = async (_opts: any) => { throw new Error('IAP not available in this build'); };
-const purchaseUpdatedListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
-const purchaseErrorListener = (_cb: any): { remove: () => void } => ({ remove: () => {} });
-const finishTransaction = async (_opts: any) => {};
+import Constants from 'expo-constants';
 
 // Product IDs for credit bundles on each platform
 const CREDIT_PRODUCT_IDS: Record<string, string> = {
@@ -249,19 +242,8 @@ export default function AccountScreen() {
   const { refresh: refreshBusinessContext } = useBusiness();
   const router = useRouter();
 
-  // IAP refs for purchase callbacks
-  const pendingBundleIdRef = useRef<string | null>(null);
-  const purchaseListenerRef = useRef<any>(null);
-  const errorListenerRef = useRef<any>(null);
-
   useEffect(() => {
     fetchData();
-    // Init IAP connection
-    initConnection().catch(() => {});
-    return () => {
-      purchaseListenerRef.current?.remove();
-      errorListenerRef.current?.remove();
-    };
   }, []);
 
   const [currency, setCurrency] = useState('USD');
@@ -1707,55 +1689,37 @@ export default function AccountScreen() {
                   }}
                   disabled={buyingCredits !== null}
                   onPress={async () => {
+                    if (Constants.executionEnvironment === 'storeClient') {
+                      Alert.alert('Development Mode', 'In-app purchases require a real build from the Play Store.', [{ text: 'OK' }]);
+                      return;
+                    }
                     const productId = CREDIT_PRODUCT_IDS[bundle.bundle_id];
                     if (!productId) {
                       Alert.alert('Error', 'Product not found');
                       return;
                     }
                     setBuyingCredits(bundle.bundle_id);
-                    pendingBundleIdRef.current = bundle.bundle_id;
-
-                    // Set up one-time purchase listener
-                    purchaseListenerRef.current?.remove();
-                    errorListenerRef.current?.remove();
-
-                    purchaseListenerRef.current = purchaseUpdatedListener(async (purchase: ProductPurchase) => {
-                      const token = purchase.purchaseToken || purchase.transactionId || '';
-                      try {
-                        const res = await apiClient.post('/subscription/add-credits', {
-                          bundle_id: pendingBundleIdRef.current,
-                          purchase_token: token,
-                          platform: Platform.OS === 'ios' ? 'ios' : 'android',
-                        });
-                        await finishTransaction({ purchase, isConsumable: true });
-                        setExtraCredits(res.data.total_extra_credits);
-                        setWaMsgLimit(waMsgLimit + res.data.credits_added);
-                        Alert.alert('Credits Added!', res.data.message);
-                        setShowTopUpModal(false);
-                      } catch (e: any) {
-                        Alert.alert('Failed', e.response?.data?.detail || 'Could not verify purchase');
-                      } finally {
-                        setBuyingCredits(null);
-                        pendingBundleIdRef.current = null;
-                      }
-                    });
-
-                    errorListenerRef.current = purchaseErrorListener((error: PurchaseError) => {
-                      if (error.code !== 'E_USER_CANCELLED') {
-                        Alert.alert('Purchase Failed', error.message || 'Could not complete purchase');
-                      }
-                      setBuyingCredits(null);
-                      pendingBundleIdRef.current = null;
-                    });
-
                     try {
-                      await requestPurchase({ sku: productId });
+                      const Purchases = require('react-native-purchases').default;
+                      const products = await Purchases.getProducts([productId]);
+                      if (!products || products.length === 0) throw new Error('Product not found in store');
+                      const { transaction } = await Purchases.purchaseStoreProduct(products[0]);
+                      const token = transaction?.transactionIdentifier || transaction?.revenueCatId || '';
+                      const res = await apiClient.post('/subscription/add-credits', {
+                        bundle_id: bundle.bundle_id,
+                        purchase_token: token,
+                        platform: Platform.OS === 'ios' ? 'ios' : 'android',
+                      });
+                      setExtraCredits(res.data.total_extra_credits);
+                      setWaMsgLimit(waMsgLimit + res.data.credits_added);
+                      Alert.alert('Messages Added!', res.data.message);
+                      setShowTopUpModal(false);
                     } catch (e: any) {
-                      if (e.code !== 'E_USER_CANCELLED') {
-                        Alert.alert('Purchase Failed', e.message || 'Could not start purchase');
+                      if (!e.userCancelled) {
+                        Alert.alert('Purchase Failed', e.response?.data?.detail || e.message || 'Could not complete purchase');
                       }
+                    } finally {
                       setBuyingCredits(null);
-                      pendingBundleIdRef.current = null;
                     }
                   }}
                 >
