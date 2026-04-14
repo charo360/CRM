@@ -9752,7 +9752,6 @@ async def health_check_head():
     """Render and some probes use HEAD; GET-only routes return 405."""
     return Response(status_code=200)
 
-app.include_router(api_router)
 
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
@@ -10123,6 +10122,8 @@ async def send_booking_reminder(booking_id: str, user=Depends(get_current_user))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send reminder: {str(e)}")
     return {"success": True, "sent_at": datetime.utcnow().isoformat()}
+
+app.include_router(api_router)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
