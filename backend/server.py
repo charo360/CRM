@@ -1439,6 +1439,7 @@ class DraftMessageRequest(BaseModel):
     tone: Optional[str] = "friendly"  # professional, friendly, casual
     custom_instructions: Optional[str] = None
     regenerate_count: Optional[int] = 0  # increments each regenerate to force variety
+    mode: Optional[str] = "auto"  # "auto" = business mode, "personal" = personal conversation mode
 
 class DraftMessageResponse(BaseModel):
     message: str
@@ -8078,6 +8079,65 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
+        customer_name = customer.get("name", "them")
+
+        # ── Personal mode: skip all business context, just draft a natural reply ──
+        if request.mode == "personal":
+            raw_msgs = await db.messages.find({
+                "customer_id": request.customer_id,
+                "user_id": business_id
+            }).sort("created_at", 1).limit(20).to_list(20)
+
+            conv_lines = []
+            for m in raw_msgs:
+                role = customer_name if m["direction"] == "incoming" else "You"
+                conv_lines.append(f"{role}: {m['content']}")
+            conversation_log = "\n".join(conv_lines) if conv_lines else ""
+
+            last_msg = raw_msgs[-1] if raw_msgs else None
+            is_replying = last_msg and last_msg["direction"] == "incoming"
+            custom_direction = request.custom_instructions or ""
+            model_pref = user.get("settings", {}).get("ai_model", "standard")
+
+            direction_note = f"\nDIRECTION: {custom_direction.strip()}" if custom_direction.strip() else ""
+
+            if is_replying:
+                scenario = f'They just said: "{last_msg["content"]}"'
+                goal = "Reply naturally to what they said."
+            elif conv_lines:
+                scenario = "Continue the conversation naturally."
+                goal = "Send a follow-up that fits the tone and topic."
+            else:
+                scenario = "First message to this person."
+                goal = "Say something genuine and easy to reply to."
+
+            prompt = f"""You are writing a personal WhatsApp message to {customer_name}.
+This is a personal conversation — not business, not sales.
+
+{scenario}
+{goal}{direction_note}
+
+Conversation so far:
+{conversation_log or "(no prior messages)"}
+
+RULES:
+1. Output ONLY the message text. No labels, no explanation.
+2. 1-3 sentences max. Casual and warm.
+3. Match their language and tone from the conversation.
+4. No business talk, no product mentions, no sales pitch.
+5. Sound like a real person texting a friend.
+
+Message:"""
+
+            from ai_service import get_drafter
+            drafted = await (get_drafter())._call_llm(prompt, model_pref=model_pref)
+            drafted = drafted.strip().strip('"').strip("'")
+            return DraftMessageResponse(
+                message=drafted or f"Hey {customer_name}, how are you?",
+                confidence=0.9,
+                reason="Personal conversation draft"
+            )
+
         # ── v2 context loader: full catalog + structured business config ──
         from autoreply.context_loader import load_context as _load_ctx
         ctx         = await _load_ctx(db, business_id, request.customer_id, user)
@@ -8090,7 +8150,6 @@ async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_curr
         user_settings    = user.get("settings", {})
         model_pref       = user_settings.get("ai_model", "standard")
         business_name    = bc.get("name") or user.get("business_name", "this business")
-        customer_name    = customer.get("name", "Customer")
         btype            = bc.get("type", "retail")
         currency         = bc.get("currency", "KES")
         custom_direction = request.custom_instructions or ""
