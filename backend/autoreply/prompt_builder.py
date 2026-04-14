@@ -2823,24 +2823,30 @@ def build_system_prompt(
     currency = bc.get("currency", "KES")
     parts: List[str] = []
 
+    def _cap(text: str, limit: int) -> str:
+        """Truncate text to limit chars, appending ellipsis if cut."""
+        if not text:
+            return text
+        return text[:limit].rstrip() + ("…" if len(text) > limit else "")
+
     # ── Identity ──
     name = bc.get("name") or "this business"
     parts.append(f"You are the WhatsApp assistant for *{name}*.")
     if bc.get("about"):
-        parts.append(f"About: {bc['about']}")
+        parts.append(f"About: {_cap(bc['about'], 200)}")
     if bc.get("products_services"):
-        parts.append(f"What we sell/offer: {bc['products_services']}")
+        parts.append(f"What we sell/offer: {_cap(bc['products_services'], 150)}")
 
     # ── Operating details ──
     details: List[str] = [f"Currency: {currency}"]
     if bc.get("business_location"):
-        details.append(f"Location/Address: {bc['business_location']}")
+        details.append(f"Location/Address: {_cap(bc['business_location'], 100)}")
     if bc.get("business_hours"):
-        details.append(f"Hours: {bc['business_hours']}")
+        details.append(f"Hours: {_cap(bc['business_hours'], 80)}")
     if bc.get("delivery_info"):
-        details.append(f"Delivery: {bc['delivery_info']}")
+        details.append(f"Delivery: {_cap(bc['delivery_info'], 120)}")
     if bc.get("special_offers"):
-        details.append(f"Current offers: {bc['special_offers']}")
+        details.append(f"Current offers: {_cap(bc['special_offers'], 120)}")
     parts.append("\n".join(details))
 
     # ── Payment methods — CRITICAL: must be shown exactly as configured ──
@@ -2853,7 +2859,7 @@ def build_system_prompt(
 
     # ── FAQs ──
     if bc.get("faqs"):
-        parts.append(f"FAQs:\n{bc['faqs']}")
+        parts.append(f"FAQs:\n{_cap(bc['faqs'], 400)}")
 
     # ── Catalog ──
     # Classify display mode by business type
