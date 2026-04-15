@@ -44,6 +44,25 @@ export default function MessagesPage() {
       .finally(() => setLoadingCustomers(false));
   }, []);
 
+  // Deep-link from other pages (e.g. Suppliers → open thread)
+  useEffect(() => {
+    if (loadingCustomers || customers.length === 0) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const cid = params.get("customer");
+      if (!cid) return;
+      if (customers.some((c) => c.id === cid)) {
+        setSelectedId(cid);
+        const url = new URL(window.location.href);
+        url.searchParams.delete("customer");
+        const next = url.pathname + (url.search || "") + (url.hash || "");
+        window.history.replaceState({}, "", next);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [loadingCustomers, customers]);
+
   // Load messages for selected customer
   const loadMessages = useCallback(async (customerId: string) => {
     try {
