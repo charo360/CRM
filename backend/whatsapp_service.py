@@ -449,12 +449,28 @@ class WhatsAppService:
             return {"status": "error", "message": str(e)}
 
     async def get_instance_status(self, user_id: str) -> Dict:
-        """Check the connection status of a user's WhatsApp instance"""
+        """Check the connection status of a user's WhatsApp instance.
+        Auto-cleans stuck pairing/connecting instances older than 5 minutes."""
         user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
         wa = user.get("whatsapp") if user else None
 
         if not wa or not wa.get("instance_name"):
             return {"connected": False, "status": "not_connected"}
+
+        # Auto-clean: if instance has been stuck in pairing/connecting for >5 min, kill it
+        wa_status = wa.get("status", "")
+        created_at = wa.get("created_at")
+        if wa_status in ("pairing", "connecting", "disconnected") and created_at:
+            age_minutes = (datetime.utcnow() - created_at).total_seconds() / 60
+            if age_minutes > 5:
+                logger.info(f"Auto-cleaning stuck instance for user {user_id} (status={wa_status}, age={age_minutes:.1f}min)")
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await self._delete_all_user_instances(client, user_id)
+                except Exception as e:
+                    logger.warning(f"Auto-clean failed for user {user_id}: {e}")
+                await self.db.users.update_one({"_id": user_id}, {"$unset": {"whatsapp": ""}})
+                return {"connected": False, "status": "not_connected"}
 
         instance_name = wa["instance_name"]
 
@@ -469,6 +485,15 @@ class WhatsAppService:
                     data = resp.json()
                     state = data.get("instance", {}).get("state", "close")
                     is_open = state == "open"
+
+                    # If Evolution reports this instance is stuck connecting (not open), auto-clean after 5 min
+                    if not is_open and state in ("connecting", "close") and created_at:
+                        age_minutes = (datetime.utcnow() - created_at).total_seconds() / 60
+                        if age_minutes > 5 and wa_status != "connected":
+                            logger.info(f"Evolution reports stuck state={state} for user {user_id} — auto-cleaning")
+                            await self._delete_all_user_instances(client, user_id)
+                            await self.db.users.update_one({"_id": user_id}, {"$unset": {"whatsapp": ""}})
+                            return {"connected": False, "status": "not_connected"}
 
                     # Update DB if status changed
                     new_status = "connected" if is_open else "disconnected"
