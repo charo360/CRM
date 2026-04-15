@@ -98,6 +98,8 @@ export interface TeamMember {
   name: string;
   email: string;
   role: string;
+  permissions?: string[];
+  created_at?: string;
 }
 
 export interface FollowUp {
@@ -158,6 +160,20 @@ export interface BroadcastTemplate {
   created_at: string;
 }
 
+export interface BroadcastAutomation {
+  id: string;
+  name: string;
+  type: "follow_up" | "recurring";
+  message: string;
+  trigger_days?: number;
+  schedule_time?: string;
+  filter_type: string;
+  status: "active" | "paused";
+  last_run?: string;
+  next_run?: string;
+  created_at: string;
+}
+
 export interface Booking {
   id: string;
   booking_number: string;
@@ -212,14 +228,82 @@ export interface WhatsAppStatus {
   plan: string;
 }
 
+export interface WhatsAppConnection {
+  connected: boolean;
+  status: string;
+  phone_number?: string;
+  pairing_code?: string;
+  qr_code?: string;
+}
+
+export interface BusinessSettings {
+  business_name?: string;
+  business_type?: string;
+  country?: string;
+  currency?: string;
+  currency_symbol?: string;
+  primary_language?: string;
+  business_description?: string;
+  products_services?: string;
+  business_location?: string;
+  business_hours?: string;
+  delivery_info?: string;
+  special_offers?: string;
+  payment_methods?: Array<{ name: string; details: string }>;
+  faqs?: string;
+  auto_reply_enabled?: boolean;
+  auto_reply_audience?: string;
+  ai_model?: string;
+}
+
+export interface Contact {
+  id: string;
+  name: string;
+  phone_number: string;
+  profile_picture?: string;
+  is_customer: boolean;
+  auto_created: boolean;
+  last_message?: string;
+  last_contacted?: string;
+  created_at: string;
+}
+
+export interface FollowUpSuggestion {
+  customer_id: string;
+  customer_name: string;
+  customer_phone: string;
+  suggested_message: string;
+  interests: string[];
+  sentiment: string;
+  priority: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface DraftRequest {
+  customer_id: string;
+  custom_instructions?: string;
+  tone?: string;
+  mode?: "auto" | "personal";
+  regenerate_count?: number;
+}
+
+export interface DraftResponse {
+  message: string;
+  confidence: number;
+  reason: string;
+}
+
 // ── API helpers ──────────────────────────────────────────────────────────────
 
 export const ordersApi = {
   list: () => api.get<Order[]>("/orders"),
+  create: (body: Partial<Order> & { customer_id: string }) => api.post<Order>("/orders", body),
   updateProgress: (id: string, body: { fulfillment_status?: string; assigned_to?: string }) =>
     api.patch<Order>(`/orders/${id}/progress`, body),
   updateStatus: (id: string, body: { payment_status?: string; delivery_status?: string; notes?: string }) =>
     api.put<Order>(`/orders/${id}`, body),
+  convertToSale: (id: string, paymentMethod: string) =>
+    api.post<{ id: string }>(`/orders/${id}/convert-to-sale?payment_method=${encodeURIComponent(paymentMethod)}`, {}),
   delete: (id: string) => api.delete<void>(`/orders/${id}`),
 };
 
@@ -240,13 +324,22 @@ export const productsApi = {
 
 export const teamApi = {
   list: () => api.get<TeamMember[]>("/team/members"),
+  create: (member: Partial<TeamMember>) => api.post<TeamMember>("/team/members", member),
+  update: (id: string, member: Partial<TeamMember>) => api.put<TeamMember>(`/team/members/${id}`, member),
+  delete: (id: string) => api.delete<void>(`/team/members/${id}`),
 };
 
 export const authApi = {
-  login: (email: string, password: string) =>
-    api.post<{ access_token: string; user: Record<string, unknown> }>("/auth/login", { email, password }),
-  register: (data: { name: string; email: string; password: string; phone?: string }) =>
-    api.post<{ access_token: string; user: Record<string, unknown> }>("/auth/register", data),
+  whatsappStart: (phoneNumber: string) =>
+    api.post<{ session_token?: string; pairing_code?: string; access_token?: string; user?: Record<string, unknown> }>(
+      "/auth/whatsapp-start", { phone_number: phoneNumber }
+    ),
+  whatsappCheck: (sessionToken: string) =>
+    api.post<{ access_token?: string; user?: Record<string, unknown>; status?: string }>(
+      "/auth/whatsapp-check", { session_token: sessionToken }
+    ),
+  register: (data: { business_name: string; owner_name: string }) =>
+    api.post<Record<string, unknown>>("/auth/register", data),
   me: () => api.get<Record<string, unknown>>("/auth/me"),
 };
 
@@ -256,13 +349,18 @@ export const followupsApi = {
   update: (id: string, body: Partial<FollowUp>) => api.put<FollowUp>(`/followups/${id}`, body),
   delete: (id: string) => api.delete<void>(`/followups/${id}`),
   snooze: (id: string, days: number) => api.post<FollowUp>(`/followups/${id}/snooze`, { days }),
+  complete: (id: string, outcome: string, note?: string) =>
+    api.post<FollowUp>(`/followups/${id}/complete`, { outcome, outcome_note: note }),
   analytics: () => api.get<Record<string, unknown>>("/followups/analytics"),
+  suggestions: () => api.get<FollowUpSuggestion[]>("/followups/suggestions"),
+  generateSuggestions: () => api.post<{ status: string }>("/followups/generate-suggestions", {}),
 };
 
 export const salesApi = {
   list: () => api.get<Sale[]>("/sales"),
   create: (body: Partial<Sale>) => api.post<Sale>("/sales", body),
   markPaid: (id: string) => api.put<Sale>(`/sales/${id}/mark-paid`, {}),
+  resendReceipt: (id: string) => api.post<{ status: string }>(`/sales/${id}/resend-receipt`, {}),
 };
 
 export const expensesApi = {
@@ -271,20 +369,11 @@ export const expensesApi = {
   delete: (id: string) => api.delete<void>(`/expenses/${id}`),
 };
 
-export const broadcastApi = {
-  list: () => api.get<Broadcast[]>("/broadcasts"),
-  create: (body: { message: string; filter_type: string; name?: string; scheduled_at?: string }) =>
-    api.post<Broadcast>("/broadcasts", body),
-  delete: (id: string) => api.delete<void>(`/broadcasts/${id}`),
-  templates: () => api.get<BroadcastTemplate[]>("/broadcast-templates"),
-  createTemplate: (body: { name: string; message: string }) =>
-    api.post<BroadcastTemplate>("/broadcast-templates", body),
-};
-
 export const bookingsApi = {
   list: () => api.get<Booking[]>("/bookings"),
   update: (id: string, body: Partial<Booking>) => api.put<Booking>(`/bookings/${id}`, body),
   delete: (id: string) => api.delete<void>(`/bookings/${id}`),
+  sendReminder: (id: string) => api.post<{ success: boolean }>(`/bookings/${id}/reminder`, {}),
 };
 
 export const analyticsApi = {
@@ -295,7 +384,10 @@ export const messagesApi = {
   forCustomer: (customerId: string, limit = 50) =>
     api.get<Message[]>(`/customers/${customerId}/messages?limit=${limit}`),
   send: (toNumber: string, message: string, customerName?: string) =>
-    api.post<{ status: string }>(`/messages/send?to_number=${encodeURIComponent(toNumber)}&message=${encodeURIComponent(message)}${customerName ? `&customer_name=${encodeURIComponent(customerName)}` : ""}`, {}),
+    api.post<{ status: string }>(
+      `/messages/send?to_number=${encodeURIComponent(toNumber)}&message=${encodeURIComponent(message)}${customerName ? `&customer_name=${encodeURIComponent(customerName)}` : ""}`,
+      {}
+    ),
   markRead: (customerId: string) =>
     api.post<void>(`/customers/${customerId}/messages/read`, {}),
 };
@@ -306,6 +398,47 @@ export const whatsappApi = {
     api.post<{ pairing_code?: string; status: string; message?: string }>("/whatsapp/connect", { phone_number: phoneNumber }),
   disconnect: () => api.post<{ status: string }>("/whatsapp/disconnect", {}),
   sync: () => api.post<{ status: string }>("/whatsapp/sync", {}),
+};
+
+export const settingsApi = {
+  get: () => api.get<BusinessSettings>("/settings"),
+  update: (settings: Partial<BusinessSettings>) => api.put<BusinessSettings>("/settings", settings),
+};
+
+export const contactsApi = {
+  list: () => api.get<Contact[]>("/contacts"),
+  suggestions: () => api.get<Contact[]>("/contacts/suggestions"),
+  addAsCustomer: (id: string) => api.post<Customer>(`/contacts/${id}/add-as-customer`, {}),
+  delete: (id: string) => api.delete<void>(`/contacts/${id}`),
+  scanSuggestions: () => api.post<{ status: string }>("/contacts/scan-suggestions", {}),
+  backfillNames: () => api.post<{ status: string }>("/customers/backfill-names", {}),
+  refreshProfilePictures: () => api.post<{ status: string }>("/customers/refresh-profile-pictures", {}),
+};
+
+export const broadcastApi = {
+  list: () => api.get<Broadcast[]>("/broadcasts"),
+  create: (body: { message: string; filter_type: string; name?: string; scheduled_at?: string }) =>
+    api.post<Broadcast>("/broadcasts", body),
+  resend: (id: string) => api.post<Broadcast>(`/broadcasts/${id}/resend`, {}),
+  delete: (id: string) => api.delete<void>(`/broadcasts/${id}`),
+  templates: () => api.get<BroadcastTemplate[]>("/broadcast-templates"),
+  createTemplate: (body: { name: string; message: string }) =>
+    api.post<BroadcastTemplate>("/broadcast-templates", body),
+  deleteTemplate: (id: string) => api.delete<void>(`/broadcast-templates/${id}`),
+  automations: () => api.get<BroadcastAutomation[]>("/broadcast-automations"),
+  createAutomation: (automation: Partial<BroadcastAutomation>) =>
+    api.post<BroadcastAutomation>("/broadcast-automations", automation),
+  updateAutomation: (id: string, automation: Partial<BroadcastAutomation>) =>
+    api.put<BroadcastAutomation>(`/broadcast-automations/${id}`, automation),
+  deleteAutomation: (id: string) => api.delete<void>(`/broadcast-automations/${id}`),
+};
+
+export const aiApi = {
+  draftMessage: (request: DraftRequest) => api.post<DraftResponse>("/ai/draft-message", request),
+  sendAutoMessage: (customerId: string, message: string) =>
+    api.post<{ status: string }>("/ai/send-auto-message", { customer_id: customerId, message }),
+  getDailyInsights: (limit = 10) => api.get<Record<string, unknown>[]>(`/analysis/daily-insights?limit=${limit}`),
+  runAnalysisNow: () => api.post<{ status: string }>("/analysis/run-now", {}),
 };
 
 export const kdsApi = {

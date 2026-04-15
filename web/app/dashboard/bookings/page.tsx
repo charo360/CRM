@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { bookingsApi, Booking } from "@/lib/api";
+import { bookingsApi, Booking, api } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { Calendar, Clock, CheckCircle2, XCircle, Loader2, ChevronDown } from "lucide-react";
+import { Calendar, Clock, CheckCircle2, XCircle, Loader2, ChevronDown, Bell } from "lucide-react";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   pending:   { label: "Pending",   color: "bg-amber-100 text-amber-700" },
@@ -26,6 +26,7 @@ export default function BookingsPage() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("All");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [remindingId, setRemindingId] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -39,6 +40,15 @@ export default function BookingsPage() {
     setUpdatingId(id);
     try { await bookingsApi.update(id, { status: status as Booking["status"] }); await load(); }
     finally { setUpdatingId(null); }
+  }
+
+  async function sendReminder(id: string) {
+    setRemindingId(id);
+    try {
+      await api.post(`/bookings/${id}/reminder`, {});
+      alert("Reminder sent!");
+    } catch { alert("Failed to send reminder"); }
+    finally { setRemindingId(null); }
   }
 
   async function handleDelete(id: string) {
@@ -157,6 +167,12 @@ export default function BookingsPage() {
                               <button onClick={() => updateStatus(b.id, "completed")} disabled={isUpdating}
                                 className="px-2 py-1 text-xs bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors">
                                 Complete
+                              </button>
+                            )}
+                            {["pending", "confirmed"].includes(b.status) && (
+                              <button onClick={() => sendReminder(b.id)} disabled={remindingId === b.id}
+                                className="p-1.5 rounded-lg text-slate-400 hover:bg-amber-100 hover:text-amber-600 transition-colors" title="Send reminder">
+                                {remindingId === b.id ? <Loader2 size={13} className="animate-spin" /> : <Bell size={13} />}
                               </button>
                             )}
                           </div>

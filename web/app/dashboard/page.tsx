@@ -1,24 +1,48 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ordersApi, customersApi, Order, Customer } from "@/lib/api";
+import { ordersApi, customersApi, Order, Customer, api } from "@/lib/api";
 import { formatCurrency, timeAgo } from "@/lib/utils";
+import { useBusiness } from "@/contexts/BusinessContext";
 import {
   ShoppingCart, Users, TrendingUp, CreditCard,
-  ArrowUpRight, Clock, CheckCircle2,
+  ArrowUpRight, Clock, Zap, Loader2, Send,
 } from "lucide-react";
 import Link from "next/link";
 
 export default function DashboardPage() {
+  const { currency, isRestaurant } = useBusiness();
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pulse, setPulse] = useState<string>("");
+  const [pulseLoading, setPulseLoading] = useState(false);
+  const [sendingPulse, setSendingPulse] = useState(false);
 
   useEffect(() => {
     Promise.all([ordersApi.list(), customersApi.list()])
       .then(([o, c]) => { setOrders(o); setCustomers(c); })
       .finally(() => setLoading(false));
+    loadPulse();
   }, []);
+
+  async function loadPulse() {
+    setPulseLoading(true);
+    try {
+      const res = await api.get<{ message?: string; summary?: string }>("/daily-pulse/preview");
+      setPulse(res.message || res.summary || "");
+    } catch { /* optional feature */ }
+    finally { setPulseLoading(false); }
+  }
+
+  async function sendPulse() {
+    setSendingPulse(true);
+    try {
+      await api.post("/daily-pulse/send", {});
+      alert("Daily pulse sent to all customers!");
+    } catch { alert("Failed to send pulse"); }
+    finally { setSendingPulse(false); }
+  }
 
   const totalRevenue = orders
     .filter((o) => o.payment_status === "Paid")
@@ -35,7 +59,7 @@ export default function DashboardPage() {
   const stats = [
     {
       label: "Total Revenue",
-      value: formatCurrency(totalRevenue),
+      value: formatCurrency(totalRevenue, currency),
       icon: TrendingUp,
       color: "text-indigo-600",
       bg: "bg-indigo-50",
@@ -116,7 +140,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="text-right">
                       <p className="text-sm font-semibold text-slate-900">
-                        {formatCurrency(order.total_amount)}
+                        {formatCurrency(order.total_amount, currency)}
                       </p>
                       <StatusBadge status={order.fulfillment_status || order.payment_status} />
                     </div>
@@ -154,6 +178,36 @@ export default function DashboardPage() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Daily Pulse */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center">
+              <Zap size={16} className="text-purple-600" />
+            </div>
+            <h2 className="font-semibold text-slate-900">Daily Pulse</h2>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={loadPulse} disabled={pulseLoading}
+              className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+              {pulseLoading ? "Loading…" : "Refresh"}
+            </button>
+            <button onClick={sendPulse} disabled={sendingPulse || !pulse}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50">
+              {sendingPulse ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
+              Send to Customers
+            </button>
+          </div>
+        </div>
+        {pulseLoading ? (
+          <div className="h-16 bg-slate-50 rounded-xl animate-pulse" />
+        ) : pulse ? (
+          <p className="text-sm text-slate-700 bg-purple-50 rounded-xl px-4 py-3 leading-relaxed">{pulse}</p>
+        ) : (
+          <p className="text-sm text-slate-400 text-center py-4">Click Refresh to generate today&apos;s business pulse</p>
+        )}
       </div>
     </div>
   );

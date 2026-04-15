@@ -1,39 +1,58 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ordersApi, Order } from "@/lib/api";
+import { ordersApi, customersApi, Order, Customer, api } from "@/lib/api";
 import { formatCurrency, timeAgo } from "@/lib/utils";
-import { Search, RefreshCw, ChevronDown } from "lucide-react";
-
-type FS = string;
+import { Search, RefreshCw, ChevronDown, Plus, X, Loader2, ArrowRightLeft } from "lucide-react";
 
 const FULFILLMENT_STATUSES = ["All", "New", "Confirmed", "Preparing", "Ready", "Done"];
 const DELIVERY_TYPES = ["All", "dine-in", "pickup", "delivery"];
 
 const STATUS_COLORS: Record<string, string> = {
-  New:       "bg-red-100 text-red-700",
-  Confirmed: "bg-orange-100 text-orange-700",
-  Preparing: "bg-yellow-100 text-yellow-700",
-  Ready:     "bg-green-100 text-green-700",
-  Done:      "bg-slate-100 text-slate-500",
-  Paid:      "bg-emerald-100 text-emerald-700",
-  Pending:   "bg-amber-100 text-amber-700",
-  Partial:   "bg-blue-100 text-blue-700",
+  New:        "bg-red-100 text-red-700",
+  Confirmed:  "bg-orange-100 text-orange-700",
+  Preparing:  "bg-yellow-100 text-yellow-700",
+  Ready:      "bg-green-100 text-green-700",
+  Done:       "bg-slate-100 text-slate-500",
+  Paid:       "bg-emerald-100 text-emerald-700",
+  Pending:    "bg-amber-100 text-amber-700",
+  Partial:    "bg-blue-100 text-blue-700",
+};
+
+const EMPTY_FORM = {
+  customer_id: "",
+  product: "",
+  quantity: 1,
+  price: 0,
+  payment_status: "Pending",
+  delivery_type: "pickup",
+  delivery_address: "",
+  table_number: "",
+  notes: "",
 };
 
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [typeFilter, setTypeFilter] = useState("All");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [convertingId, setConvertingId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
 
   async function load() {
     setLoading(true);
     try {
-      const data = await ordersApi.list();
-      setOrders(data);
+      const [ordersData, customersData] = await Promise.all([
+        ordersApi.list(),
+        customersApi.list(),
+      ]);
+      setOrders(ordersData);
+      setCustomers(customersData);
     } finally {
       setLoading(false);
     }
@@ -52,6 +71,49 @@ export default function OrdersPage() {
       await load();
     } finally {
       setUpdatingId(null);
+    }
+  }
+
+  async function convertToSale(order: Order) {
+    const method = prompt("Payment method? (Cash / Mobile Money / Card)", "Cash");
+    if (!method) return;
+    setConvertingId(order.id);
+    try {
+      await api.post(`/orders/${order.id}/convert-to-sale?payment_method=${encodeURIComponent(method)}`, {});
+      alert("Order converted to sale!");
+      await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to convert");
+    } finally {
+      setConvertingId(null);
+    }
+  }
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.customer_id) return alert("Select a customer");
+    setCreating(true);
+    try {
+      const total = form.price * form.quantity;
+      await ordersApi.create({
+        customer_id: form.customer_id,
+        product: form.product,
+        quantity: form.quantity,
+        price: form.price,
+        total_amount: total,
+        payment_status: form.payment_status,
+        delivery_type: form.delivery_type,
+        delivery_address: form.delivery_address || undefined,
+        table_number: form.table_number || undefined,
+        notes: form.notes || undefined,
+      });
+      setShowCreate(false);
+      setForm(EMPTY_FORM);
+      await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to create order");
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -76,13 +138,21 @@ export default function OrdersPage() {
           <h1 className="text-2xl font-bold text-slate-900">Orders</h1>
           <p className="text-slate-500 text-sm mt-1">{orders.length} total orders</p>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600"
-        >
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={load}
+            className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600"
+          >
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
+          >
+            <Plus size={15} /> New Order
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -160,12 +230,8 @@ export default function OrdersPage() {
                             <span className="ml-1 text-slate-400">#{order.table_number}</span>
                           )}
                         </td>
-                        <td className="px-4 py-3">
-                          <Badge status={fs} />
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge status={order.payment_status} />
-                        </td>
+                        <td className="px-4 py-3"><Badge status={fs} /></td>
+                        <td className="px-4 py-3"><Badge status={order.payment_status} /></td>
                         <td className="px-4 py-3 font-semibold text-slate-800">
                           {formatCurrency(order.total_amount)}
                         </td>
@@ -173,17 +239,29 @@ export default function OrdersPage() {
                           {timeAgo(order.created_at)}
                         </td>
                         <td className="px-4 py-3">
-                          {nextStatus ? (
-                            <button
-                              onClick={() => advanceStatus(order)}
-                              disabled={updatingId === order.id}
-                              className="px-3 py-1 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
-                            >
-                              {updatingId === order.id ? "..." : `→ ${nextStatus}`}
-                            </button>
-                          ) : (
-                            <span className="text-xs text-slate-400">Done ✓</span>
-                          )}
+                          <div className="flex items-center gap-1">
+                            {nextStatus ? (
+                              <button
+                                onClick={() => advanceStatus(order)}
+                                disabled={updatingId === order.id}
+                                className="px-3 py-1 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                              >
+                                {updatingId === order.id ? "..." : `→ ${nextStatus}`}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-400">Done ✓</span>
+                            )}
+                            {order.payment_status !== "Paid" && (
+                              <button
+                                onClick={() => convertToSale(order)}
+                                disabled={convertingId === order.id}
+                                className="p-1.5 rounded-lg text-slate-400 hover:bg-green-100 hover:text-green-700 transition-colors"
+                                title="Convert to Sale"
+                              >
+                                {convertingId === order.id ? <Loader2 size={13} className="animate-spin" /> : <ArrowRightLeft size={13} />}
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -195,6 +273,148 @@ export default function OrdersPage() {
           )}
         </div>
       </div>
+
+      {/* Create Order Modal */}
+      {showCreate && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <h3 className="font-bold text-slate-900">New Order</h3>
+              <button onClick={() => setShowCreate(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleCreate} className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Customer *</label>
+                <select
+                  value={form.customer_id}
+                  onChange={(e) => setForm(f => ({ ...f, customer_id: e.target.value }))}
+                  required
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Select customer…</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name} — {c.phone_number}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Product / Item *</label>
+                <input
+                  value={form.product}
+                  onChange={(e) => setForm(f => ({ ...f, product: e.target.value }))}
+                  placeholder="e.g. Chicken Burger"
+                  required
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Quantity</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={form.quantity}
+                    onChange={(e) => setForm(f => ({ ...f, quantity: Number(e.target.value) }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Unit Price</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={form.price}
+                    onChange={(e) => setForm(f => ({ ...f, price: Number(e.target.value) }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              {form.price > 0 && (
+                <p className="text-xs text-slate-500">
+                  Total: <strong>{formatCurrency(form.price * form.quantity)}</strong>
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Delivery Type</label>
+                  <select
+                    value={form.delivery_type}
+                    onChange={(e) => setForm(f => ({ ...f, delivery_type: e.target.value }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="pickup">Pickup</option>
+                    <option value="delivery">Delivery</option>
+                    <option value="dine-in">Dine-in</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Payment Status</label>
+                  <select
+                    value={form.payment_status}
+                    onChange={(e) => setForm(f => ({ ...f, payment_status: e.target.value }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="Pending">Pending</option>
+                    <option value="Partial">Partial</option>
+                    <option value="Paid">Paid</option>
+                  </select>
+                </div>
+              </div>
+
+              {form.delivery_type === "delivery" && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Delivery Address</label>
+                  <input
+                    value={form.delivery_address}
+                    onChange={(e) => setForm(f => ({ ...f, delivery_address: e.target.value }))}
+                    placeholder="Enter delivery address"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              )}
+
+              {form.delivery_type === "dine-in" && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Table Number</label>
+                  <input
+                    value={form.table_number}
+                    onChange={(e) => setForm(f => ({ ...f, table_number: e.target.value }))}
+                    placeholder="e.g. 5"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Notes</label>
+                <textarea
+                  value={form.notes}
+                  onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="Special instructions…"
+                  rows={2}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={creating}
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {creating && <Loader2 size={14} className="animate-spin" />}
+                Create Order
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -208,9 +428,7 @@ function Badge({ status }: { status: string | null }) {
   );
 }
 
-function Select({
-  value, onChange, options, label,
-}: {
+function Select({ value, onChange, options, label }: {
   value: string; onChange: (v: string) => void; options: string[]; label: string;
 }) {
   return (

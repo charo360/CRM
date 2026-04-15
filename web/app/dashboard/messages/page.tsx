@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { customersApi, messagesApi, Customer, Message } from "@/lib/api";
+import { customersApi, messagesApi, aiApi, Customer, Message } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
-import { Search, Send, Loader2, MessageSquare, RefreshCw } from "lucide-react";
+import { Search, Send, Loader2, MessageSquare, RefreshCw, Sparkles, RotateCcw } from "lucide-react";
 
 type Channel = "whatsapp" | "instagram";
 
@@ -24,6 +24,8 @@ export default function MessagesPage() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState("");
+  const [aiDrafting, setAiDrafting] = useState(false);
+  const [personalMode, setPersonalMode] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -72,6 +74,23 @@ export default function MessagesPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  async function handleAIDraft() {
+    if (!selectedId) return;
+    setAiDrafting(true);
+    try {
+      const response = await aiApi.draftMessage({
+        customer_id: selectedId,
+        mode: personalMode ? "personal" : "auto",
+      });
+      setDraft(response.message);
+    } catch (e) {
+      console.error("Failed to generate AI draft:", e);
+      alert("Failed to generate AI draft");
+    } finally {
+      setAiDrafting(false);
+    }
+  }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -270,22 +289,57 @@ export default function MessagesPage() {
           </div>
 
           {/* Input */}
-          <form onSubmit={handleSend}
-            className="flex items-end gap-2 px-4 py-3 bg-white border-t border-slate-200">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e as unknown as React.FormEvent); } }}
-              placeholder={`Message via ${CHANNEL_CONFIG[channel].label}…`}
-              rows={1}
-              className="flex-1 px-4 py-2.5 text-sm border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 resize-none max-h-32"
-              style={{ minHeight: "42px" }}
-            />
-            <button type="submit" disabled={sending || !draft.trim()}
-              className="w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 transition-colors shrink-0">
-              {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-            </button>
-          </form>
+          <div className="bg-white border-t border-slate-200">
+            {/* AI Controls */}
+            <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleAIDraft}
+                  disabled={aiDrafting || !selectedId}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded-lg disabled:opacity-50 transition-colors"
+                >
+                  <Sparkles size={12} className={aiDrafting ? "animate-spin" : ""} />
+                  {aiDrafting ? "Drafting..." : "AI Draft"}
+                </button>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="personal-mode"
+                    checked={personalMode}
+                    onChange={(e) => setPersonalMode(e.target.checked)}
+                    className="w-3 h-3 text-purple-600 rounded focus:ring-purple-500"
+                  />
+                  <label htmlFor="personal-mode" className="text-xs text-slate-600">
+                    Personal mode
+                  </label>
+                </div>
+              </div>
+              {draft && (
+                <button
+                  onClick={() => setDraft("")}
+                  className="text-xs text-slate-400 hover:text-slate-600"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            
+            <form onSubmit={handleSend} className="flex items-end gap-2 px-4 py-3">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e as unknown as React.FormEvent); } }}
+                placeholder={`Message via ${CHANNEL_CONFIG[channel].label}…`}
+                rows={1}
+                className="flex-1 px-4 py-2.5 text-sm border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 resize-none max-h-32"
+                style={{ minHeight: "42px" }}
+              />
+              <button type="submit" disabled={sending || !draft.trim()}
+                className="w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 transition-colors shrink-0">
+                {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              </button>
+            </form>
+          </div>
         </div>
       )}
     </div>

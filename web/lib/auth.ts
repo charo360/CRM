@@ -26,6 +26,26 @@ export function setUser(user: Record<string, unknown>) {
   localStorage.setItem("user", JSON.stringify(user));
 }
 
+export function getBusinessId(): string | null {
+  const user = getUser();
+  return user?.business_id as string || user?._id as string || null;
+}
+
+export function getBusinessSettings(): Record<string, unknown> {
+  const user = getUser();
+  return user?.settings as Record<string, unknown> || {};
+}
+
+export function getCurrency(): string {
+  const settings = getBusinessSettings();
+  return settings?.currency as string || "KES";
+}
+
+export function getBusinessType(): string {
+  const settings = getBusinessSettings();
+  return settings?.business_type as string || "retail";
+}
+
 export function isAuthenticated(): boolean {
   return !!getToken();
 }

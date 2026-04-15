@@ -20,6 +20,9 @@ import {
   BarChart2,
   Megaphone,
   MessageSquare,
+  Settings,
+  UserCheck,
+  Truck,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -31,6 +34,8 @@ const NAV_GROUPS = [
       { href: "/dashboard", label: "Overview", icon: LayoutDashboard, exact: true },
       { href: "/dashboard/messages", label: "Messages", icon: MessageSquare },
       { href: "/dashboard/customers", label: "Customers", icon: Users },
+      { href: "/dashboard/contacts", label: "Contacts", icon: UserCheck },
+      { href: "/dashboard/suppliers", label: "Suppliers", icon: Truck },
       { href: "/dashboard/followups", label: "Follow-ups", icon: Bell },
     ],
   },
@@ -53,9 +58,12 @@ const NAV_GROUPS = [
     label: "Business",
     items: [
       { href: "/dashboard/analytics", label: "Analytics", icon: BarChart2 },
-      { href: "/dashboard/channels", label: "Channels", icon: Radio },
+      { href: "/dashboard/team-analytics", label: "Team Analytics", icon: Radio },
+      { href: "/dashboard/whatsapp", label: "WhatsApp", icon: MessageSquare },
+      { href: "/dashboard/team", label: "Team", icon: Users },
       { href: "/dashboard/shop", label: "Shop", icon: Store },
       { href: "/dashboard/imports", label: "Imports", icon: Upload },
+      { href: "/dashboard/settings", label: "Settings", icon: Settings },
     ],
   },
   {

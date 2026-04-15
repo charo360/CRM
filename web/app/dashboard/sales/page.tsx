@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { salesApi, expensesApi, Sale, Expense } from "@/lib/api";
+import { salesApi, expensesApi, Sale, Expense, api } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { TrendingUp, TrendingDown, Plus, Download, X, Loader2, ChevronDown } from "lucide-react";
+import { TrendingUp, TrendingDown, Plus, Download, X, Loader2, ChevronDown, Send } from "lucide-react";
 
 type Tab = "sales" | "expenses";
 type DateRange = "Today" | "This Week" | "This Month" | "All Time";
@@ -159,7 +159,7 @@ export default function SalesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-100 bg-slate-50">
-                  {["Customer", "Item", "Amount", "Method", "Credit", "Date"].map((h) => (
+                  {["Customer", "Item", "Amount", "Method", "Credit", "Date", ""].map((h) => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -182,6 +182,15 @@ export default function SalesPage() {
                       {s.is_credit && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">Credit</span>}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-400">{formatDate(s.created_at)}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => api.post(`/sales/${s.id}/resend-receipt`, {}).then(() => alert("Receipt sent!")).catch(() => alert("Failed"))}
+                        className="p-1.5 rounded-lg text-slate-400 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
+                        title="Resend receipt"
+                      >
+                        <Send size={13} />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

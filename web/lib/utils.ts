@@ -6,7 +6,20 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number, currency = "KES") {
-  return `${currency} ${amount.toLocaleString("en-KE", { minimumFractionDigits: 0 })}`;
+  const currencyConfig: Record<string, { symbol: string; locale: string }> = {
+    KES: { symbol: "KSh", locale: "en-KE" },
+    USD: { symbol: "$", locale: "en-US" },
+    EUR: { symbol: "€", locale: "en-EU" },
+    GBP: { symbol: "£", locale: "en-GB" },
+    NGN: { symbol: "₦", locale: "en-NG" },
+    ZAR: { symbol: "R", locale: "en-ZA" },
+    GHS: { symbol: "₵", locale: "en-GH" },
+    UGX: { symbol: "USh", locale: "en-UG" },
+    TZS: { symbol: "TSh", locale: "en-TZ" },
+  };
+  
+  const config = currencyConfig[currency] || { symbol: currency, locale: "en-US" };
+  return `${config.symbol} ${amount.toLocaleString(config.locale, { minimumFractionDigits: 0 })}`;
 }
 
 export function formatDate(dateStr: string) {

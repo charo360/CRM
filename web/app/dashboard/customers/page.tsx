@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { customersApi, Customer } from "@/lib/api";
 import { formatCurrency, timeAgo } from "@/lib/utils";
+import { useRouter } from "next/navigation";
 import { Search, UserPlus, ChevronDown, MessageSquare, Loader2, X } from "lucide-react";
 
 const STAGES = ["all", "lead", "contacted", "negotiating", "won", "lost"];
@@ -20,6 +21,7 @@ const TAG_COLORS: Record<string, string> = {
 };
 
 export default function CustomersPage() {
+  const router = useRouter();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -134,7 +136,7 @@ export default function CustomersPage() {
                     </tr>
                   ))
                 : filtered.map((c) => (
-                    <tr key={c.id} className="hover:bg-slate-50 group">
+                    <tr key={c.id} className="hover:bg-slate-50 group cursor-pointer" onClick={() => router.push(`/dashboard/customers/${c.id}`)}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center shrink-0">
@@ -175,7 +177,7 @@ export default function CustomersPage() {
                       <td className="px-4 py-3 text-xs text-slate-400">
                         {c.last_contacted ? timeAgo(c.last_contacted) : "Never"}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <a
                             href={`https://wa.me/${c.phone_number.replace(/\D/g, "")}`}

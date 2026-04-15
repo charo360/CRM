@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { isAuthenticated } from "@/lib/auth";
+import { BusinessProvider } from "@/contexts/BusinessContext";
 import Sidebar from "@/components/Sidebar";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -10,16 +11,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     if (!isAuthenticated()) {
-      router.replace("/login");
+      router.push("/login");
     }
   }, [router]);
 
+  if (!isAuthenticated()) {
+    return null;
+  }
+
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto flex flex-col">
-        {children}
-      </main>
-    </div>
+    <BusinessProvider>
+      <div className="flex h-screen bg-slate-50">
+        <Sidebar />
+        <main className="flex-1 overflow-auto">{children}</main>
+      </div>
+    </BusinessProvider>
   );
 }

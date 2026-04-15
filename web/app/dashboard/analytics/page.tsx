@@ -1,15 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { analyticsApi, salesApi, ordersApi, customersApi, AnalyticsSummary, Sale, Order, Customer } from "@/lib/api";
+import { analyticsApi, salesApi, ordersApi, customersApi, api, AnalyticsSummary, Sale, Order, Customer } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
-import { BarChart2, Users, TrendingUp, ShoppingCart, Bell, MessageSquare, Calendar } from "lucide-react";
+import { BarChart2, Users, TrendingUp, ShoppingCart, Bell, MessageSquare, Calendar, Package, AlertTriangle } from "lucide-react";
+
+interface StockAnalytics {
+  total_products: number;
+  total_value: number;
+  in_stock_count: number;
+  out_of_stock: { id: string; name: string; price: number }[];
+  low_stock: { id: string; name: string; stock: number; price: number }[];
+}
 
 export default function AnalyticsPage() {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [sales, setSales] = useState<Sale[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [stock, setStock] = useState<StockAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -18,11 +27,13 @@ export default function AnalyticsPage() {
       salesApi.list().catch(() => []),
       ordersApi.list().catch(() => []),
       customersApi.list().catch(() => []),
-    ]).then(([s, sa, o, c]) => {
+      api.get<StockAnalytics>("/analytics/stock").catch(() => null),
+    ]).then(([s, sa, o, c, st]) => {
       setSummary(s);
       setSales(sa as Sale[]);
       setOrders(o as Order[]);
       setCustomers(c as Customer[]);
+      setStock(st as StockAnalytics | null);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -162,6 +173,58 @@ export default function AnalyticsPage() {
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+
+        {/* Stock Analytics */}
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <h2 className="font-semibold text-slate-900 mb-4">Inventory Health</h2>
+          {loading ? (
+            <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-5 bg-slate-100 rounded animate-pulse" />)}</div>
+          ) : !stock ? (
+            <p className="text-sm text-slate-400 text-center py-8">No product data</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: "Total Products", value: stock.total_products, icon: Package, color: "text-indigo-600", bg: "bg-indigo-50" },
+                  { label: "Inventory Value", value: formatCurrency(stock.total_value), icon: TrendingUp, color: "text-green-600", bg: "bg-green-50" },
+                  { label: "In Stock", value: stock.in_stock_count, icon: Package, color: "text-blue-600", bg: "bg-blue-50" },
+                ].map(({ label, value, icon: Icon, color, bg }) => (
+                  <div key={label} className="text-center p-3 rounded-xl bg-slate-50">
+                    <div className={`w-7 h-7 rounded-lg ${bg} flex items-center justify-center mx-auto mb-1`}>
+                      <Icon size={14} className={color} />
+                    </div>
+                    <p className="text-sm font-bold text-slate-800">{value}</p>
+                    <p className="text-xs text-slate-400">{label}</p>
+                  </div>
+                ))}
+              </div>
+              {stock.out_of_stock.length > 0 && (
+                <div>
+                  <p className="flex items-center gap-1 text-xs font-semibold text-red-600 mb-2">
+                    <AlertTriangle size={12} /> {stock.out_of_stock.length} Out of Stock
+                  </p>
+                  <div className="space-y-1">
+                    {stock.out_of_stock.slice(0, 3).map(p => (
+                      <p key={p.id} className="text-xs text-slate-600 bg-red-50 px-3 py-1.5 rounded-lg">{p.name}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {stock.low_stock.length > 0 && (
+                <div>
+                  <p className="flex items-center gap-1 text-xs font-semibold text-amber-600 mb-2">
+                    <AlertTriangle size={12} /> {stock.low_stock.length} Low Stock
+                  </p>
+                  <div className="space-y-1">
+                    {stock.low_stock.slice(0, 3).map(p => (
+                      <p key={p.id} className="text-xs text-slate-600 bg-amber-50 px-3 py-1.5 rounded-lg">{p.name} — {p.stock} left</p>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
