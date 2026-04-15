@@ -11,7 +11,7 @@ import {
 import Link from "next/link";
 
 export default function DashboardPage() {
-  const { currency, isRestaurant } = useBusiness();
+  const { currency, ui } = useBusiness();
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,21 +65,21 @@ export default function DashboardPage() {
       bg: "bg-indigo-50",
     },
     {
-      label: "Active Orders",
+      label: ui.activeOrdersLabel,
       value: activeOrders.length,
       icon: ShoppingCart,
       color: "text-orange-600",
       bg: "bg-orange-50",
     },
     {
-      label: "Customers",
+      label: ui.customersNavLabel,
       value: customers.length,
       icon: Users,
       color: "text-blue-600",
       bg: "bg-blue-50",
     },
     {
-      label: "Paid Orders",
+      label: ui.paidOrdersLabel,
       value: orders.filter((o) => o.payment_status === "Paid").length,
       icon: CreditCard,
       color: "text-green-600",
@@ -91,7 +91,7 @@ export default function DashboardPage() {
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Overview</h1>
-        <p className="text-slate-500 text-sm mt-1">Welcome back. Here's what's happening.</p>
+        <p className="text-slate-500 text-sm mt-1">{ui.overviewSubtitle}</p>
       </div>
 
       {/* Stats */}
@@ -115,7 +115,7 @@ export default function DashboardPage() {
         {/* Recent orders */}
         <div className="bg-white rounded-xl border border-slate-200">
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-            <h2 className="font-semibold text-slate-900">Recent Orders</h2>
+            <h2 className="font-semibold text-slate-900">{ui.recentOrdersTitle}</h2>
             <Link href="/dashboard/orders" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
               View all <ArrowUpRight size={12} />
             </Link>
@@ -159,12 +159,14 @@ export default function DashboardPage() {
           </div>
           <div className="p-5 grid grid-cols-2 gap-3">
             {[
-              { href: "/kds", label: "Open KDS", icon: "🖥️", desc: "Kitchen display" },
+              ...(ui.showKdsNav
+                ? [{ href: "/kds", label: "Open KDS", icon: "🖥️", desc: "Kitchen display" as const }]
+                : []),
               { href: "/dashboard/orders", label: "Orders", icon: "📦", desc: "Manage orders" },
               { href: "/dashboard/channels", label: "Channels", icon: "📡", desc: "WhatsApp & more" },
               { href: "/dashboard/imports", label: "Import", icon: "⬆️", desc: "Bulk upload" },
               { href: "/dashboard/payments", label: "Payments", icon: "💰", desc: "Reconcile" },
-              { href: "/dashboard/shop", label: "Shop", icon: "🛍️", desc: "Storefront" },
+              { href: "/dashboard/shop", label: ui.shopNavLabel, icon: "🛍️", desc: "Storefront" },
             ].map(({ href, label, icon, desc }) => (
               <Link
                 key={href}

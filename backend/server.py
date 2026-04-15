@@ -963,8 +963,9 @@ class BookingAddon(BaseModel):
 class BookingCreate(BaseModel):
     customer_id: Optional[str] = None
     customer_name: Optional[str] = None  # for walk-in
-    service_id: str
-    date: str  # YYYY-MM-DD
+    service_id: str = ""  # catalog product id; empty or "manual" with service_name
+    service_name: Optional[str] = None  # when not linked to a catalog item
+    date: str = ""  # YYYY-MM-DD
     time: str = "09:00"  # HH:MM
     checkin_date: Optional[str] = None
     checkout_date: Optional[str] = None
@@ -1158,6 +1159,14 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
     sent_count = 0
     for customer in customers:
+        bcheck = await db.broadcasts.find_one({"_id": broadcast_id})
+        if bcheck and bcheck.get("status") == "cancelled":
+            await db.broadcasts.update_one(
+                {"_id": broadcast_id},
+                {"$set": {"sent_count": sent_count}},
+            )
+            return
+
         try:
             personalized_message = message.replace("{{name}}", customer.get("name", "there"))
 
@@ -1200,11 +1209,34 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
         import random as _rnd
         await asyncio.sleep(_rnd.uniform(*BROADCAST_DELAY))
     
-    # Update broadcast status
-    await db.broadcasts.update_one(
-        {"_id": broadcast_id},
-        {"$set": {"sent_count": sent_count, "status": "completed"}}
+    # Update broadcast status (do not overwrite cancelled)
+    fin = await db.broadcasts.find_one({"_id": broadcast_id})
+    if fin and fin.get("status") == "cancelled":
+        await db.broadcasts.update_one(
+            {"_id": broadcast_id},
+            {"$set": {"sent_count": sent_count}},
+        )
+    else:
+        await db.broadcasts.update_one(
+            {"_id": broadcast_id},
+            {"$set": {"sent_count": sent_count, "status": "completed"}},
+        )
+
+@api_router.post("/broadcasts/{broadcast_id}/cancel")
+async def cancel_broadcast_in_progress(broadcast_id: str, user = Depends(get_current_user)):
+    """Stop an in-progress broadcast (no further recipients will be sent)."""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.broadcasts.update_one(
+        {
+            "_id": broadcast_id,
+            "user_id": business_id,
+            "status": {"$in": ["pending", "sending", "scheduled"]},
+        },
+        {"$set": {"status": "cancelled"}},
     )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Broadcast not found or cannot be stopped")
+    return {"status": "cancelled"}
 
 @api_router.get("/broadcasts", response_model=List[BroadcastResponse])
 async def get_broadcasts(user = Depends(get_current_user)):
@@ -1892,9 +1924,10 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
     user_id = session["user_id"]
     phone = session["phone"]
 
-    # Request new pairing code
+    # New pairing code only — do NOT call create_instance() here (it could delete/recreate
+    # the Evolution instance and invalidate the code the user is typing).
     whatsapp_service = get_whatsapp_service(db)
-    result = await whatsapp_service.create_instance(user_id, phone)
+    result = await whatsapp_service.refresh_pairing_code(user_id, phone)
 
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result.get("message", "Failed to refresh pairing code"))
@@ -2019,6 +2052,11 @@ async def get_settings(user = Depends(get_current_user)):
         "ai_model": s.get("ai_model", "standard"),
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
         "business_type": s.get("business_type") or user.get("business_type", ""),
+        "primary_language": s.get("primary_language", "English"),
+        "country": s.get("country", "Kenya"),
+        "business_name": user.get("business_name", ""),
+        "owner_name": user.get("owner_name", ""),
+        "restaurant_has_reservations": s.get("restaurant_has_reservations", False),
     }
     await cache_set(cache_key, result, TTL_TENANT_SETTINGS)
     return result
@@ -2031,7 +2069,7 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
     top_level_fields = {}
     settings_fields = {}
     for k, v in body.items():
-        if k in ("currency", "country_code", "payment_methods"):
+        if k in ("currency", "country_code", "payment_methods", "business_name", "owner_name"):
             top_level_fields[k] = v
         else:
             settings_fields[f"settings.{k}"] = v
@@ -4580,7 +4618,14 @@ async def get_orders(user = Depends(get_current_user)):
     return result
 
 @api_router.put("/orders/{order_id}", response_model=OrderResponse)
-async def update_order(order_id: str, payment_status: Optional[str] = None, delivery_status: Optional[str] = None, notes: Optional[str] = None, user = Depends(get_current_user)):
+async def update_order(
+    order_id: str,
+    payment_status: Optional[str] = None,
+    delivery_status: Optional[str] = None,
+    notes: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    user=Depends(get_current_user),
+):
     """Update order payment status, delivery status, or notes"""
     from bson import ObjectId
     business_id = user.get("business_id", user["_id"])
@@ -4607,6 +4652,18 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         await db.orders.update_one({"_id": order["_id"]}, {"$set": update_ops})
         order = await db.orders.find_one({"_id": order["_id"]})
 
+    # When marking paid, record revenue in sales (same logic as convert-to-sale); skip if already linked
+    if (
+        payment_status is not None
+        and (payment_status or "").strip().lower() == "paid"
+        and order
+        and not order.get("sale_id")
+    ):
+        pm = (payment_method or "Cash").strip() or "Cash"
+        sale_id = await _insert_sale_from_order_document(order, user, business_id, pm)
+        await db.orders.update_one({"_id": order["_id"]}, {"$set": {"sale_id": sale_id}})
+        order = await db.orders.find_one({"_id": order["_id"]})
+
     # Get customer info
     if order.get("customer_id") == "walk-in":
         customer_name = "Walk-in Customer"
@@ -4617,7 +4674,7 @@ async def update_order(order_id: str, payment_status: Optional[str] = None, deli
         customer_phone = customer.get("phone_number", "N/A") if customer else "N/A"
 
     # Send WhatsApp confirmation when owner marks order as Paid
-    if payment_status == "Paid" and customer_phone and customer_phone != "N/A":
+    if payment_status is not None and (payment_status or "").strip().lower() == "paid" and customer_phone and customer_phone != "N/A":
         try:
             ws = get_whatsapp_service(db)
             order_number = order.get("order_number", "")
@@ -4942,35 +4999,12 @@ async def delete_order(order_id: str, user = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Order not found")
     return {"message": "Order deleted successfully"}
 
-@api_router.post("/orders/{order_id}/convert-to-sale", response_model=SaleResponse)
-async def convert_order_to_sale(order_id: str, payment_method: str, user = Depends(get_current_user)):
-    """Convert a paid order to a sale"""
-    from bson import ObjectId
-    business_id = user.get("business_id", user["_id"])
-    order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
-    if not order:
-        try:
-            order = await db.orders.find_one({"_id": ObjectId(order_id), "user_id": business_id})
-        except Exception:
-            pass
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    if order["payment_status"] != "Paid":
-        raise HTTPException(status_code=400, detail="Only paid orders can be converted to sales")
-    
-    # Get customer info
-    if order["customer_id"] == "walk-in":
-        customer_name = "Walk-in Customer"
-        customer_phone = "N/A"
-    else:
-        customer = await db.customers.find_one({"_id": order["customer_id"]})
-        if not customer:
-            raise HTTPException(status_code=404, detail="Customer not found")
-        customer_name = customer["name"]
-        customer_phone = customer["phone_number"]
-    
-    # Resolve item label and amount safely (orders use various field names)
+
+async def _insert_sale_from_order_document(order: dict, user: dict, business_id: str, payment_method: str) -> str:
+    """
+    Insert a sales row for a paid order and update customer CRM stats.
+    Used when marking an order Paid (web/mobile) and when converting an order to a sale.
+    """
     items = order.get("items") or []
     order_item = (
         order.get("product")
@@ -4979,8 +5013,6 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         or "Order"
     )
     order_amount = float(order.get("total_amount") or order.get("total") or 0)
-
-    # Create sale
     sale_id = str(uuid.uuid4())
     sale_doc = {
         "_id": sale_id,
@@ -4994,27 +5026,99 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         "is_credit": False,
         "due_date": None,
         "paid_date": None,
-        "created_at": datetime.utcnow()
+        "created_at": datetime.utcnow(),
+        "source_order_id": str(order["_id"]),
     }
-
     await db.sales.insert_one(sale_doc)
 
-    # Update customer stats (skip for walk-in)
-    if order["customer_id"] != "walk-in":
-        update_ops = {
-            "$inc": {"purchase_count": 1, "total_spent": order_amount},
-            "$set": {"last_contacted": datetime.utcnow()}
-        }
+    if order.get("customer_id") != "walk-in":
+        customer = await db.customers.find_one({"_id": order["customer_id"]})
+        if customer:
+            update_ops = {
+                "$inc": {"purchase_count": 1, "total_spent": order_amount},
+                "$set": {"last_contacted": datetime.utcnow()},
+            }
+            if customer.get("tag") == "New":
+                update_ops["$set"]["tag"] = "Returning"
+            await db.customers.update_one(
+                {"_id": order["customer_id"]},
+                update_ops,
+            )
+    return sale_id
 
-        if customer.get("tag") == "New":
-            update_ops["$set"]["tag"] = "Returning"
 
-        await db.customers.update_one(
-            {"_id": order["customer_id"]},
-            update_ops
+@api_router.post("/orders/{order_id}/convert-to-sale", response_model=SaleResponse)
+async def convert_order_to_sale(order_id: str, payment_method: str, user = Depends(get_current_user)):
+    """Convert a paid order to a sale (or clear the order if a sale was already created when marking Paid)."""
+    from bson import ObjectId
+    business_id = user.get("business_id", user["_id"])
+    order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+    if not order:
+        try:
+            order = await db.orders.find_one({"_id": ObjectId(order_id), "user_id": business_id})
+        except Exception:
+            pass
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    paid = (order.get("payment_status") or "").strip().lower() == "paid"
+    if not paid:
+        raise HTTPException(status_code=400, detail="Only paid orders can be converted to sales")
+
+    # Sale already created when the order was marked Paid — only remove the order from the queue
+    if order.get("sale_id"):
+        existing = await db.sales.find_one({"_id": order["sale_id"], "user_id": business_id})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Linked sale not found")
+        if order["customer_id"] == "walk-in":
+            customer_name = "Walk-in Customer"
+            customer_phone = "N/A"
+        else:
+            customer = await db.customers.find_one({"_id": order["customer_id"]})
+            if not customer:
+                raise HTTPException(status_code=404, detail="Customer not found")
+            customer_name = customer["name"]
+            customer_phone = customer["phone_number"]
+        await db.orders.delete_one({"_id": order["_id"]})
+        return SaleResponse(
+            id=existing["_id"],
+            user_id=existing["user_id"],
+            customer_id=existing["customer_id"],
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            item=existing["item"],
+            amount=float(existing["amount"]),
+            payment_method=existing.get("payment_method"),
+            receipt_sent=existing.get("receipt_sent", False),
+            is_credit=existing.get("is_credit", False),
+            due_date=existing.get("due_date"),
+            paid_date=existing.get("paid_date"),
+            created_at=existing["created_at"],
         )
 
-    # Delete the order using the actual _id from the document (may be string or ObjectId)
+    # Get customer info for response
+    if order["customer_id"] == "walk-in":
+        customer_name = "Walk-in Customer"
+        customer_phone = "N/A"
+    else:
+        customer = await db.customers.find_one({"_id": order["customer_id"]})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        customer_name = customer["name"]
+        customer_phone = customer["phone_number"]
+
+    items = order.get("items") or []
+    order_item = (
+        order.get("product")
+        or order.get("product_name")
+        or (", ".join(it.get("product_name", "") for it in items if it.get("product_name")) if items else None)
+        or "Order"
+    )
+    order_amount = float(order.get("total_amount") or order.get("total") or 0)
+
+    sale_id = await _insert_sale_from_order_document(order, user, business_id, payment_method)
+    sale_doc = await db.sales.find_one({"_id": sale_id})
+
     await db.orders.delete_one({"_id": order["_id"]})
 
     return SaleResponse(
@@ -5030,7 +5134,7 @@ async def convert_order_to_sale(order_id: str, payment_method: str, user = Depen
         is_credit=False,
         due_date=None,
         paid_date=None,
-        created_at=sale_doc["created_at"]
+        created_at=sale_doc["created_at"],
     )
 
 async def send_order_payment_reminders():
@@ -5320,11 +5424,15 @@ class ProductResponse(BaseModel):
     price: float = 0.0
     discount_price: Optional[float] = None
     category: str = "Other"
+    sub_category: Optional[str] = None
     image_url: Optional[str] = None
     images: List[str] = []
     description: Optional[str] = None
     in_stock: bool = True
     stock_quantity: Optional[int] = None
+    unit: Optional[str] = None
+    moq: Optional[int] = None
+    pricing_tiers: Optional[List[dict]] = None
     created_at: datetime
 
 @api_router.get("/products", response_model=List[ProductResponse])
@@ -5345,11 +5453,15 @@ async def get_products(user = Depends(get_current_user)):
             price=p.get("price") or 0.0,
             discount_price=p.get("discount_price"),
             category=p.get("category") or "Other",
+            sub_category=p.get("sub_category"),
             image_url=orig,
             images=imgs,
             description=p.get("description"),
             in_stock=p.get("in_stock", True),
             stock_quantity=p.get("stock_quantity"),
+            unit=p.get("unit") or None,
+            moq=p.get("moq"),
+            pricing_tiers=p.get("pricing_tiers") or None,
             created_at=p.get("created_at", datetime.utcnow())
         ))
     return result
@@ -5473,11 +5585,15 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         price=product_doc["price"],
         discount_price=product_doc["discount_price"],
         category=product_doc["category"],
+        sub_category=product_doc.get("sub_category"),
         image_url=product_doc["image_url"],
         images=product_doc["images"],
         description=product_doc["description"],
         in_stock=product_doc["in_stock"],
         stock_quantity=product_doc["stock_quantity"],
+        unit=product_doc.get("unit") or None,
+        moq=product_doc.get("moq"),
+        pricing_tiers=product_doc.get("pricing_tiers") or None,
         created_at=product_doc["created_at"]
     )
 
@@ -5531,11 +5647,15 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         price=result.get("price") or 0.0,
         discount_price=result.get("discount_price"),
         category=result.get("category") or "Other",
+        sub_category=result.get("sub_category"),
         image_url=orig,
         images=imgs,
         description=result.get("description"),
         in_stock=result.get("in_stock", True),
         stock_quantity=result.get("stock_quantity"),
+        unit=result.get("unit") or None,
+        moq=result.get("moq"),
+        pricing_tiers=result.get("pricing_tiers") or None,
         created_at=result["created_at"]
     )
 
@@ -9981,12 +10101,41 @@ def _generate_booking_number() -> str:
     import random, string
     return "BK-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
+
+def _booking_query_by_id(business_id: str, booking_id: str) -> dict:
+    """
+    Match a booking document whether _id was stored as a string UUID (manual /api/bookings)
+    or as a BSON ObjectId (WhatsApp / AI insert_one paths).
+    """
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    or_ids = [{"_id": booking_id}]
+    try:
+        or_ids.append({"_id": ObjectId(booking_id)})
+    except (InvalidId, TypeError):
+        pass
+    return {"user_id": business_id, "$or": or_ids}
+
+
 def _booking_to_response(doc: dict) -> dict:
     created = doc.get("created_at", datetime.utcnow())
     if isinstance(created, datetime):
         created_str = created.isoformat()
     else:
         created_str = str(created)
+
+    # Rentals / AI inserts may only set checkin_date — surface a single calendar date for lists
+    date_val = (doc.get("date") or "").strip()
+    if not date_val and doc.get("checkin_date"):
+        date_val = str(doc.get("checkin_date", "")).strip()
+
+    has_checkin = bool(doc.get("checkin_date"))
+    is_stay = bool(doc.get("checkin_date") and doc.get("checkout_date"))
+    time_val = doc.get("time")
+    if time_val is None or str(time_val).strip() == "":
+        time_val = "—" if (is_stay or has_checkin) else "09:00"
+
     return {
         "id": str(doc.get("_id", "")),
         "booking_number": doc.get("booking_number", ""),
@@ -9998,8 +10147,8 @@ def _booking_to_response(doc: dict) -> dict:
         "service_name": doc.get("service_name", ""),
         "service_category": doc.get("service_category"),
         "staff_name": doc.get("staff_name"),
-        "date": doc.get("date", ""),
-        "time": doc.get("time", "09:00"),
+        "date": date_val,
+        "time": time_val,
         "end_time": doc.get("end_time"),
         "duration": doc.get("duration"),
         "checkin_date": doc.get("checkin_date"),
@@ -10034,21 +10183,53 @@ async def create_booking(booking: BookingCreate, user=Depends(get_current_user))
     elif booking.customer_name:
         customer_name = booking.customer_name
 
-    # Resolve service info
+    # Resolve service: catalog id, or custom name (same as mobile app)
+    sid = (booking.service_id or "").strip()
+    if sid.lower() == "manual":
+        sid = ""
+    svc = None
+    if sid:
+        svc = await db.products.find_one({"_id": sid, "user_id": business_id})
     service_name = ""
     service_category = None
     duration = None
-    svc = await db.products.find_one({"_id": booking.service_id, "user_id": business_id})
     if svc:
-        service_name = svc.get("name", "")
+        service_name = (svc.get("name") or "").strip()
         service_category = svc.get("offering_type") or svc.get("category")
         duration = svc.get("duration")
+    elif booking.service_name and str(booking.service_name).strip():
+        service_name = str(booking.service_name).strip()
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Select a service from your catalog or enter a custom service name.",
+        )
+
+    has_stay = bool(booking.checkin_date and booking.checkout_date)
+    if (booking.checkin_date or booking.checkout_date) and not has_stay:
+        raise HTTPException(
+            status_code=400,
+            detail="Both check-in and check-out dates are required for a stay.",
+        )
+
+    if has_stay:
+        date_val = ((booking.date or "").strip() or (booking.checkin_date or "").strip())
+        time_val = (booking.time or "").strip() or "00:00"
+    else:
+        date_val = (booking.date or "").strip()
+        if not date_val:
+            raise HTTPException(status_code=400, detail="Date is required.")
+        time_val = (booking.time or "").strip() or "09:00"
+
+    price_val = float(booking.price or 0)
+    if price_val == 0 and svc:
+        price_val = float(svc.get("price") or 0)
 
     # Calculate end time from duration
     end_time = None
-    if duration and booking.time:
+    if duration and time_val and time_val != "—":
         try:
-            h, m = map(int, booking.time.split(":"))
+            h, m = map(int, time_val.split(":"))
             total_m = h * 60 + m + int(duration)
             end_time = f"{total_m // 60:02d}:{total_m % 60:02d}"
         except Exception:
@@ -10067,6 +10248,7 @@ async def create_booking(booking: BookingCreate, user=Depends(get_current_user))
 
     booking_id = str(uuid.uuid4())
     now = datetime.utcnow()
+    stored_service_id = sid or "manual"
     doc = {
         "_id": booking_id,
         "booking_number": _generate_booking_number(),
@@ -10074,24 +10256,24 @@ async def create_booking(booking: BookingCreate, user=Depends(get_current_user))
         "customer_id": booking.customer_id if booking.customer_id and booking.customer_id != "walk-in" else None,
         "customer_name": customer_name,
         "customer_phone": customer_phone,
-        "service_id": booking.service_id,
+        "service_id": stored_service_id,
         "service_name": service_name,
         "service_category": service_category,
         "staff_name": booking.staff_name,
-        "date": booking.date or (booking.checkin_date or ""),
-        "time": booking.time or "09:00",
+        "date": date_val,
+        "time": time_val,
         "end_time": end_time,
         "duration": duration,
         "checkin_date": booking.checkin_date,
         "checkout_date": booking.checkout_date,
         "nights": nights,
         "capacity": booking.capacity,
-        "enrolled_count": 1 if booking.customer_id else 0,
+        "enrolled_count": 1 if booking.customer_id and booking.customer_id != "walk-in" else 0,
         "addons": [a.dict() for a in booking.addons] if booking.addons else [],
-        "total_price": booking.price,
+        "total_price": price_val,
         "status": "pending",
         "payment_status": "unpaid",
-        "price": booking.price,
+        "price": price_val,
         "notes": booking.notes,
         "source": "manual",
         "created_at": now,
@@ -10117,12 +10299,13 @@ async def get_bookings(
 async def update_booking(booking_id: str, update: BookingUpdate, user=Depends(get_current_user)):
     """Update booking status, payment status, or staff"""
     business_id = user.get("business_id", user["_id"])
-    doc = await db.bookings.find_one({"_id": booking_id, "user_id": business_id})
+    doc = await db.bookings.find_one(_booking_query_by_id(business_id, booking_id))
     if not doc:
         raise HTTPException(status_code=404, detail="Booking not found")
     updates = {k: v for k, v in update.dict().items() if v is not None}
     if updates:
-        await db.bookings.update_one({"_id": booking_id}, {"$set": updates})
+        q = _booking_query_by_id(business_id, booking_id)
+        await db.bookings.update_one(q, {"$set": updates})
         doc.update(updates)
     return _booking_to_response(doc)
 
@@ -10130,7 +10313,7 @@ async def update_booking(booking_id: str, update: BookingUpdate, user=Depends(ge
 async def delete_booking(booking_id: str, user=Depends(get_current_user)):
     """Delete a booking"""
     business_id = user.get("business_id", user["_id"])
-    result = await db.bookings.delete_one({"_id": booking_id, "user_id": business_id})
+    result = await db.bookings.delete_one(_booking_query_by_id(business_id, booking_id))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Booking not found")
     return {"success": True}
@@ -10139,7 +10322,7 @@ async def delete_booking(booking_id: str, user=Depends(get_current_user)):
 async def send_booking_reminder(booking_id: str, user=Depends(get_current_user)):
     """Send WhatsApp reminder for a booking"""
     business_id = user.get("business_id", user["_id"])
-    doc = await db.bookings.find_one({"_id": booking_id, "user_id": business_id})
+    doc = await db.bookings.find_one(_booking_query_by_id(business_id, booking_id))
     if not doc:
         raise HTTPException(status_code=404, detail="Booking not found")
     phone = doc.get("customer_phone")
@@ -10164,7 +10347,7 @@ async def send_booking_reminder(booking_id: str, user=Depends(get_current_user))
         whatsapp_service = get_whatsapp_service(db)
         await whatsapp_service.send_message(business_id, phone, message)
         now = datetime.utcnow().isoformat()
-        await db.bookings.update_one({"_id": booking_id}, {"$set": {"last_reminder_at": now}})
+        await db.bookings.update_one(_booking_query_by_id(business_id, booking_id), {"$set": {"last_reminder_at": now}})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send reminder: {str(e)}")
     return {"success": True, "sent_at": datetime.utcnow().isoformat()}

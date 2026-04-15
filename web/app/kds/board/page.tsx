@@ -27,7 +27,9 @@ export default function KDSBoardPage() {
   const [lastRefresh, setLastRefresh] = useState(new Date());
   const [updatingId, setUpdatingId] = useState<string | null>(null);
 
-  const fetchOrders = useCallback(async () => {
+  const fetchOrders = useCallback(async (options?: { showFullPageSpinner?: boolean }) => {
+    const spin = options?.showFullPageSpinner ?? false;
+    if (spin) setLoading(true);
     try {
       const all = await ordersApi.list();
       // Show only active (non-Done) orders on KDS
@@ -47,13 +49,13 @@ export default function KDSBoardPage() {
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (spin) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchOrders();
-    const interval = setInterval(fetchOrders, POLL_INTERVAL);
+    fetchOrders({ showFullPageSpinner: true });
+    const interval = setInterval(() => fetchOrders({ showFullPageSpinner: false }), POLL_INTERVAL);
     return () => clearInterval(interval);
   }, [fetchOrders]);
 
@@ -66,7 +68,7 @@ export default function KDSBoardPage() {
     setUpdatingId(order.id);
     try {
       await ordersApi.updateProgress(order.id, { fulfillment_status: next });
-      await fetchOrders();
+      await fetchOrders({ showFullPageSpinner: false });
     } finally {
       setUpdatingId(null);
     }
@@ -223,6 +225,7 @@ function OrderCard({
 
         {nextStatus && (
           <button
+            type="button"
             onClick={onAdvance}
             disabled={isUpdating}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-opacity disabled:opacity-50 ${

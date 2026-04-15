@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { analyticsApi, salesApi, ordersApi, customersApi, api, AnalyticsSummary, Sale, Order, Customer } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
+import { useBusiness } from "@/contexts/BusinessContext";
 import { BarChart2, Users, TrendingUp, ShoppingCart, Bell, MessageSquare, Calendar, Package, AlertTriangle } from "lucide-react";
 
 interface StockAnalytics {
@@ -14,6 +15,7 @@ interface StockAnalytics {
 }
 
 export default function AnalyticsPage() {
+  const { bookingsNavLabel } = useBusiness();
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [sales, setSales] = useState<Sale[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -76,7 +78,13 @@ export default function AnalyticsPage() {
     { label: "New This Month", value: newThisMonth, icon: Users, color: "text-green-600", bg: "bg-green-50" },
     { label: "Unread Messages", value: summary?.unread_messages ?? "—", icon: MessageSquare, color: "text-red-600", bg: "bg-red-50" },
     { label: "Follow-ups Today", value: summary?.followups_today ?? "—", icon: Bell, color: "text-purple-600", bg: "bg-purple-50" },
-    { label: "Bookings Today", value: summary?.bookings_today ?? "—", icon: Calendar, color: "text-sky-600", bg: "bg-sky-50" },
+    {
+      label: bookingsNavLabel === "Reservations" ? "Reservations Today" : "Bookings Today",
+      value: summary?.bookings_today ?? "—",
+      icon: Calendar,
+      color: "text-sky-600",
+      bg: "bg-sky-50",
+    },
   ];
 
   return (

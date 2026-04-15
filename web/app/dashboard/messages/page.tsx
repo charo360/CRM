@@ -44,23 +44,39 @@ export default function MessagesPage() {
       .finally(() => setLoadingCustomers(false));
   }, []);
 
-  // Deep-link from other pages (e.g. Suppliers → open thread)
+  // Deep-link from other pages (Customers list, profile, Contacts → open thread in CRM, not wa.me)
   useEffect(() => {
-    if (loadingCustomers || customers.length === 0) return;
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const cid = params.get("customer");
-      if (!cid) return;
-      if (customers.some((c) => c.id === cid)) {
+    if (loadingCustomers) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const cid = params.get("customer");
+        if (!cid) return;
+
+        const inList = (list: Customer[]) => list.some((c) => c.id === cid);
+        if (!inList(customers)) {
+          try {
+            const one = await customersApi.get(cid);
+            if (cancelled) return;
+            setCustomers((prev) => (inList(prev) ? prev : [one, ...prev]));
+          } catch {
+            return;
+          }
+        }
+        if (cancelled) return;
         setSelectedId(cid);
         const url = new URL(window.location.href);
         url.searchParams.delete("customer");
         const next = url.pathname + (url.search || "") + (url.hash || "");
         window.history.replaceState({}, "", next);
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [loadingCustomers, customers]);
 
   // Load messages for selected customer

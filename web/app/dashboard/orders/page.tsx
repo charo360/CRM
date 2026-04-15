@@ -44,8 +44,8 @@ export default function OrdersPage() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
 
-  async function load() {
-    setLoading(true);
+  async function load(showSkeleton = true) {
+    if (showSkeleton) setLoading(true);
     try {
       const [ordersData, customersData] = await Promise.all([
         ordersApi.list(),
@@ -54,11 +54,13 @@ export default function OrdersPage() {
       setOrders(ordersData);
       setCustomers(customersData);
     } finally {
-      setLoading(false);
+      if (showSkeleton) setLoading(false);
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load(true);
+  }, []);
 
   async function advanceStatus(order: Order) {
     const flow = ["New", "Confirmed", "Preparing", "Ready", "Done"];
@@ -68,7 +70,7 @@ export default function OrdersPage() {
     setUpdatingId(order.id);
     try {
       await ordersApi.updateProgress(order.id, { fulfillment_status: flow[nextIdx] });
-      await load();
+      await load(false);
     } finally {
       setUpdatingId(null);
     }
@@ -81,7 +83,7 @@ export default function OrdersPage() {
     try {
       await api.post(`/orders/${order.id}/convert-to-sale?payment_method=${encodeURIComponent(method)}`, {});
       alert("Order converted to sale!");
-      await load();
+      await load(false);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to convert");
     } finally {
@@ -109,7 +111,7 @@ export default function OrdersPage() {
       });
       setShowCreate(false);
       setForm(EMPTY_FORM);
-      await load();
+      await load(false);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to create order");
     } finally {
@@ -140,13 +142,15 @@ export default function OrdersPage() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={load}
+            type="button"
+            onClick={() => load(true)}
             className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600"
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
             Refresh
           </button>
           <button
+            type="button"
             onClick={() => setShowCreate(true)}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
           >
@@ -242,6 +246,7 @@ export default function OrdersPage() {
                           <div className="flex items-center gap-1">
                             {nextStatus ? (
                               <button
+                                type="button"
                                 onClick={() => advanceStatus(order)}
                                 disabled={updatingId === order.id}
                                 className="px-3 py-1 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
@@ -253,6 +258,7 @@ export default function OrdersPage() {
                             )}
                             {order.payment_status !== "Paid" && (
                               <button
+                                type="button"
                                 onClick={() => convertToSale(order)}
                                 disabled={convertingId === order.id}
                                 className="p-1.5 rounded-lg text-slate-400 hover:bg-green-100 hover:text-green-700 transition-colors"

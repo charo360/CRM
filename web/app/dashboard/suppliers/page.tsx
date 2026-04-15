@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, customersApi, Customer, productsApi, Product } from "@/lib/api";
@@ -80,6 +80,8 @@ export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
   const [insights, setInsights] = useState<SupplierInsights | null>(null);
   const [loading, setLoading] = useState(true);
+  /** AI + restock insights load after the supplier list (heavy on the server). */
+  const [insightsLoading, setInsightsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<MainTab>("suppliers");
 
   const [allCustomers, setAllCustomers] = useState<Customer[]>([]);
@@ -108,48 +110,91 @@ export default function SuppliersPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
 
   const [productCatalog, setProductCatalog] = useState<Product[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const productsFetchedOk = useRef(false);
   const [listQuery, setListQuery] = useState("");
   const [filterCategory, setFilterCategory] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"name" | "category" | "rating" | "recent">("name");
   const [catalogSelect, setCatalogSelect] = useState("");
 
+  function normalizeSuppliers(sups: SupplierRow[]) {
+    return (sups || []).map((s) => ({
+      ...s,
+      id: s.id || s._id,
+      products_supplied: Array.isArray(s.products_supplied) ? s.products_supplied : [],
+    }));
+  }
+
+  function applyInsights(ins: SupplierInsights | null) {
+    if (ins) {
+      setInsights({
+        potential_suppliers: (ins.potential_suppliers || []).map((p) => ({
+          ...p,
+          id: p.id || p._id,
+        })),
+        restock_suggestions: ins.restock_suggestions || [],
+      });
+    } else setInsights(null);
+  }
+
+  /** Full refresh (toolbar): suppliers + insights in parallel. */
   async function load() {
     setLoading(true);
+    setInsightsLoading(true);
     try {
       const [sups, ins] = await Promise.all([
         api.get<SupplierRow[]>("/suppliers").catch(() => []),
         api.get<SupplierInsights>("/suppliers/insights").catch(() => null),
       ]);
-      const normalized = (sups || []).map((s) => ({
-        ...s,
-        id: s.id || s._id,
-        products_supplied: Array.isArray(s.products_supplied) ? s.products_supplied : [],
-      }));
-      setSuppliers(normalized);
-      if (ins) {
-        setInsights({
-          potential_suppliers: (ins.potential_suppliers || []).map((p) => ({
-            ...p,
-            id: p.id || p._id,
-          })),
-          restock_suggestions: ins.restock_suggestions || [],
-        });
-      } else setInsights(null);
+      setSuppliers(normalizeSuppliers(sups || []));
+      applyInsights(ins);
     } finally {
       setLoading(false);
+      setInsightsLoading(false);
     }
   }
 
+  /** First paint: supplier list only, then insights in the background (faster than blocking on AI). */
   useEffect(() => {
-    load();
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const sups = await api.get<SupplierRow[]>("/suppliers").catch(() => []);
+        if (cancelled) return;
+        setSuppliers(normalizeSuppliers(sups || []));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+      if (cancelled) return;
+      setInsightsLoading(true);
+      try {
+        const ins = await api.get<SupplierInsights>("/suppliers/insights").catch(() => null);
+        if (cancelled) return;
+        applyInsights(ins);
+      } finally {
+        if (!cancelled) setInsightsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  useEffect(() => {
-    productsApi
-      .list()
-      .then((list) => setProductCatalog(list || []))
-      .catch(() => setProductCatalog([]));
-  }, []);
+  /** Product catalog is only needed when editing supplier details (expanded row). */
+  async function ensureProductCatalog() {
+    if (productsFetchedOk.current) return;
+    setCatalogLoading(true);
+    try {
+      const list = await productsApi.list();
+      setProductCatalog(list || []);
+      productsFetchedOk.current = true;
+    } catch {
+      setProductCatalog([]);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (activeTab !== "add") return;
@@ -171,6 +216,12 @@ export default function SuppliersPage() {
       cancelled = true;
     };
   }, [activeTab, suppliers]);
+
+  useEffect(() => {
+    if (expandedId) {
+      void ensureProductCatalog();
+    }
+  }, [expandedId]);
 
   const potentialSuppliers = insights?.potential_suppliers ?? [];
   const restockSuggestions = insights?.restock_suggestions ?? [];
@@ -546,7 +597,7 @@ export default function SuppliersPage() {
         ))}
       </div>
 
-      {loading && suppliers.length === 0 && !insights ? (
+      {loading && suppliers.length === 0 ? (
         <div className="flex justify-center py-20">
           <Loader2 className="animate-spin text-indigo-600" size={28} />
         </div>
@@ -554,6 +605,13 @@ export default function SuppliersPage() {
         <>
           {activeTab === "suppliers" && (
             <>
+          {insightsLoading && restockSuggestions.length === 0 && (
+            <div className="flex items-center gap-2 text-sm text-slate-500 py-2">
+              <Loader2 className="animate-spin text-indigo-500" size={16} />
+              Loading restock suggestions…
+            </div>
+          )}
+
           {restockSuggestions.length > 0 && (
             <section>
               <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
@@ -884,7 +942,12 @@ export default function SuppliersPage() {
                                 </button>
                               </div>
                             </div>
-                            {productCatalog.length === 0 ? (
+                            {catalogLoading ? (
+                              <p className="text-xs text-slate-500 mt-1.5 flex items-center gap-1.5">
+                                <Loader2 className="animate-spin shrink-0" size={12} />
+                                Loading catalog…
+                              </p>
+                            ) : productCatalog.length === 0 ? (
                               <p className="text-xs text-slate-400 mt-1.5">
                                 Add products in Shop to pick from your catalog.
                               </p>
@@ -955,6 +1018,7 @@ export default function SuppliersPage() {
           </section>
 
           {!loading &&
+            !insightsLoading &&
             activeTab === "suppliers" &&
             suppliers.length === 0 &&
             potentialSuppliers.length === 0 &&
@@ -975,7 +1039,12 @@ export default function SuppliersPage() {
               <p className="text-sm text-slate-500">
                 AI flags contacts whose recent messages look like supplier conversations. Add them and assign a category.
               </p>
-              {potentialSuppliers.length === 0 ? (
+              {insightsLoading && potentialSuppliers.length === 0 ? (
+                <div className="flex items-center gap-2 text-sm text-slate-500 py-8 justify-center bg-white rounded-xl border border-slate-200">
+                  <Loader2 className="animate-spin text-indigo-500" size={18} />
+                  Scanning recent chats…
+                </div>
+              ) : potentialSuppliers.length === 0 ? (
                 <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
                   <Sparkles size={40} className="text-slate-300 mx-auto mb-3" />
                   <p className="text-slate-600 font-medium">No potential suppliers right now</p>

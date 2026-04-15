@@ -39,19 +39,36 @@ class SupplierAnalyzer:
                 "user_id": user_id
             }).sort("last_contacted", -1).limit(60).to_list(60)
 
+            eligible = [c for c in contacts if "Supplier" not in c.get("tags", [])]
+            if not eligible:
+                return []
+
+            # One query for recent messages across all eligible contacts (avoids N sequential round-trips)
+            ids = [c["_id"] for c in eligible]
+            raw_msgs = await self.db.messages.find({
+                "user_id": user_id,
+                "customer_id": {"$in": ids},
+            }).sort("created_at", -1).limit(2500).to_list(2500)
+
+            by_customer: Dict[str, List[Dict]] = {}
+            for m in raw_msgs:
+                cid = m.get("customer_id")
+                if not cid:
+                    continue
+                key = str(cid)
+                if key not in by_customer:
+                    by_customer[key] = []
+                if len(by_customer[key]) < 15:
+                    by_customer[key].append(m)
+
+            id_to_contact = {str(c["_id"]): c for c in eligible}
+
             # Stage 1: keyword pre-filter (free, instant)
             candidates = []
-            for contact in contacts:
-                if "Supplier" in contact.get("tags", []):
+            for cid_str, messages in by_customer.items():
+                contact = id_to_contact.get(cid_str)
+                if not contact or not messages:
                     continue
-                messages = await self.db.messages.find({
-                    "customer_id": contact["_id"],
-                    "user_id": user_id
-                }).sort("created_at", -1).limit(15).to_list(15)
-
-                if not messages:
-                    continue
-
                 full_text = " ".join([m.get("content", "").lower() for m in messages])
                 if any(kw in full_text for kw in SUPPLIER_KEYWORDS):
                     candidates.append((contact, messages))
@@ -134,7 +151,9 @@ class SupplierAnalyzer:
                     sales_counts[name] = sales_counts.get(name, 0) + sale.get("quantity", 1)
 
             for product in products:
-                stock = product.get("stock_count")
+                stock = product.get("stock_quantity")
+                if stock is None:
+                    stock = product.get("stock_count")
                 if stock is None:
                     continue
 

@@ -13,9 +13,18 @@ const STATUS_CONFIG: Record<PaymentStatus, { icon: React.ReactNode; cls: string 
   Partial: { icon: <AlertCircle size={14} />,  cls: "text-blue-700 bg-blue-100" },
 };
 
+/** API may return paid/unpaid/partial in any casing — normalize for UI. */
+function normalizePaymentStatus(raw: string | undefined | null): PaymentStatus {
+  const s = (raw || "").toLowerCase();
+  if (s === "paid") return "Paid";
+  if (s === "partial") return "Partial";
+  return "Pending";
+}
+
 export default function PaymentsPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"All" | PaymentStatus>("All");
 
@@ -24,7 +33,8 @@ export default function PaymentsPage() {
   }, []);
 
   const filtered = orders.filter((o) => {
-    const matchFilter = filter === "All" || o.payment_status === filter;
+    const ps = normalizePaymentStatus(o.payment_status);
+    const matchFilter = filter === "All" || ps === filter;
     const matchSearch =
       !search ||
       o.customer_name.toLowerCase().includes(search.toLowerCase()) ||
@@ -32,9 +42,9 @@ export default function PaymentsPage() {
     return matchFilter && matchSearch;
   });
 
-  const paid = orders.filter((o) => o.payment_status === "Paid");
-  const pending = orders.filter((o) => o.payment_status === "Pending");
-  const partial = orders.filter((o) => o.payment_status === "Partial");
+  const paid = orders.filter((o) => normalizePaymentStatus(o.payment_status) === "Paid");
+  const pending = orders.filter((o) => normalizePaymentStatus(o.payment_status) === "Pending");
+  const partial = orders.filter((o) => normalizePaymentStatus(o.payment_status) === "Partial");
 
   const totalPaid = paid.reduce((s, o) => s + o.total_amount, 0);
   const totalPending = pending.reduce((s, o) => s + o.total_amount, 0);
@@ -62,9 +72,16 @@ export default function PaymentsPage() {
   }
 
   async function markPaid(order: Order) {
-    await ordersApi.updateStatus(order.id, { payment_status: "Paid" });
-    const updated = await ordersApi.list();
-    setOrders(updated);
+    setMarkingPaidId(order.id);
+    try {
+      await ordersApi.updateStatus(order.id, { payment_status: "Paid" });
+      const updated = await ordersApi.list();
+      setOrders(updated);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not mark as paid");
+    } finally {
+      setMarkingPaidId(null);
+    }
   }
 
   return (
@@ -161,8 +178,8 @@ export default function PaymentsPage() {
                     </tr>
                   ))
                 : filtered.map((order) => {
-                    const ps = (order.payment_status || "Pending") as PaymentStatus;
-                    const cfg = STATUS_CONFIG[ps] || STATUS_CONFIG.Pending;
+                    const ps = normalizePaymentStatus(order.payment_status);
+                    const cfg = STATUS_CONFIG[ps];
                     return (
                       <tr key={order.id} className="hover:bg-slate-50">
                         <td className="px-4 py-3 font-mono text-slate-700 text-xs">
@@ -185,10 +202,12 @@ export default function PaymentsPage() {
                         <td className="px-4 py-3">
                           {ps !== "Paid" ? (
                             <button
-                              onClick={() => markPaid(order)}
-                              className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                              type="button"
+                              onClick={() => void markPaid(order)}
+                              disabled={markingPaidId === order.id}
+                              className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-wait"
                             >
-                              Mark Paid
+                              {markingPaidId === order.id ? "Saving…" : "Mark Paid"}
                             </button>
                           ) : (
                             <span className="text-xs text-green-600 font-medium">✓ Paid</span>

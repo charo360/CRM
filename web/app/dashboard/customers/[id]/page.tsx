@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api, Customer, Message, Sale, Order, FollowUp } from "@/lib/api";
-import { formatCurrency, formatDate, timeAgo } from "@/lib/utils";
+import { formatCurrency, formatDate, formatDateTime, timeAgo } from "@/lib/utils";
 import {
   ArrowLeft, MessageSquare, Phone, Mail, MapPin, ShoppingBag,
   TrendingUp, Calendar, FileText, Sparkles, Loader2, Edit, Save, X,
@@ -215,14 +215,13 @@ export default function CustomerProfilePage() {
               </>
             ) : (
               <>
-                <a
-                  href={`https://wa.me/${customer.phone_number.replace(/\D/g, "")}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() => router.push(`/dashboard/messages?customer=${encodeURIComponent(customer.id)}`)}
                   className="flex items-center gap-1.5 px-3 py-2 bg-green-500 text-white text-sm font-medium rounded-lg hover:bg-green-600"
                 >
-                  <MessageSquare size={14} /> WhatsApp
-                </a>
+                  <MessageSquare size={14} /> Message
+                </button>
                 <button onClick={() => setEditing(true)} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50">
                   <Edit size={14} /> Edit
                 </button>
@@ -433,7 +432,7 @@ export default function CustomerProfilePage() {
                   <p className="text-sm font-medium text-slate-800 capitalize">{f.type} follow-up</p>
                   {f.message && <p className="text-xs text-slate-500 mt-0.5">{f.message}</p>}
                   <p className="text-xs text-slate-400 mt-1">
-                    {formatDate(f.reminder_date)} · <span className="capitalize">{f.status}</span>
+                    {formatDateTime(f.reminder_date)} · <span className="capitalize">{f.status}</span>
                   </p>
                 </div>
               </div>

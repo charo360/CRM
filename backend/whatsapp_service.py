@@ -91,6 +91,187 @@ class WhatsAppService:
         """Generate a unique instance name for a user"""
         return f"user_{user_id.replace('-', '_')}"
 
+    def _clean_phone_digits(self, phone_number: str) -> str:
+        return phone_number.lstrip("+").replace(" ", "").replace("-", "")
+
+    def _pairing_code_from_json(self, code_data: dict) -> str:
+        """Parse Evolution /instance/connect JSON; prefer pairingCode over QR `code` token."""
+        if not code_data or not isinstance(code_data, dict):
+            return ""
+        pc = code_data.get("pairingCode") or code_data.get("pairing_code")
+        if pc:
+            return str(pc).strip().replace(" ", "")
+        for key in ("data", "response", "instance"):
+            nested = code_data.get(key)
+            if isinstance(nested, dict):
+                pc = nested.get("pairingCode") or nested.get("pairing_code")
+                if pc:
+                    return str(pc).strip().replace(" ", "")
+        # Do not use Baileys long auth `code` (often contains @ or is very long)
+        c = code_data.get("code")
+        if c and isinstance(c, str) and "@" not in c and len(c) <= 16:
+            return c.strip().replace(" ", "")
+        return ""
+
+    async def _fetch_pairing_code_http(
+        self, client: httpx.AsyncClient, instance_name: str, clean_number: str
+    ) -> tuple[str, str]:
+        """Call GET /instance/connect only. Returns (pairing_code, last_error)."""
+        pairing_code = ""
+        last_code_error = ""
+        for attempt in range(3):
+            try:
+                code_resp = await client.get(
+                    f"{self.base_url}/instance/connect/{instance_name}",
+                    params={"number": clean_number},
+                    headers=self._headers(),
+                    timeout=30,
+                )
+                if code_resp.status_code == 200:
+                    code_data = code_resp.json()
+                    pairing_code = self._pairing_code_from_json(code_data)
+                    if pairing_code:
+                        break
+                    last_code_error = f"Empty pairingCode in response: {code_resp.text[:300]}"
+                else:
+                    last_code_error = f"HTTP {code_resp.status_code}: {code_resp.text[:300]}"
+            except Exception as ce:
+                last_code_error = str(ce)
+            if attempt < 2:
+                logger.warning(
+                    f"Pairing code attempt {attempt + 1} failed for {instance_name}: {last_code_error} — retrying in 5s"
+                )
+                await asyncio.sleep(5)
+        return pairing_code, last_code_error
+
+    async def refresh_pairing_code(self, user_id: str, phone_number: str) -> Dict:
+        """
+        Request a new pairing code without deleting the Evolution instance.
+
+        Used by /auth/whatsapp-refresh. The previous implementation called
+        create_instance(), which deleted and recreated the instance when it
+        already existed — that invalidated the code shown to the user and led to
+        WhatsApp reporting \"wrong code\" while the app kept polling.
+        """
+        instance_name = self._instance_name(user_id)
+        clean_number = self._clean_phone_digits(phone_number)
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                await asyncio.sleep(2)
+                pairing_code, last_err = await self._fetch_pairing_code_http(
+                    client, instance_name, clean_number
+                )
+                if not pairing_code:
+                    logger.error(f"refresh_pairing_code failed for {instance_name}: {last_err}")
+                    return {
+                        "status": "error",
+                        "message": last_err or "Failed to refresh pairing code. Try again.",
+                    }
+
+                await self.db.users.update_one(
+                    {"_id": user_id},
+                    {
+                        "$set": {
+                            "whatsapp.pairing_code": pairing_code,
+                            "whatsapp.status": "pairing",
+                            "whatsapp.number": phone_number,
+                        }
+                    },
+                )
+                return {
+                    "status": "pairing",
+                    "pairing_code": pairing_code,
+                    "pairing_data": {},
+                    "instance_name": instance_name,
+                }
+        except httpx.ConnectError:
+            return {"status": "error", "message": "WhatsApp service is not available. Please try again later."}
+        except Exception as e:
+            logger.error(f"refresh_pairing_code error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def _ensure_instance_webhook(self, client: httpx.AsyncClient, instance_name: str) -> None:
+        """Configure Evolution webhook so inbound messages reach the CRM."""
+        webhook_base = os.environ.get(
+            "WEBHOOK_BASE_URL",
+            "http://host.docker.internal:8000",
+        )
+        webhook_payload = {
+            "webhook": {
+                "enabled": True,
+                "url": f"{webhook_base}/api/webhooks/evolution",
+                "webhookByEvents": False,
+                "webhookBase64": False,
+                "events": [
+                    "MESSAGES_UPSERT",
+                    "MESSAGES_UPDATE",
+                    "CHATS_UPDATE",
+                    "CONNECTION_UPDATE",
+                ],
+            }
+        }
+        try:
+            wh_resp = await client.post(
+                f"{self.base_url}/webhook/set/{instance_name}",
+                json=webhook_payload,
+                headers=self._headers(),
+            )
+            if wh_resp.status_code in (200, 201):
+                logger.info(f"Webhook configured for {instance_name}")
+            else:
+                logger.warning(
+                    f"Failed to set webhook for {instance_name}: {wh_resp.status_code} {wh_resp.text}"
+                )
+        except Exception as wh_err:
+            logger.warning(f"Webhook setup error for {instance_name}: {wh_err}")
+
+    async def _finalize_instance_created(
+        self,
+        user_id: str,
+        phone_number: str,
+        instance_name: str,
+        pairing_code: str,
+        client: httpx.AsyncClient,
+    ) -> Dict:
+        """Persist WhatsApp instance metadata and return the pairing payload."""
+        is_business_account = False
+        try:
+            profile_resp = await client.get(
+                f"{self.base_url}/instance/fetchInstances",
+                headers=self._headers(),
+            )
+            if profile_resp.status_code == 200:
+                instances = profile_resp.json()
+                for inst in (instances if isinstance(instances, list) else []):
+                    if inst.get("name") == instance_name:
+                        is_business_account = inst.get("isBusiness", False) or inst.get("businessId") is not None
+                        break
+        except Exception:
+            pass
+
+        await self.db.users.update_one(
+            {"_id": user_id},
+            {
+                "$set": {
+                    "whatsapp.number": phone_number,
+                    "whatsapp.instance_name": instance_name,
+                    "whatsapp.status": "pairing",
+                    "whatsapp.pairing_code": pairing_code,
+                    "whatsapp.is_business": is_business_account,
+                    "whatsapp.created_at": datetime.utcnow(),
+                }
+            },
+        )
+
+        logger.info(f"Created instance {instance_name} for user {user_id}, pairing code: {pairing_code}")
+        return {
+            "status": "pairing",
+            "pairing_code": pairing_code,
+            "instance_name": instance_name,
+            "message": "Enter this code in WhatsApp > Linked Devices > Link with phone number",
+        }
+
     # ============ INSTANCE MANAGEMENT ============
 
     async def create_instance(self, user_id: str, phone_number: str) -> Dict:
@@ -99,8 +280,7 @@ class WhatsAppService:
         Returns the 8-digit pairing code for the user to enter in WhatsApp.
         """
         instance_name = self._instance_name(user_id)
-        # Strip + and any non-digit chars for Evolution API
-        clean_number = phone_number.lstrip('+').replace(' ', '').replace('-', '')
+        clean_number = self._clean_phone_digits(phone_number)
 
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -123,9 +303,37 @@ class WhatsAppService:
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    # Instance already exists — force-delete it and recreate for a fresh pairing code
+                    # Instance already exists — first try a new pairing code WITHOUT deleting.
+                    # Deleting mid-pairing invalidates the code the user is typing (WhatsApp: "wrong code").
                     if "already" in error_detail.lower() or "exists" in error_detail.lower():
-                        logger.info(f"Instance {instance_name} already exists — force-deleting for fresh pairing")
+                        logger.info(
+                            f"Instance {instance_name} already exists — trying new pairing code without recreate"
+                        )
+                        await asyncio.sleep(3)
+                        for _wait in range(5):
+                            try:
+                                state_resp = await client.get(
+                                    f"{self.base_url}/instance/connectionState/{instance_name}",
+                                    headers=self._headers(),
+                                )
+                                if state_resp.status_code == 200:
+                                    _state = state_resp.json().get("instance", {}).get("state", "")
+                                    if _state in ("connecting", "open", "close"):
+                                        break
+                            except Exception:
+                                pass
+                            await asyncio.sleep(2)
+                        pairing_code, pc_err = await self._fetch_pairing_code_http(
+                            client, instance_name, clean_number
+                        )
+                        if pairing_code:
+                            await self._ensure_instance_webhook(client, instance_name)
+                            return await self._finalize_instance_created(
+                                user_id, phone_number, instance_name, pairing_code, client
+                            )
+                        logger.warning(
+                            f"Could not get pairing on existing instance ({pc_err}) — force-delete and recreate"
+                        )
                         try:
                             await client.delete(
                                 f"{self.base_url}/instance/logout/{instance_name}",
@@ -139,7 +347,6 @@ class WhatsAppService:
                             await asyncio.sleep(2)
                         except Exception as del_err:
                             logger.warning(f"Force-delete of stale instance failed: {del_err}")
-                        # Re-create the instance fresh
                         create_resp = await client.post(
                             f"{self.base_url}/instance/create",
                             json=create_payload,
@@ -152,38 +359,7 @@ class WhatsAppService:
                         logger.error(f"Failed to create instance: {error_detail}")
                         return {"status": "error", "message": f"Failed to create WhatsApp instance: {error_detail}"}
 
-                # Step 1b: Configure webhook so we receive messages in real-time
-                # Evolution API runs in Docker, so use host.docker.internal
-                webhook_base = os.environ.get(
-                    'WEBHOOK_BASE_URL',
-                    'http://host.docker.internal:8000'
-                )
-                webhook_payload = {
-                    "webhook": {
-                        "enabled": True,
-                        "url": f"{webhook_base}/api/webhooks/evolution",
-                        "webhookByEvents": False,
-                        "webhookBase64": False,
-                        "events": [
-                            "MESSAGES_UPSERT",
-                            "MESSAGES_UPDATE",
-                            "CHATS_UPDATE",
-                            "CONNECTION_UPDATE",
-                        ]
-                    }
-                }
-                try:
-                    wh_resp = await client.post(
-                        f"{self.base_url}/webhook/set/{instance_name}",
-                        json=webhook_payload,
-                        headers=self._headers(),
-                    )
-                    if wh_resp.status_code in (200, 201):
-                        logger.info(f"Webhook configured for {instance_name}")
-                    else:
-                        logger.warning(f"Failed to set webhook for {instance_name}: {wh_resp.status_code} {wh_resp.text}")
-                except Exception as wh_err:
-                    logger.warning(f"Webhook setup error for {instance_name}: {wh_err}")
+                await self._ensure_instance_webhook(client, instance_name)
 
                 # Step 2: Wait for Baileys WebSocket — poll until "connecting" state or timeout
                 # WA Business needs a bit more time than regular WA to establish the socket
@@ -202,74 +378,17 @@ class WhatsAppService:
                         pass
                     await asyncio.sleep(2)
 
-                # Step 3: Request pairing code — retry up to 3× with 5s back-off
-                # Works for both WhatsApp and WhatsApp Business (same Baileys protocol)
-                pairing_code = ""
-                last_code_error = ""
-                for attempt in range(3):
-                    try:
-                        code_resp = await client.get(
-                            f"{self.base_url}/instance/connect/{instance_name}",
-                            params={"number": clean_number},
-                            headers=self._headers(),
-                            timeout=30,
-                        )
-                        if code_resp.status_code == 200:
-                            code_data = code_resp.json()
-                            pairing_code = code_data.get("pairingCode") or code_data.get("code", "")
-                            if pairing_code:
-                                logger.info(f"Pairing code obtained on attempt {attempt + 1} for {instance_name}")
-                                break
-                            else:
-                                last_code_error = f"Empty code in response: {code_resp.text[:200]}"
-                        else:
-                            last_code_error = f"HTTP {code_resp.status_code}: {code_resp.text[:200]}"
-                    except Exception as ce:
-                        last_code_error = str(ce)
-                    if attempt < 2:
-                        logger.warning(f"Pairing code attempt {attempt + 1} failed for {instance_name}: {last_code_error} — retrying in 5s")
-                        await asyncio.sleep(5)
-
+                # Step 3: Request pairing code (same helper as /auth/whatsapp-refresh)
+                pairing_code, last_code_error = await self._fetch_pairing_code_http(
+                    client, instance_name, clean_number
+                )
                 if not pairing_code:
                     logger.error(f"Failed to get pairing code after 3 attempts: {last_code_error}")
                     return {"status": "error", "message": "Failed to generate pairing code. Please try again."}
 
-                # Step 4: Store instance info in user record
-                # Detect WA Business vs regular WA from the profile info if available
-                is_business_account = False
-                try:
-                    profile_resp = await client.get(
-                        f"{self.base_url}/instance/fetchInstances",
-                        headers=self._headers(),
-                    )
-                    if profile_resp.status_code == 200:
-                        instances = profile_resp.json()
-                        for inst in (instances if isinstance(instances, list) else []):
-                            if inst.get("name") == instance_name:
-                                is_business_account = inst.get("isBusiness", False) or inst.get("businessId") is not None
-                                break
-                except Exception:
-                    pass
-
-                await self.db.users.update_one(
-                    {"_id": user_id},
-                    {"$set": {
-                        "whatsapp.number": phone_number,
-                        "whatsapp.instance_name": instance_name,
-                        "whatsapp.status": "pairing",
-                        "whatsapp.pairing_code": pairing_code,
-                        "whatsapp.is_business": is_business_account,
-                        "whatsapp.created_at": datetime.utcnow(),
-                    }}
+                return await self._finalize_instance_created(
+                    user_id, phone_number, instance_name, pairing_code, client
                 )
-
-                logger.info(f"Created instance {instance_name} for user {user_id}, pairing code: {pairing_code}")
-                return {
-                    "status": "pairing",
-                    "pairing_code": pairing_code,
-                    "instance_name": instance_name,
-                    "message": "Enter this code in WhatsApp > Linked Devices > Link with phone number",
-                }
 
         except httpx.ConnectError:
             logger.error("Cannot connect to Evolution API — is it running?")

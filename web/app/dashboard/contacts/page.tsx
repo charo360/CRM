@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { contactsApi, Contact, api } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Search, UserPlus, Users, Sparkles, RefreshCw, MessageSquare, Trash2, CheckCircle2, XCircle, Clock } from "lucide-react";
 
 export default function ContactsPage() {
+  const router = useRouter();
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [suggestions, setSuggestions] = useState<Contact[]>([]);
   const [pending, setPending] = useState<Contact[]>([]);
@@ -225,10 +227,14 @@ export default function ContactsPage() {
                     className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50">
                     <UserPlus size={14} /> Add Customer
                   </button>
-                  <a href={`https://wa.me/${contact.phone_number.replace(/\D/g, "")}`} target="_blank" rel="noopener noreferrer"
-                    className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors" title="WhatsApp">
+                  <button
+                    type="button"
+                    onClick={() => router.push(`/dashboard/messages?customer=${encodeURIComponent(contact.id)}`)}
+                    className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+                    title="Message in CRM (business WhatsApp)"
+                  >
                     <MessageSquare size={16} />
-                  </a>
+                  </button>
                   <button onClick={() => handleDelete(contact)} disabled={processing === contact.id}
                     className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50" title="Delete">
                     <Trash2 size={16} />

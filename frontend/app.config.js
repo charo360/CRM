@@ -32,7 +32,7 @@ export default {
         backgroundColor: "#2DB843"
       },
       edgeToEdgeEnabled: true,
-      softwareKeyboardLayoutMode: "adjustResize",
+      softwareKeyboardLayoutMode: "resize",
       permissions: ["android.permission.READ_CONTACTS"]
     },
     web: {

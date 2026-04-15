@@ -14,7 +14,16 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || "Request failed");
+    const d = err.detail as unknown;
+    const msg =
+      typeof d === "string"
+        ? d
+        : Array.isArray(d)
+          ? d
+              .map((x: { msg?: string }) => (typeof x === "object" && x && "msg" in x ? x.msg : String(x)))
+              .join("; ")
+          : "Request failed";
+    throw new Error(msg || "Request failed");
   }
   return res.json();
 }
@@ -83,14 +92,25 @@ export interface Customer {
   profile_picture?: string | null;
 }
 
+/** Matches backend `ProductResponse` / `ProductCreate` (shop catalog). */
 export interface Product {
   id: string;
   name: string;
   price: number;
-  description?: string;
-  category?: string;
+  discount_price?: number | null;
+  description?: string | null;
+  category?: string | null;
+  sub_category?: string | null;
+  image_url?: string | null;
   images?: string[];
   in_stock?: boolean;
+  stock_quantity?: number | null;
+  variants?: Array<{ name: string; price: number }>;
+  modifier_groups?: Array<Record<string, unknown>>;
+  unit?: string | null;
+  moq?: number | null;
+  pricing_tiers?: Array<{ min_qty: number; price: number }>;
+  created_at?: string;
 }
 
 export interface TeamMember {
@@ -155,33 +175,69 @@ export interface Broadcast {
   status: string;
   scheduled_at?: string;
   created_at: string;
+  image_url?: string | null;
+  image_urls?: string[] | null;
+}
+
+export interface BroadcastPerformance {
+  broadcast_id: string;
+  sent_count: number;
+  recipients_count: number;
+  replies: number;
+  reply_rate: number;
 }
 
 export interface BroadcastTemplate {
   id: string;
   name: string;
   message: string;
+  image_url?: string | null;
   created_at: string;
 }
 
+/** Backend `broadcast_automations` docs (auto_followup & recurring). */
 export interface BroadcastAutomation {
   id: string;
-  name: string;
-  type: "follow_up" | "recurring";
-  message: string;
-  trigger_days?: number;
-  schedule_time?: string;
-  filter_type: string;
-  status: "active" | "paused";
+  name?: string;
+  type: string;
+  message?: string;
+  broadcast_id?: string;
+  follow_up_message?: string;
+  delay_days?: number;
+  filter_type?: string;
+  recurrence?: string;
+  send_hour?: number;
+  image_urls?: string[];
+  status: string;
   last_run?: string;
   next_run?: string;
+  runs?: number;
   created_at: string;
+}
+
+export interface CustomerGroup {
+  id: string;
+  name: string;
+  customer_ids: string[];
+  count: number;
+  created_at: string;
+}
+
+export interface BroadcastCreateBody {
+  message: string;
+  name?: string;
+  filter_type: string;
+  customer_ids?: string[];
+  image_url?: string;
+  image_urls?: string[];
+  scheduled_at?: string;
+  template_id?: string;
 }
 
 export interface Booking {
   id: string;
   booking_number: string;
-  customer_id: string;
+  customer_id: string | null;
   customer_name: string;
   customer_phone?: string;
   service_id: string;
@@ -189,12 +245,31 @@ export interface Booking {
   staff_name?: string;
   date: string;
   time: string;
+  checkin_date?: string | null;
+  checkout_date?: string | null;
+  nights?: number | null;
   status: "pending" | "confirmed" | "completed" | "cancelled" | "no_show";
   payment_status: "unpaid" | "partial" | "paid";
   price: number;
   total_price?: number;
   notes?: string;
   created_at: string;
+}
+
+/** Body for `POST /bookings` — aligned with mobile `bookingsAPI.createBooking`. */
+export interface BookingCreatePayload {
+  customer_id?: string;
+  customer_name?: string;
+  service_id?: string;
+  service_name?: string;
+  date: string;
+  time?: string;
+  checkin_date?: string;
+  checkout_date?: string;
+  staff_name?: string;
+  capacity?: number;
+  notes?: string;
+  price?: number;
 }
 
 export interface AnalyticsSummary {
@@ -242,8 +317,10 @@ export interface WhatsAppConnection {
 
 export interface BusinessSettings {
   business_name?: string;
+  owner_name?: string;
   business_type?: string;
   country?: string;
+  country_code?: string;
   currency?: string;
   currency_symbol?: string;
   primary_language?: string;
@@ -258,7 +335,17 @@ export interface BusinessSettings {
   auto_reply_enabled?: boolean;
   auto_reply_audience?: string;
   ai_model?: string;
+  notification_enabled?: boolean;
+  notification_time?: string;
+  daily_alert_count?: number;
+  message_tone?: string;
+  daily_pulse_enabled?: boolean;
+  daily_pulse_time?: string;
+  restaurant_has_reservations?: boolean;
 }
+
+/** Backend `/business-knowledge` payload (journey + AI fields). */
+export type BusinessKnowledge = Record<string, unknown>;
 
 export interface Contact {
   id: string;
@@ -304,8 +391,24 @@ export const ordersApi = {
   create: (body: Partial<Order> & { customer_id: string }) => api.post<Order>("/orders", body),
   updateProgress: (id: string, body: { fulfillment_status?: string; assigned_to?: string }) =>
     api.patch<Order>(`/orders/${id}/progress`, body),
-  updateStatus: (id: string, body: { payment_status?: string; delivery_status?: string; notes?: string }) =>
-    api.put<Order>(`/orders/${id}`, body),
+  /**
+   * Backend `PUT /orders/{id}` reads `payment_status`, `delivery_status`, and `notes` from **query
+   * parameters** (same as the mobile app), not from a JSON body.
+   */
+  updateStatus: (id: string, body: { payment_status?: string; delivery_status?: string; notes?: string }) => {
+    const q = new URLSearchParams();
+    if (body.payment_status != null && body.payment_status !== "") {
+      q.set("payment_status", body.payment_status);
+    }
+    if (body.delivery_status != null && body.delivery_status !== "") {
+      q.set("delivery_status", body.delivery_status);
+    }
+    if (body.notes !== undefined) {
+      q.set("notes", body.notes);
+    }
+    const qs = q.toString();
+    return api.put<Order>(`/orders/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`, {});
+  },
   convertToSale: (id: string, paymentMethod: string) =>
     api.post<{ id: string }>(`/orders/${id}/convert-to-sale?payment_method=${encodeURIComponent(paymentMethod)}`, {}),
   delete: (id: string) => api.delete<void>(`/orders/${id}`),
@@ -319,11 +422,21 @@ export const customersApi = {
   delete: (id: string) => api.delete<void>(`/customers/${id}`),
 };
 
+export const customerGroupsApi = {
+  list: () => api.get<CustomerGroup[]>("/customer-groups"),
+  create: (body: { name: string; customer_ids: string[] }) =>
+    api.post<CustomerGroup>("/customer-groups", body),
+  delete: (id: string) => api.delete<void>(`/customer-groups/${id}`),
+};
+
 export const productsApi = {
   list: () => api.get<Product[]>("/products"),
   create: (body: Partial<Product>) => api.post<Product>("/products", body),
   update: (id: string, body: Partial<Product>) => api.put<Product>(`/products/${id}`, body),
   delete: (id: string) => api.delete<void>(`/products/${id}`),
+  /** Same as mobile: WhatsApp catalog blast to a segment. */
+  broadcastCatalog: (body: { product_ids: string[]; filter_type: string; customer_ids?: string[] }) =>
+    api.post<{ broadcast_id?: string; status?: string }>("/products/broadcast-catalog", body),
 };
 
 export const teamApi = {
@@ -401,6 +514,7 @@ export const expensesApi = {
 
 export const bookingsApi = {
   list: () => api.get<Booking[]>("/bookings"),
+  create: (body: BookingCreatePayload) => api.post<Booking>("/bookings", body),
   update: (id: string, body: Partial<Booking>) => api.put<Booking>(`/bookings/${id}`, body),
   delete: (id: string) => api.delete<void>(`/bookings/${id}`),
   sendReminder: (id: string) => api.post<{ success: boolean }>(`/bookings/${id}/reminder`, {}),
@@ -433,6 +547,23 @@ export const whatsappApi = {
 export const settingsApi = {
   get: () => api.get<BusinessSettings>("/settings"),
   update: (settings: Partial<BusinessSettings>) => api.put<BusinessSettings>("/settings", settings),
+  /** Same as mobile: AI draft for business knowledge “About” / description. */
+  generateAiAbout: (body: {
+    business_type: string;
+    current_description?: string;
+    mode?: "generate" | "improve";
+  }) =>
+    api.post<{ status: string; description: string }>("/settings/ai-about", {
+      business_type: body.business_type,
+      current_description: body.current_description,
+      mode: body.mode ?? "generate",
+    }),
+};
+
+export const businessKnowledgeApi = {
+  get: () => api.get<BusinessKnowledge>("/business-knowledge"),
+  update: (body: Partial<BusinessKnowledge>) =>
+    api.put<{ status: string }>("/business-knowledge", body),
 };
 
 export const contactsApi = {
@@ -447,24 +578,39 @@ export const contactsApi = {
 
 export const broadcastApi = {
   list: () => api.get<Broadcast[]>("/broadcasts"),
-  create: (body: { message: string; filter_type: string; name?: string; scheduled_at?: string }) =>
-    api.post<Broadcast>("/broadcasts", body),
-  resend: (id: string) => api.post<Broadcast>(`/broadcasts/${id}/resend`, {}),
+  create: (body: BroadcastCreateBody) => api.post<Broadcast>("/broadcasts", body),
+  resend: (id: string) =>
+    api.post<{ status: string; broadcast_id: string; recipients_count: number }>(`/broadcasts/${id}/resend`, {}),
+  cancel: (id: string) => api.post<{ status: string }>(`/broadcasts/${id}/cancel`, {}),
   delete: (id: string) => api.delete<void>(`/broadcasts/${id}`),
+  performance: (id: string) => api.get<BroadcastPerformance>(`/broadcasts/${id}/performance`),
   templates: () => api.get<BroadcastTemplate[]>("/broadcast-templates"),
-  createTemplate: (body: { name: string; message: string }) =>
+  createTemplate: (body: { name: string; message: string; image_url?: string }) =>
     api.post<BroadcastTemplate>("/broadcast-templates", body),
   deleteTemplate: (id: string) => api.delete<void>(`/broadcast-templates/${id}`),
-  automations: () => api.get<BroadcastAutomation[]>("/broadcast-automations"),
-  createAutomation: (automation: Partial<BroadcastAutomation>) =>
-    api.post<BroadcastAutomation>("/broadcast-automations", automation),
-  updateAutomation: (id: string, automation: Partial<BroadcastAutomation>) =>
-    api.put<BroadcastAutomation>(`/broadcast-automations/${id}`, automation),
-  deleteAutomation: (id: string) => api.delete<void>(`/broadcast-automations/${id}`),
+  automations: () => api.get<BroadcastAutomation[]>("/broadcasts/automations"),
+  deleteAutomation: (id: string) => api.delete<void>(`/broadcasts/automations/${id}`),
+  autoFollowup: (body: { broadcast_id: string; follow_up_message: string; delay_days?: number }) =>
+    api.post<{ status: string; automation_id: string }>("/broadcasts/auto-followup", body),
+  recurring: (body: {
+    message: string;
+    filter_type?: string;
+    image_urls?: string[];
+    recurrence?: "weekly" | "monthly";
+    send_hour?: number;
+  }) => api.post<{ status: string; automation_id: string }>("/broadcasts/recurring", body),
+};
+
+export const uploadApi = {
+  imageBase64: (base64_data: string, filename = "image.jpg") =>
+    api.post<{ image_url: string }>("/upload-image", { base64_data, filename }),
 };
 
 export const aiApi = {
   draftMessage: (request: DraftRequest) => api.post<DraftResponse>("/ai/draft-message", request),
+  /** Same as mobile `POST /ai/generate-broadcast-message`. */
+  generateBroadcastMessage: (body: { prompt: string; business_type?: string }) =>
+    api.post<{ message: string }>("/ai/generate-broadcast-message", body),
   sendAutoMessage: (customerId: string, message: string) =>
     api.post<{ status: string }>("/ai/send-auto-message", { customer_id: customerId, message }),
   getDailyInsights: (limit = 10) => api.get<Record<string, unknown>[]>(`/analysis/daily-insights?limit=${limit}`),
