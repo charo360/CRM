@@ -41,6 +41,30 @@ function inRange(dateStr: string, range: DateRange): boolean {
   return true;
 }
 
+/** Search across Customer, Item, Amount, Method, Credit, Date (matches table columns). */
+function saleMatchesSearch(s: Sale, raw: string): boolean {
+  const q = raw.trim().toLowerCase();
+  if (!q) return true;
+  const isWalkIn = s.customer_id === "walk-in";
+  const creditLabel = s.is_credit ? (s.paid_date ? "paid" : "credit") : "";
+  const blob = [
+    s.customer_name,
+    isWalkIn ? "walk-in walk in" : s.customer_phone || "",
+    s.item || "",
+    String(s.amount),
+    formatCurrency(s.amount),
+    (s.payment_method || "").toLowerCase(),
+    s.is_credit ? `credit ${creditLabel} ${s.paid_date ? "paid" : "unpaid"}` : "cash",
+    creditLabel,
+    formatDate(s.created_at),
+    s.created_at || "",
+    s.due_date || "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  return blob.includes(q);
+}
+
 export default function SalesPage() {
   const [tab, setTab] = useState<Tab>("sales");
   const [sales, setSales] = useState<Sale[]>([]);
@@ -68,6 +92,7 @@ export default function SalesPage() {
   });
 
   const [expForm, setExpForm] = useState({ category: "Inventory", amount: "", description: "" });
+  const [saleListSearch, setSaleListSearch] = useState("");
 
   async function load() {
     setLoading(true);
@@ -112,6 +137,11 @@ export default function SalesPage() {
 
   const filteredSales = sales.filter((s) => inRange(s.created_at, range));
   const filteredExpenses = expenses.filter((e) => inRange(e.created_at, range));
+
+  const salesTableRows = useMemo(
+    () => filteredSales.filter((s) => saleMatchesSearch(s, saleListSearch)),
+    [filteredSales, saleListSearch]
+  );
 
   const filteredCustomersPick = useMemo(() => {
     const q = customerSearch.trim().toLowerCase();
@@ -221,12 +251,13 @@ export default function SalesPage() {
     const rows =
       tab === "sales"
         ? [
-            ["Customer", "Item", "Amount", "Method", "Date"],
-            ...filteredSales.map((s) => [
+            ["Customer", "Item", "Amount", "Method", "Credit", "Date"],
+            ...salesTableRows.map((s) => [
               s.customer_name,
               s.item,
               s.amount,
-              s.payment_method,
+              s.payment_method || "",
+              s.is_credit ? (s.paid_date ? "Paid" : "Credit") : "",
               formatDate(s.created_at),
             ]),
           ]
@@ -317,7 +348,11 @@ export default function SalesPage() {
                   : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
-              {t === "sales" ? `Sales (${filteredSales.length})` : `Expenses (${filteredExpenses.length})`}
+              {t === "sales"
+                ? saleListSearch.trim()
+                  ? `Sales (${salesTableRows.length} of ${filteredSales.length})`
+                  : `Sales (${filteredSales.length})`
+                : `Expenses (${filteredExpenses.length})`}
             </button>
           ))}
         </div>
@@ -339,6 +374,39 @@ export default function SalesPage() {
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        {tab === "sales" && (
+          <div className="px-4 pt-4 pb-2 border-b border-slate-100 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+            <div className="relative flex-1 max-w-xl">
+              <Search
+                size={14}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+              />
+              <input
+                type="search"
+                value={saleListSearch}
+                onChange={(e) => setSaleListSearch(e.target.value)}
+                placeholder="Search by customer, item, amount, method, credit, date…"
+                className="w-full pl-8 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                aria-label="Search sales"
+              />
+              {saleListSearch.trim() ? (
+                <button
+                  type="button"
+                  onClick={() => setSaleListSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+            </div>
+            {saleListSearch.trim() ? (
+              <p className="text-xs text-slate-500 shrink-0">
+                Showing {salesTableRows.length} of {filteredSales.length} in this period
+              </p>
+            ) : null}
+          </div>
+        )}
         <div className="overflow-x-auto">
           {tab === "sales" ? (
             <table className="w-full text-sm">
@@ -365,7 +433,7 @@ export default function SalesPage() {
                         ))}
                       </tr>
                     ))
-                  : filteredSales.map((s) => {
+                  : salesTableRows.map((s) => {
                       const isWalkIn = s.customer_id === "walk-in";
                       const canResend =
                         !isWalkIn && (!s.is_credit || Boolean(s.paid_date));
@@ -481,9 +549,22 @@ export default function SalesPage() {
               </tbody>
             </table>
           )}
-          {!loading && (tab === "sales" ? filteredSales : filteredExpenses).length === 0 && (
-            <p className="text-center text-sm text-slate-400 py-12">No {tab} in this period</p>
+          {!loading && tab === "sales" && filteredSales.length > 0 && salesTableRows.length === 0 && (
+            <p className="text-center text-sm text-slate-500 py-12">
+              No sales match “{saleListSearch.trim()}”.{" "}
+              <button
+                type="button"
+                onClick={() => setSaleListSearch("")}
+                className="font-semibold text-indigo-600 hover:text-indigo-700"
+              >
+                Clear search
+              </button>
+            </p>
           )}
+          {!loading &&
+            (tab === "sales" ? filteredSales.length === 0 : filteredExpenses.length === 0) && (
+              <p className="text-center text-sm text-slate-400 py-12">No {tab} in this period</p>
+            )}
         </div>
       </div>
 
