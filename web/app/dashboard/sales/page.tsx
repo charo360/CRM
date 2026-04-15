@@ -65,6 +65,23 @@ function saleMatchesSearch(s: Sale, raw: string): boolean {
   return blob.includes(q);
 }
 
+/** Search Category, Amount, Description, Date (matches expenses table). */
+function expenseMatchesSearch(e: Expense, raw: string): boolean {
+  const q = raw.trim().toLowerCase();
+  if (!q) return true;
+  const blob = [
+    e.category || "",
+    String(e.amount),
+    formatCurrency(e.amount),
+    e.description || "",
+    formatDate(e.created_at),
+    e.created_at || "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  return blob.includes(q);
+}
+
 export default function SalesPage() {
   const [tab, setTab] = useState<Tab>("sales");
   const [sales, setSales] = useState<Sale[]>([]);
@@ -93,6 +110,7 @@ export default function SalesPage() {
 
   const [expForm, setExpForm] = useState({ category: "Inventory", amount: "", description: "" });
   const [saleListSearch, setSaleListSearch] = useState("");
+  const [expenseListSearch, setExpenseListSearch] = useState("");
 
   async function load() {
     setLoading(true);
@@ -141,6 +159,11 @@ export default function SalesPage() {
   const salesTableRows = useMemo(
     () => filteredSales.filter((s) => saleMatchesSearch(s, saleListSearch)),
     [filteredSales, saleListSearch]
+  );
+
+  const expensesTableRows = useMemo(
+    () => filteredExpenses.filter((e) => expenseMatchesSearch(e, expenseListSearch)),
+    [filteredExpenses, expenseListSearch]
   );
 
   const filteredCustomersPick = useMemo(() => {
@@ -263,7 +286,7 @@ export default function SalesPage() {
           ]
         : [
             ["Category", "Amount", "Description", "Date"],
-            ...filteredExpenses.map((e) => [
+            ...expensesTableRows.map((e) => [
               e.category,
               e.amount,
               e.description || "",
@@ -352,7 +375,9 @@ export default function SalesPage() {
                 ? saleListSearch.trim()
                   ? `Sales (${salesTableRows.length} of ${filteredSales.length})`
                   : `Sales (${filteredSales.length})`
-                : `Expenses (${filteredExpenses.length})`}
+                : expenseListSearch.trim()
+                  ? `Expenses (${expensesTableRows.length} of ${filteredExpenses.length})`
+                  : `Expenses (${filteredExpenses.length})`}
             </button>
           ))}
         </div>
@@ -403,6 +428,39 @@ export default function SalesPage() {
             {saleListSearch.trim() ? (
               <p className="text-xs text-slate-500 shrink-0">
                 Showing {salesTableRows.length} of {filteredSales.length} in this period
+              </p>
+            ) : null}
+          </div>
+        )}
+        {tab === "expenses" && (
+          <div className="px-4 pt-4 pb-2 border-b border-slate-100 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+            <div className="relative flex-1 max-w-xl">
+              <Search
+                size={14}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+              />
+              <input
+                type="search"
+                value={expenseListSearch}
+                onChange={(e) => setExpenseListSearch(e.target.value)}
+                placeholder="Search by category, amount, description, date…"
+                className="w-full pl-8 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                aria-label="Search expenses"
+              />
+              {expenseListSearch.trim() ? (
+                <button
+                  type="button"
+                  onClick={() => setExpenseListSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+            </div>
+            {expenseListSearch.trim() ? (
+              <p className="text-xs text-slate-500 shrink-0">
+                Showing {expensesTableRows.length} of {filteredExpenses.length} in this period
               </p>
             ) : null}
           </div>
@@ -502,7 +560,7 @@ export default function SalesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-100 bg-slate-50">
-                  {["Category", "Amount", "Description", "Date", ""].map((h) => (
+                  {["Category", "Amount", "Description", "Date", "Actions"].map((h) => (
                     <th
                       key={h}
                       className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide"
@@ -523,7 +581,7 @@ export default function SalesPage() {
                         ))}
                       </tr>
                     ))
-                  : filteredExpenses.map((exp) => (
+                  : expensesTableRows.map((exp) => (
                       <tr key={exp.id} className="hover:bg-slate-50">
                         <td className="px-4 py-3">
                           <span className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full font-medium">
@@ -555,6 +613,18 @@ export default function SalesPage() {
               <button
                 type="button"
                 onClick={() => setSaleListSearch("")}
+                className="font-semibold text-indigo-600 hover:text-indigo-700"
+              >
+                Clear search
+              </button>
+            </p>
+          )}
+          {!loading && tab === "expenses" && filteredExpenses.length > 0 && expensesTableRows.length === 0 && (
+            <p className="text-center text-sm text-slate-500 py-12">
+              No expenses match “{expenseListSearch.trim()}”.{" "}
+              <button
+                type="button"
+                onClick={() => setExpenseListSearch("")}
                 className="font-semibold text-indigo-600 hover:text-indigo-700"
               >
                 Clear search
