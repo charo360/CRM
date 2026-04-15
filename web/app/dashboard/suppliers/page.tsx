@@ -17,9 +17,11 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
-  ArrowLeft,
   User,
+  UserPlus,
 } from "lucide-react";
+
+type MainTab = "suppliers" | "potential" | "add";
 
 const PRESET_CATEGORIES = [
   "Electronics",
@@ -78,10 +80,15 @@ export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
   const [insights, setInsights] = useState<SupplierInsights | null>(null);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<"list" | "add">("list");
+  const [activeTab, setActiveTab] = useState<MainTab>("suppliers");
 
   const [allCustomers, setAllCustomers] = useState<Customer[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [manualName, setManualName] = useState("");
+  const [manualPhone, setManualPhone] = useState("");
+  const [manualCategory, setManualCategory] = useState("");
+  const [manualSaving, setManualSaving] = useState(false);
   const [addingIds, setAddingIds] = useState<string[]>([]);
 
   const [categoryTarget, setCategoryTarget] = useState<SupplierRow | null>(null);
@@ -144,6 +151,27 @@ export default function SuppliersPage() {
       .catch(() => setProductCatalog([]));
   }, []);
 
+  useEffect(() => {
+    if (activeTab !== "add") return;
+    let cancelled = false;
+    setLoadingContacts(true);
+    (async () => {
+      try {
+        const list = await customersApi.list();
+        if (cancelled) return;
+        const supplierIds = new Set(suppliers.map((s) => contactId(s)));
+        setAllCustomers(list.filter((c) => !supplierIds.has(c.id)));
+      } catch {
+        if (!cancelled) setAllCustomers([]);
+      } finally {
+        if (!cancelled) setLoadingContacts(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, suppliers]);
+
   const potentialSuppliers = insights?.potential_suppliers ?? [];
   const restockSuggestions = insights?.restock_suggestions ?? [];
 
@@ -191,23 +219,36 @@ export default function SuppliersPage() {
       .sort((a, b) => a.localeCompare(b));
   }, [productCatalog, editProductsSupplied]);
 
-  async function fetchAllCustomers() {
-    setLoading(true);
-    try {
-      const list = await customersApi.list();
-      const supplierIds = new Set(suppliers.map((s) => contactId(s)));
-      setAllCustomers(list.filter((c) => !supplierIds.has(c.id)));
-    } catch {
-      setAllCustomers([]);
-    } finally {
-      setLoading(false);
+  async function handleManualAdd(e: React.FormEvent) {
+    e.preventDefault();
+    const name = manualName.trim();
+    const phone = manualPhone.trim();
+    if (!name || !phone) {
+      alert("Name and phone are required.");
+      return;
     }
-  }
-
-  function startAddMode() {
-    setViewMode("add");
-    setSearchQuery("");
-    fetchAllCustomers();
+    setManualSaving(true);
+    try {
+      const created = await customersApi.create({
+        name,
+        phone_number: phone,
+        notes: "Added from Suppliers (manual)",
+      });
+      const id = created.id;
+      await api.post(`/suppliers/${id}/tag`, {});
+      if (manualCategory)
+        await api.put(`/suppliers/${id}`, { supplier_category: manualCategory });
+      setManualName("");
+      setManualPhone("");
+      setManualCategory("");
+      await load();
+      setActiveTab("suppliers");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Could not add supplier";
+      alert(msg);
+    } finally {
+      setManualSaving(false);
+    }
   }
 
   function openCategoryPicker(customer: SupplierRow) {
@@ -227,6 +268,7 @@ export default function SuppliersPage() {
       setCategoryTarget(null);
       setAllCustomers((prev) => prev.filter((c) => c.id !== id));
       await load();
+      setActiveTab("suppliers");
     } catch {
       alert("Failed to add supplier");
     } finally {
@@ -448,71 +490,6 @@ export default function SuppliersPage() {
       </div>
     );
 
-  if (viewMode === "add") {
-    return (
-      <div className="p-6 max-w-3xl mx-auto space-y-4">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setViewMode("list")}
-            className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
-            aria-label="Back"
-          >
-            <ArrowLeft size={18} />
-          </button>
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">Add supplier</h1>
-            <p className="text-slate-500 text-sm">Pick a contact and set a category</p>
-          </div>
-        </div>
-
-        <div className="relative">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search contacts…"
-            className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
-          />
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 min-h-[240px]">
-          {loading ? (
-            <div className="flex justify-center py-16">
-              <Loader2 className="animate-spin text-indigo-600" size={28} />
-            </div>
-          ) : filteredCustomers.length === 0 ? (
-            <p className="text-center text-slate-400 text-sm py-12">No contacts found</p>
-          ) : (
-            filteredCustomers.map((c) => (
-              <div key={c.id} className="flex items-center justify-between px-4 py-3 gap-3">
-                <div className="min-w-0">
-                  <p className="font-medium text-slate-800 truncate">{c.name}</p>
-                  <p className="text-xs text-slate-500 font-mono">{c.phone_number}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    openCategoryPicker({
-                      id: c.id,
-                      name: c.name,
-                      phone_number: c.phone_number,
-                    })
-                  }
-                  disabled={addingIds.includes(c.id)}
-                  className="shrink-0 px-3 py-1.5 text-sm font-semibold rounded-lg border border-indigo-600 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
-                >
-                  {addingIds.includes(c.id) ? <Loader2 className="animate-spin" size={14} /> : "Add"}
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-        {categoryPickerModal}
-      </div>
-    );
-  }
-
   return (
     <div className="p-6 max-w-3xl mx-auto space-y-6">
       <div className="flex items-center justify-between gap-4">
@@ -530,12 +507,43 @@ export default function SuppliersPage() {
           </button>
           <button
             type="button"
-            onClick={startAddMode}
+            onClick={() => setActiveTab("add")}
             className="flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
           >
             <Plus size={16} /> Add supplier
           </button>
         </div>
+      </div>
+
+      <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
+        {(
+          [
+            { id: "suppliers" as MainTab, label: "My suppliers" },
+            {
+              id: "potential" as MainTab,
+              label: "Potential suppliers",
+              count: potentialSuppliers.length,
+            },
+            { id: "add" as MainTab, label: "Add supplier" },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={cn(
+              "px-4 py-2 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap shrink-0",
+              activeTab === tab.id
+                ? "bg-white border-b-2 border-indigo-600 text-indigo-600"
+                : "text-slate-500 hover:text-slate-800"
+            )}
+          >
+            {tab.label}
+            {"count" in tab && tab.count > 0 ? (
+              <span className="ml-1 text-xs text-slate-400">({tab.count})</span>
+            ) : null}
+          </button>
+        ))}
       </div>
 
       {loading && suppliers.length === 0 && !insights ? (
@@ -544,6 +552,8 @@ export default function SuppliersPage() {
         </div>
       ) : (
         <>
+          {activeTab === "suppliers" && (
+            <>
           {restockSuggestions.length > 0 && (
             <section>
               <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
@@ -578,43 +588,6 @@ export default function SuppliersPage() {
                     <p className="text-sm text-indigo-600 font-medium mt-2">{item.suggested_action}</p>
                   </div>
                 ))}
-              </div>
-            </section>
-          )}
-
-          {potentialSuppliers.length > 0 && (
-            <section>
-              <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-                Potential suppliers
-              </h2>
-              <div className="space-y-2">
-                {potentialSuppliers.map((p) => {
-                  const pid = contactId(p);
-                  return (
-                    <div
-                      key={pid}
-                      className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3"
-                    >
-                      <div className="min-w-0">
-                        <p className="font-semibold text-slate-900">{p.name}</p>
-                        <p className="text-xs text-slate-500 font-mono">{p.phone_number}</p>
-                        <p className="text-xs text-emerald-700 mt-1">AI detected supplier signals in chat</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => openCategoryPicker(p)}
-                        disabled={!pid || addingIds.includes(pid)}
-                        className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
-                      >
-                        {addingIds.includes(pid) ? (
-                          <Loader2 className="animate-spin" size={14} />
-                        ) : (
-                          "Add"
-                        )}
-                      </button>
-                    </div>
-                  );
-                })}
               </div>
             </section>
           )}
@@ -674,7 +647,7 @@ export default function SuppliersPage() {
                 <Truck size={36} className="text-slate-300 mx-auto mb-3" />
                 <p className="text-slate-600 font-medium">No suppliers yet</p>
                 <p className="text-slate-400 text-sm mt-1">
-                  Add suppliers from your contacts or use suggestions above.
+                  Open the Add supplier tab to create one manually or tag a contact.
                 </p>
               </div>
             ) : filteredSuppliers.length === 0 ? (
@@ -982,6 +955,7 @@ export default function SuppliersPage() {
           </section>
 
           {!loading &&
+            activeTab === "suppliers" &&
             suppliers.length === 0 &&
             potentialSuppliers.length === 0 &&
             restockSuggestions.length === 0 && (
@@ -993,6 +967,190 @@ export default function SuppliersPage() {
                 </p>
               </div>
             )}
+            </>
+          )}
+
+          {activeTab === "potential" && (
+            <section className="space-y-3">
+              <p className="text-sm text-slate-500">
+                AI flags contacts whose recent messages look like supplier conversations. Add them and assign a category.
+              </p>
+              {potentialSuppliers.length === 0 ? (
+                <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                  <Sparkles size={40} className="text-slate-300 mx-auto mb-3" />
+                  <p className="text-slate-600 font-medium">No potential suppliers right now</p>
+                  <p className="text-slate-400 text-sm mt-1">
+                    New suggestions appear as you message contacts.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {potentialSuppliers.map((p) => {
+                    const pid = contactId(p);
+                    return (
+                      <div
+                        key={pid}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-900">{p.name}</p>
+                          <p className="text-xs text-slate-500 font-mono">{p.phone_number}</p>
+                          <p className="text-xs text-emerald-700 mt-1">AI detected supplier signals in chat</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openCategoryPicker(p)}
+                          disabled={!pid || addingIds.includes(pid)}
+                          className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                        >
+                          {addingIds.includes(pid) ? (
+                            <Loader2 className="animate-spin" size={14} />
+                          ) : (
+                            "Add"
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
+          {activeTab === "add" && (
+            <div className="space-y-8">
+              <section className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+                <div className="flex items-center gap-2 text-slate-900 font-semibold">
+                  <UserPlus size={20} className="text-indigo-600" />
+                  Add manually
+                </div>
+                <p className="text-sm text-slate-500">
+                  Creates a new contact and tags them as a supplier. Use a valid phone number (with country code if needed).
+                </p>
+                <form onSubmit={handleManualAdd} className="space-y-3 max-w-md">
+                  <div>
+                    <label
+                      htmlFor="sup-manual-name"
+                      className="text-xs font-semibold text-slate-500 uppercase tracking-wide"
+                    >
+                      Name *
+                    </label>
+                    <input
+                      id="sup-manual-name"
+                      value={manualName}
+                      onChange={(e) => setManualName(e.target.value)}
+                      className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                      required
+                      autoComplete="organization"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="sup-manual-phone"
+                      className="text-xs font-semibold text-slate-500 uppercase tracking-wide"
+                    >
+                      Phone *
+                    </label>
+                    <input
+                      id="sup-manual-phone"
+                      value={manualPhone}
+                      onChange={(e) => setManualPhone(e.target.value)}
+                      className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                      required
+                      inputMode="tel"
+                      autoComplete="tel"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="sup-manual-cat"
+                      className="text-xs font-semibold text-slate-500 uppercase tracking-wide"
+                    >
+                      Category (optional)
+                    </label>
+                    <select
+                      id="sup-manual-cat"
+                      value={manualCategory}
+                      onChange={(e) => setManualCategory(e.target.value)}
+                      className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                    >
+                      <option value="">— Set later in profile —</option>
+                      {PRESET_CATEGORIES.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={manualSaving}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {manualSaving ? (
+                      <Loader2 className="animate-spin" size={16} />
+                    ) : (
+                      <UserPlus size={16} />
+                    )}
+                    Create supplier
+                  </button>
+                </form>
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-slate-800">From existing contacts</h3>
+                <p className="text-sm text-slate-500 mb-3">
+                  Choose a contact who is not already a supplier.
+                </p>
+                <div className="relative mb-3">
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search contacts…"
+                    className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 min-h-[200px]">
+                  {loadingContacts ? (
+                    <div className="flex justify-center py-16">
+                      <Loader2 className="animate-spin text-indigo-600" size={28} />
+                    </div>
+                  ) : filteredCustomers.length === 0 ? (
+                    <p className="text-center text-slate-400 text-sm py-12">No contacts found</p>
+                  ) : (
+                    filteredCustomers.map((c) => (
+                      <div key={c.id} className="flex items-center justify-between px-4 py-3 gap-3">
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-800 truncate">{c.name}</p>
+                          <p className="text-xs text-slate-500 font-mono">{c.phone_number}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openCategoryPicker({
+                              id: c.id,
+                              name: c.name,
+                              phone_number: c.phone_number,
+                            })
+                          }
+                          disabled={addingIds.includes(c.id)}
+                          className="shrink-0 px-3 py-1.5 text-sm font-semibold rounded-lg border border-indigo-600 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+                        >
+                          {addingIds.includes(c.id) ? (
+                            <Loader2 className="animate-spin" size={14} />
+                          ) : (
+                            "Add"
+                          )}
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+
         </>
       )}
 
