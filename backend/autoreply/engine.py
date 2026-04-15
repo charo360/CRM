@@ -381,10 +381,12 @@ async def _call_ai_with_retry(
             )
             if attempt < MAX_RETRIES - 1:
                 attempt_messages = attempt_messages + [
-                    {"role": "assistant", "content": raw},
+                    {"role": "assistant", "content": raw or ""},
                     {"role": "user", "content": (
                         "Your previous response was not valid JSON or was missing required fields. "
-                        "Reply with ONLY a valid JSON object. No text before or after. No code blocks."
+                        "Reply with ONLY a valid JSON object containing: reply, intent, sentiment, actions, escalate, escalate_reason, new_menu, flow_update. "
+                        "Include send_product_image or send_catalog_images in actions if a product was selected or catalog was requested. "
+                        "No text before or after. No markdown code blocks."
                     )},
                 ]
                 continue

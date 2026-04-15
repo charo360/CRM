@@ -870,11 +870,16 @@ class WhatsAppService:
                         clean_filename = urllib.parse.unquote(media_filename or "")
                         if not clean_filename:
                             clean_filename = "image.jpg" if (media_type or "image") == "image" else "document.pdf"
+                        # Convert relative URLs to absolute so Evolution API can download them
+                        evo_media_url = media_url
+                        if evo_media_url.startswith("/"):
+                            _backend_base = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+                            evo_media_url = _backend_base + evo_media_url
                         # Send media message (FLAT structure fix)
                         payload = {
                             "number": clean_to,
                             "mediatype": media_type or "image",
-                            "media": media_url,
+                            "media": evo_media_url,
                             "caption": message,
                             "fileName": clean_filename,
                         }
