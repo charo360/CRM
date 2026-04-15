@@ -440,9 +440,24 @@ async def _call_openai_compat(client, model_name: str, system_prompt: str, messa
     else:
         kwargs["max_tokens"] = 1500
         kwargs["temperature"] = 0.4   # lower temp → more consistent JSON
+        # Force JSON output — prevents None/empty content from the API
+        # Supported by gpt-4o, gpt-4o-mini, deepseek-chat, grok (non-reasoning)
+        _JSON_OBJECT_MODELS = ("gpt-", "deepseek", "grok-3", "grok-2")
+        if any(model_name.startswith(p) for p in _JSON_OBJECT_MODELS):
+            kwargs["response_format"] = {"type": "json_object"}
 
     response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
-    return response.choices[0].message.content or ""
+    choice = response.choices[0]
+    content = choice.message.content
+    # Log refusals so they're visible in Railway logs
+    if content is None:
+        refusal = getattr(choice.message, "refusal", None)
+        finish = choice.finish_reason
+        logger.error(
+            f"[AutoReplyV2] OpenAI returned None content — finish_reason={finish} refusal={refusal}"
+        )
+        return ""
+    return content
 
 
 async def _call_claude_http(client_config: Dict, model_name: str, system_prompt: str, messages: List[Dict]) -> str:
