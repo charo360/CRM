@@ -6115,20 +6115,13 @@ async def delete_account(user = Depends(get_current_user)):
         or whatsapp_service._instance_name(user_id)
     )
 
-    # Try to disconnect — 3 attempts with back-off
-    evo_deleted = False
-    for attempt in range(3):
-        try:
-            await whatsapp_service.disconnect_instance(user_id)
-            evo_deleted = True
-            break
-        except Exception as e:
-            logging.error(f"Account deletion: WhatsApp disconnect attempt {attempt + 1} failed for user {user_id}: {e}")
-            if attempt < 2:
-                await asyncio.sleep(2 ** attempt)
-
-    if not evo_deleted:
-        # Final fallback: fire-and-forget direct delete by instance name
+    # Disconnect and delete ALL Evolution instances for this user (named + any stale timestamp-suffixed ones)
+    try:
+        await whatsapp_service.disconnect_instance(user_id)
+        logging.info(f"Account deletion: all Evolution instances removed for user {user_id}")
+    except Exception as e:
+        logging.error(f"Account deletion: WhatsApp disconnect failed for user {user_id}: {e}")
+        # Final fallback: direct delete by instance name
         try:
             import httpx as _httpx
             _evo_base = os.environ.get('EVOLUTION_API_URL', 'http://localhost:8080').rstrip('/')
@@ -6138,7 +6131,7 @@ async def delete_account(user = Depends(get_current_user)):
                 await _c.delete(f"{_evo_base}/instance/delete/{instance_name}", headers={"apikey": _evo_key})
             logging.info(f"Fallback instance delete sent for {instance_name}")
         except Exception as fb_err:
-            logging.warning(f"Account deletion: Evolution instance {instance_name} may still exist — run POST /admin/cleanup-instance to remove it. Error: {fb_err}")
+            logging.warning(f"Account deletion: Evolution instance {instance_name} may still exist. Error: {fb_err}")
 
     # Delete all user data from every collection
     await db.customers.delete_many({"user_id": user_id})

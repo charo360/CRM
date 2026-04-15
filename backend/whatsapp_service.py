@@ -498,23 +498,25 @@ class WhatsAppService:
         user = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
         wa = user.get("whatsapp") if user else None
 
-        if not wa or not wa.get("instance_name"):
-            return {"status": "not_connected"}
-
-        instance_name = wa["instance_name"]
-
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                # Logout first (unlinks WhatsApp)
-                await client.delete(
-                    f"{self.base_url}/instance/logout/{instance_name}",
-                    headers=self._headers(),
-                )
-                # Delete the instance
-                await client.delete(
-                    f"{self.base_url}/instance/delete/{instance_name}",
-                    headers=self._headers(),
-                )
+                # Delete ALL instances for this user (named + any timestamp-suffixed stale ones)
+                await self._delete_all_user_instances(client, user_id)
+
+                # Also explicitly delete the named instance from DB in case it wasn't caught above
+                if wa and wa.get("instance_name"):
+                    instance_name = wa["instance_name"]
+                    try:
+                        await client.delete(
+                            f"{self.base_url}/instance/logout/{instance_name}",
+                            headers=self._headers(),
+                        )
+                        await client.delete(
+                            f"{self.base_url}/instance/delete/{instance_name}",
+                            headers=self._headers(),
+                        )
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error(f"Error deleting instance: {e}")
 
