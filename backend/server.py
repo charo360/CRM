@@ -6151,7 +6151,7 @@ async def delete_account(user = Depends(get_current_user)):
     # Delete the user record itself
     await db.users.delete_one({"_id": user_id})
 
-    logging.info(f"Account deleted for user {user_id} (evo_instance_deleted={evo_deleted})")
+    logging.info(f"Account deleted for user {user_id}")
     return {"status": "success", "message": "Account and all data permanently deleted"}
 
 
