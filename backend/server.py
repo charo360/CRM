@@ -6146,7 +6146,7 @@ async def delete_account(request: Request):
         except Exception as fb_err:
             logging.warning(f"Account deletion: Evolution instance {instance_name} may still exist. Error: {fb_err}")
 
-    # Delete all user data from every collection
+    # Delete all user data from every collection (user_id and business_id are the same for owners)
     await db.customers.delete_many({"user_id": user_id})
     await db.messages.delete_many({"user_id": user_id})
     await db.sales.delete_many({"user_id": user_id})
@@ -6156,10 +6156,20 @@ async def delete_account(request: Request):
     await db.products.delete_many({"user_id": user_id})
     await db.broadcasts.delete_many({"user_id": user_id})
     await db.broadcast_templates.delete_many({"user_id": user_id})
+    await db.broadcast_automations.delete_many({"user_id": user_id})
     await db.transactions.delete_many({"user_id": user_id})
     await db.customer_analysis.delete_many({"user_id": user_id})
     await db.pending_classifications.delete_many({"user_id": user_id})
     await db.pending_catalogs.delete_many({"user_id": user_id})
+    await db.settings.delete_many({"user_id": user_id})
+    await db.bookings.delete_many({"user_id": user_id})
+    await db.customer_groups.delete_many({"user_id": user_id})
+    await db.followup_events.delete_many({"user_id": user_id})
+    await db.conversation_memory.delete_many({"user_id": user_id})
+    await db.activity_logs.delete_many({"business_id": user_id})
+    await db.conversation_assignments.delete_many({"business_id": user_id})
+    await db.team_members.delete_many({"business_id": user_id})
+    await db.wa_auth_sessions.delete_many({"user_id": user_id})
 
     # Delete the user record itself
     await db.users.delete_one({"_id": user_id})
