@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { api, customersApi, Customer } from "@/lib/api";
+import { api, customersApi, Customer, productsApi, Product } from "@/lib/api";
 import { formatCurrency, timeAgo, cn } from "@/lib/utils";
 import {
   Truck,
@@ -17,6 +18,7 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowLeft,
+  User,
 } from "lucide-react";
 
 const PRESET_CATEGORIES = [
@@ -49,6 +51,7 @@ interface SupplierRow {
   phone_number: string;
   email?: string;
   supplier_category?: string;
+  products_supplied?: string[];
   payment_terms?: string;
   lead_time?: string;
   rating?: number;
@@ -93,7 +96,15 @@ export default function SuppliersPage() {
   const [editPaymentTerms, setEditPaymentTerms] = useState("");
   const [editLeadTime, setEditLeadTime] = useState("");
   const [editRating, setEditRating] = useState(0);
+  const [editProductsSupplied, setEditProductsSupplied] = useState<string[]>([]);
+  const [customProductLine, setCustomProductLine] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  const [productCatalog, setProductCatalog] = useState<Product[]>([]);
+  const [listQuery, setListQuery] = useState("");
+  const [filterCategory, setFilterCategory] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"name" | "category" | "rating" | "recent">("name");
+  const [catalogSelect, setCatalogSelect] = useState("");
 
   async function load() {
     setLoading(true);
@@ -105,6 +116,7 @@ export default function SuppliersPage() {
       const normalized = (sups || []).map((s) => ({
         ...s,
         id: s.id || s._id,
+        products_supplied: Array.isArray(s.products_supplied) ? s.products_supplied : [],
       }));
       setSuppliers(normalized);
       if (ins) {
@@ -125,8 +137,59 @@ export default function SuppliersPage() {
     load();
   }, []);
 
+  useEffect(() => {
+    productsApi
+      .list()
+      .then((list) => setProductCatalog(list || []))
+      .catch(() => setProductCatalog([]));
+  }, []);
+
   const potentialSuppliers = insights?.potential_suppliers ?? [];
   const restockSuggestions = insights?.restock_suggestions ?? [];
+
+  const filteredSuppliers = useMemo(() => {
+    let list = [...suppliers];
+    const q = listQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (s) =>
+          s.name.toLowerCase().includes(q) ||
+          s.phone_number.includes(q) ||
+          (s.email && s.email.toLowerCase().includes(q)) ||
+          (s.supplier_category || "").toLowerCase().includes(q) ||
+          (s.products_supplied || []).some((p) => p.toLowerCase().includes(q))
+      );
+    }
+    if (filterCategory !== "all") {
+      list = list.filter((s) => (s.supplier_category || "Other") === filterCategory);
+    }
+    const sorted = [...list];
+    sorted.sort((a, b) => {
+      switch (sortBy) {
+        case "name":
+          return a.name.localeCompare(b.name);
+        case "category":
+          return (a.supplier_category || "").localeCompare(b.supplier_category || "");
+        case "rating":
+          return (b.rating || 0) - (a.rating || 0);
+        case "recent": {
+          const at = a.last_contacted ? new Date(a.last_contacted).getTime() : 0;
+          const bt = b.last_contacted ? new Date(b.last_contacted).getTime() : 0;
+          return bt - at;
+        }
+        default:
+          return 0;
+      }
+    });
+    return sorted;
+  }, [suppliers, listQuery, filterCategory, sortBy]);
+
+  const catalogNamesToAdd = useMemo(() => {
+    const names = productCatalog.map((p) => p.name).filter(Boolean) as string[];
+    return [...new Set(names)]
+      .filter((n) => !editProductsSupplied.includes(n))
+      .sort((a, b) => a.localeCompare(b));
+  }, [productCatalog, editProductsSupplied]);
 
   async function fetchAllCustomers() {
     setLoading(true);
@@ -205,7 +268,29 @@ export default function SuppliersPage() {
     setShowEditCustomInput(!isPreset && !!cat);
     setEditPaymentTerms(supplier.payment_terms || "");
     setEditLeadTime(supplier.lead_time || "");
-    setEditRating(supplier.rating || 0);
+    setEditRating(supplier.rating ?? 0);
+    setEditProductsSupplied(
+      Array.isArray(supplier.products_supplied) ? [...supplier.products_supplied] : []
+    );
+    setCustomProductLine("");
+    setCatalogSelect("");
+  }
+
+  function addProductFromCatalog(name: string) {
+    const t = name.trim();
+    if (!t || editProductsSupplied.includes(t)) return;
+    setEditProductsSupplied((prev) => [...prev, t]);
+  }
+
+  function removeProductTag(name: string) {
+    setEditProductsSupplied((prev) => prev.filter((p) => p !== name));
+  }
+
+  function addCustomProductLine() {
+    const t = customProductLine.trim();
+    if (!t || editProductsSupplied.includes(t)) return;
+    setEditProductsSupplied((prev) => [...prev, t]);
+    setCustomProductLine("");
   }
 
   async function handleSaveDetails(supplier: SupplierRow) {
@@ -214,11 +299,14 @@ export default function SuppliersPage() {
     const finalCategory = showEditCustomInput ? editCustomCategory.trim() : editCategory;
     setSavingId(id);
     try {
-      const body: Record<string, unknown> = {};
+      const productsClean = [...new Set(editProductsSupplied.map((p) => p.trim()).filter(Boolean))];
+      const body: Record<string, unknown> = {
+        products_supplied: productsClean,
+        payment_terms: editPaymentTerms.trim(),
+        lead_time: editLeadTime.trim(),
+        rating: editRating,
+      };
       if (finalCategory) body.supplier_category = finalCategory;
-      if (editPaymentTerms.trim()) body.payment_terms = editPaymentTerms.trim();
-      if (editLeadTime.trim()) body.lead_time = editLeadTime.trim();
-      if (editRating > 0) body.rating = editRating;
       await api.put(`/suppliers/${id}`, body);
       setSuppliers((prev) =>
         prev.map((s) =>
@@ -226,6 +314,7 @@ export default function SuppliersPage() {
             ? {
                 ...s,
                 supplier_category: (finalCategory || s.supplier_category) as string | undefined,
+                products_supplied: productsClean,
                 payment_terms: editPaymentTerms.trim(),
                 lead_time: editLeadTime.trim(),
                 rating: editRating,
@@ -531,9 +620,55 @@ export default function SuppliersPage() {
           )}
 
           <section>
-            <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-              My suppliers ({suppliers.length})
-            </h2>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between mb-3">
+              <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                My suppliers (
+                {filteredSuppliers.length === suppliers.length
+                  ? suppliers.length
+                  : `${filteredSuppliers.length} of ${suppliers.length}`}
+                )
+              </h2>
+            </div>
+
+            {suppliers.length > 0 && (
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap mb-3">
+                <div className="relative flex-1 min-w-[180px]">
+                  <Search
+                    size={14}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                  />
+                  <input
+                    value={listQuery}
+                    onChange={(e) => setListQuery(e.target.value)}
+                    placeholder="Search name, phone, email, category, products…"
+                    className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <select
+                  value={filterCategory}
+                  onChange={(e) => setFilterCategory(e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-700 min-w-[140px]"
+                >
+                  <option value="all">All categories</option>
+                  {PRESET_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-700 min-w-[160px]"
+                >
+                  <option value="name">Sort: Name (A–Z)</option>
+                  <option value="category">Sort: Category</option>
+                  <option value="rating">Sort: Rating</option>
+                  <option value="recent">Sort: Recent contact</option>
+                </select>
+              </div>
+            )}
+
             {suppliers.length === 0 ? (
               <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
                 <Truck size={36} className="text-slate-300 mx-auto mb-3" />
@@ -542,9 +677,23 @@ export default function SuppliersPage() {
                   Add suppliers from your contacts or use suggestions above.
                 </p>
               </div>
+            ) : filteredSuppliers.length === 0 ? (
+              <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
+                <p className="text-slate-600 font-medium">No suppliers match your filters</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setListQuery("");
+                    setFilterCategory("all");
+                  }}
+                  className="mt-3 text-sm font-semibold text-indigo-600 hover:text-indigo-700"
+                >
+                  Clear search and category
+                </button>
+              </div>
             ) : (
               <div className="space-y-2">
-                {suppliers.map((s) => {
+                {filteredSuppliers.map((s) => {
                   const sid = contactId(s);
                   const isOpen = expandedId === sid;
                   const isSaving = savingId === sid;
@@ -568,6 +717,9 @@ export default function SuppliersPage() {
                           <div className="min-w-0 flex-1">
                             <p className="font-semibold text-slate-900">{s.name}</p>
                             <p className="text-sm text-slate-500 font-mono">{s.phone_number}</p>
+                            {s.email ? (
+                              <p className="text-xs text-slate-400 truncate max-w-[220px]">{s.email}</p>
+                            ) : null}
                             <div className="flex flex-wrap items-center gap-2 mt-2">
                               {displayCat ? (
                                 <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
@@ -583,6 +735,24 @@ export default function SuppliersPage() {
                             ) : null}
                             {s.lead_time ? (
                               <p className="text-xs text-slate-500">⏱ {s.lead_time}</p>
+                            ) : null}
+                            {s.products_supplied && s.products_supplied.length > 0 ? (
+                              <div className="flex flex-wrap gap-1 mt-1.5">
+                                {s.products_supplied.slice(0, 4).map((p) => (
+                                  <span
+                                    key={p}
+                                    title={p}
+                                    className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 max-w-[120px] truncate"
+                                  >
+                                    {p}
+                                  </span>
+                                ))}
+                                {s.products_supplied.length > 4 ? (
+                                  <span className="text-[10px] text-slate-400 self-center">
+                                    +{s.products_supplied.length - 4}
+                                  </span>
+                                ) : null}
+                              </div>
                             ) : null}
                             {(s.total_spent != null && s.total_spent > 0) || s.last_contacted ? (
                               <div className="flex flex-wrap gap-3 mt-2 text-xs text-slate-400">
@@ -600,6 +770,13 @@ export default function SuppliersPage() {
                           </div>
                         </button>
                         <div className="flex flex-col justify-center gap-1 pr-3 py-3 border-l border-slate-100">
+                          <Link
+                            href={`/dashboard/customers/${sid}`}
+                            className="p-2 rounded-lg text-slate-500 hover:bg-indigo-50 hover:text-indigo-600"
+                            title="View contact profile"
+                          >
+                            <User size={18} />
+                          </Link>
                           <button
                             type="button"
                             onClick={() => openMessages(s)}
@@ -670,6 +847,77 @@ export default function SuppliersPage() {
                             )}
                           </div>
                           <div>
+                            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-2">
+                              Products supplied
+                            </p>
+                            <div className="flex flex-wrap gap-1.5 mb-2">
+                              {editProductsSupplied.map((p) => (
+                                <span
+                                  key={p}
+                                  className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs"
+                                >
+                                  {p}
+                                  <button
+                                    type="button"
+                                    onClick={() => removeProductTag(p)}
+                                    className="p-0.5 rounded hover:bg-slate-200 text-slate-500"
+                                    aria-label={`Remove ${p}`}
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                            <div className="flex flex-col gap-2">
+                              <select
+                                value={catalogSelect}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  if (v) {
+                                    addProductFromCatalog(v);
+                                    setCatalogSelect("");
+                                  } else {
+                                    setCatalogSelect("");
+                                  }
+                                }}
+                                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-800"
+                              >
+                                <option value="">Add from your catalog…</option>
+                                {catalogNamesToAdd.map((name) => (
+                                  <option key={name} value={name}>
+                                    {name}
+                                  </option>
+                                ))}
+                              </select>
+                              <div className="flex gap-2">
+                                <input
+                                  value={customProductLine}
+                                  onChange={(e) => setCustomProductLine(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      addCustomProductLine();
+                                    }
+                                  }}
+                                  placeholder="Custom product name"
+                                  className="flex-1 min-w-0 px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={addCustomProductLine}
+                                  className="px-3 py-2 text-sm font-medium rounded-lg border border-slate-200 hover:bg-slate-50 shrink-0"
+                                >
+                                  Add
+                                </button>
+                              </div>
+                            </div>
+                            {productCatalog.length === 0 ? (
+                              <p className="text-xs text-slate-400 mt-1.5">
+                                Add products in Shop to pick from your catalog.
+                              </p>
+                            ) : null}
+                          </div>
+                          <div>
                             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1">
                               Payment terms
                             </p>
@@ -695,7 +943,16 @@ export default function SuppliersPage() {
                             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1">
                               Rating
                             </p>
-                            {renderStars(editRating, setEditRating)}
+                            <div className="flex flex-wrap items-center gap-3">
+                              {renderStars(editRating, setEditRating)}
+                              <button
+                                type="button"
+                                onClick={() => setEditRating(0)}
+                                className="text-xs font-medium text-slate-500 hover:text-slate-800"
+                              >
+                                Clear rating
+                              </button>
+                            </div>
                           </div>
                           <div className="flex gap-2 pt-1">
                             <button
