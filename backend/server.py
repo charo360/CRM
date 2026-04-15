@@ -839,6 +839,8 @@ class FollowUpCreate(BaseModel):
     reminder_date: datetime
     message: Optional[str] = None
     type: str = "call"  # call, whatsapp, meeting, email
+    # Optional user_id of owner or team member; omit or null → assign to creator
+    assigned_to: Optional[str] = None
 
 class FollowUpUpdate(BaseModel):
     reminder_date: Optional[datetime] = None
@@ -847,6 +849,7 @@ class FollowUpUpdate(BaseModel):
     type: Optional[str] = None
     outcome: Optional[str] = None  # called, replied, no_answer, converted, rescheduled
     outcome_note: Optional[str] = None
+    assigned_to: Optional[str] = None  # set "" to clear assignee
 
 class FollowUpResponse(BaseModel):
     id: str
@@ -863,6 +866,11 @@ class FollowUpResponse(BaseModel):
     is_auto_sequence: Optional[bool] = None
     sequence_day: Optional[int] = None
     created_at: datetime
+    assigned_to: Optional[str] = None
+    assigned_to_name: Optional[str] = None
+
+class BulkFollowUpIds(BaseModel):
+    ids: List[str]
 
 # Sales/Receipt Models
 class SaleCreate(BaseModel):
@@ -2446,6 +2454,7 @@ async def get_team_members(user = Depends(get_current_user)):
             "name": member["name"],
             "email": member.get("email", ""),
             "phone_number": member.get("phone_number"),
+            "user_id": member.get("user_id"),
             "role": member["role"],
             "business_id": member["business_id"],
             "status": member["status"],
@@ -3397,6 +3406,32 @@ async def delete_customer(customer_id: str, user = Depends(get_current_user)):
 
 # ============ FOLLOW-UP ENDPOINTS ============
 
+async def _validate_followup_assignee(assignee_id: str, business_id: str) -> None:
+    if assignee_id == business_id:
+        return
+    m = await db.team_members.find_one({"business_id": business_id, "user_id": assignee_id})
+    if not m:
+        raise HTTPException(status_code=400, detail="Invalid assignee for this business")
+
+
+async def _followup_assignee_labels(business_id: str, assignee_ids: set) -> dict:
+    """Map user_id -> display name for follow-up assignees."""
+    if not assignee_ids:
+        return {}
+    out: dict = {}
+    if business_id in assignee_ids:
+        u = await db.users.find_one({"_id": business_id})
+        out[business_id] = (u or {}).get("business_name") or (u or {}).get("name") or "Owner"
+    remaining = assignee_ids - {business_id}
+    if remaining:
+        cur = db.team_members.find({"business_id": business_id, "user_id": {"$in": list(remaining)}})
+        async for m in cur:
+            uid = m.get("user_id")
+            if uid:
+                out[uid] = m.get("name") or "Team"
+    return out
+
+
 @api_router.post("/followups", response_model=FollowUpResponse)
 async def create_followup(followup: FollowUpCreate, user = Depends(get_current_user)):
     """Create a follow-up reminder"""
@@ -3414,6 +3449,16 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         )
 
     followup_id = str(uuid.uuid4())
+    assignee_raw = followup.assigned_to
+    if assignee_raw == "":
+        resolved_assignee = None
+    elif assignee_raw is not None:
+        await _validate_followup_assignee(assignee_raw, business_id)
+        resolved_assignee = assignee_raw
+    else:
+        resolved_assignee = user["_id"]
+        await _validate_followup_assignee(resolved_assignee, business_id)
+
     followup_doc = {
         "_id": followup_id,
         "user_id": business_id,
@@ -3422,10 +3467,13 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         "message": followup.message,
         "status": "pending",
         "type": followup.type,
-        "created_at": datetime.utcnow()
+        "created_at": datetime.utcnow(),
+        "assigned_to": resolved_assignee,
     }
 
     await db.followups.insert_one(followup_doc)
+    labels = await _followup_assignee_labels(business_id, {resolved_assignee} if resolved_assignee else set())
+    aname = labels.get(resolved_assignee) if resolved_assignee else None
     
     return FollowUpResponse(
         id=followup_id,
@@ -3439,17 +3487,32 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
         type=followup.type,
         is_auto_sequence=followup_doc.get("is_auto_sequence"),
         sequence_day=followup_doc.get("sequence_day"),
-        created_at=followup_doc["created_at"]
+        created_at=followup_doc["created_at"],
+        assigned_to=resolved_assignee,
+        assigned_to_name=aname,
     )
 
 @api_router.get("/followups", response_model=List[FollowUpResponse])
-async def get_followups(status: Optional[str] = None, user = Depends(get_current_user)):
+async def get_followups(
+    status: Optional[str] = None,
+    assigned_to: Optional[str] = Query(
+        None,
+        description="Filter by assignee user_id, or 'mine', or 'unassigned'",
+    ),
+    user = Depends(get_current_user),
+):
     """Get all follow-ups for current user — excludes auto-sequence (AI Draft) items"""
     business_id = user.get("business_id", user["_id"])
-    query = {"user_id": business_id, "is_auto_sequence": {"$ne": True}}
+    query: dict = {"user_id": business_id, "is_auto_sequence": {"$ne": True}}
     if status:
         query["status"] = status
-    
+    if assigned_to == "mine":
+        query["assigned_to"] = user["_id"]
+    elif assigned_to == "unassigned":
+        query["$or"] = [{"assigned_to": None}, {"assigned_to": {"$exists": False}}]
+    elif assigned_to:
+        query["assigned_to"] = assigned_to
+
     followups = await db.followups.find(query).sort("reminder_date", 1).to_list(1000)
     if not followups:
         return []
@@ -3459,9 +3522,13 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
     customers_list = await db.customers.find({"_id": {"$in": customer_ids}}).to_list(None)
     customers_map = {c["_id"]: c for c in customers_list}
 
+    aid_set = {f.get("assigned_to") for f in followups if f.get("assigned_to")}
+    labels = await _followup_assignee_labels(business_id, aid_set)
+
     result = []
     for f in followups:
         customer = customers_map.get(f["customer_id"])
+        aid = f.get("assigned_to")
         result.append(FollowUpResponse(
             id=f["_id"],
             user_id=f["user_id"],
@@ -3476,7 +3543,9 @@ async def get_followups(status: Optional[str] = None, user = Depends(get_current
             outcome_note=f.get("outcome_note"),
             is_auto_sequence=f.get("is_auto_sequence"),
             sequence_day=f.get("sequence_day"),
-            created_at=f["created_at"]
+            created_at=f["created_at"],
+            assigned_to=aid,
+            assigned_to_name=labels.get(aid) if aid else None,
         ))
     
     return result
@@ -3489,12 +3558,24 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
     if not followup:
         raise HTTPException(status_code=404, detail="Follow-up not found")
     
-    update_data = {k: v for k, v in update.dict().items() if v is not None}
+    raw = update.model_dump(exclude_unset=True)
+    update_data = {}
+    for k, v in raw.items():
+        if k == "assigned_to":
+            if v == "":
+                update_data["assigned_to"] = None
+            elif v is not None:
+                await _validate_followup_assignee(v, business_id)
+                update_data["assigned_to"] = v
+        elif v is not None:
+            update_data[k] = v
     if update_data:
         await db.followups.update_one({"_id": followup_id}, {"$set": update_data})
     
     updated = await db.followups.find_one({"_id": followup_id})
     customer = await db.customers.find_one({"_id": updated["customer_id"]})
+    aid = updated.get("assigned_to")
+    labels = await _followup_assignee_labels(business_id, {aid} if aid else set())
     
     return FollowUpResponse(
         id=updated["_id"],
@@ -3510,7 +3591,9 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
         outcome_note=updated.get("outcome_note"),
         is_auto_sequence=updated.get("is_auto_sequence"),
         sequence_day=updated.get("sequence_day"),
-        created_at=updated["created_at"]
+        created_at=updated["created_at"],
+        assigned_to=aid,
+        assigned_to_name=labels.get(aid) if aid else None,
     )
 
 @api_router.delete("/followups/{followup_id}")
@@ -3548,6 +3631,36 @@ async def snooze_followup(followup_id: str, days: int = 1, user = Depends(get_cu
         "message": f"Follow-up snoozed for {days} day(s)",
         "new_date": new_date
     }
+
+
+class BulkSnoozeBody(BaseModel):
+    ids: List[str]
+    days: int = 1
+
+
+@api_router.post("/followups/bulk-snooze")
+async def bulk_snooze_followups(body: BulkSnoozeBody, user = Depends(get_current_user)):
+    """Snooze multiple pending follow-ups by the same number of days."""
+    business_id = user.get("business_id", user["_id"])
+    days = max(1, min(body.days, 365))
+    modified = 0
+    for fid in body.ids:
+        doc = await db.followups.find_one({"_id": fid, "user_id": business_id, "status": "pending"})
+        if not doc:
+            continue
+        current_date = doc.get("reminder_date", datetime.utcnow())
+        new_date = current_date + timedelta(days=days)
+        await db.followups.update_one({"_id": fid}, {"$set": {"reminder_date": new_date}})
+        modified += 1
+    return {"status": "success", "updated": modified, "days": days}
+
+
+@api_router.post("/followups/bulk-delete")
+async def bulk_delete_followups(body: BulkFollowUpIds, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.followups.delete_many({"_id": {"$in": body.ids}, "user_id": business_id})
+    return {"status": "success", "deleted": result.deleted_count}
+
 
 @api_router.post("/followups/{followup_id}/redraft")
 async def redraft_followup_message(
@@ -4094,25 +4207,24 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
     
     await db.sales.insert_one(sale_doc)
     
-    # Update customer tag to "Returning" if was "New"
-    update_ops = {
-        "$inc": {"purchase_count": 1, "total_spent": sale.amount},
-        "$set": {"last_contacted": datetime.utcnow()}
-    }
-    
-    if "New" in customer.get("tags", []):
-        new_tags = [t for t in customer.get("tags", []) if t != "New"]
-        new_tags.append("Returning")
-        update_ops["$set"]["tags"] = new_tags
-        
-    await db.customers.update_one(
-        {"_id": sale.customer_id},
-        update_ops
-    )
+    # Update CRM customer stats (skip walk-in — not a real customer document)
+    if not is_walk_in:
+        update_ops = {
+            "$inc": {"purchase_count": 1, "total_spent": sale.amount},
+            "$set": {"last_contacted": datetime.utcnow()}
+        }
+        if "New" in customer.get("tags", []):
+            new_tags = [t for t in customer.get("tags", []) if t != "New"]
+            new_tags.append("Returning")
+            update_ops["$set"]["tags"] = new_tags
+        await db.customers.update_one(
+            {"_id": sale.customer_id, "user_id": business_id},
+            update_ops
+        )
     
     # Send receipt via WhatsApp — try Redis queue first, fall back to background_tasks
     # Use business_id (owner) for WhatsApp instance, since team members don't have their own instance
-    if sale.send_receipt:
+    if sale.send_receipt and not is_walk_in:
         owner = await db.users.find_one({"_id": business_id}) if business_id != user["_id"] else user
         currency = (owner or user).get("currency", "USD")
         business_name = (owner or user).get("business_name", user.get("business_name", "Your Shop"))
@@ -7677,72 +7789,6 @@ async def evolution_webhook(request: Request):
     except Exception as e:
         logging.error(f"Evolution webhook error: {e}")
         return {"status": "error", "message": str(e)}
-
-# ============ SMART FOLLOW-UP ENDPOINTS ============
-
-@api_router.get("/stats/followup-suggestions")
-async def get_followup_suggestions(user = Depends(get_current_user)):
-    """
-    Get smart follow-up suggestions based on customer activity
-    Only counts customers who don't already have pending follow-ups
-    """
-    now = datetime.utcnow()
-    
-    # Get all customers with pending follow-ups
-    pending_followups = await db.followups.find({
-        "user_id": user["_id"],
-        "status": "pending"
-    }).to_list(None)
-    
-    customer_ids_with_followups = {f["customer_id"] for f in pending_followups}
-    
-    # Customers not contacted in 14+ days (without pending follow-ups)
-    # This is more realistic - 14 days is when attention is truly needed
-    two_weeks_ago = now - timedelta(days=14)
-    neglected_week = await db.customers.count_documents({
-        "user_id": user["_id"],
-        "_id": {"$nin": list(customer_ids_with_followups)},
-        "$or": [
-            {"last_contacted": {"$lt": two_weeks_ago}},
-            {"last_contacted": None}
-        ]
-    })
-    
-    # Customers not contacted in 30+ days (without pending follow-ups)
-    month_ago = now - timedelta(days=30)
-    neglected_month = await db.customers.count_documents({
-        "user_id": user["_id"],
-        "_id": {"$nin": list(customer_ids_with_followups)},
-        "last_contacted": {"$lt": month_ago}
-    })
-    
-    # New customers (never followed up and no pending follow-ups)
-    new_no_followup = await db.customers.count_documents({
-        "user_id": user["_id"],
-        "_id": {"$nin": list(customer_ids_with_followups)},
-        "tags": "New",
-        "last_contacted": None
-    })
-    
-    # VIP customers not contacted in 7+ days (VIPs need more frequent attention)
-    week_ago = now - timedelta(days=7)
-    vip_neglected = await db.customers.count_documents({
-        "user_id": user["_id"],
-        "_id": {"$nin": list(customer_ids_with_followups)},
-        "tags": "VIP",
-        "$or": [
-            {"last_contacted": {"$lt": week_ago}},
-            {"last_contacted": None}
-        ]
-    })
-    
-    return {
-        "neglected_week": neglected_week,
-        "neglected_month": neglected_month,
-        "new_no_followup": new_no_followup,
-        "vip_neglected": vip_neglected,
-        "total_needing_attention": neglected_week + new_no_followup + vip_neglected
-    }
 
 # ============ STATS ENDPOINTS ============
 

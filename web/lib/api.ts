@@ -98,6 +98,7 @@ export interface TeamMember {
   name: string;
   email: string;
   role: string;
+  user_id?: string | null;
   permissions?: string[];
   created_at?: string;
 }
@@ -114,7 +115,10 @@ export interface FollowUp {
   outcome?: string | null;
   outcome_note?: string | null;
   is_auto_sequence?: boolean;
+  sequence_day?: number;
   created_at: string;
+  assigned_to?: string | null;
+  assigned_to_name?: string | null;
 }
 
 export interface Sale {
@@ -343,23 +347,49 @@ export const authApi = {
   me: () => api.get<Record<string, unknown>>("/auth/me"),
 };
 
+export interface FollowupSuggestionStats {
+  neglected_week: number;
+  neglected_month: number;
+  new_no_followup: number;
+  vip_neglected: number;
+  total_needing_attention: number;
+}
+
 export const followupsApi = {
-  list: () => api.get<FollowUp[]>("/followups"),
-  create: (body: Partial<FollowUp>) => api.post<FollowUp>("/followups", body),
-  update: (id: string, body: Partial<FollowUp>) => api.put<FollowUp>(`/followups/${id}`, body),
+  list: (params?: { status?: string; assigned_to?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.assigned_to) q.set("assigned_to", params.assigned_to);
+    const qs = q.toString();
+    return api.get<FollowUp[]>(`/followups${qs ? `?${qs}` : ""}`);
+  },
+  create: (body: Record<string, unknown>) => api.post<FollowUp>("/followups", body),
+  update: (id: string, body: Record<string, unknown>) => api.put<FollowUp>(`/followups/${id}`, body),
   delete: (id: string) => api.delete<void>(`/followups/${id}`),
-  snooze: (id: string, days: number) => api.post<FollowUp>(`/followups/${id}/snooze`, { days }),
-  complete: (id: string, outcome: string, note?: string) =>
-    api.post<FollowUp>(`/followups/${id}/complete`, { outcome, outcome_note: note }),
-  analytics: () => api.get<Record<string, unknown>>("/followups/analytics"),
-  suggestions: () => api.get<FollowUpSuggestion[]>("/followups/suggestions"),
-  generateSuggestions: () => api.post<{ status: string }>("/followups/generate-suggestions", {}),
+  snooze: (id: string, days: number) =>
+    api.post(`/followups/${id}/snooze?days=${days}`, {}),
+  bulkSnooze: (ids: string[], days: number) =>
+    api.post<{ status: string; updated: number }>("/followups/bulk-snooze", { ids, days }),
+  bulkDelete: (ids: string[]) =>
+    api.post<{ status: string; deleted: number }>("/followups/bulk-delete", { ids }),
+  suggestionStats: () => api.get<FollowupSuggestionStats>("/stats/followup-suggestions"),
+  analytics: (days: number) => api.get<Record<string, unknown>>(`/followups/analytics?days=${days}`),
 };
 
 export const salesApi = {
   list: () => api.get<Sale[]>("/sales"),
-  create: (body: Partial<Sale>) => api.post<Sale>("/sales", body),
-  markPaid: (id: string) => api.put<Sale>(`/sales/${id}/mark-paid`, {}),
+  create: (body: {
+    customer_id: string;
+    item: string;
+    amount: number;
+    payment_method?: string;
+    send_receipt?: boolean;
+    receipt_message?: string;
+    is_credit?: boolean;
+    due_date?: string;
+  }) => api.post<Sale>("/sales", body),
+  markPaid: (id: string, paymentMethod = "Cash") =>
+    api.put<Sale>(`/sales/${id}/mark-paid?payment_method=${encodeURIComponent(paymentMethod)}`, {}),
   resendReceipt: (id: string) => api.post<{ status: string }>(`/sales/${id}/resend-receipt`, {}),
 };
 
