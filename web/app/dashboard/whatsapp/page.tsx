@@ -10,6 +10,7 @@ export default function WhatsAppPage() {
   const [connecting, setConnecting] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState("");
   const [pairingCode, setPairingCode] = useState("");
+  const [codeSecondsLeft, setCodeSecondsLeft] = useState(0);
   const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
@@ -39,11 +40,34 @@ export default function WhatsAppPage() {
       const result = await whatsappApi.connect(phoneNumber);
       if (result.pairing_code) {
         setPairingCode(result.pairing_code);
+        setCodeSecondsLeft(60);
       }
       await loadStatus();
     } catch (e) {
       console.error("Failed to connect:", e);
       alert("Failed to connect WhatsApp");
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  useEffect(() => {
+    if (codeSecondsLeft <= 0) return;
+    const t = setTimeout(() => setCodeSecondsLeft((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [codeSecondsLeft]);
+
+  async function handleRefreshCode() {
+    if (!phoneNumber.trim()) return;
+    setConnecting(true);
+    try {
+      const result = await whatsappApi.connect(phoneNumber);
+      if (result.pairing_code) {
+        setPairingCode(result.pairing_code);
+        setCodeSecondsLeft(60);
+      }
+    } catch (e) {
+      console.error("Failed to refresh code:", e);
     } finally {
       setConnecting(false);
     }
@@ -199,9 +223,18 @@ export default function WhatsAppPage() {
 
         {pairingCode && (
           <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-            <h3 className="font-medium text-blue-900 mb-2">Pairing Code</h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-medium text-blue-900">Pairing Code</h3>
+              {codeSecondsLeft > 0 ? (
+                <span className={`text-sm font-semibold ${codeSecondsLeft <= 15 ? "text-red-600" : "text-blue-600"}`}>
+                  Expires in {codeSecondsLeft}s
+                </span>
+              ) : (
+                <span className="text-sm font-semibold text-red-600">Expired</span>
+              )}
+            </div>
             <div className="flex items-center gap-3">
-              <code className="text-2xl font-mono font-bold text-blue-700 bg-white px-3 py-2 rounded border">
+              <code className={`text-2xl font-mono font-bold bg-white px-3 py-2 rounded border ${codeSecondsLeft === 0 ? "text-slate-400 line-through" : "text-blue-700"}`}>
                 {pairingCode}
               </code>
               <button
@@ -212,8 +245,18 @@ export default function WhatsAppPage() {
               </button>
             </div>
             <p className="text-sm text-blue-700 mt-2">
-              Enter this code in WhatsApp → Settings → Linked Devices → Link a Device
+              Enter this code in WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number
             </p>
+            {codeSecondsLeft === 0 && (
+              <button
+                onClick={handleRefreshCode}
+                disabled={connecting}
+                className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={connecting ? "animate-spin" : ""} />
+                {connecting ? "Getting new code…" : "Get new code"}
+              </button>
+            )}
           </div>
         )}
       </div>

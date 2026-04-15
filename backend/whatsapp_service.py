@@ -274,6 +274,39 @@ class WhatsAppService:
 
     # ============ INSTANCE MANAGEMENT ============
 
+    async def _delete_all_user_instances(self, client: httpx.AsyncClient, user_id: str) -> None:
+        """Delete ALL Evolution instances belonging to this user (handles stale/duplicate instances)."""
+        prefix = f"user_{user_id.replace('-', '_')}"
+        try:
+            resp = await client.get(
+                f"{self.base_url}/instance/fetchInstances",
+                headers=self._headers(),
+            )
+            if resp.status_code != 200:
+                return
+            instances = resp.json() if isinstance(resp.json(), list) else []
+            for inst in instances:
+                name = inst.get("name", "")
+                if name == prefix or name.startswith(f"{prefix}_"):
+                    try:
+                        await client.delete(
+                            f"{self.base_url}/instance/logout/{name}",
+                            headers=self._headers(),
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await client.delete(
+                            f"{self.base_url}/instance/delete/{name}",
+                            headers=self._headers(),
+                        )
+                        logger.info(f"Deleted stale instance {name}")
+                    except Exception as e:
+                        logger.warning(f"Could not delete instance {name}: {e}")
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.warning(f"_delete_all_user_instances error: {e}")
+
     async def create_instance(self, user_id: str, phone_number: str) -> Dict:
         """
         Create an Evolution API instance for a user and request a pairing code.
@@ -284,12 +317,16 @@ class WhatsAppService:
 
         try:
             async with httpx.AsyncClient(timeout=60) as client:
+                # Step 0: Delete ALL stale instances for this user before creating a fresh one.
+                # Multiple stale instances cause WhatsApp to reject new pairing attempts with 401.
+                await self._delete_all_user_instances(client, user_id)
+
                 # Step 1: Create instance
                 create_payload = {
                     "instanceName": instance_name,
                     "token": str(uuid.uuid4()),
                     "number": clean_number,
-                    "qrcode": True,
+                    "qrcode": False,
                     "integration": "WHATSAPP-BAILEYS",
                     "reject_call": False,
                     "groupsIgnore": True,
@@ -303,9 +340,23 @@ class WhatsAppService:
 
                 if create_resp.status_code not in (200, 201):
                     error_detail = create_resp.text
-                    # Instance already exists — first try a new pairing code WITHOUT deleting.
-                    # Deleting mid-pairing invalidates the code the user is typing (WhatsApp: "wrong code").
                     if "already" in error_detail.lower() or "exists" in error_detail.lower():
+                        logger.info(
+                            f"Instance {instance_name} still exists after cleanup — force-deleting"
+                        )
+                        try:
+                            await client.delete(f"{self.base_url}/instance/logout/{instance_name}", headers=self._headers())
+                            await client.delete(f"{self.base_url}/instance/delete/{instance_name}", headers=self._headers())
+                        except Exception:
+                            pass
+                        await asyncio.sleep(2)
+                        create_resp = await client.post(
+                            f"{self.base_url}/instance/create",
+                            json=create_payload,
+                            headers=self._headers(),
+                        )
+                        if create_resp.status_code not in (200, 201):
+                            return {"status": "error", "message": "Failed to create WhatsApp instance after cleanup"}
                         logger.info(
                             f"Instance {instance_name} already exists — trying new pairing code without recreate"
                         )
