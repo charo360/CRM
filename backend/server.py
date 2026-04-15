@@ -624,11 +624,11 @@ def verify_token(token: str) -> dict:
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     payload = verify_token(credentials.credentials)
     user = await db.users.find_one({"_id": payload["user_id"]})
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=401, detail="User not found", headers={"X-Account-Deleted": "true"})
     return user
 
 def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
@@ -6100,18 +6100,31 @@ async def add_credits(request: CreditTopUpRequest, user = Depends(get_current_us
 # ============ ACCOUNT MANAGEMENT ============
 
 @api_router.delete("/account")
-async def delete_account(user = Depends(get_current_user)):
+async def delete_account(request: Request):
     """
     Permanently delete user account and all associated data.
     Required for GDPR/CCPA compliance and app store policies.
     """
-    user_id = user["_id"]
-    whatsapp_service = get_whatsapp_service(db)
+    # Manually extract user so we can handle already-deleted accounts gracefully
+    from fastapi.security import HTTPBearer as _HTTPBearer
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = auth_header.split(" ", 1)[1]
+    try:
+        payload = verify_token(token)
+    except HTTPException:
+        raise
 
-    # Grab instance name BEFORE we delete the user record so retry always works
-    user_record = await db.users.find_one({"_id": user_id}, {"whatsapp": 1})
+    user_id = payload["user_id"]
+    user = await db.users.find_one({"_id": user_id})
+
+    # If account is already gone (e.g. prior attempt crashed after delete), return success
+    if not user:
+        return {"status": "success", "message": "Account already deleted"}
+    whatsapp_service = get_whatsapp_service(db)
     instance_name = (
-        (user_record.get("whatsapp") or {}).get("instance_name")
+        (user.get("whatsapp") or {}).get("instance_name")
         or whatsapp_service._instance_name(user_id)
     )
 

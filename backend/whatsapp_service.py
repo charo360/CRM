@@ -274,9 +274,12 @@ class WhatsAppService:
 
     # ============ INSTANCE MANAGEMENT ============
 
-    async def _delete_all_user_instances(self, client: httpx.AsyncClient, user_id: str) -> None:
-        """Delete ALL Evolution instances belonging to this user (handles stale/duplicate instances)."""
+    async def _delete_all_user_instances(self, client: httpx.AsyncClient, user_id: str, phone_number: str = "") -> None:
+        """Delete ALL Evolution instances belonging to this user.
+        Also deletes any instance linked to the same phone number (catches orphaned instances from deleted accounts)."""
         prefix = f"user_{user_id.replace('-', '_')}"
+        clean_phone = self._clean_phone_digits(phone_number) if phone_number else ""
+        owner_jid = f"{clean_phone}@s.whatsapp.net" if clean_phone else ""
         try:
             resp = await client.get(
                 f"{self.base_url}/instance/fetchInstances",
@@ -287,19 +290,22 @@ class WhatsAppService:
             instances = resp.json() if isinstance(resp.json(), list) else []
             for inst in instances:
                 name = inst.get("name", "")
-                if name == prefix or name.startswith(f"{prefix}_"):
+                inst_number = inst.get("number", "")
+                inst_owner = inst.get("ownerJid", "") or ""
+                # Match by user_id prefix OR by phone number (catches orphaned instances from old deleted accounts)
+                matched = (
+                    name == prefix
+                    or name.startswith(f"{prefix}_")
+                    or (clean_phone and inst_number == clean_phone)
+                    or (owner_jid and inst_owner == owner_jid)
+                )
+                if matched:
                     try:
-                        await client.delete(
-                            f"{self.base_url}/instance/logout/{name}",
-                            headers=self._headers(),
-                        )
+                        await client.delete(f"{self.base_url}/instance/logout/{name}", headers=self._headers())
                     except Exception:
                         pass
                     try:
-                        await client.delete(
-                            f"{self.base_url}/instance/delete/{name}",
-                            headers=self._headers(),
-                        )
+                        await client.delete(f"{self.base_url}/instance/delete/{name}", headers=self._headers())
                         logger.info(f"Deleted stale instance {name}")
                     except Exception as e:
                         logger.warning(f"Could not delete instance {name}: {e}")
@@ -317,9 +323,9 @@ class WhatsAppService:
 
         try:
             async with httpx.AsyncClient(timeout=60) as client:
-                # Step 0: Delete ALL stale instances for this user before creating a fresh one.
-                # Multiple stale instances cause WhatsApp to reject new pairing attempts with 401.
-                await self._delete_all_user_instances(client, user_id)
+                # Step 0: Delete ALL stale instances for this user (and any orphaned instances for this
+                # phone number from previously deleted accounts) before creating a fresh one.
+                await self._delete_all_user_instances(client, user_id, phone_number)
 
                 # Step 1: Create instance
                 create_payload = {
