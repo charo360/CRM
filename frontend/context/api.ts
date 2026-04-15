@@ -226,7 +226,7 @@ apiClient.interceptors.response.use(
     // On network error for mutations: enqueue for later sync + return optimistic success
     if (isNetworkError && method && ['post', 'put', 'patch', 'delete'].includes(method)) {
       // Skip auth, AI, and file-upload endpoints from queuing
-      const skipPatterns = ['/auth/', '/ai/', '/analysis/', '/ai-description', '/ai-about', '/upload', '/send-', '/broadcast'];
+      const skipPatterns = ['/auth/', '/ai/', '/analysis/', '/ai-description', '/ai-about', '/upload', '/send-', '/broadcast', '/account'];
       const shouldSkip = skipPatterns.some((p) => url.includes(p));
       if (!shouldSkip) {
         const requestData = error.config?.data ? JSON.parse(error.config.data) : undefined;

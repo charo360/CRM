@@ -6128,23 +6128,16 @@ async def delete_account(request: Request):
         or whatsapp_service._instance_name(user_id)
     )
 
-    # Disconnect and delete ALL Evolution instances for this user (named + any stale timestamp-suffixed ones)
-    try:
-        await whatsapp_service.disconnect_instance(user_id)
-        logging.info(f"Account deletion: all Evolution instances removed for user {user_id}")
-    except Exception as e:
-        logging.error(f"Account deletion: WhatsApp disconnect failed for user {user_id}: {e}")
-        # Final fallback: direct delete by instance name
+    # Fire-and-forget Evolution cleanup — do NOT await so the response returns fast.
+    # Awaiting Evolution API (15s timeout + retries) caused Render to time out the request,
+    # which triggered the mobile app's offline queue to fake a success without actually deleting.
+    async def _cleanup_evolution():
         try:
-            import httpx as _httpx
-            _evo_base = os.environ.get('EVOLUTION_API_URL', 'http://localhost:8080').rstrip('/')
-            _evo_key = os.environ.get('EVOLUTION_API_KEY', '')
-            async with _httpx.AsyncClient(timeout=10) as _c:
-                await _c.delete(f"{_evo_base}/instance/logout/{instance_name}", headers={"apikey": _evo_key})
-                await _c.delete(f"{_evo_base}/instance/delete/{instance_name}", headers={"apikey": _evo_key})
-            logging.info(f"Fallback instance delete sent for {instance_name}")
-        except Exception as fb_err:
-            logging.warning(f"Account deletion: Evolution instance {instance_name} may still exist. Error: {fb_err}")
+            await whatsapp_service.disconnect_instance(user_id)
+            logging.info(f"Account deletion: Evolution instances removed for user {user_id}")
+        except Exception as e:
+            logging.warning(f"Account deletion: Evolution cleanup failed for {user_id}: {e}")
+    asyncio.create_task(_cleanup_evolution())
 
     # Delete all user data from every collection (user_id and business_id are the same for owners)
     await db.customers.delete_many({"user_id": user_id})
