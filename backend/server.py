@@ -1702,6 +1702,15 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     })
     if team_member:
         business_id = team_member["business_id"]
+        # Verify the business owner still exists — stale team_member records from deleted accounts must be ignored
+        owner_exists = await db.users.find_one({"_id": business_id}, {"_id": 1})
+        if not owner_exists:
+            # Clean up the stale record and fall through to normal registration
+            await db.team_members.delete_many({"business_id": business_id})
+            team_member = None
+
+    if team_member:
+        business_id = team_member["business_id"]
         # Find or create a user account for this employee
         emp_user = await db.users.find_one({"phone_number": phone})
         if not emp_user:
@@ -6119,8 +6128,14 @@ async def delete_account(request: Request):
     user_id = payload["user_id"]
     user = await db.users.find_one({"_id": user_id})
 
-    # If account is already gone (e.g. prior attempt crashed after delete), return success
+    # If account is already gone (e.g. prior attempt crashed after delete), still clean up
+    # any leftover team_members/settings records keyed by phone or user_id, then return success
     if not user:
+        phone_number = payload.get("phone_number", "")
+        if phone_number:
+            await db.team_members.delete_many({"phone_number": phone_number})
+        await db.team_members.delete_many({"business_id": user_id})
+        await db.settings.delete_many({"user_id": user_id})
         return {"status": "success", "message": "Account already deleted"}
     whatsapp_service = get_whatsapp_service(db)
     instance_name = (
