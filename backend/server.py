@@ -10378,6 +10378,241 @@ async def send_booking_reminder(booking_id: str, user=Depends(get_current_user))
 
 app.include_router(api_router)
 
+
+# ============ META WEBHOOKS (Messenger + Instagram) ============
+# These live directly on the app (not under /api) so Meta can reach them.
+# Webhook URLs:
+#   Messenger : https://crm-1-pnfo.onrender.com/webhook/messenger
+#   Instagram : https://crm-1-pnfo.onrender.com/webhook/instagram
+
+from meta_service import (
+    META_VERIFY_TOKEN,
+    get_user_by_page_id,
+    get_user_by_instagram_id,
+    get_or_create_meta_customer,
+    save_incoming_message,
+    save_outgoing_message,
+    send_messenger_message,
+    send_instagram_message,
+)
+
+
+async def _process_meta_message(
+    user: dict,
+    customer: dict,
+    text: str,
+    sender_id: str,
+    channel: str,
+    token: str,
+):
+    """Run AutoReplyV2 for a Meta message and reply via the right channel."""
+    from autoreply.engine import process_message as ar_process
+
+    user_id = user["_id"]
+
+    class _MetaSender:
+        """Thin wrapper so AutoReplyV2 can call send_message() without knowing the channel."""
+        async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", **kwargs):
+            if channel == "messenger":
+                ok = await send_messenger_message(token, sender_id, message)
+            else:
+                ok = await send_instagram_message(token, sender_id, message)
+            if ok:
+                await save_outgoing_message(db, user_id, customer["_id"], message, channel)
+
+    try:
+        await ar_process(
+            db=db,
+            user=user,
+            customer=customer,
+            customer_id=customer["_id"],
+            message=text,
+            from_number=f"meta_{channel}_{sender_id}",
+            whatsapp_service=_MetaSender(),
+        )
+    except Exception as exc:
+        logging.error(f"[Meta] AutoReply error for {channel}/{sender_id}: {exc}", exc_info=True)
+        # Send fallback
+        fallback = "Sorry, I'm having trouble right now. Please try again! 🙏"
+        if channel == "messenger":
+            await send_messenger_message(token, sender_id, fallback)
+        else:
+            await send_instagram_message(token, sender_id, fallback)
+
+
+@app.get("/webhook/messenger")
+async def messenger_webhook_verify(
+    hub_mode: str = Query(None, alias="hub.mode"),
+    hub_verify_token: str = Query(None, alias="hub.verify_token"),
+    hub_challenge: str = Query(None, alias="hub.challenge"),
+):
+    """Meta webhook verification handshake."""
+    if hub_mode == "subscribe" and hub_verify_token == META_VERIFY_TOKEN:
+        logging.info("[Meta] Messenger webhook verified ✓")
+        return Response(content=hub_challenge, media_type="text/plain")
+    logging.warning(f"[Meta] Messenger verification failed — token mismatch")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@app.post("/webhook/messenger")
+async def messenger_webhook(request: Request):
+    """Receive Messenger messages from Meta."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if body.get("object") != "page":
+        return {"status": "ignored"}
+
+    for entry in body.get("entry", []):
+        page_id = entry.get("id", "")
+        for event in entry.get("messaging", []):
+            # Only handle incoming messages (not echoes/reads)
+            if "message" not in event:
+                continue
+            msg = event["message"]
+            if msg.get("is_echo"):
+                continue
+            sender_id = event.get("sender", {}).get("id", "")
+            text = msg.get("text", "").strip()
+            mid = msg.get("mid", "")
+            if not sender_id or not text:
+                continue
+
+            # Find the CRM user who owns this page
+            user = await get_user_by_page_id(db, page_id)
+            if not user:
+                logging.warning(f"[Meta] No CRM user found for page {page_id}")
+                continue
+
+            user_id = user["_id"]
+            token   = user["_meta_token"]
+
+            # Get/create customer
+            customer = await get_or_create_meta_customer(db, user_id, sender_id, "messenger")
+            await save_incoming_message(db, user_id, customer["_id"], sender_id, text, "messenger", mid)
+
+            # Process async so webhook returns fast
+            asyncio.create_task(_process_meta_message(user, customer, text, sender_id, "messenger", token))
+
+    return {"status": "ok"}
+
+
+@app.get("/webhook/instagram")
+async def instagram_webhook_verify(
+    hub_mode: str = Query(None, alias="hub.mode"),
+    hub_verify_token: str = Query(None, alias="hub.verify_token"),
+    hub_challenge: str = Query(None, alias="hub.challenge"),
+):
+    """Meta webhook verification handshake for Instagram."""
+    if hub_mode == "subscribe" and hub_verify_token == META_VERIFY_TOKEN:
+        logging.info("[Meta] Instagram webhook verified ✓")
+        return Response(content=hub_challenge, media_type="text/plain")
+    logging.warning(f"[Meta] Instagram verification failed — token mismatch")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@app.post("/webhook/instagram")
+async def instagram_webhook(request: Request):
+    """Receive Instagram DMs from Meta."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if body.get("object") != "instagram":
+        return {"status": "ignored"}
+
+    for entry in body.get("entry", []):
+        instagram_id = entry.get("id", "")
+        for event in entry.get("messaging", []):
+            if "message" not in event:
+                continue
+            msg = event["message"]
+            if msg.get("is_echo"):
+                continue
+            sender_id = event.get("sender", {}).get("id", "")
+            text = msg.get("text", "").strip()
+            mid = msg.get("mid", "")
+            if not sender_id or not text:
+                continue
+
+            user = await get_user_by_instagram_id(db, instagram_id)
+            if not user:
+                logging.warning(f"[Meta] No CRM user found for instagram {instagram_id}")
+                continue
+
+            user_id = user["_id"]
+            token   = user["_meta_token"]
+
+            customer = await get_or_create_meta_customer(db, user_id, sender_id, "instagram")
+            await save_incoming_message(db, user_id, customer["_id"], sender_id, text, "instagram", mid)
+
+            asyncio.create_task(_process_meta_message(user, customer, text, sender_id, "instagram", token))
+
+    return {"status": "ok"}
+
+
+# ── API: Connect a Facebook Page / Instagram account ──────────────────────────
+
+@api_router.post("/meta/connect")
+async def connect_meta_page(request: Request, user=Depends(get_current_user)):
+    """
+    Store a Page Access Token for Messenger or Instagram.
+    Body: { page_id, page_access_token, channel: "messenger"|"instagram", instagram_id? }
+    """
+    data = await request.json()
+    page_id    = data.get("page_id", "").strip()
+    token      = data.get("page_access_token", "").strip()
+    channel    = data.get("channel", "messenger")
+    ig_id      = data.get("instagram_id", "").strip()
+
+    if not page_id or not token:
+        raise HTTPException(status_code=400, detail="page_id and page_access_token required")
+
+    user_id = user.get("business_id", user["_id"])
+    now = datetime.utcnow()
+
+    await db.meta_connections.update_one(
+        {"user_id": user_id, "channel": channel},
+        {"$set": {
+            "user_id":           user_id,
+            "page_id":           page_id,
+            "instagram_id":      ig_id or page_id,
+            "page_access_token": token,
+            "channel":           channel,
+            "updated_at":        now,
+        }, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+    logging.info(f"[Meta] {channel} connected for user {user_id} page {page_id}")
+    return {"status": "connected", "channel": channel, "page_id": page_id}
+
+
+@api_router.get("/meta/connections")
+async def get_meta_connections(user=Depends(get_current_user)):
+    """Return which Meta channels this user has connected."""
+    user_id = user.get("business_id", user["_id"])
+    conns = await db.meta_connections.find({"user_id": user_id}).to_list(10)
+    return [
+        {
+            "channel":  c["channel"],
+            "page_id":  c.get("page_id", ""),
+            "connected": True,
+        }
+        for c in conns
+    ]
+
+
+@api_router.delete("/meta/disconnect/{channel}")
+async def disconnect_meta(channel: str, user=Depends(get_current_user)):
+    """Remove a Meta channel connection."""
+    user_id = user.get("business_id", user["_id"])
+    await db.meta_connections.delete_one({"user_id": user_id, "channel": channel})
+    return {"status": "disconnected", "channel": channel}
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
