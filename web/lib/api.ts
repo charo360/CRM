@@ -542,6 +542,17 @@ export interface MetaConnection {
   connected: boolean;
 }
 
+export interface TelegramConnection {
+  connected: boolean;
+  bot_username?: string;
+}
+
+export const telegramApi = {
+  connection: () => api.get<TelegramConnection>("/telegram/connection"),
+  connect: (bot_token: string) => api.post<{ status: string; bot_username: string }>("/telegram/connect", { bot_token }),
+  disconnect: () => api.delete<{ status: string }>("/telegram/disconnect"),
+};
+
 export const metaApi = {
   connections: () => api.get<MetaConnection[]>("/meta/connections"),
   connect: (body: { page_id: string; page_access_token: string; channel: string; instagram_id?: string }) =>

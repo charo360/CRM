@@ -10418,7 +10418,137 @@ async def disconnect_meta(channel: str, user=Depends(get_current_user)):
     return {"status": "disconnected", "channel": channel}
 
 
+# ── Telegram API routes (must be before include_router) ───────────────────────
+
+@api_router.post("/telegram/connect")
+async def connect_telegram(request: Request, user=Depends(get_current_user)):
+    """Connect a Telegram bot token to this CRM account."""
+    from telegram_service import get_bot_info, set_telegram_webhook
+    data = await request.json()
+    bot_token = data.get("bot_token", "").strip()
+    if not bot_token:
+        raise HTTPException(status_code=400, detail="bot_token required")
+
+    # Verify token is valid
+    bot_info = await get_bot_info(bot_token)
+    if not bot_info:
+        raise HTTPException(status_code=400, detail="Invalid bot token — check and try again")
+
+    user_id = user.get("business_id", user["_id"])
+    now = datetime.utcnow()
+    bot_username = bot_info.get("username", "")
+
+    # Register webhook with Telegram
+    backend_url = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+    webhook_url = f"{backend_url}/webhook/telegram/{bot_token}"
+    await set_telegram_webhook(bot_token, webhook_url)
+
+    await db.telegram_connections.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id":      user_id,
+            "bot_token":    bot_token,
+            "bot_username": bot_username,
+            "updated_at":   now,
+        }, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+    logging.info(f"[Telegram] @{bot_username} connected for user {user_id}")
+    return {"status": "connected", "bot_username": bot_username}
+
+
+@api_router.get("/telegram/connection")
+async def get_telegram_connection(user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    conn = await db.telegram_connections.find_one({"user_id": user_id})
+    if not conn:
+        return {"connected": False}
+    return {"connected": True, "bot_username": conn.get("bot_username", "")}
+
+
+@api_router.delete("/telegram/disconnect")
+async def disconnect_telegram(user=Depends(get_current_user)):
+    from telegram_service import delete_telegram_webhook
+    user_id = user.get("business_id", user["_id"])
+    conn = await db.telegram_connections.find_one({"user_id": user_id})
+    if conn:
+        await delete_telegram_webhook(conn["bot_token"])
+        await db.telegram_connections.delete_one({"user_id": user_id})
+    return {"status": "disconnected"}
+
+
 app.include_router(api_router)
+
+
+# ============ TELEGRAM WEBHOOK ============
+
+from telegram_service import (
+    send_telegram_message,
+    get_user_by_bot_token,
+    get_or_create_telegram_customer,
+    save_telegram_message,
+)
+
+
+@app.post("/webhook/telegram/{bot_token}")
+async def telegram_webhook(bot_token: str, request: Request):
+    """Receive messages from Telegram for the given bot token."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    message = body.get("message") or body.get("edited_message")
+    if not message:
+        return {"status": "ignored"}
+
+    text = (message.get("text") or "").strip()
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
+    message_id = message.get("message_id", 0)
+    sender = message.get("from", {})
+    sender_name = f"{sender.get('first_name', '')} {sender.get('last_name', '')}".strip() or f"User {chat_id}"
+
+    if not text or not chat_id:
+        return {"status": "ignored"}
+
+    # Find CRM user who owns this bot
+    user = await get_user_by_bot_token(db, bot_token)
+    if not user:
+        logging.warning(f"[Telegram] No CRM user found for bot token ending ...{bot_token[-6:]}")
+        return {"status": "ignored"}
+
+    user_id = user["_id"]
+    token   = user["_tg_token"]
+
+    customer = await get_or_create_telegram_customer(db, user_id, chat_id, sender_name)
+    await save_telegram_message(db, user_id, customer["_id"], chat_id, text, "incoming", message_id)
+
+    async def _process():
+        from autoreply.engine import process_message as ar_process
+
+        class _TelegramSender:
+            async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", **kwargs):
+                ok = await send_telegram_message(token, chat_id, message)
+                if ok:
+                    await save_telegram_message(db, user_id, customer["_id"], chat_id, message, "outgoing")
+
+        try:
+            await ar_process(
+                db=db,
+                user=user,
+                customer=customer,
+                customer_id=customer["_id"],
+                message=text,
+                from_number=f"telegram_{chat_id}",
+                whatsapp_service=_TelegramSender(),
+            )
+        except Exception as exc:
+            logging.error(f"[Telegram] AutoReply error: {exc}", exc_info=True)
+            await send_telegram_message(token, chat_id, "Sorry, I'm having trouble right now. Please try again! 🙏")
+
+    asyncio.create_task(_process())
+    return {"status": "ok"}
 
 
 # ============ META WEBHOOKS (Messenger + Instagram) ============

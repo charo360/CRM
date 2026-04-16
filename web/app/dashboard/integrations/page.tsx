@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { metaApi, type MetaConnection } from "@/lib/api";
+import { metaApi, telegramApi, type MetaConnection, type TelegramConnection } from "@/lib/api";
 import { Plug, Mail, Calendar, CheckCircle, Loader2 } from "lucide-react";
 
 function SlackGlyph({ className }: { className?: string }) {
@@ -182,15 +182,99 @@ function MetaConnectForm({ channel, connection, onConnected, onDisconnected }: M
   );
 }
 
+function TelegramGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
+    </svg>
+  );
+}
+
+function TelegramConnectForm({ connection, onConnected, onDisconnected }: {
+  connection?: TelegramConnection;
+  onConnected: () => void;
+  onDisconnected: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [token, setToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleConnect() {
+    if (!token.trim()) { setError("Bot token required"); return; }
+    setSaving(true); setError("");
+    try {
+      await telegramApi.connect(token.trim());
+      setOpen(false); setToken("");
+      onConnected();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to connect");
+    } finally { setSaving(false); }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm("Disconnect Telegram bot? Auto-replies will stop.")) return;
+    try { await telegramApi.disconnect(); onDisconnected(); }
+    catch { alert("Failed to disconnect"); }
+  }
+
+  if (connection?.connected) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-1.5 text-green-700 text-xs font-medium">
+          <CheckCircle size={13} />
+          @{connection.bot_username} connected
+        </div>
+        <button onClick={handleDisconnect} className="w-full rounded-lg bg-red-600 px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-red-700">
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {!open ? (
+        <button onClick={() => setOpen(true)} className="w-full rounded-lg bg-[#229ED9] px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-[#1a8abf]">
+          Connect
+        </button>
+      ) : (
+        <div className="space-y-1.5">
+          <input
+            className="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            placeholder="Bot token from @BotFather"
+            value={token}
+            onChange={e => setToken(e.target.value)}
+            type="password"
+          />
+          {error && <p className="text-[10px] text-red-600">{error}</p>}
+          <div className="flex gap-1.5">
+            <button onClick={handleConnect} disabled={saving} className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+              {saving && <Loader2 size={11} className="animate-spin" />}
+              Save
+            </button>
+            <button onClick={() => { setOpen(false); setError(""); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function IntegrationsPage() {
   const [metaConns, setMetaConns] = useState<MetaConnection[]>([]);
+  const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
 
   useEffect(() => {
     metaApi.connections().then(setMetaConns).catch(() => {});
+    telegramApi.connection().then(setTgConn).catch(() => {});
   }, []);
 
   function refresh() {
     metaApi.connections().then(setMetaConns).catch(() => {});
+    telegramApi.connection().then(setTgConn).catch(() => {});
   }
 
   function getConn(channel: "messenger" | "instagram") {
@@ -247,6 +331,29 @@ export default function IntegrationsPage() {
             Meta for Developers
           </a>{" "}
           → your app → Messenger → Settings → Generate Token.
+        </p>
+      </section>
+
+      {/* Telegram */}
+      <section>
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Telegram</h2>
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          <SmallTile
+            title="Telegram Bot"
+            subtitle="@Zilocrmbot → auto-reply"
+            borderClass="border-[#229ED9]/20 bg-sky-50/50"
+            icon={<TelegramGlyph className="h-5 w-5 text-[#229ED9]" />}
+          >
+            <TelegramConnectForm
+              connection={tgConn}
+              onConnected={refresh}
+              onDisconnected={refresh}
+            />
+          </SmallTile>
+        </div>
+        <p className="mt-2 text-[11px] text-slate-500">
+          Get your bot token from <span className="font-medium text-slate-700">@BotFather</span> on Telegram → /newbot.
+          No approval needed.
         </p>
       </section>
 
