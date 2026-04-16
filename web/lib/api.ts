@@ -536,6 +536,19 @@ export const messagesApi = {
     api.post<void>(`/customers/${customerId}/messages/read`, {}),
 };
 
+export interface MetaConnection {
+  channel: "messenger" | "instagram";
+  page_id: string;
+  connected: boolean;
+}
+
+export const metaApi = {
+  connections: () => api.get<MetaConnection[]>("/meta/connections"),
+  connect: (body: { page_id: string; page_access_token: string; channel: string; instagram_id?: string }) =>
+    api.post<{ status: string; channel: string; page_id: string }>("/meta/connect", body),
+  disconnect: (channel: string) => api.delete<{ status: string }>(`/meta/disconnect/${channel}`),
+};
+
 export const whatsappApi = {
   status: () => api.get<WhatsAppStatus>("/whatsapp/status"),
   connect: (phoneNumber: string) =>
