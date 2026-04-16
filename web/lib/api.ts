@@ -558,6 +558,8 @@ export const metaApi = {
   connect: (body: { page_id: string; page_access_token: string; channel: string; instagram_id?: string }) =>
     api.post<{ status: string; channel: string; page_id: string }>("/meta/connect", body),
   disconnect: (channel: string) => api.delete<{ status: string }>(`/meta/disconnect/${channel}`),
+  oauthStart: (channel: "messenger" | "instagram") =>
+    api.get<{ url: string; redirect_uri: string }>(`/meta/oauth/start?channel=${channel}`),
 };
 
 export const whatsappApi = {

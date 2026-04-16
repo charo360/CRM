@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
 import { metaApi, telegramApi, type MetaConnection, type TelegramConnection } from "@/lib/api";
-import { Plug, Mail, Calendar, CheckCircle, Loader2 } from "lucide-react";
+import { Plug, Mail, Calendar, CheckCircle, Loader2, AlertCircle } from "lucide-react";
 
 function SlackGlyph({ className }: { className?: string }) {
   return (
@@ -58,41 +59,23 @@ function SmallTile({ icon, title, subtitle, borderClass, children }: SmallTilePr
 type MetaConnectFormProps = {
   channel: "messenger" | "instagram";
   connection?: MetaConnection;
-  onConnected: () => void;
   onDisconnected: () => void;
 };
 
-function MetaConnectForm({ channel, connection, onConnected, onDisconnected }: MetaConnectFormProps) {
-  const [open, setOpen] = useState(false);
-  const [pageId, setPageId] = useState("");
-  const [token, setToken] = useState("");
-  const [igId, setIgId] = useState("");
-  const [saving, setSaving] = useState(false);
+function MetaConnectForm({ channel, connection, onDisconnected }: MetaConnectFormProps) {
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
   const isInstagram = channel === "instagram";
 
-  async function handleConnect() {
-    if (!pageId.trim() || !token.trim()) {
-      setError("Page ID and Access Token are required");
-      return;
-    }
-    setSaving(true);
+  async function handleOAuth() {
+    setLoading(true);
     setError("");
     try {
-      await metaApi.connect({
-        page_id: pageId.trim(),
-        page_access_token: token.trim(),
-        channel,
-        instagram_id: isInstagram ? (igId.trim() || pageId.trim()) : undefined,
-      });
-      setOpen(false);
-      setPageId(""); setToken(""); setIgId("");
-      onConnected();
+      const { url } = await metaApi.oauthStart(channel);
+      window.location.href = url;
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to connect");
-    } finally {
-      setSaving(false);
+      setError(e instanceof Error ? e.message : "Failed to start login");
+      setLoading(false);
     }
   }
 
@@ -125,59 +108,23 @@ function MetaConnectForm({ channel, connection, onConnected, onDisconnected }: M
 
   return (
     <div className="space-y-2">
-      {!open ? (
-        <button
-          onClick={() => setOpen(true)}
-          className={`w-full rounded-lg px-2.5 py-1.5 text-center text-xs font-semibold text-white ${
-            isInstagram
-              ? "bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
-              : "bg-[#0084ff] hover:bg-[#006ecc]"
-          }`}
-        >
-          Connect
-        </button>
-      ) : (
-        <div className="space-y-1.5">
-          <input
-            className="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400"
-            placeholder={isInstagram ? "Instagram Account ID" : "Page ID (e.g. 114174821715288)"}
-            value={pageId}
-            onChange={e => setPageId(e.target.value)}
-          />
-          {isInstagram && (
-            <input
-              className="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400"
-              placeholder="Instagram User ID (if different from Page ID)"
-              value={igId}
-              onChange={e => setIgId(e.target.value)}
-            />
-          )}
-          <input
-            className="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400"
-            placeholder="Page Access Token"
-            value={token}
-            onChange={e => setToken(e.target.value)}
-            type="password"
-          />
-          {error && <p className="text-[10px] text-red-600">{error}</p>}
-          <div className="flex gap-1.5">
-            <button
-              onClick={handleConnect}
-              disabled={saving}
-              className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-            >
-              {saving && <Loader2 size={11} className="animate-spin" />}
-              Save
-            </button>
-            <button
-              onClick={() => { setOpen(false); setError(""); }}
-              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
+      {error && <p className="text-[10px] text-red-600">{error}</p>}
+      <button
+        onClick={handleOAuth}
+        disabled={loading}
+        className={`flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-60 ${
+          isInstagram
+            ? "bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
+            : "bg-[#1877f2] hover:bg-[#166fe5]"
+        }`}
+      >
+        {loading ? <Loader2 size={11} className="animate-spin" /> : (
+          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor" aria-hidden>
+            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+          </svg>
+        )}
+        {loading ? "Redirecting…" : `Connect with ${isInstagram ? "Instagram" : "Facebook"}`}
+      </button>
     </div>
   );
 }
@@ -266,16 +213,39 @@ function TelegramConnectForm({ connection, onConnected, onDisconnected }: {
 export default function IntegrationsPage() {
   const [metaConns, setMetaConns] = useState<MetaConnection[]>([]);
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
+  const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const searchParams = useSearchParams();
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     metaApi.connections().then(setMetaConns).catch(() => {});
     telegramApi.connection().then(setTgConn).catch(() => {});
   }, []);
 
-  function refresh() {
-    metaApi.connections().then(setMetaConns).catch(() => {});
-    telegramApi.connection().then(setTgConn).catch(() => {});
-  }
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Handle OAuth redirect result (?connected=messenger or ?error=...)
+  useEffect(() => {
+    const connected = searchParams.get("connected");
+    const error = searchParams.get("error");
+    if (connected) {
+      setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected successfully!` });
+      refresh();
+      // Clean URL without reload
+      window.history.replaceState({}, "", window.location.pathname);
+    } else if (error) {
+      const msgs: Record<string, string> = {
+        oauth_denied: "You cancelled the login. Please try again.",
+        no_pages: "No Facebook Pages found. Make sure you have a Page linked to your account.",
+        token_exchange: "Authentication failed. Please try again.",
+        invalid_state: "Session expired. Please try again.",
+        server_error: "Server error during connection. Please try again.",
+      };
+      setBanner({ type: "error", msg: msgs[error] || "Connection failed. Please try again." });
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [searchParams, refresh]);
 
   function getConn(channel: "messenger" | "instagram") {
     return metaConns.find(c => c.channel === channel);
@@ -293,6 +263,21 @@ export default function IntegrationsPage() {
         </p>
       </div>
 
+      {/* OAuth result banner */}
+      {banner && (
+        <div className={`flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs font-medium ${
+          banner.type === "success"
+            ? "bg-green-50 text-green-800 border border-green-200"
+            : "bg-red-50 text-red-800 border border-red-200"
+        }`}>
+          {banner.type === "success"
+            ? <CheckCircle size={14} className="mt-0.5 shrink-0" />
+            : <AlertCircle size={14} className="mt-0.5 shrink-0" />}
+          <span>{banner.msg}</span>
+          <button onClick={() => setBanner(null)} className="ml-auto text-current opacity-50 hover:opacity-100">✕</button>
+        </div>
+      )}
+
       {/* Meta Channels */}
       <section>
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Messenger · Instagram</h2>
@@ -306,7 +291,6 @@ export default function IntegrationsPage() {
             <MetaConnectForm
               channel="messenger"
               connection={getConn("messenger")}
-              onConnected={refresh}
               onDisconnected={refresh}
             />
           </SmallTile>
@@ -320,17 +304,12 @@ export default function IntegrationsPage() {
             <MetaConnectForm
               channel="instagram"
               connection={getConn("instagram")}
-              onConnected={refresh}
               onDisconnected={refresh}
             />
           </SmallTile>
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          Get your Page ID and Access Token from{" "}
-          <a href="https://developers.facebook.com" target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline">
-            Meta for Developers
-          </a>{" "}
-          → your app → Messenger → Settings → Generate Token.
+          Log in with your Facebook account and select which Page to connect. No developer setup needed.
         </p>
       </section>
 

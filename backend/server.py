@@ -10418,6 +10418,53 @@ async def disconnect_meta(channel: str, user=Depends(get_current_user)):
     return {"status": "disconnected", "channel": channel}
 
 
+import base64 as _b64
+import json as _json2
+
+_FACEBOOK_APP_ID     = os.environ.get("FACEBOOK_APP_ID", "")
+_FACEBOOK_APP_SECRET = os.environ.get("FACEBOOK_APP_SECRET", "")
+
+def _meta_state_encode(user_id: str, channel: str) -> str:
+    raw = _b64.urlsafe_b64encode(_json2.dumps({"uid": user_id, "ch": channel}).encode()).decode().rstrip("=")
+    sig = hmac.new(JWT_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:16]
+    return f"{raw}.{sig}"
+
+def _meta_state_decode(state: str):
+    try:
+        raw, sig = state.rsplit(".", 1)
+        expected = hmac.new(JWT_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:16]
+        if sig != expected:
+            raise ValueError("bad sig")
+        padded = raw + "=" * (-len(raw) % 4)
+        data = _json2.loads(_b64.urlsafe_b64decode(padded))
+        return data["uid"], data["ch"]
+    except Exception:
+        return None, None
+
+
+@api_router.get("/meta/oauth/start")
+async def meta_oauth_start(channel: str = "messenger", user=Depends(get_current_user)):
+    """Return the Facebook OAuth URL so the frontend can redirect the user."""
+    if not _FACEBOOK_APP_ID:
+        raise HTTPException(status_code=500, detail="FACEBOOK_APP_ID not configured on server")
+    user_id = str(user.get("business_id", user["_id"]))
+    state = _meta_state_encode(user_id, channel)
+    backend_url = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+    redirect_uri = f"{backend_url}/api/meta/oauth/callback"
+    scopes = "pages_messaging,pages_read_engagement,pages_manage_metadata"
+    if channel == "instagram":
+        scopes += ",instagram_business_manage_messages"
+    fb_url = (
+        f"https://www.facebook.com/v18.0/dialog/oauth"
+        f"?client_id={_FACEBOOK_APP_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={scopes}"
+        f"&state={state}"
+        f"&response_type=code"
+    )
+    return {"url": fb_url, "redirect_uri": redirect_uri}
+
+
 # ── Telegram API routes (must be before include_router) ───────────────────────
 
 @api_router.post("/telegram/connect")
@@ -10478,6 +10525,115 @@ async def disconnect_telegram(user=Depends(get_current_user)):
 
 
 app.include_router(api_router)
+
+
+# ── Facebook OAuth callback (public — called by Facebook, no JWT) ─────────────
+
+@app.get("/api/meta/oauth/callback")
+async def meta_oauth_callback(
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+):
+    """Facebook redirects here after user grants/denies Messenger/Instagram access."""
+    frontend_url = os.environ.get("FRONTEND_URL", "https://zilo.vercel.app").rstrip("/")
+    back_url = f"{frontend_url}/dashboard/integrations"
+
+    if error or not code:
+        logging.warning(f"[Meta OAuth] Denied or error: {error} — {error_description}")
+        return Response(status_code=302, headers={"Location": f"{back_url}?error=oauth_denied"})
+
+    user_id, channel = _meta_state_decode(state)
+    if not user_id:
+        return Response(status_code=302, headers={"Location": f"{back_url}?error=invalid_state"})
+
+    backend_url = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+    redirect_uri = f"{backend_url}/api/meta/oauth/callback"
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            # 1. Exchange code → short-lived user access token
+            tok_resp = await client.get(
+                "https://graph.facebook.com/v18.0/oauth/access_token",
+                params={
+                    "client_id":     _FACEBOOK_APP_ID,
+                    "client_secret": _FACEBOOK_APP_SECRET,
+                    "redirect_uri":  redirect_uri,
+                    "code":          code,
+                },
+            )
+            tok_data = tok_resp.json()
+            if "error" in tok_data:
+                logging.error(f"[Meta OAuth] Token exchange failed: {tok_data}")
+                return Response(status_code=302, headers={"Location": f"{back_url}?error=token_exchange"})
+            short_token = tok_data["access_token"]
+
+            # 2. Exchange → long-lived user token (60 days)
+            ll_resp = await client.get(
+                "https://graph.facebook.com/v18.0/oauth/access_token",
+                params={
+                    "grant_type":      "fb_exchange_token",
+                    "client_id":       _FACEBOOK_APP_ID,
+                    "client_secret":   _FACEBOOK_APP_SECRET,
+                    "fb_exchange_token": short_token,
+                },
+            )
+            ll_data = ll_resp.json()
+            long_user_token = ll_data.get("access_token", short_token)
+
+            # 3. Get pages the user administers
+            pages_resp = await client.get(
+                "https://graph.facebook.com/v18.0/me/accounts",
+                params={
+                    "access_token": long_user_token,
+                    "fields": "id,name,access_token,instagram_business_account",
+                },
+            )
+            pages_data = pages_resp.json()
+            pages = pages_data.get("data", [])
+
+        if not pages:
+            logging.warning(f"[Meta OAuth] No pages found for user {user_id}")
+            return Response(status_code=302, headers={"Location": f"{back_url}?error=no_pages"})
+
+        # 4. Save connection — use first page (if user has multiple, they'll pick later)
+        page = pages[0]
+        page_id    = page["id"]
+        page_token = page["access_token"]
+        now = datetime.utcnow()
+
+        if channel == "instagram":
+            ig_account = page.get("instagram_business_account") or {}
+            ig_id = ig_account.get("id", page_id)
+            await db.meta_connections.update_one(
+                {"user_id": user_id, "channel": "instagram"},
+                {"$set": {
+                    "user_id": user_id, "page_id": page_id,
+                    "instagram_id": ig_id,
+                    "page_access_token": page_token,
+                    "channel": "instagram", "updated_at": now,
+                }, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+            )
+        else:
+            await db.meta_connections.update_one(
+                {"user_id": user_id, "channel": "messenger"},
+                {"$set": {
+                    "user_id": user_id, "page_id": page_id,
+                    "instagram_id": page_id,
+                    "page_access_token": page_token,
+                    "channel": "messenger", "updated_at": now,
+                }, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+            )
+
+        logging.info(f"[Meta OAuth] {channel} connected via OAuth for user {user_id} page {page_id}")
+        return Response(status_code=302, headers={"Location": f"{back_url}?connected={channel}"})
+
+    except Exception as exc:
+        logging.exception(f"[Meta OAuth] Unexpected error: {exc}")
+        return Response(status_code=302, headers={"Location": f"{back_url}?error=server_error"})
 
 
 # ============ TELEGRAM WEBHOOK ============
