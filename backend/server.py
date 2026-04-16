@@ -10418,39 +10418,52 @@ async def disconnect_meta(channel: str, user=Depends(get_current_user)):
     return {"status": "disconnected", "channel": channel}
 
 
-# ── Bird.com (Conversations API) — link workspace to CRM user ─────────────────
-@api_router.post("/bird/connect")
-async def bird_connect(request: Request, user=Depends(get_current_user)):
+# ── Bird.com — operator-only: map Bird channel → CRM user (clients never configure Bird) ──
+_BIRD_PROVISION_SECRET = os.environ.get("BIRD_PROVISION_SECRET", "").strip()
+
+
+@api_router.post("/bird/provision-channel")
+async def bird_provision_channel(request: Request):
+    """Map a Bird channel UUID to a CRM user. Requires header X-Bird-Provision-Secret matching BIRD_PROVISION_SECRET."""
+    secret = request.headers.get("X-Bird-Provision-Secret", "").strip()
+    if not _BIRD_PROVISION_SECRET or secret != _BIRD_PROVISION_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Bird-Provision-Secret")
     data = await request.json()
-    workspace_id = (data.get("workspace_id") or data.get("workspaceId") or "").strip()
-    if not workspace_id:
-        raise HTTPException(status_code=400, detail="workspace_id required")
-    user_id = user.get("business_id", user["_id"])
+    channel_id = (data.get("channel_id") or data.get("channelId") or "").strip()
+    user_id_raw = data.get("user_id") or data.get("crm_user_id")
+    workspace_id = (data.get("workspace_id") or data.get("workspaceId") or os.environ.get("BIRD_WORKSPACE_ID", "") or "").strip()
+    if not channel_id or user_id_raw is None or user_id_raw == "":
+        raise HTTPException(status_code=400, detail="channel_id and user_id required")
+    from bird_service import normalize_crm_user_id
+
+    user_id = normalize_crm_user_id(user_id_raw)
     now = datetime.utcnow()
     await db.bird_connections.update_one(
-        {"workspace_id": workspace_id},
-        {"$set": {"user_id": user_id, "workspace_id": workspace_id, "updated_at": now}, "$setOnInsert": {"created_at": now}},
+        {"channel_id": channel_id},
+        {
+            "$set": {
+                "user_id": user_id,
+                "channel_id": channel_id,
+                "workspace_id": workspace_id,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
         upsert=True,
     )
-    logging.info(f"[Bird] workspace {workspace_id} linked to user {user_id}")
-    return {"status": "connected", "workspace_id": workspace_id}
+    logging.info(f"[Bird] provisioned channel {channel_id} -> user {user_id}")
+    return {"status": "ok", "channel_id": channel_id, "user_id": str(user_id)}
 
 
-@api_router.get("/bird/connections")
-async def bird_connections_get(user=Depends(get_current_user)):
-    user_id = user.get("business_id", user["_id"])
-    rows = await db.bird_connections.find({"user_id": user_id}).to_list(50)
-    return [
-        {"workspace_id": r.get("workspace_id", ""), "connected": True}
-        for r in rows
-    ]
-
-
-@api_router.delete("/bird/disconnect/{workspace_id}")
-async def bird_disconnect(workspace_id: str, user=Depends(get_current_user)):
-    user_id = user.get("business_id", user["_id"])
-    await db.bird_connections.delete_one({"user_id": user_id, "workspace_id": workspace_id})
-    return {"status": "disconnected", "workspace_id": workspace_id}
+@api_router.delete("/bird/provision-channel/{channel_id}")
+async def bird_unprovision_channel(channel_id: str, request: Request):
+    """Remove channel mapping (same secret as POST)."""
+    secret = request.headers.get("X-Bird-Provision-Secret", "").strip()
+    if not _BIRD_PROVISION_SECRET or secret != _BIRD_PROVISION_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Bird-Provision-Secret")
+    await db.bird_connections.delete_one({"channel_id": channel_id})
+    logging.info(f"[Bird] removed channel mapping {channel_id}")
+    return {"status": "removed", "channel_id": channel_id}
 
 
 import base64 as _b64
@@ -10928,7 +10941,7 @@ from bird_service import (
     verify_webhook_signature,
     extract_text_from_last_message,
     find_user_participant_id,
-    get_connection_by_workspace,
+    get_connection_for_inbound,
     get_user_for_bird,
     get_or_create_bird_customer,
     save_incoming_bird_message,
@@ -10991,7 +11004,11 @@ async def bird_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     try:
-        await db.bird_connections.create_index("workspace_id", unique=True)
+        await db.bird_connections.create_index(
+            "channel_id",
+            unique=True,
+            partialFilterExpression={"channel_id": {"$type": "string", "$ne": ""}},
+        )
     except Exception:
         pass
 
@@ -11013,18 +11030,22 @@ async def bird_webhook(request: Request):
         return {"status": "ok"}
 
     mid = (last.get("id") or "").strip()
+    channel_id = (payload.get("channelId") or "").strip()
     workspace_id = (
         (body.get("workspaceId") or body.get("workspace_id") or "").strip()
         or (payload.get("workspaceId") or "").strip()
         or os.environ.get("BIRD_WORKSPACE_ID", "").strip()
     )
     if not workspace_id:
-        logging.warning("[Bird] webhook missing workspaceId; set BIRD_WORKSPACE_ID or link workspace via POST /api/bird/connect")
+        logging.warning("[Bird] webhook missing workspaceId; set BIRD_WORKSPACE_ID on the server")
         return {"status": "ok"}
 
-    conn = await get_connection_by_workspace(db, workspace_id)
+    conn = await get_connection_for_inbound(db, workspace_id, channel_id)
     if not conn:
-        logging.warning(f"[Bird] No CRM user linked to workspace {workspace_id}; call POST /api/bird/connect")
+        logging.warning(
+            f"[Bird] No CRM mapping for channel_id={channel_id or '(none)'} workspace={workspace_id}; "
+            "provision with POST /api/bird/provision-channel"
+        )
         return {"status": "ok"}
 
     user = await get_user_for_bird(db, conn)
@@ -11033,7 +11054,6 @@ async def bird_webhook(request: Request):
         return {"status": "ok"}
 
     conversation_id = payload.get("id")
-    channel_id = (payload.get("channelId") or "").strip()
     user_pid = find_user_participant_id(payload)
     if (not user_pid) and conversation_id:
         full = await fetch_conversation(workspace_id, conversation_id)

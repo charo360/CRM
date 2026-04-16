@@ -6,8 +6,8 @@ import { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { metaApi, telegramApi, birdApi, type MetaConnection, type TelegramConnection, type BirdConnection } from "@/lib/api";
-import { Plug, Mail, Calendar, CheckCircle, Loader2, AlertCircle, MessageCircle } from "lucide-react";
+import { metaApi, telegramApi, type MetaConnection, type TelegramConnection } from "@/lib/api";
+import { Plug, Mail, Calendar, CheckCircle, Loader2, AlertCircle } from "lucide-react";
 
 function SlackGlyph({ className }: { className?: string }) {
   return (
@@ -137,110 +137,6 @@ function TelegramGlyph({ className }: { className?: string }) {
   );
 }
 
-function BirdConnectForm({ connections, onChange }: { connections: BirdConnection[]; onChange: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [workspaceId, setWorkspaceId] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleConnect() {
-    const w = workspaceId.trim();
-    if (!w) {
-      setError("Workspace ID required");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    try {
-      await birdApi.connect(w);
-      setOpen(false);
-      setWorkspaceId("");
-      onChange();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to link workspace");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleDisconnect(ws: string) {
-    if (!confirm("Unlink this Bird workspace? Inbound webhooks will stop mapping to your account.")) return;
-    try {
-      await birdApi.disconnect(ws);
-      onChange();
-    } catch {
-      alert("Failed to unlink");
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      {connections.length > 0 && (
-        <ul className="space-y-1.5">
-          {connections.map(c => (
-            <li
-              key={c.workspace_id}
-              className="flex items-center justify-between gap-2 rounded-lg border border-emerald-100 bg-white/80 px-2 py-1.5"
-            >
-              <span className="min-w-0 truncate font-mono text-[10px] text-emerald-900" title={c.workspace_id}>
-                {c.workspace_id.slice(0, 8)}…{c.workspace_id.slice(-6)}
-              </span>
-              <button
-                type="button"
-                onClick={() => handleDisconnect(c.workspace_id)}
-                className="shrink-0 rounded bg-red-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-red-700"
-              >
-                Unlink
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {!open ? (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="w-full rounded-lg bg-emerald-700 px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-emerald-800"
-        >
-          Link workspace
-        </button>
-      ) : (
-        <div className="space-y-1.5">
-          <input
-            className="w-full rounded border border-slate-200 px-2 py-1 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-emerald-500"
-            placeholder="Workspace UUID (Bird dashboard)"
-            value={workspaceId}
-            onChange={e => setWorkspaceId(e.target.value)}
-            autoComplete="off"
-          />
-          {error && <p className="text-[10px] text-red-600">{error}</p>}
-          <div className="flex gap-1.5">
-            <button
-              type="button"
-              onClick={handleConnect}
-              disabled={saving}
-              className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-            >
-              {saving && <Loader2 size={11} className="animate-spin" />}
-              Save
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                setError("");
-              }}
-              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function TelegramConnectForm({ connection, onConnected, onDisconnected }: {
   connection?: TelegramConnection;
   onConnected: () => void;
@@ -316,14 +212,12 @@ function TelegramConnectForm({ connection, onConnected, onDisconnected }: {
 
 export default function IntegrationsPage() {
   const [metaConns, setMetaConns] = useState<MetaConnection[]>([]);
-  const [birdConns, setBirdConns] = useState<BirdConnection[]>([]);
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const searchParams = useSearchParams();
 
   const refresh = useCallback(() => {
     metaApi.connections().then(setMetaConns).catch(() => {});
-    birdApi.connections().then(setBirdConns).catch(() => {});
     telegramApi.connection().then(setTgConn).catch(() => {});
   }, []);
 
@@ -416,26 +310,6 @@ export default function IntegrationsPage() {
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
           Log in with your Facebook account and select which Page to connect. No developer setup needed.
-        </p>
-      </section>
-
-      {/* Bird.com (Messenger / Instagram via Bird) */}
-      <section>
-        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Bird</h2>
-        <div className="grid gap-2.5 sm:grid-cols-2">
-          <SmallTile
-            title="Bird Conversations"
-            subtitle="Meta channels via Bird — webhook + AccessKey on server"
-            borderClass="border-emerald-200 bg-emerald-50/50"
-            icon={<MessageCircle className="h-5 w-5 text-emerald-700" />}
-          >
-            <BirdConnectForm connections={birdConns} onChange={refresh} />
-          </SmallTile>
-        </div>
-        <p className="mt-2 text-[11px] text-slate-500">
-          Paste your Bird <span className="font-medium text-slate-700">workspace ID</span>, then set the webhook in Bird to{" "}
-          <code className="rounded bg-slate-100 px-1 py-0.5 text-[10px]">POST …/webhook/bird</code> for conversations events.
-          Server needs <span className="font-medium text-slate-700">BIRD_API_KEY</span> in environment.
         </p>
       </section>
 

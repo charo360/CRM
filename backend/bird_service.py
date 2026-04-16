@@ -1,19 +1,23 @@
 """
 bird_service.py — Bird.com Conversations webhook + outbound messages (AccessKey API).
 
-Inbound: POST /webhook/bird — Bird sends conversation.created / conversation.updated
-        with lastMessage from type \"contact\" (see Bird Conversations API events).
+Inbound: POST /webhook/bird — conversation.created / conversation.updated
+        with lastMessage from type \"contact\".
 
-Store Bird workspace → CRM user in db.bird_connections:
-  { user_id, workspace_id, created_at, updated_at }
+Routing (db.bird_connections):
+  • Preferred: { channel_id, user_id, workspace_id? } — one Bird channel → one CRM business.
+    You provision via POST /api/bird/provision-channel with X-Bird-Provision-Secret (operator-only).
+  • Legacy: { workspace_id, user_id } with no channel_id — single-tenant workspace match.
+  • Env fallback: BIRD_WORKSPACE_ID + BIRD_DEFAULT_USER_ID when no DB row matches.
 
 Env:
-  BIRD_API_KEY            — AccessKey (required for send + optional fetch)
-  BIRD_WORKSPACE_ID       — default workspace UUID if webhook body omits it
-  BIRD_DEFAULT_USER_ID    — fallback CRM user _id (24-char hex) when using env workspace only
-  BIRD_WEBHOOK_SIGNING_KEY — if set, POST /webhook/bird verifies MessageBird signature headers
-  BIRD_WEBHOOK_PUBLIC_URL — full URL Bird uses when signing (must match subscription URL)
-  BIRD_API_BASE           — default https://api.bird.com
+  BIRD_API_KEY             — AccessKey (server only)
+  BIRD_WORKSPACE_ID        — default workspace UUID for API paths / webhook fallback
+  BIRD_DEFAULT_USER_ID     — optional single-tenant fallback (CRM user ObjectId hex)
+  BIRD_PROVISION_SECRET    — required on server to call /api/bird/provision-channel
+  BIRD_WEBHOOK_SIGNING_KEY — optional webhook HMAC
+  BIRD_WEBHOOK_PUBLIC_URL
+  BIRD_API_BASE
 """
 from __future__ import annotations
 
@@ -101,10 +105,39 @@ def _normalize_uid(raw) -> Any:
     return raw
 
 
-async def get_connection_by_workspace(db, workspace_id: str) -> Optional[Dict[str, Any]]:
-    conn = await db.bird_connections.find_one({"workspace_id": workspace_id})
-    if conn:
-        return conn
+def normalize_crm_user_id(raw) -> Any:
+    """CRM users._id from JSON (string ObjectId) or ObjectId."""
+    return _normalize_uid(raw)
+
+
+async def get_connection_for_inbound(
+    db,
+    workspace_id: str,
+    channel_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Resolve which CRM user owns this webhook.
+    1) Match Bird channel_id (multi-tenant, same workspace for all clients).
+    2) Else match workspace_id on a row with no channel_id (legacy / single business).
+    3) Else env BIRD_DEFAULT_USER_ID if workspace matches BIRD_WORKSPACE_ID.
+    """
+    if channel_id:
+        conn = await db.bird_connections.find_one({"channel_id": channel_id})
+        if conn:
+            return conn
+
+    if workspace_id:
+        conn = await db.bird_connections.find_one({
+            "workspace_id": workspace_id,
+            "$or": [
+                {"channel_id": {"$exists": False}},
+                {"channel_id": None},
+                {"channel_id": ""},
+            ],
+        })
+        if conn:
+            return conn
+
     if BIRD_WORKSPACE_ID and workspace_id == BIRD_WORKSPACE_ID:
         uid = os.environ.get("BIRD_DEFAULT_USER_ID", "").strip()
         if uid:
