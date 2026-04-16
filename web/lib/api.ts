@@ -562,6 +562,20 @@ export const metaApi = {
     api.get<{ url: string; redirect_uri: string }>(`/meta/oauth/start?channel=${channel}`),
 };
 
+export interface BirdConnection {
+  workspace_id: string;
+  connected: boolean;
+}
+
+/** Bird.com Conversations — link workspace UUID so webhooks map to this CRM user. */
+export const birdApi = {
+  connections: () => api.get<BirdConnection[]>("/bird/connections"),
+  connect: (workspace_id: string) =>
+    api.post<{ status: string; workspace_id: string }>("/bird/connect", { workspace_id }),
+  disconnect: (workspaceId: string) =>
+    api.delete<{ status: string; workspace_id: string }>(`/bird/disconnect/${encodeURIComponent(workspaceId)}`),
+};
+
 export const whatsappApi = {
   status: () => api.get<WhatsAppStatus>("/whatsapp/status"),
   connect: (phoneNumber: string) =>

@@ -10418,6 +10418,41 @@ async def disconnect_meta(channel: str, user=Depends(get_current_user)):
     return {"status": "disconnected", "channel": channel}
 
 
+# ── Bird.com (Conversations API) — link workspace to CRM user ─────────────────
+@api_router.post("/bird/connect")
+async def bird_connect(request: Request, user=Depends(get_current_user)):
+    data = await request.json()
+    workspace_id = (data.get("workspace_id") or data.get("workspaceId") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    user_id = user.get("business_id", user["_id"])
+    now = datetime.utcnow()
+    await db.bird_connections.update_one(
+        {"workspace_id": workspace_id},
+        {"$set": {"user_id": user_id, "workspace_id": workspace_id, "updated_at": now}, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+    logging.info(f"[Bird] workspace {workspace_id} linked to user {user_id}")
+    return {"status": "connected", "workspace_id": workspace_id}
+
+
+@api_router.get("/bird/connections")
+async def bird_connections_get(user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    rows = await db.bird_connections.find({"user_id": user_id}).to_list(50)
+    return [
+        {"workspace_id": r.get("workspace_id", ""), "connected": True}
+        for r in rows
+    ]
+
+
+@api_router.delete("/bird/disconnect/{workspace_id}")
+async def bird_disconnect(workspace_id: str, user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    await db.bird_connections.delete_one({"user_id": user_id, "workspace_id": workspace_id})
+    return {"status": "disconnected", "workspace_id": workspace_id}
+
+
 import base64 as _b64
 import json as _json2
 
@@ -10879,6 +10914,142 @@ async def instagram_webhook(request: Request):
 
             asyncio.create_task(_process_meta_message(user, customer, text, sender_id, "instagram", token))
 
+    return {"status": "ok"}
+
+
+# ============ BIRD.COM (Conversations) =========================================
+# Webhook URL (configure in Bird dashboard → Notifications → Webhook subscription):
+#   POST https://<BACKEND_PUBLIC_URL>/webhook/bird
+# Service: conversations — events: conversation.created, conversation.updated
+# Optional: set signingKey in Bird and BIRD_WEBHOOK_SIGNING_KEY + BIRD_WEBHOOK_PUBLIC_URL here.
+
+from bird_service import (
+    BIRD_WEBHOOK_SIGNING_KEY as _BIRD_SIGNING_KEY,
+    verify_webhook_signature,
+    extract_text_from_last_message,
+    find_user_participant_id,
+    get_connection_by_workspace,
+    get_user_for_bird,
+    get_or_create_bird_customer,
+    save_incoming_bird_message,
+    save_outgoing_bird_message,
+    send_conversation_message,
+    fetch_conversation,
+)
+
+
+async def _process_bird_message(
+    user: dict,
+    customer: dict,
+    text: str,
+    workspace_id: str,
+    conversation_id: str,
+    user_participant_id: str,
+):
+    from autoreply.engine import process_message as ar_process
+
+    user_id = user["_id"]
+
+    class _BirdSender:
+        async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", **kwargs):
+            ok = await send_conversation_message(workspace_id, conversation_id, user_participant_id, message)
+            if ok:
+                await save_outgoing_bird_message(db, user_id, customer["_id"], message)
+
+    try:
+        await ar_process(
+            db=db,
+            user=user,
+            customer=customer,
+            customer_id=customer["_id"],
+            message=text,
+            from_number=f"bird_{conversation_id}",
+            whatsapp_service=_BirdSender(),
+        )
+    except Exception as exc:
+        logging.error(f"[Bird] AutoReply error: {exc}", exc_info=True)
+        await send_conversation_message(
+            workspace_id,
+            conversation_id,
+            user_participant_id,
+            "Sorry, I'm having trouble right now. Please try again! 🙏",
+        )
+
+
+@app.post("/webhook/bird")
+async def bird_webhook(request: Request):
+    raw = await request.body()
+    verify_url = (os.environ.get("BIRD_WEBHOOK_PUBLIC_URL") or str(request.url)).strip()
+    sig = request.headers.get("messagebird-signature") or request.headers.get("Messagebird-Signature")
+    ts = request.headers.get("messagebird-request-timestamp") or request.headers.get("Messagebird-Request-Timestamp")
+    if _BIRD_SIGNING_KEY and not verify_webhook_signature(raw, sig, ts, verify_url):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    try:
+        await db.bird_connections.create_index("workspace_id", unique=True)
+    except Exception:
+        pass
+
+    if body.get("service") != "conversations":
+        return {"status": "ignored"}
+    if body.get("event") not in ("conversation.created", "conversation.updated"):
+        return {"status": "ignored"}
+
+    payload = body.get("payload") or {}
+    last = payload.get("lastMessage")
+    if not last:
+        return {"status": "ok"}
+    sender = last.get("sender") or {}
+    if sender.get("type") != "contact":
+        return {"status": "ok"}
+
+    text = extract_text_from_last_message(last)
+    if not text:
+        return {"status": "ok"}
+
+    mid = (last.get("id") or "").strip()
+    workspace_id = (
+        (body.get("workspaceId") or body.get("workspace_id") or "").strip()
+        or (payload.get("workspaceId") or "").strip()
+        or os.environ.get("BIRD_WORKSPACE_ID", "").strip()
+    )
+    if not workspace_id:
+        logging.warning("[Bird] webhook missing workspaceId; set BIRD_WORKSPACE_ID or link workspace via POST /api/bird/connect")
+        return {"status": "ok"}
+
+    conn = await get_connection_by_workspace(db, workspace_id)
+    if not conn:
+        logging.warning(f"[Bird] No CRM user linked to workspace {workspace_id}; call POST /api/bird/connect")
+        return {"status": "ok"}
+
+    user = await get_user_for_bird(db, conn)
+    if not user:
+        logging.warning("[Bird] Linked user record not found")
+        return {"status": "ok"}
+
+    conversation_id = payload.get("id")
+    channel_id = (payload.get("channelId") or "").strip()
+    user_pid = find_user_participant_id(payload)
+    if (not user_pid) and conversation_id:
+        full = await fetch_conversation(workspace_id, conversation_id)
+        if full:
+            user_pid = find_user_participant_id(full)
+
+    if not user_pid or not conversation_id:
+        logging.warning("[Bird] Missing conversation id or user participant (inbox user)")
+        return {"status": "ok"}
+
+    customer = await get_or_create_bird_customer(db, user["_id"], sender, channel_id)
+    await save_incoming_bird_message(db, user["_id"], customer["_id"], text, mid, channel_id)
+
+    asyncio.create_task(
+        _process_bird_message(user, customer, text, workspace_id, conversation_id, user_pid)
+    )
     return {"status": "ok"}
 
 
