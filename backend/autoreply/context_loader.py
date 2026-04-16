@@ -74,7 +74,8 @@ async def load_context(db, user_id, customer_id, user: dict) -> dict:
     messages = await _load_messages(db, user_id, customer_id)
     mini_state = await _load_mini_state(db, user_id, customer_id)
     settings = user.get("settings", {}) or {}
-    business_type = (settings.get("business_type") or user.get("business_type", "retail")).lower()
+    bk_type = (user.get("business_knowledge") or {}).get("business_type", "")
+    business_type = (settings.get("business_type") or user.get("business_type") or bk_type or "retail").lower()
 
     # Always load products — all businesses add their catalog via ProductCatalogModal → db.products
     products = await _load_products(db, user_id)

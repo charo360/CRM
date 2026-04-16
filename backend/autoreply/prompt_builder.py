@@ -2834,7 +2834,9 @@ def build_system_prompt(
     parts.append(f"You are the WhatsApp assistant for *{name}*.")
     if bc.get("about"):
         parts.append(f"About: {_cap(bc['about'], 200)}")
-    if bc.get("products_services"):
+    # Only show free-text products_services description when there's no structured catalog.
+    # If a catalog exists, the catalog IS the source of truth — stale text can list deleted items.
+    if bc.get("products_services") and not products and not services:
         parts.append(f"What we sell/offer: {_cap(bc['products_services'], 150)}")
 
     # ── Operating details ──
