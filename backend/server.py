@@ -10376,6 +10376,48 @@ async def send_booking_reminder(booking_id: str, user=Depends(get_current_user))
         raise HTTPException(status_code=500, detail=f"Failed to send reminder: {str(e)}")
     return {"success": True, "sent_at": datetime.utcnow().isoformat()}
 
+
+# ── API: Connect a Facebook Page / Instagram account ──────────────────────────
+# NOTE: these must be registered on api_router BEFORE app.include_router(api_router)
+
+@api_router.post("/meta/connect")
+async def connect_meta_page(request: Request, user=Depends(get_current_user)):
+    data = await request.json()
+    page_id = data.get("page_id", "").strip()
+    token   = data.get("page_access_token", "").strip()
+    channel = data.get("channel", "messenger")
+    ig_id   = data.get("instagram_id", "").strip()
+    if not page_id or not token:
+        raise HTTPException(status_code=400, detail="page_id and page_access_token required")
+    user_id = user.get("business_id", user["_id"])
+    now = datetime.utcnow()
+    await db.meta_connections.update_one(
+        {"user_id": user_id, "channel": channel},
+        {"$set": {
+            "user_id": user_id, "page_id": page_id,
+            "instagram_id": ig_id or page_id,
+            "page_access_token": token, "channel": channel, "updated_at": now,
+        }, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+    logging.info(f"[Meta] {channel} connected for user {user_id} page {page_id}")
+    return {"status": "connected", "channel": channel, "page_id": page_id}
+
+
+@api_router.get("/meta/connections")
+async def get_meta_connections(user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    conns = await db.meta_connections.find({"user_id": user_id}).to_list(10)
+    return [{"channel": c["channel"], "page_id": c.get("page_id", ""), "connected": True} for c in conns]
+
+
+@api_router.delete("/meta/disconnect/{channel}")
+async def disconnect_meta(channel: str, user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    await db.meta_connections.delete_one({"user_id": user_id, "channel": channel})
+    return {"status": "disconnected", "channel": channel}
+
+
 app.include_router(api_router)
 
 
@@ -10552,65 +10594,6 @@ async def instagram_webhook(request: Request):
             asyncio.create_task(_process_meta_message(user, customer, text, sender_id, "instagram", token))
 
     return {"status": "ok"}
-
-
-# ── API: Connect a Facebook Page / Instagram account ──────────────────────────
-
-@api_router.post("/meta/connect")
-async def connect_meta_page(request: Request, user=Depends(get_current_user)):
-    """
-    Store a Page Access Token for Messenger or Instagram.
-    Body: { page_id, page_access_token, channel: "messenger"|"instagram", instagram_id? }
-    """
-    data = await request.json()
-    page_id    = data.get("page_id", "").strip()
-    token      = data.get("page_access_token", "").strip()
-    channel    = data.get("channel", "messenger")
-    ig_id      = data.get("instagram_id", "").strip()
-
-    if not page_id or not token:
-        raise HTTPException(status_code=400, detail="page_id and page_access_token required")
-
-    user_id = user.get("business_id", user["_id"])
-    now = datetime.utcnow()
-
-    await db.meta_connections.update_one(
-        {"user_id": user_id, "channel": channel},
-        {"$set": {
-            "user_id":           user_id,
-            "page_id":           page_id,
-            "instagram_id":      ig_id or page_id,
-            "page_access_token": token,
-            "channel":           channel,
-            "updated_at":        now,
-        }, "$setOnInsert": {"created_at": now}},
-        upsert=True,
-    )
-    logging.info(f"[Meta] {channel} connected for user {user_id} page {page_id}")
-    return {"status": "connected", "channel": channel, "page_id": page_id}
-
-
-@api_router.get("/meta/connections")
-async def get_meta_connections(user=Depends(get_current_user)):
-    """Return which Meta channels this user has connected."""
-    user_id = user.get("business_id", user["_id"])
-    conns = await db.meta_connections.find({"user_id": user_id}).to_list(10)
-    return [
-        {
-            "channel":  c["channel"],
-            "page_id":  c.get("page_id", ""),
-            "connected": True,
-        }
-        for c in conns
-    ]
-
-
-@api_router.delete("/meta/disconnect/{channel}")
-async def disconnect_meta(channel: str, user=Depends(get_current_user)):
-    """Remove a Meta channel connection."""
-    user_id = user.get("business_id", user["_id"])
-    await db.meta_connections.delete_one({"user_id": user_id, "channel": channel})
-    return {"status": "disconnected", "channel": channel}
 
 
 @app.on_event("shutdown")
