@@ -14,7 +14,8 @@ Env:
   BIRD_API_KEY             — AccessKey (server only)
   BIRD_WORKSPACE_ID        — default workspace UUID for API paths / webhook fallback
   BIRD_DEFAULT_USER_ID     — optional single-tenant fallback (CRM user ObjectId hex)
-  BIRD_PROVISION_SECRET    — required on server to call /api/bird/provision-channel
+  OPERATOR_PROVISION_SECRET — required for /api/bird/provision-channel and /api/telegram/provision-bot
+                            (fallback: BIRD_PROVISION_SECRET)
   BIRD_WEBHOOK_SIGNING_KEY — optional webhook HMAC
   BIRD_WEBHOOK_PUBLIC_URL
   BIRD_API_BASE

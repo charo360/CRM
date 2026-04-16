@@ -94,7 +94,7 @@ function MetaConnectForm({ channel, connection, onDisconnected }: MetaConnectFor
       <div className="space-y-2">
         <div className="flex items-center gap-1.5 text-green-700 text-xs font-medium">
           <CheckCircle size={13} />
-          Connected · Page {connection.page_id}
+          Connected
         </div>
         <button
           onClick={handleDisconnect}
@@ -123,7 +123,7 @@ function MetaConnectForm({ channel, connection, onDisconnected }: MetaConnectFor
             <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
           </svg>
         )}
-        {loading ? "Redirecting…" : `Connect with ${isInstagram ? "Instagram" : "Facebook"}`}
+        {loading ? "Redirecting…" : isInstagram ? "Connect Instagram" : "Connect Messenger"}
       </button>
     </div>
   );
@@ -137,76 +137,22 @@ function TelegramGlyph({ className }: { className?: string }) {
   );
 }
 
-function TelegramConnectForm({ connection, onConnected, onDisconnected }: {
-  connection?: TelegramConnection;
-  onConnected: () => void;
-  onDisconnected: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [token, setToken] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleConnect() {
-    if (!token.trim()) { setError("Bot token required"); return; }
-    setSaving(true); setError("");
-    try {
-      await telegramApi.connect(token.trim());
-      setOpen(false); setToken("");
-      onConnected();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to connect");
-    } finally { setSaving(false); }
-  }
-
-  async function handleDisconnect() {
-    if (!confirm("Disconnect Telegram bot? Auto-replies will stop.")) return;
-    try { await telegramApi.disconnect(); onDisconnected(); }
-    catch { alert("Failed to disconnect"); }
-  }
-
-  if (connection?.connected) {
+function TelegramStatus({ connection }: { connection?: TelegramConnection }) {
+  if (connection?.connected && connection.bot_username) {
     return (
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <div className="flex items-center gap-1.5 text-green-700 text-xs font-medium">
           <CheckCircle size={13} />
-          @{connection.bot_username} connected
+          @{connection.bot_username}
         </div>
-        <button onClick={handleDisconnect} className="w-full rounded-lg bg-red-600 px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-red-700">
-          Disconnect
-        </button>
+        <p className="text-[10px] leading-snug text-slate-500">Telegram is active for your account.</p>
       </div>
     );
   }
-
   return (
-    <div className="space-y-2">
-      {!open ? (
-        <button onClick={() => setOpen(true)} className="w-full rounded-lg bg-[#229ED9] px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-[#1a8abf]">
-          Connect
-        </button>
-      ) : (
-        <div className="space-y-1.5">
-          <input
-            className="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400"
-            placeholder="Bot token from @BotFather"
-            value={token}
-            onChange={e => setToken(e.target.value)}
-            type="password"
-          />
-          {error && <p className="text-[10px] text-red-600">{error}</p>}
-          <div className="flex gap-1.5">
-            <button onClick={handleConnect} disabled={saving} className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
-              {saving && <Loader2 size={11} className="animate-spin" />}
-              Save
-            </button>
-            <button onClick={() => { setOpen(false); setError(""); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50">
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+    <p className="text-[11px] leading-relaxed text-slate-600">
+      Not connected yet. If Telegram is included in your plan, your account team will enable it — you don&apos;t need tokens or setup here.
+    </p>
   );
 }
 
@@ -259,7 +205,7 @@ export default function IntegrationsPage() {
         </div>
         <h1 className="text-xl font-bold text-slate-900">Integrations</h1>
         <p className="mt-1 text-xs leading-relaxed text-slate-500 sm:text-sm">
-          Connect messaging channels and productivity tools to your CRM.
+          Connect Facebook, Instagram, and email tools in a few taps. Anything that needs backend setup is handled for you.
         </p>
       </div>
 
@@ -284,7 +230,7 @@ export default function IntegrationsPage() {
         <div className="grid gap-2.5 sm:grid-cols-2">
           <SmallTile
             title="Messenger"
-            subtitle="Facebook Page DMs → auto-reply"
+            subtitle="Facebook Page — tap Connect and sign in"
             borderClass="border-[#0084ff]/20 bg-blue-50/50"
             icon={<MessengerGlyph className="h-5 w-5 text-[#0084ff]" />}
           >
@@ -296,8 +242,8 @@ export default function IntegrationsPage() {
           </SmallTile>
 
           <SmallTile
-            title="Instagram DMs"
-            subtitle="Instagram Business DMs → auto-reply"
+            title="Instagram"
+            subtitle="Business inbox — tap Connect and sign in"
             borderClass="border-pink-200 bg-pink-50/50"
             icon={<InstagramGlyph className="h-5 w-5 text-pink-600" />}
           >
@@ -309,7 +255,7 @@ export default function IntegrationsPage() {
           </SmallTile>
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          Log in with your Facebook account and select which Page to connect. No developer setup needed.
+          Use your normal Meta login. We don&apos;t show technical IDs or developer options here.
         </p>
       </section>
 
@@ -318,22 +264,14 @@ export default function IntegrationsPage() {
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Telegram</h2>
         <div className="grid gap-2.5 sm:grid-cols-2">
           <SmallTile
-            title="Telegram Bot"
-            subtitle="@Zilocrmbot → auto-reply"
+            title="Telegram"
+            subtitle="Bot messaging (set up by your team)"
             borderClass="border-[#229ED9]/20 bg-sky-50/50"
             icon={<TelegramGlyph className="h-5 w-5 text-[#229ED9]" />}
           >
-            <TelegramConnectForm
-              connection={tgConn}
-              onConnected={refresh}
-              onDisconnected={refresh}
-            />
+            <TelegramStatus connection={tgConn} />
           </SmallTile>
         </div>
-        <p className="mt-2 text-[11px] text-slate-500">
-          Get your bot token from <span className="font-medium text-slate-700">@BotFather</span> on Telegram → /newbot.
-          No approval needed.
-        </p>
       </section>
 
       {/* Slack · Email · Calendar */}
@@ -342,7 +280,7 @@ export default function IntegrationsPage() {
         <div className="grid gap-2.5 sm:grid-cols-3">
           <SmallTile
             title="Slack"
-            subtitle="Workspace alerts & threads"
+            subtitle="Sign in to your workspace"
             borderClass="border-slate-200 bg-slate-50/80"
             icon={<SlackGlyph className="h-5 w-5 text-[#4A154B]" />}
           >
@@ -357,7 +295,7 @@ export default function IntegrationsPage() {
 
           <SmallTile
             title="Email"
-            subtitle="Gmail / Outlook via Nango"
+            subtitle="Gmail or Outlook — one sign-in"
             borderClass="border-slate-200 bg-slate-50/80"
             icon={<Mail size={18} className="text-slate-600" />}
           >
@@ -372,7 +310,7 @@ export default function IntegrationsPage() {
 
           <SmallTile
             title="Calendar"
-            subtitle="Google / Microsoft"
+            subtitle="Google or Microsoft — one sign-in"
             borderClass="border-slate-200 bg-slate-50/80"
             icon={<Calendar size={18} className="text-emerald-600" />}
           >
@@ -388,11 +326,11 @@ export default function IntegrationsPage() {
       </section>
 
       <section className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[11px] leading-relaxed text-slate-600">
-        <strong className="text-slate-800">WhatsApp</strong> is under{" "}
+        <strong className="text-slate-800">WhatsApp</strong>: open{" "}
         <Link href="/dashboard/whatsapp" className="font-medium text-indigo-600 hover:underline">
           Business → WhatsApp
-        </Link>
-        . Team &amp; shop settings live in{" "}
+        </Link>{" "}
+        to pair your number — same idea, guided steps only. Team and shop options are in{" "}
         <Link href="/dashboard/settings" className="font-medium text-indigo-600 hover:underline">
           Settings
         </Link>

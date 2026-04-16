@@ -10418,16 +10418,32 @@ async def disconnect_meta(channel: str, user=Depends(get_current_user)):
     return {"status": "disconnected", "channel": channel}
 
 
+def _operator_provision_secret() -> str:
+    """Single secret for operator-only provisioning (Bird, Telegram bot, etc.)."""
+    return (os.environ.get("OPERATOR_PROVISION_SECRET") or os.environ.get("BIRD_PROVISION_SECRET") or "").strip()
+
+
+def _require_operator_secret(request: Request) -> None:
+    expected = _operator_provision_secret()
+    got = (
+        request.headers.get("X-Operator-Provision-Secret")
+        or request.headers.get("X-Bird-Provision-Secret")
+        or ""
+    ).strip()
+    if not expected or got != expected:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing X-Operator-Provision-Secret",
+        )
+
+
 # ── Bird.com — operator-only: map Bird channel → CRM user (clients never configure Bird) ──
-_BIRD_PROVISION_SECRET = os.environ.get("BIRD_PROVISION_SECRET", "").strip()
 
 
 @api_router.post("/bird/provision-channel")
 async def bird_provision_channel(request: Request):
-    """Map a Bird channel UUID to a CRM user. Requires header X-Bird-Provision-Secret matching BIRD_PROVISION_SECRET."""
-    secret = request.headers.get("X-Bird-Provision-Secret", "").strip()
-    if not _BIRD_PROVISION_SECRET or secret != _BIRD_PROVISION_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Bird-Provision-Secret")
+    """Map a Bird channel UUID to a CRM user. Header: X-Operator-Provision-Secret (or legacy X-Bird-Provision-Secret)."""
+    _require_operator_secret(request)
     data = await request.json()
     channel_id = (data.get("channel_id") or data.get("channelId") or "").strip()
     user_id_raw = data.get("user_id") or data.get("crm_user_id")
@@ -10458,9 +10474,7 @@ async def bird_provision_channel(request: Request):
 @api_router.delete("/bird/provision-channel/{channel_id}")
 async def bird_unprovision_channel(channel_id: str, request: Request):
     """Remove channel mapping (same secret as POST)."""
-    secret = request.headers.get("X-Bird-Provision-Secret", "").strip()
-    if not _BIRD_PROVISION_SECRET or secret != _BIRD_PROVISION_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Bird-Provision-Secret")
+    _require_operator_secret(request)
     await db.bird_connections.delete_one({"channel_id": channel_id})
     logging.info(f"[Bird] removed channel mapping {channel_id}")
     return {"status": "removed", "channel_id": channel_id}
@@ -10513,43 +10527,65 @@ async def meta_oauth_start(channel: str = "messenger", user=Depends(get_current_
     return {"url": fb_url, "redirect_uri": redirect_uri}
 
 
-# ── Telegram API routes (must be before include_router) ───────────────────────
+# ── Telegram — operator provisions bot; clients only see status (read-only GET) ───────────
 
-@api_router.post("/telegram/connect")
-async def connect_telegram(request: Request, user=Depends(get_current_user)):
-    """Connect a Telegram bot token to this CRM account."""
+
+@api_router.post("/telegram/provision-bot")
+async def telegram_provision_bot(request: Request):
+    """Attach a bot token to a CRM user. Same header as Bird: X-Operator-Provision-Secret."""
+    _require_operator_secret(request)
     from telegram_service import get_bot_info, set_telegram_webhook
+    from bird_service import normalize_crm_user_id
+
     data = await request.json()
     bot_token = data.get("bot_token", "").strip()
-    if not bot_token:
-        raise HTTPException(status_code=400, detail="bot_token required")
+    user_id_raw = data.get("user_id") or data.get("crm_user_id")
+    if not bot_token or user_id_raw is None or user_id_raw == "":
+        raise HTTPException(status_code=400, detail="bot_token and user_id required")
 
-    # Verify token is valid
     bot_info = await get_bot_info(bot_token)
     if not bot_info:
-        raise HTTPException(status_code=400, detail="Invalid bot token — check and try again")
+        raise HTTPException(status_code=400, detail="Invalid bot token")
 
-    user_id = user.get("business_id", user["_id"])
+    user_id = normalize_crm_user_id(user_id_raw)
     now = datetime.utcnow()
     bot_username = bot_info.get("username", "")
 
-    # Register webhook with Telegram
     backend_url = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
     webhook_url = f"{backend_url}/webhook/telegram/{bot_token}"
     await set_telegram_webhook(bot_token, webhook_url)
 
     await db.telegram_connections.update_one(
         {"user_id": user_id},
-        {"$set": {
-            "user_id":      user_id,
-            "bot_token":    bot_token,
-            "bot_username": bot_username,
-            "updated_at":   now,
-        }, "$setOnInsert": {"created_at": now}},
+        {
+            "$set": {
+                "user_id": user_id,
+                "bot_token": bot_token,
+                "bot_username": bot_username,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
         upsert=True,
     )
-    logging.info(f"[Telegram] @{bot_username} connected for user {user_id}")
-    return {"status": "connected", "bot_username": bot_username}
+    logging.info(f"[Telegram] provisioned @{bot_username} for user {user_id}")
+    return {"status": "connected", "bot_username": bot_username, "user_id": str(user_id)}
+
+
+@api_router.delete("/telegram/provision-bot/{user_id}")
+async def telegram_unprovision_bot(user_id: str, request: Request):
+    """Remove Telegram bot for a CRM user (operator only). user_id = Mongo ObjectId hex."""
+    _require_operator_secret(request)
+    from bird_service import normalize_crm_user_id
+    from telegram_service import delete_telegram_webhook
+
+    uid = normalize_crm_user_id(user_id)
+    conn = await db.telegram_connections.find_one({"user_id": uid})
+    if conn:
+        await delete_telegram_webhook(conn["bot_token"])
+        await db.telegram_connections.delete_one({"user_id": uid})
+    logging.info(f"[Telegram] removed bot for user {uid}")
+    return {"status": "disconnected", "user_id": user_id}
 
 
 @api_router.get("/telegram/connection")
@@ -10559,17 +10595,6 @@ async def get_telegram_connection(user=Depends(get_current_user)):
     if not conn:
         return {"connected": False}
     return {"connected": True, "bot_username": conn.get("bot_username", "")}
-
-
-@api_router.delete("/telegram/disconnect")
-async def disconnect_telegram(user=Depends(get_current_user)):
-    from telegram_service import delete_telegram_webhook
-    user_id = user.get("business_id", user["_id"])
-    conn = await db.telegram_connections.find_one({"user_id": user_id})
-    if conn:
-        await delete_telegram_webhook(conn["bot_token"])
-        await db.telegram_connections.delete_one({"user_id": user_id})
-    return {"status": "disconnected"}
 
 
 app.include_router(api_router)
