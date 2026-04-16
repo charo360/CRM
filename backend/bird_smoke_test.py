@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Smoke-test Bird AccessKey: GET /me (auth), GET channels (needs BIRD_WORKSPACE_ID).
+Smoke-test Bird AccessKey:
+  - GET /me (auth probe)
+  - GET /workspaces/{id}/channels
+  - GET /workspaces/{id}/conversations?limit=3
 
 Usage (from CRM/backend):
   python bird_smoke_test.py
 
 Requires in .env / .env.local:
   BIRD_API_KEY
-  BIRD_WORKSPACE_ID  — optional; if set, also lists channels for that workspace.
+  BIRD_WORKSPACE_ID  — required for channels + conversations checks
 """
 from __future__ import annotations
 
@@ -66,11 +69,23 @@ def main() -> int:
     print(f"GET /workspaces/.../channels -> HTTP {s2}")
     try:
         data = json.loads(body2)
-        print("results:", len(data.get("results") or data.get("items") or []))
+        print("channels count:", len(data.get("results") or data.get("items") or []))
         print(json.dumps(data, indent=2)[:2000])
     except json.JSONDecodeError:
         print(body2[:800])
-    return 0 if s2 == 200 else 1
+    if s2 != 200:
+        return 1
+
+    s3, body3 = get(f"/workspaces/{ws}/conversations?limit=3")
+    print(f"GET /workspaces/.../conversations -> HTTP {s3}")
+    try:
+        cdata = json.loads(body3)
+        conv = cdata.get("results") or cdata.get("items") or []
+        print("conversations count:", len(conv))
+        print(json.dumps(cdata, indent=2)[:2500])
+    except json.JSONDecodeError:
+        print(body3[:800])
+    return 0 if s3 == 200 else 1
 
 
 if __name__ == "__main__":
