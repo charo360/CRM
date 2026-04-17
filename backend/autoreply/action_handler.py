@@ -65,6 +65,8 @@ async def execute_actions(
                 await _notify_owner(db, action, customer_id)
             elif atype == "clear_flow":
                 pass  # handled by engine after all actions
+            elif atype in ("send_product_image", "send_catalog_images"):
+                pass  # handled by engine.py via whatsapp_service.send_message
             else:
                 logger.warning(f"[ActionHandler] Unknown action type: '{atype}' — skipped")
         except Exception as exc:

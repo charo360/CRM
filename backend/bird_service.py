@@ -302,34 +302,30 @@ async def send_channel_message(
         backend_base = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
         media_url = backend_base + media_url
 
-    if media_url:
-        body: Dict[str, Any] = {
-            "type": "image",
-            "image": {"url": media_url},
-        }
-        if text:
-            body["image"]["caption"] = text[:1000]
-    else:
-        body = {"type": "text", "text": {"text": text[:4000]}}
-
+    receiver = {"contacts": [{"identifierKey": identifier_key, "identifierValue": identifier_value}]}
     url = f"{BIRD_API_BASE}/workspaces/{workspace_id}/channels/{channel_id}/messages"
-    payload = {
-        "receiver": {
-            "contacts": [{"identifierKey": identifier_key, "identifierValue": identifier_value}]
-        },
-        "body": body,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(url, json=payload, headers=_auth_headers())
-        if resp.status_code not in (200, 201, 202):
-            logger.error(f"[Bird] channel send failed {resp.status_code}: {resp.text[:300]}")
+
+    async def _post(body: Dict[str, Any]) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(url, json={"receiver": receiver, "body": body}, headers=_auth_headers())
+            if resp.status_code not in (200, 201, 202):
+                logger.error(f"[Bird] channel send failed {resp.status_code}: {resp.text[:300]}")
+                return False
+            logger.info(f"[Bird] channel message sent via {channel_id} (HTTP {resp.status_code})")
+            return True
+        except Exception as exc:
+            logger.error(f"[Bird] channel send error: {exc}")
             return False
-        logger.info(f"[Bird] channel message sent via {channel_id} (HTTP {resp.status_code})")
-        return True
-    except Exception as exc:
-        logger.error(f"[Bird] channel send error: {exc}")
-        return False
+
+    if media_url:
+        # Instagram/Messenger don't support caption on image — send image then text separately
+        ok = await _post({"type": "image", "image": {"url": media_url}})
+        if text and ok:
+            await _post({"type": "text", "text": {"text": text[:4000]}})
+        return ok
+    else:
+        return await _post({"type": "text", "text": {"text": text[:4000]}})
 
 
 async def send_conversation_message(
