@@ -10971,6 +10971,7 @@ from bird_service import (
     get_or_create_bird_customer,
     save_incoming_bird_message,
     save_outgoing_bird_message,
+    send_channel_message,
     send_conversation_message,
     fetch_conversation,
     fetch_conversation_participants,
@@ -10988,10 +10989,18 @@ async def _process_bird_message(
     from autoreply.engine import process_message as ar_process
 
     user_id = user["_id"]
+    bird_contact = customer.get("bird_contact") or {}
+    identifier_key = bird_contact.get("identifierKey", "")
+    identifier_value = bird_contact.get("identifierValue") or bird_contact.get("platformAddress", "")
+    channel_id = customer.get("bird_channel_id", "")
 
     class _BirdSender:
         async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", **kwargs):
-            ok = await send_conversation_message(workspace_id, conversation_id, user_participant_id, message)
+            ok = False
+            if channel_id and identifier_key and identifier_value:
+                ok = await send_channel_message(workspace_id, channel_id, identifier_key, identifier_value, message)
+            if not ok:
+                ok = await send_conversation_message(workspace_id, conversation_id, user_participant_id, message)
             if ok:
                 await save_outgoing_bird_message(db, user_id, customer["_id"], message)
 

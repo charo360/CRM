@@ -283,6 +283,37 @@ async def save_outgoing_bird_message(db, user_id, customer_id, text: str) -> Non
     })
 
 
+async def send_channel_message(
+    workspace_id: str,
+    channel_id: str,
+    identifier_key: str,
+    identifier_value: str,
+    text: str,
+) -> bool:
+    """Send a message directly via a Bird channel to a contact by identifier."""
+    if not BIRD_API_KEY:
+        logger.error("[Bird] BIRD_API_KEY not set")
+        return False
+    url = f"{BIRD_API_BASE}/workspaces/{workspace_id}/channels/{channel_id}/messages"
+    payload = {
+        "receiver": {
+            "contacts": [{"identifierKey": identifier_key, "identifierValue": identifier_value}]
+        },
+        "body": {"type": "text", "text": {"text": text[:4000]}},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(url, json=payload, headers=_auth_headers())
+        if resp.status_code not in (200, 201):
+            logger.error(f"[Bird] channel send failed {resp.status_code}: {resp.text[:300]}")
+            return False
+        logger.info(f"[Bird] channel message sent via {channel_id}")
+        return True
+    except Exception as exc:
+        logger.error(f"[Bird] channel send error: {exc}")
+        return False
+
+
 async def send_conversation_message(
     workspace_id: str,
     conversation_id: str,
