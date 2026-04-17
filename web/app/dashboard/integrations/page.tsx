@@ -33,6 +33,18 @@ function InstagramGlyph({ className }: { className?: string }) {
   );
 }
 
+/** Set NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=true to show legacy “Connect with Facebook” OAuth instead of Bird. */
+const SHOW_DIRECT_META_OAUTH = process.env.NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH === "true";
+
+function MetaMessengerInstagramBirdIcons() {
+  return (
+    <div className="flex items-center justify-center gap-0.5">
+      <MessengerGlyph className="h-5 w-5 text-[#0084ff]" />
+      <InstagramGlyph className="h-5 w-5 text-pink-600" />
+    </div>
+  );
+}
+
 type SmallTileProps = {
   icon: ReactNode;
   title: string;
@@ -163,7 +175,9 @@ export default function IntegrationsPage() {
   const searchParams = useSearchParams();
 
   const refresh = useCallback(() => {
-    metaApi.connections().then(setMetaConns).catch(() => {});
+    if (SHOW_DIRECT_META_OAUTH) {
+      metaApi.connections().then(setMetaConns).catch(() => {});
+    }
     telegramApi.connection().then(setTgConn).catch(() => {});
   }, []);
 
@@ -205,7 +219,7 @@ export default function IntegrationsPage() {
         </div>
         <h1 className="text-xl font-bold text-slate-900">Integrations</h1>
         <p className="mt-1 text-xs leading-relaxed text-slate-500 sm:text-sm">
-          Connect Facebook, Instagram, and email tools in a few taps. Anything that needs backend setup is handled for you.
+          Messenger and Instagram run through Bird; email and calendar use one-tap sign-in. Your team handles anything technical.
         </p>
       </div>
 
@@ -224,39 +238,68 @@ export default function IntegrationsPage() {
         </div>
       )}
 
-      {/* Meta Channels */}
+      {/* Messenger + Instagram: Bird (default) or direct Meta OAuth (opt-in) */}
       <section>
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Messenger · Instagram</h2>
-        <div className="grid gap-2.5 sm:grid-cols-2">
-          <SmallTile
-            title="Messenger"
-            subtitle="Facebook Page — tap Connect and sign in"
-            borderClass="border-[#0084ff]/20 bg-blue-50/50"
-            icon={<MessengerGlyph className="h-5 w-5 text-[#0084ff]" />}
-          >
-            <MetaConnectForm
-              channel="messenger"
-              connection={getConn("messenger")}
-              onDisconnected={refresh}
-            />
-          </SmallTile>
+        {SHOW_DIRECT_META_OAUTH ? (
+          <>
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <SmallTile
+                title="Messenger"
+                subtitle="Facebook Page — tap Connect and sign in"
+                borderClass="border-[#0084ff]/20 bg-blue-50/50"
+                icon={<MessengerGlyph className="h-5 w-5 text-[#0084ff]" />}
+              >
+                <MetaConnectForm
+                  channel="messenger"
+                  connection={getConn("messenger")}
+                  onDisconnected={refresh}
+                />
+              </SmallTile>
 
-          <SmallTile
-            title="Instagram"
-            subtitle="Business inbox — tap Connect and sign in"
-            borderClass="border-pink-200 bg-pink-50/50"
-            icon={<InstagramGlyph className="h-5 w-5 text-pink-600" />}
-          >
-            <MetaConnectForm
-              channel="instagram"
-              connection={getConn("instagram")}
-              onDisconnected={refresh}
-            />
-          </SmallTile>
-        </div>
-        <p className="mt-2 text-[11px] text-slate-500">
-          Use your normal Meta login. We don&apos;t show technical IDs or developer options here.
-        </p>
+              <SmallTile
+                title="Instagram"
+                subtitle="Business inbox — tap Connect and sign in"
+                borderClass="border-pink-200 bg-pink-50/50"
+                icon={<InstagramGlyph className="h-5 w-5 text-pink-600" />}
+              >
+                <MetaConnectForm
+                  channel="instagram"
+                  connection={getConn("instagram")}
+                  onDisconnected={refresh}
+                />
+              </SmallTile>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              Direct Meta login (legacy). Prefer Bird? Set NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=false.
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="grid gap-2.5 sm:grid-cols-1">
+              <SmallTile
+                title="Messenger & Instagram"
+                subtitle="Facebook Page + Instagram DMs via Bird"
+                borderClass="border-emerald-200 bg-emerald-50/50"
+                icon={<MetaMessengerInstagramBirdIcons />}
+              >
+                <p className="text-[11px] leading-relaxed text-slate-600">
+                  Your Facebook Page and Instagram inbox are connected inside <span className="font-medium text-slate-800">Bird</span>. Your
+                  account team adds those channels in Bird and maps each Bird channel ID to your CRM — no Meta login on this screen.
+                  Inbound DMs hit our webhook and auto-replies go back through Bird.
+                </p>
+              </SmallTile>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              WhatsApp stays on{" "}
+              <Link href="/dashboard/whatsapp" className="font-medium text-indigo-600 hover:underline">
+                Business → WhatsApp
+              </Link>{" "}
+              (Evolution). To use the old “Connect with Facebook” flow here instead, set{" "}
+              <code className="rounded bg-slate-100 px-1 py-0.5 text-[10px]">NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=true</code>.
+            </p>
+          </>
+        )}
       </section>
 
       {/* Telegram */}
