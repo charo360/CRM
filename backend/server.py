@@ -10995,10 +10995,10 @@ async def _process_bird_message(
     channel_id = customer.get("bird_channel_id", "")
 
     class _BirdSender:
-        async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", **kwargs):
+        async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", media_url=None, media_type="image", **kwargs):
             ok = False
             if channel_id and identifier_key and identifier_value:
-                ok = await send_channel_message(workspace_id, channel_id, identifier_key, identifier_value, message)
+                ok = await send_channel_message(workspace_id, channel_id, identifier_key, identifier_value, message, media_url=media_url, media_type=media_type)
             if not ok:
                 ok = await send_conversation_message(workspace_id, conversation_id, user_participant_id, message)
             if ok:

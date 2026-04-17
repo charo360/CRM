@@ -289,17 +289,35 @@ async def send_channel_message(
     identifier_key: str,
     identifier_value: str,
     text: str,
+    media_url: Optional[str] = None,
+    media_type: str = "image",
 ) -> bool:
-    """Send a message directly via a Bird channel to a contact by identifier."""
+    """Send a text or image message via a Bird channel to a contact by identifier."""
     if not BIRD_API_KEY:
         logger.error("[Bird] BIRD_API_KEY not set")
         return False
+
+    # Resolve relative URLs to absolute
+    if media_url and media_url.startswith("/"):
+        backend_base = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+        media_url = backend_base + media_url
+
+    if media_url:
+        body: Dict[str, Any] = {
+            "type": "image",
+            "image": {"url": media_url},
+        }
+        if text:
+            body["image"]["caption"] = text[:1000]
+    else:
+        body = {"type": "text", "text": {"text": text[:4000]}}
+
     url = f"{BIRD_API_BASE}/workspaces/{workspace_id}/channels/{channel_id}/messages"
     payload = {
         "receiver": {
             "contacts": [{"identifierKey": identifier_key, "identifierValue": identifier_value}]
         },
-        "body": {"type": "text", "text": {"text": text[:4000]}},
+        "body": body,
     }
     try:
         async with httpx.AsyncClient(timeout=20) as client:
