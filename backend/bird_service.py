@@ -163,6 +163,36 @@ async def get_user_for_bird(db, conn: Dict[str, Any]):
     return await db.users.find_one({"_id": uid})
 
 
+async def fetch_conversation_participants(workspace_id: str, conversation_id: str) -> Optional[str]:
+    """Fetch conversation participants and return the first non-contact participant ID."""
+    if not BIRD_API_KEY:
+        return None
+    url = f"{BIRD_API_BASE}/workspaces/{workspace_id}/conversations/{conversation_id}/participants"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(url, headers=_auth_headers())
+        if resp.status_code != 200:
+            logger.warning(f"[Bird] fetch participants {resp.status_code}: {resp.text[:200]}")
+            return None
+        data = resp.json()
+        participants = data.get("results") or data.get("items") or (data if isinstance(data, list) else [])
+        logger.info(f"[Bird] participants: {participants}")
+        for p in participants:
+            if p.get("type") not in ("contact", None, ""):
+                logger.info(f"[Bird] Found sender participant type={p.get('type')} id={p.get('id')}")
+                return p.get("id")
+        # Last resort: any participant with an id that isn't the contact
+        for p in participants:
+            pid = p.get("id") or p.get("participantId")
+            if pid:
+                logger.info(f"[Bird] Using fallback participant type={p.get('type')} id={pid}")
+                return pid
+        return None
+    except Exception as exc:
+        logger.error(f"[Bird] fetch participants error: {exc}")
+        return None
+
+
 async def fetch_conversation(workspace_id: str, conversation_id: str) -> Optional[Dict[str, Any]]:
     if not BIRD_API_KEY:
         return None
