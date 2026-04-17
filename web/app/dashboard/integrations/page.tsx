@@ -33,8 +33,8 @@ function InstagramGlyph({ className }: { className?: string }) {
   );
 }
 
-/** Set NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=true to show legacy “Connect with Facebook” OAuth instead of Bird. */
-const SHOW_DIRECT_META_OAUTH = process.env.NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH === "true";
+/** Set NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=false to hide the Connect buttons (Bird-only mode). */
+const SHOW_DIRECT_META_OAUTH = process.env.NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH !== “false”;
 
 function MetaMessengerInstagramBirdIcons() {
   return (

@@ -10483,8 +10483,8 @@ async def bird_unprovision_channel(channel_id: str, request: Request):
 import base64 as _b64
 import json as _json2
 
-_FACEBOOK_APP_ID     = os.environ.get("FACEBOOK_APP_ID", "")
-_FACEBOOK_APP_SECRET = os.environ.get("FACEBOOK_APP_SECRET", "")
+_FACEBOOK_APP_ID     = os.environ.get("FACEBOOK_APP_ID") or os.environ.get("META_APP_ID", "")
+_FACEBOOK_APP_SECRET = os.environ.get("FACEBOOK_APP_SECRET") or os.environ.get("META_APP_SECRET", "")
 
 def _meta_state_encode(user_id: str, channel: str) -> str:
     raw = _b64.urlsafe_b64encode(_json2.dumps({"uid": user_id, "ch": channel}).encode()).decode().rstrip("=")
@@ -10513,9 +10513,10 @@ async def meta_oauth_start(channel: str = "messenger", user=Depends(get_current_
     state = _meta_state_encode(user_id, channel)
     backend_url = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
     redirect_uri = f"{backend_url}/api/meta/oauth/callback"
-    scopes = "pages_messaging,pages_read_engagement,pages_manage_metadata"
+    # Basic permissions only — easy Meta review; Bird handles actual messaging
+    scopes = "pages_show_list,pages_read_engagement,business_management"
     if channel == "instagram":
-        scopes += ",instagram_business_manage_messages"
+        scopes += ",instagram_basic"
     fb_url = (
         f"https://www.facebook.com/v18.0/dialog/oauth"
         f"?client_id={_FACEBOOK_APP_ID}"
@@ -10670,36 +10671,82 @@ async def meta_oauth_callback(
             logging.warning(f"[Meta OAuth] No pages found for user {user_id}")
             return Response(status_code=302, headers={"Location": f"{back_url}?error=no_pages"})
 
-        # 4. Save connection — use first page (if user has multiple, they'll pick later)
-        page = pages[0]
-        page_id    = page["id"]
-        page_token = page["access_token"]
-        now = datetime.utcnow()
+        # 4. Use first page — store all pages so client can switch later
+        page      = pages[0]
+        page_id   = page["id"]
+        page_name = page.get("name", page_id)
+        now       = datetime.utcnow()
 
+        ig_id = page_id
         if channel == "instagram":
             ig_account = page.get("instagram_business_account") or {}
             ig_id = ig_account.get("id", page_id)
-            await db.meta_connections.update_one(
-                {"user_id": user_id, "channel": "instagram"},
+
+        # 5. Create Bird connector for this page
+        from bird_service import BIRD_API_KEY, BIRD_API_BASE, BIRD_WORKSPACE_ID, _auth_headers
+        ws = BIRD_WORKSPACE_ID
+        bird_channel_id = None
+        if BIRD_API_KEY and ws:
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    if channel == "instagram":
+                        connector_payload = {
+                            "name": f"Instagram: {page_name}",
+                            "connectorTemplateId": "fa65761f-9141-4d84-95f3-bd96f7e0e475",
+                            "arguments": {
+                                "instagramAccountId": ig_id,
+                                "pageId": page_id,
+                            },
+                        }
+                    else:
+                        connector_payload = {
+                            "name": f"Messenger: {page_name}",
+                            "connectorTemplateId": "f3851b68-02f0-4574-8ccb-295caf3a14a9",
+                            "arguments": {"pageId": page_id},
+                        }
+                    conn_resp = await client.post(
+                        f"{BIRD_API_BASE}/workspaces/{ws}/connectors",
+                        json=connector_payload,
+                        headers=_auth_headers(),
+                    )
+                    if conn_resp.status_code in (200, 201):
+                        conn_data = conn_resp.json()
+                        bird_channel_id = (conn_data.get("channel") or {}).get("channelId")
+                        logging.info(f"[Meta OAuth] Bird connector created for {channel} page {page_id} → channel {bird_channel_id}")
+                    else:
+                        logging.warning(f"[Meta OAuth] Bird connector creation failed {conn_resp.status_code}: {conn_resp.text[:300]}")
+            except Exception as bird_exc:
+                logging.error(f"[Meta OAuth] Bird connector error: {bird_exc}")
+
+        # 6. Auto-provision Bird channel → CRM user
+        if bird_channel_id:
+            await db.bird_connections.update_one(
+                {"channel_id": bird_channel_id},
                 {"$set": {
-                    "user_id": user_id, "page_id": page_id,
-                    "instagram_id": ig_id,
-                    "page_access_token": page_token,
-                    "channel": "instagram", "updated_at": now,
+                    "user_id": user_id,
+                    "channel_id": bird_channel_id,
+                    "workspace_id": ws,
+                    "page_id": page_id,
+                    "channel": channel,
+                    "updated_at": now,
                 }, "$setOnInsert": {"created_at": now}},
                 upsert=True,
             )
-        else:
-            await db.meta_connections.update_one(
-                {"user_id": user_id, "channel": "messenger"},
-                {"$set": {
-                    "user_id": user_id, "page_id": page_id,
-                    "instagram_id": page_id,
-                    "page_access_token": page_token,
-                    "channel": "messenger", "updated_at": now,
-                }, "$setOnInsert": {"created_at": now}},
-                upsert=True,
-            )
+            logging.info(f"[Meta OAuth] Auto-provisioned Bird channel {bird_channel_id} → user {user_id}")
+
+        # 7. Also save meta_connection for reference
+        await db.meta_connections.update_one(
+            {"user_id": user_id, "channel": channel},
+            {"$set": {
+                "user_id": user_id, "page_id": page_id,
+                "instagram_id": ig_id,
+                "channel": channel,
+                "bird_channel_id": bird_channel_id,
+                "page_name": page_name,
+                "updated_at": now,
+            }, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
 
         logging.info(f"[Meta OAuth] {channel} connected via OAuth for user {user_id} page {page_id}")
         return Response(status_code=302, headers={"Location": f"{back_url}?connected={channel}"})
