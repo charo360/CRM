@@ -319,8 +319,9 @@ async def send_channel_message(
             return False
 
     if media_url:
-        # Instagram/Messenger don't support caption on image — send image then text separately
-        ok = await _post({"type": "image", "image": {"url": media_url}})
+        # Bird image format: images array with mediaUrl objects
+        # Caption sent as separate text message (Instagram/Messenger don't support inline captions)
+        ok = await _post({"type": "image", "image": {"images": [{"mediaUrl": media_url}]}})
         if text and ok:
             await _post({"type": "text", "text": {"text": text[:4000]}})
         return ok
