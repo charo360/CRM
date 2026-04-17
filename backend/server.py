@@ -11093,8 +11093,7 @@ async def bird_webhook(request: Request):
     await save_incoming_bird_message(db, user["_id"], customer["_id"], text, mid, channel_id)
 
     if not user_pid:
-        logging.warning("[Bird] No user participant found — contact saved but auto-reply skipped")
-        return {"status": "ok"}
+        logging.info("[Bird] No existing flow participant — will let Bird create one via addMissingParticipants")
 
     asyncio.create_task(
         _process_bird_message(user, customer, text, workspace_id, conversation_id, user_pid)

@@ -256,19 +256,20 @@ async def save_outgoing_bird_message(db, user_id, customer_id, text: str) -> Non
 async def send_conversation_message(
     workspace_id: str,
     conversation_id: str,
-    user_participant_id: str,
+    user_participant_id: Optional[str],
     text: str,
 ) -> bool:
     if not BIRD_API_KEY:
         logger.error("[Bird] BIRD_API_KEY not set")
         return False
     url = f"{BIRD_API_BASE}/workspaces/{workspace_id}/conversations/{conversation_id}/messages"
-    payload = {
+    payload: Dict[str, Any] = {
         "body": {"type": "text", "text": {"text": text[:4000]}},
-        "participantId": user_participant_id,
         "participantType": "flow",
         "addMissingParticipants": True,
     }
+    if user_participant_id:
+        payload["participantId"] = user_participant_id
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(url, json=payload, headers=_auth_headers())
