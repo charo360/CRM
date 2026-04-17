@@ -304,10 +304,10 @@ async def send_channel_message(
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(url, json=payload, headers=_auth_headers())
-        if resp.status_code not in (200, 201):
+        if resp.status_code not in (200, 201, 202):
             logger.error(f"[Bird] channel send failed {resp.status_code}: {resp.text[:300]}")
             return False
-        logger.info(f"[Bird] channel message sent via {channel_id}")
+        logger.info(f"[Bird] channel message sent via {channel_id} (HTTP {resp.status_code})")
         return True
     except Exception as exc:
         logger.error(f"[Bird] channel send error: {exc}")
