@@ -196,6 +196,7 @@ async def get_or_create_bird_customer(db, user_id, sender: Dict[str, Any], chann
     doc = {
         "user_id": user_id,
         "phone": phone,
+        "phone_number": phone,
         "name": name,
         "channel": "bird",
         "bird_channel_id": channel_id,

@@ -3246,7 +3246,7 @@ async def get_customers(
             id=c["_id"],
             user_id=c["user_id"],
             name=c["name"],
-            phone_number=c["phone_number"],
+            phone_number=c.get("phone_number") or c.get("phone", ""),
             notes=c.get("notes"),
             tags=c.get("tags", []),
             stage=c.get("stage", "lead"),
