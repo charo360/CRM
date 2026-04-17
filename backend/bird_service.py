@@ -92,8 +92,20 @@ def extract_text_from_last_message(last_message: Dict[str, Any]) -> str:
 
 
 def find_user_participant_id(conv: Dict[str, Any]) -> Optional[str]:
-    for p in conv.get("featuredParticipants") or []:
+    participants = conv.get("featuredParticipants") or conv.get("participants") or []
+    # Try exact "user" type first
+    for p in participants:
         if p.get("type") == "user":
+            return p.get("id")
+    # Fallback: any non-contact participant (inbox, channel, bot, agent, etc.)
+    for p in participants:
+        if p.get("type") not in ("contact", None, ""):
+            logger.info(f"[Bird] Using participant type={p.get('type')} id={p.get('id')} as sender")
+            return p.get("id")
+    # Last resort: first participant with an id
+    for p in participants:
+        if p.get("id"):
+            logger.info(f"[Bird] Fallback participant type={p.get('type')} id={p.get('id')}")
             return p.get("id")
     return None
 
