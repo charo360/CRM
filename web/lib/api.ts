@@ -707,6 +707,10 @@ export const whatsappApi = {
     api.post<{ pairing_code?: string; status: string; message?: string }>("/whatsapp/connect", { phone_number: phoneNumber }),
   disconnect: () => api.post<{ status: string }>("/whatsapp/disconnect", {}),
   sync: () => api.post<{ status: string }>("/whatsapp/sync", {}),
+  /** Start a QR-code based connection. Returns base64 QR image. */
+  qrStart: () => api.post<{ status: string; qr_base64: string }>("/whatsapp/qr-start", {}),
+  /** Fetch a refreshed QR code for the pending instance. */
+  qrFetch: () => api.get<{ qr_base64: string }>("/whatsapp/qr"),
 };
 
 export const settingsApi = {

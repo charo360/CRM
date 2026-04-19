@@ -6288,6 +6288,104 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     
     return result
 
+@api_router.post("/whatsapp/qr-start")
+async def whatsapp_qr_start(user = Depends(get_current_user)):
+    """
+    Start a QR-code based WhatsApp connection (no phone number required).
+    Creates an Evolution API instance with qrcode=True and returns the QR image as base64.
+    Frontend should poll GET /whatsapp/qr every 20s for a fresh code, and
+    GET /whatsapp/status every 5s to detect when it goes connected.
+    """
+    import httpx as _httpx, uuid as _uuid, os as _os
+    wa_service = get_whatsapp_service(db)
+    user_id = user.get("business_id", user["_id"])
+    instance_name = wa_service._instance_name(user_id)
+
+    base_url = wa_service.base_url
+    headers = wa_service._headers()
+
+    webhook_base = _os.environ.get("WEBHOOK_BASE_URL", "http://host.docker.internal:8000")
+    webhook_cfg = {
+        "webhook": {
+            "enabled": True,
+            "url": f"{webhook_base}/api/webhooks/evolution",
+            "webhookByEvents": False,
+            "webhookBase64": False,
+            "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CHATS_UPDATE", "CONNECTION_UPDATE"],
+        }
+    }
+
+    async with _httpx.AsyncClient(timeout=30) as client:
+        # Delete stale instance if exists
+        await client.delete(f"{base_url}/instance/delete/{instance_name}", headers=headers)
+        await asyncio.sleep(1)
+
+        # Create instance with qrcode=True (no phone number)
+        create_resp = await client.post(
+            f"{base_url}/instance/create",
+            json={
+                "instanceName": instance_name,
+                "token": str(_uuid.uuid4()),
+                "qrcode": True,
+                "integration": "WHATSAPP-BAILEYS",
+                "reject_call": False,
+                "groupsIgnore": True,
+            },
+            headers=headers,
+        )
+        if create_resp.status_code not in (200, 201):
+            raise HTTPException(500, f"Failed to create QR instance: {create_resp.text[:200]}")
+
+        # Set webhook
+        await client.post(f"{base_url}/webhook/set/{instance_name}", json=webhook_cfg, headers=headers)
+
+        # Save instance in DB (status=qr_pending)
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {
+                "whatsapp.instance_name": instance_name,
+                "whatsapp.status": "qr_pending",
+                "whatsapp.created_at": datetime.utcnow(),
+            }},
+        )
+
+        # Wait a moment for the instance to initialise, then fetch QR
+        await asyncio.sleep(3)
+        qr_resp = await client.get(f"{base_url}/instance/connect/{instance_name}", headers=headers)
+        qr_data = qr_resp.json() if qr_resp.status_code == 200 else {}
+
+    # The QR code is inside qr_data["base64"] or qr_data["qrcode"]["base64"]
+    qr_base64 = (
+        qr_data.get("base64")
+        or (qr_data.get("qrcode") or {}).get("base64")
+        or ""
+    )
+    return {"status": "qr_ready", "qr_base64": qr_base64}
+
+
+@api_router.get("/whatsapp/qr")
+async def whatsapp_qr_fetch(user = Depends(get_current_user)):
+    """Fetch the latest QR code for an existing pending instance."""
+    import httpx as _httpx
+    wa_service = get_whatsapp_service(db)
+    user_id = user.get("business_id", user["_id"])
+    instance_name = wa_service._instance_name(user_id)
+
+    async with _httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{wa_service.base_url}/instance/connect/{instance_name}",
+            headers=wa_service._headers(),
+        )
+        data = resp.json() if resp.status_code == 200 else {}
+
+    qr_base64 = (
+        data.get("base64")
+        or (data.get("qrcode") or {}).get("base64")
+        or ""
+    )
+    return {"qr_base64": qr_base64}
+
+
 @api_router.get("/whatsapp/status")
 async def whatsapp_status(user = Depends(get_current_user)):
     """Get WhatsApp connection status and message usage"""
