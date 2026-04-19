@@ -368,33 +368,77 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="get_owner_info",
+    description="Return the business owner's name, phone number, business name and settings. Use this when the user refers to 'owner', 'me', 'my number', or 'myself'.",
+    parameters={"type": "object", "properties": {}},
+    destructive=False,
+)
+async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
+    user = await ctx.db.users.find_one({"_id": ctx.business_id})
+    if not user:
+        return {"error": "Owner record not found"}
+    settings = user.get("settings", {})
+    return {
+        "owner_name":    user.get("owner_name") or user.get("name", ""),
+        "business_name": user.get("business_name", ""),
+        "phone_number":  user.get("phone_number") or settings.get("phone_number", ""),
+        "email":         user.get("email", ""),
+        "country":       settings.get("country", ""),
+        "currency":      settings.get("currency", ""),
+        "whatsapp_number": (user.get("whatsapp") or {}).get("number", ""),
+    }
+
+
+@tool(
     name="send_whatsapp_message",
-    description="Send a WhatsApp message to a specific customer. Use sparingly — this actually messages the customer.",
+    description=(
+        "Send a WhatsApp message. Accepts EITHER customer_id OR phone_number (international format). "
+        "Use get_owner_info first if the user says 'send to me / owner / myself'."
+    ),
     parameters={
         "type": "object",
-        "required": ["customer_id", "message"],
+        "required": ["message"],
         "properties": {
-            "customer_id": {"type": "string"},
+            "customer_id": {"type": "string", "description": "CRM customer ID (use if known)"},
+            "phone_number": {"type": "string", "description": "Phone in international format e.g. +254712345678 (use when no customer_id)"},
             "message": {"type": "string"},
         },
     },
     destructive=True,
 )
 async def send_whatsapp_message(ctx: ToolContext, args: Dict[str, Any]):
-    cust = await ctx.db.customers.find_one({"_id": args["customer_id"], "user_id": ctx.business_id})
-    if not cust:
-        return {"error": "Customer not found"}
     from whatsapp_service import get_whatsapp_service
     wa = get_whatsapp_service(ctx.db)
+
+    to_number: str = ""
+    customer_name: str = ""
+
+    if args.get("customer_id"):
+        cust = await ctx.db.customers.find_one({"_id": args["customer_id"], "user_id": ctx.business_id})
+        if not cust:
+            return {"error": f"Customer '{args['customer_id']}' not found. Use get_customers to look up the correct ID, or provide a phone_number directly."}
+        to_number = cust.get("phone_number", "")
+        customer_name = cust.get("name", "")
+    elif args.get("phone_number"):
+        to_number = args["phone_number"]
+        # Try to find a matching customer name for context
+        cust = await ctx.db.customers.find_one({"phone_number": to_number, "user_id": ctx.business_id})
+        customer_name = cust.get("name", "") if cust else ""
+    else:
+        return {"error": "Provide either customer_id or phone_number."}
+
+    if not to_number:
+        return {"error": "No phone number available for this customer."}
+
     try:
         res = await wa.send_message(
             user_id=ctx.business_id,
-            to_number=cust["phone_number"],
+            to_number=to_number,
             message=args["message"],
-            customer_name=cust.get("name", ""),
+            customer_name=customer_name,
             send_context="assistant",
         )
-        return {"status": "sent", "provider_response": res}
+        return {"status": "sent", "to": to_number, "provider_response": res}
     except Exception as e:
         return {"error": str(e)}
 
