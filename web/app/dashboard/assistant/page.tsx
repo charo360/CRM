@@ -5,6 +5,47 @@ import AssistantChat from "@/components/AssistantChat";
 import { assistantApi, type AssistantConversationSummary } from "@/lib/api";
 import { Plus, MessageSquare, Trash2, Loader2, Pencil, Check, X } from "lucide-react";
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+function timeAgo(iso?: string): string {
+  if (!iso) return "";
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d === 1) return "yesterday";
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function groupByDate(list: AssistantConversationSummary[]) {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 86400000;
+  const startOf7Days = startOfToday - 6 * 86400000;
+  const startOf30Days = startOfToday - 29 * 86400000;
+
+  const groups: { label: string; items: AssistantConversationSummary[] }[] = [
+    { label: "Today", items: [] },
+    { label: "Yesterday", items: [] },
+    { label: "Previous 7 days", items: [] },
+    { label: "This month", items: [] },
+    { label: "Older", items: [] },
+  ];
+
+  for (const c of list) {
+    const t = c.updated_at ? new Date(c.updated_at).getTime() : 0;
+    if (t >= startOfToday) groups[0].items.push(c);
+    else if (t >= startOfYesterday) groups[1].items.push(c);
+    else if (t >= startOf7Days) groups[2].items.push(c);
+    else if (t >= startOf30Days) groups[3].items.push(c);
+    else groups[4].items.push(c);
+  }
+  return groups.filter((g) => g.items.length > 0);
+}
+
 export default function AssistantPage() {
   const [conversations, setConversations] = useState<AssistantConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -71,12 +112,10 @@ export default function AssistantPage() {
 
   return (
     <div className="flex h-[calc(100vh-4rem)]">
-      {/* Conversations sidebar */}
-      <aside className="flex w-60 flex-col border-r border-slate-200 bg-slate-50">
-        <div className="flex items-center justify-between border-b border-slate-200 px-2.5 py-1.5">
-          <div className="text-[12px] font-semibold uppercase tracking-wide text-slate-600">
-            Conversations
-          </div>
+      {/* Conversations sidebar — ChatGPT-style dark panel */}
+      <aside className="flex w-64 flex-col bg-[#171717]">
+        {/* New chat button */}
+        <div className="px-3 pt-3 pb-2">
           <button
             type="button"
             onClick={() => {
@@ -84,104 +123,90 @@ export default function AssistantPage() {
               setEditingId(null);
               setNewNonce((n) => n + 1);
             }}
-            className="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2 py-0.5 text-[10.5px] font-semibold text-white hover:bg-indigo-700"
+            className="flex w-full items-center gap-2.5 rounded-lg border border-white/10 px-3 py-2 text-[13px] font-medium text-white/80 transition hover:bg-white/10 active:scale-[0.98]"
           >
-            <Plus size={11} /> New
+            <Plus size={15} className="text-white/60" />
+            New chat
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto py-0.5">
+
+        {/* Section label */}
+        <div className="px-3 pb-1 pt-2">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/30">Recent</p>
+        </div>
+
+        {/* Conversation list — grouped by date */}
+        <div className="flex-1 overflow-y-auto px-2 pb-3">
           {loading ? (
-            <div className="flex justify-center p-4 text-slate-400">
-              <Loader2 size={14} className="animate-spin" />
+            <div className="flex justify-center py-6">
+              <Loader2 size={14} className="animate-spin text-white/30" />
             </div>
           ) : conversations.length === 0 ? (
-            <p className="px-3 py-4 text-[11px] text-slate-400">No conversations yet.</p>
+            <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
+              <MessageSquare size={22} className="text-white/20" />
+              <p className="text-[11px] text-white/30">No conversations yet.<br />Start one above.</p>
+            </div>
           ) : (
-            conversations.map((c) => {
-              const editing = editingId === c.id;
-              return (
-                <div
-                  key={c.id}
-                  className={`group flex items-center gap-1.5 px-2.5 py-1 text-[12px] leading-tight cursor-pointer hover:bg-white ${
-                    activeId === c.id
-                      ? "bg-white font-semibold text-indigo-700"
-                      : "text-slate-700"
-                  }`}
-                  onClick={() => !editing && setActiveId(c.id)}
-                  onDoubleClick={(e) => {
-                    e.stopPropagation();
-                    startEdit(c);
-                  }}
-                >
-                  <MessageSquare size={11} className="shrink-0 text-slate-400" />
-                  {editing ? (
-                    <>
-                      <input
-                        autoFocus
-                        value={editingTitle}
-                        onChange={(e) => setEditingTitle(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void saveEdit();
-                          if (e.key === "Escape") setEditingId(null);
-                        }}
-                        className="flex-1 rounded border border-indigo-300 bg-white px-1 py-0.5 text-[12px] outline-none focus:ring-1 focus:ring-indigo-400"
-                      />
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void saveEdit();
-                        }}
-                        className="text-green-600 hover:text-green-700"
-                        aria-label="Save"
-                      >
-                        <Check size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditingId(null);
-                        }}
-                        className="text-slate-400 hover:text-slate-600"
-                        aria-label="Cancel"
-                      >
-                        <X size={12} />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span className="truncate flex-1">{c.title}</span>
-                      <div className="hidden items-center gap-0.5 group-hover:flex">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startEdit(c);
-                          }}
-                          className="text-slate-400 hover:text-indigo-600"
-                          aria-label="Rename"
-                        >
-                          <Pencil size={10.5} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void onDelete(c.id);
-                          }}
-                          className="text-slate-400 hover:text-red-600"
-                          aria-label="Delete"
-                        >
-                          <Trash2 size={10.5} />
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })
+            groupByDate(conversations).map((group) => (
+              <div key={group.label}>
+                {/* Date group header */}
+                <p className="mt-3 mb-0.5 px-2 text-[10px] font-semibold uppercase tracking-widest text-white/25">
+                  {group.label}
+                </p>
+                {group.items.map((c) => {
+                  const editing = editingId === c.id;
+                  const active = activeId === c.id;
+                  return (
+                    <div
+                      key={c.id}
+                      className={`group relative flex cursor-pointer flex-col rounded-lg px-2.5 py-2 transition-colors ${
+                        active
+                          ? "bg-white/10 text-white"
+                          : "text-white/60 hover:bg-white/[0.07] hover:text-white/90"
+                      }`}
+                      onClick={() => !editing && setActiveId(c.id)}
+                      onDoubleClick={(e) => { e.stopPropagation(); startEdit(c); }}
+                    >
+                      {editing ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            autoFocus
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void saveEdit();
+                              if (e.key === "Escape") setEditingId(null);
+                            }}
+                            className="flex-1 rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-[12px] text-white outline-none focus:ring-1 focus:ring-indigo-400"
+                          />
+                          <button type="button" onClick={(e) => { e.stopPropagation(); void saveEdit(); }} className="text-green-400 hover:text-green-300" aria-label="Save"><Check size={12} /></button>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); setEditingId(null); }} className="text-white/40 hover:text-white/70" aria-label="Cancel"><X size={12} /></button>
+                        </div>
+                      ) : (
+                        <>
+                          {/* Title row */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex-1 truncate text-[13px] font-medium leading-snug">
+                              {c.title}
+                            </span>
+                            {/* Actions — appear on hover */}
+                            <div className="relative hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                              <button type="button" onClick={(e) => { e.stopPropagation(); startEdit(c); }} className="rounded p-0.5 text-white/30 hover:text-white/80" aria-label="Rename"><Pencil size={11} /></button>
+                              <button type="button" onClick={(e) => { e.stopPropagation(); void onDelete(c.id); }} className="rounded p-0.5 text-white/30 hover:text-red-400" aria-label="Delete"><Trash2 size={11} /></button>
+                            </div>
+                          </div>
+                          {/* Sub-row: time ago */}
+                          <span className="mt-0.5 text-[10px] text-white/25 group-hover:text-white/35">
+                            {timeAgo(c.updated_at)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))
           )}
         </div>
       </aside>
@@ -193,7 +218,19 @@ export default function AssistantPage() {
           conversationId={activeId}
           onConversationChange={(id) => {
             setActiveId(id);
-            void load();
+            // Optimistically add the new conversation so it appears instantly.
+            setConversations((prev) => {
+              if (prev.some((c) => c.id === id)) return prev;
+              const stub: AssistantConversationSummary = {
+                id,
+                title: "New chat",
+                updated_at: new Date().toISOString(),
+                message_count: 1,
+              };
+              return [stub, ...prev];
+            });
+            // Reload after smart-title background task finishes (~3 s).
+            setTimeout(() => void load(), 3200);
           }}
         />
       </main>
