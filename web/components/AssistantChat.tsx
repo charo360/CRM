@@ -3,11 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   assistantApi,
+  customersApi,
+  messagesApi,
   type AssistantConversation,
   type AssistantDocument,
   type AssistantMessage,
   type AssistantModel,
   type AssistantStep,
+  type Customer,
 } from "@/lib/api";
 import {
   Loader2,
@@ -22,6 +25,9 @@ import {
   X as XIcon,
   ShieldCheck,
   Download,
+  MessageCircle,
+  Search,
+  CheckCheck,
 } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
@@ -365,8 +371,142 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WhatsApp customer picker modal
+// ─────────────────────────────────────────────────────────────────────────────
+function WhatsAppPickerModal({
+  content,
+  onClose,
+}: {
+  content: string;
+  onClose: () => void;
+}) {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState<string | null>(null);
+  const [sent, setSent] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    customersApi.list().then((list) => {
+      setCustomers(list.filter((c) => c.phone_number));
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const filtered = customers.filter(
+    (c) =>
+      c.name.toLowerCase().includes(query.toLowerCase()) ||
+      c.phone_number.includes(query)
+  );
+
+  async function handleSend(customer: Customer) {
+    if (sending || sent === customer.id) return;
+    setSending(customer.id);
+    setError("");
+    try {
+      await messagesApi.send(customer.phone_number, content, customer.name);
+      setSent(customer.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Send failed");
+    } finally {
+      setSending(null);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100">
+              <MessageCircle size={15} className="text-green-600" />
+            </div>
+            <div>
+              <p className="text-[13px] font-semibold text-slate-800">Send via WhatsApp</p>
+              <p className="text-[10.5px] text-slate-400">Choose a customer to send this reply to</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+            <XIcon size={15} />
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+            <Search size={13} className="shrink-0 text-slate-400" />
+            <input
+              autoFocus
+              placeholder="Search by name or phone…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="flex-1 bg-transparent text-[13px] text-slate-800 placeholder-slate-400 outline-none"
+            />
+          </div>
+        </div>
+
+        {/* Customer list */}
+        <div className="max-h-72 overflow-y-auto px-2 pb-3">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 size={16} className="animate-spin text-slate-300" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="py-8 text-center text-[12px] text-slate-400">No customers found</p>
+          ) : (
+            filtered.map((c) => {
+              const isSent = sent === c.id;
+              const isSending = sending === c.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => void handleSend(c)}
+                  disabled={isSending || isSent}
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:opacity-70"
+                >
+                  {/* Avatar */}
+                  {c.profile_picture ? (
+                    <img src={c.profile_picture} alt="" className="h-8 w-8 rounded-full object-cover" />
+                  ) : (
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-[12px] font-semibold text-indigo-600">
+                      {c.name.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium text-slate-800">{c.name}</p>
+                    <p className="text-[11px] text-slate-400">{c.phone_number}</p>
+                  </div>
+                  <div className="shrink-0">
+                    {isSending ? (
+                      <Loader2 size={14} className="animate-spin text-green-500" />
+                    ) : isSent ? (
+                      <CheckCheck size={14} className="text-green-500" />
+                    ) : (
+                      <MessageCircle size={14} className="text-slate-300 group-hover:text-green-500" />
+                    )}
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        {/* Error */}
+        {error && (
+          <p className="border-t border-slate-100 px-5 py-3 text-[11.5px] text-red-500">{error}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({ msg }: { msg: AssistantMessage }) {
   const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
+  const [showWaPicker, setShowWaPicker] = useState(false);
 
   async function handleExport(format: "pdf" | "docx") {
     if (!msg.content || exporting) return;
@@ -408,9 +548,9 @@ function MessageBubble({ msg }: { msg: AssistantMessage }) {
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
-            {/* Download buttons — shown for substantial replies */}
+            {/* Action buttons — shown for substantial replies */}
             {hasContent && (
-              <div className="flex items-center gap-1.5 pt-1">
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
                 <span className="text-[10px] text-slate-400">Download as</span>
                 <button
                   type="button"
@@ -430,7 +570,22 @@ function MessageBubble({ msg }: { msg: AssistantMessage }) {
                   {exporting === "docx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
                   Word
                 </button>
+                <span className="text-[10px] text-slate-300">|</span>
+                <button
+                  type="button"
+                  onClick={() => setShowWaPicker(true)}
+                  className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-green-700 hover:bg-green-50 hover:border-green-400"
+                >
+                  <MessageCircle size={9} />
+                  Send via WhatsApp
+                </button>
               </div>
+            )}
+            {showWaPicker && msg.content && (
+              <WhatsAppPickerModal
+                content={msg.content}
+                onClose={() => setShowWaPicker(false)}
+              />
             )}
           </div>
         </div>

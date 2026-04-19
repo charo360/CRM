@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
-TEMP_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "zilo_docs"
+TEMP_DIR = Path(tempfile.gettempdir()) / "zilo_docs"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
