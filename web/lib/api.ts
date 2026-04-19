@@ -547,9 +547,15 @@ export interface TelegramConnection {
   bot_username?: string;
 }
 
-/** Bot attach/detach is operator-only (POST/DELETE /telegram/provision-bot with secret). */
 export const telegramApi = {
   connection: () => api.get<TelegramConnection>("/telegram/connection"),
+  connect: (bot_token: string) =>
+    api.post<{ status: string; connected: boolean; bot_username: string }>(
+      "/telegram/connect",
+      { bot_token }
+    ),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/telegram/connect"),
 };
 
 export const metaApi = {

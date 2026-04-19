@@ -10598,6 +10598,74 @@ async def get_telegram_connection(user=Depends(get_current_user)):
     return {"connected": True, "bot_username": conn.get("bot_username", "")}
 
 
+@api_router.post("/telegram/connect")
+async def telegram_user_connect(request: Request, user=Depends(get_current_user)):
+    """User-facing: attach a Telegram bot to the authenticated CRM account.
+    Body: {"bot_token": "<BotFather token>"}. Token is validated with Telegram,
+    stored server-side, and the webhook is registered. Token is never returned."""
+    from telegram_service import get_bot_info, set_telegram_webhook
+
+    data = await request.json()
+    bot_token = (data.get("bot_token") or "").strip()
+    if not bot_token or ":" not in bot_token:
+        raise HTTPException(status_code=400, detail="A valid Telegram bot token is required")
+
+    bot_info = await get_bot_info(bot_token)
+    if not bot_info:
+        raise HTTPException(status_code=400, detail="Invalid bot token — double-check it with @BotFather")
+
+    user_id = user.get("business_id", user["_id"])
+    bot_username = bot_info.get("username", "")
+    now = datetime.utcnow()
+
+    # Prevent two accounts from claiming the same bot
+    existing = await db.telegram_connections.find_one({"bot_token": bot_token})
+    if existing and existing.get("user_id") != user_id:
+        raise HTTPException(status_code=409, detail="This bot is already connected to another account")
+
+    backend_url = os.environ.get("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+    webhook_url = f"{backend_url}/webhook/telegram/{bot_token}"
+    ok = await set_telegram_webhook(bot_token, webhook_url)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Could not register webhook with Telegram")
+
+    await db.telegram_connections.update_one(
+        {"user_id": user_id},
+        {
+            "$set": {
+                "user_id": user_id,
+                "bot_token": bot_token,
+                "bot_username": bot_username,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+    logging.info(f"[Telegram] user {user_id} connected @{bot_username}")
+    return {"status": "connected", "connected": True, "bot_username": bot_username}
+
+
+@api_router.delete("/telegram/connect")
+async def telegram_user_disconnect(user=Depends(get_current_user)):
+    """User-facing: detach the Telegram bot from the authenticated CRM account."""
+    from telegram_service import delete_telegram_webhook
+
+    user_id = user.get("business_id", user["_id"])
+    conn = await db.telegram_connections.find_one({"user_id": user_id})
+    if not conn:
+        return {"status": "disconnected", "connected": False}
+
+    try:
+        await delete_telegram_webhook(conn["bot_token"])
+    except Exception as e:
+        logging.warning(f"[Telegram] webhook delete failed for user {user_id}: {e}")
+
+    await db.telegram_connections.delete_one({"user_id": user_id})
+    logging.info(f"[Telegram] user {user_id} disconnected")
+    return {"status": "disconnected", "connected": False}
+
+
 app.include_router(api_router)
 
 

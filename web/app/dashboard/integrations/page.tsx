@@ -149,22 +149,110 @@ function TelegramGlyph({ className }: { className?: string }) {
   );
 }
 
-function TelegramStatus({ connection }: { connection?: TelegramConnection }) {
+function TelegramStatus({
+  connection,
+  onChanged,
+}: {
+  connection?: TelegramConnection;
+  onChanged: () => void;
+}) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleConnect() {
+    const t = token.trim();
+    if (!t) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await telegramApi.connect(t);
+      setToken("");
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not connect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm("Disconnect this Telegram bot? Incoming messages will stop.")) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await telegramApi.disconnect();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not disconnect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (connection?.connected && connection.bot_username) {
     return (
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <div className="flex items-center gap-1.5 text-green-700 text-xs font-medium">
           <CheckCircle size={13} />
           @{connection.bot_username}
         </div>
         <p className="text-[10px] leading-snug text-slate-500">Telegram is active for your account.</p>
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          disabled={busy}
+          className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={11} className="animate-spin" /> : null}
+          Disconnect
+        </button>
+        {err && (
+          <p className="flex items-center gap-1 text-[10px] text-red-600">
+            <AlertCircle size={10} /> {err}
+          </p>
+        )}
       </div>
     );
   }
+
   return (
-    <p className="text-[11px] leading-relaxed text-slate-600">
-      Not connected yet. If Telegram is included in your plan, your account team will enable it — you don&apos;t need tokens or setup here.
-    </p>
+    <div className="space-y-1.5">
+      <p className="text-[11px] leading-relaxed text-slate-600">
+        Paste a Telegram bot token from{" "}
+        <a
+          href="https://t.me/BotFather"
+          target="_blank"
+          rel="noreferrer"
+          className="font-medium text-[#229ED9] hover:underline"
+        >
+          @BotFather
+        </a>{" "}
+        to connect.
+      </p>
+      <input
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="123456:ABC-DEF…"
+        autoComplete="off"
+        className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-[11px] font-mono outline-none focus:border-[#229ED9]"
+      />
+      <button
+        type="button"
+        onClick={handleConnect}
+        disabled={busy || !token.trim()}
+        className="inline-flex items-center gap-1 rounded-md bg-[#229ED9] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#1b8bc0] disabled:opacity-50"
+      >
+        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />}
+        Connect
+      </button>
+      {err && (
+        <p className="flex items-center gap-1 text-[10px] text-red-600">
+          <AlertCircle size={10} /> {err}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -316,11 +404,11 @@ function IntegrationsPageInner() {
         <div className="grid gap-2.5 sm:grid-cols-2">
           <SmallTile
             title="Telegram"
-            subtitle="Bot messaging (set up by your team)"
+            subtitle="Bot messaging via @BotFather token"
             borderClass="border-[#229ED9]/20 bg-sky-50/50"
             icon={<TelegramGlyph className="h-5 w-5 text-[#229ED9]" />}
           >
-            <TelegramStatus connection={tgConn} />
+            <TelegramStatus connection={tgConn} onChanged={refresh} />
           </SmallTile>
         </div>
       </section>
