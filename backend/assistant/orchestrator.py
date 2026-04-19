@@ -80,6 +80,9 @@ async def run_turn(
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a single conversational turn."""
+    # Stash the conversation id on the user dict so tools (e.g. search_documents)
+    # can scope their queries without an extra plumbing channel.
+    user = {**user, "_active_conversation_id": conversation_id}
     ctx = ToolContext(db, user)
 
     # Load attached documents for this conversation
@@ -99,10 +102,21 @@ async def run_turn(
                     })
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    # Append document context (text) as a second system message
+    # Append document context (text) as a second system message.
+    # For LONG docs we also note that the `search_documents` tool is available so
+    # the model can pull additional excerpts instead of relying on the truncated preamble.
     if attached_docs:
         preamble = build_context_preamble(attached_docs)
         if preamble:
+            has_long_doc = any(
+                (d.get("text_len") or len(d.get("text") or "")) >= 6000 for d in attached_docs
+            )
+            if has_long_doc:
+                preamble += (
+                    "\n\nNote: at least one document is long and has been chunked. "
+                    "Call the `search_documents` tool with a natural-language query whenever "
+                    "you need passages that aren't in the excerpt above."
+                )
             messages.append({"role": "system", "content": preamble})
     # Trim history to last 30 messages
     messages.extend(history[-30:])

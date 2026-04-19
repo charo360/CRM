@@ -600,6 +600,16 @@ export interface AssistantChatResponse {
   needs_confirmation: null | { tool: string; arguments: Record<string, unknown>; reason: string };
 }
 
+export interface AssistantAuditEntry {
+  id: string;
+  conversation_id?: string | null;
+  tool: string;
+  arguments: Record<string, unknown>;
+  result_summary?: string | null;
+  status: string;
+  created_at: string;
+}
+
 export interface AssistantDocument {
   id: string;
   filename: string;
@@ -634,6 +644,8 @@ export const assistantApi = {
     ),
   deleteDocument: (docId: string) =>
     api.delete<{ status: string }>(`/assistant/documents/${docId}`),
+  audit: (limit = 50) =>
+    api.get<AssistantAuditEntry[]>(`/assistant/audit?limit=${limit}`),
   uploadDocument: async (file: File, conversationId?: string | null) => {
     const token = getToken();
     const form = new FormData();

@@ -15,6 +15,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from .embeddings import (
+    LONG_DOC_THRESHOLD,
+    delete_document_chunks,
+    ingest_document_chunks,
+)
+
 logger = logging.getLogger(__name__)
 
 MAX_BYTES = 15 * 1024 * 1024          # 15 MB per file
@@ -123,6 +129,23 @@ async def store_upload(
         "created_at": datetime.utcnow(),
     }
     await db.assistant_documents.insert_one(doc)
+
+    # Chunk + embed long text docs so the agent can retrieve excerpts via
+    # `search_documents` instead of drowning in a giant preamble.
+    chunks_indexed = 0
+    if text and len(text) >= LONG_DOC_THRESHOLD:
+        try:
+            chunks_indexed = await ingest_document_chunks(
+                db,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                document_id=doc_id,
+                filename=filename,
+                text=text,
+            )
+        except Exception as e:
+            logger.warning(f"[documents] embedding ingest failed: {e}")
+
     return {
         "id": doc_id,
         "filename": filename,
@@ -131,6 +154,7 @@ async def store_upload(
         "size": len(content),
         "text_len": len(text),
         "has_text": bool(text),
+        "chunks_indexed": chunks_indexed,
     }
 
 
@@ -159,6 +183,11 @@ async def load_full(db, user_id: str, conversation_id: str) -> List[Dict[str, An
 
 async def delete_document(db, user_id: str, doc_id: str) -> bool:
     res = await db.assistant_documents.delete_one({"_id": doc_id, "user_id": user_id})
+    # Best-effort cleanup of the chunk index
+    try:
+        await delete_document_chunks(db, user_id, doc_id)
+    except Exception:
+        pass
     return res.deleted_count > 0
 
 

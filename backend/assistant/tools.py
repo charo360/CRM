@@ -703,6 +703,56 @@ async def disconnect_telegram(ctx: ToolContext, args: Dict[str, Any]):
     return {"status": "disconnected"}
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# DOCUMENT RETRIEVAL
+# ═════════════════════════════════════════════════════════════════════════════
+@tool(
+    name="search_documents",
+    description=(
+        "Semantic search across the documents the user has attached to this conversation. "
+        "Use this when a document is long and you need the specific passages that answer the user's question. "
+        "Returns the top matching chunks with the originating filename."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Natural-language question or keywords to search for."},
+            "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 10},
+        },
+        "required": ["query"],
+    },
+)
+async def search_documents(ctx: ToolContext, args: Dict[str, Any]):
+    from .embeddings import search_chunks  # lazy import to avoid cycles
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"error": "query is required"}
+    conv_id = (ctx.user or {}).get("_active_conversation_id")
+    if not conv_id:
+        return {"error": "No active conversation context — cannot search documents."}
+    top_k = min(max(int(args.get("top_k") or 5), 1), 10)
+    hits = await search_chunks(
+        ctx.db,
+        user_id=ctx.business_id,
+        conversation_id=conv_id,
+        query=query,
+        top_k=top_k,
+    )
+    return {
+        "query": query,
+        "count": len(hits),
+        "results": [
+            {
+                "filename": h["filename"],
+                "chunk_index": h["chunk_index"],
+                "score": round(h["score"], 4),
+                "text": h["text"],
+            }
+            for h in hits
+        ],
+    }
+
+
 # ─── helpers ──────────────────────────────────────────────────────────────────
 def _parse_when(raw: str) -> Optional[datetime]:
     raw = raw.strip().lower()
