@@ -112,8 +112,8 @@ export default function AssistantPage() {
 
   return (
     <div className="flex h-[calc(100vh-4rem)]">
-      {/* Conversations sidebar — ChatGPT-style dark panel */}
-      <aside className="flex w-64 flex-col bg-[#171717]">
+      {/* Conversations sidebar */}
+      <aside className="flex w-64 flex-col border-r border-slate-200 bg-slate-50">
         {/* New chat button */}
         <div className="px-3 pt-3 pb-2">
           <button
@@ -123,16 +123,16 @@ export default function AssistantPage() {
               setEditingId(null);
               setNewNonce((n) => n + 1);
             }}
-            className="flex w-full items-center gap-2.5 rounded-lg border border-white/10 px-3 py-2 text-[13px] font-medium text-white/80 transition hover:bg-white/10 active:scale-[0.98]"
+            className="flex w-full items-center gap-2.5 rounded-lg bg-indigo-600 px-3 py-2 text-[13px] font-medium text-white transition hover:bg-indigo-700 active:scale-[0.98]"
           >
-            <Plus size={15} className="text-white/60" />
+            <Plus size={15} className="text-white" />
             New chat
           </button>
         </div>
 
         {/* Section label */}
         <div className="px-3 pb-1 pt-2">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/30">Recent</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Recent</p>
         </div>
 
         {/* Conversation list — grouped by date */}
@@ -143,14 +143,14 @@ export default function AssistantPage() {
             </div>
           ) : conversations.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
-              <MessageSquare size={22} className="text-white/20" />
-              <p className="text-[11px] text-white/30">No conversations yet.<br />Start one above.</p>
+              <MessageSquare size={22} className="text-slate-300" />
+              <p className="text-[11px] text-slate-400">No conversations yet.<br />Start one above.</p>
             </div>
           ) : (
             groupByDate(conversations).map((group) => (
               <div key={group.label}>
                 {/* Date group header */}
-                <p className="mt-3 mb-0.5 px-2 text-[10px] font-semibold uppercase tracking-widest text-white/25">
+                <p className="mt-3 mb-0.5 px-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
                   {group.label}
                 </p>
                 {group.items.map((c) => {
@@ -161,8 +161,8 @@ export default function AssistantPage() {
                       key={c.id}
                       className={`group relative flex cursor-pointer flex-col rounded-lg px-2.5 py-2 transition-colors ${
                         active
-                          ? "bg-white/10 text-white"
-                          : "text-white/60 hover:bg-white/[0.07] hover:text-white/90"
+                          ? "bg-white font-semibold text-indigo-700 shadow-sm"
+                          : "text-slate-700 hover:bg-white hover:text-slate-900"
                       }`}
                       onClick={() => !editing && setActiveId(c.id)}
                       onDoubleClick={(e) => { e.stopPropagation(); startEdit(c); }}
@@ -178,10 +178,10 @@ export default function AssistantPage() {
                               if (e.key === "Enter") void saveEdit();
                               if (e.key === "Escape") setEditingId(null);
                             }}
-                            className="flex-1 rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-[12px] text-white outline-none focus:ring-1 focus:ring-indigo-400"
+                            className="flex-1 rounded border border-indigo-300 bg-white px-1.5 py-0.5 text-[12px] text-slate-900 outline-none focus:ring-1 focus:ring-indigo-400"
                           />
-                          <button type="button" onClick={(e) => { e.stopPropagation(); void saveEdit(); }} className="text-green-400 hover:text-green-300" aria-label="Save"><Check size={12} /></button>
-                          <button type="button" onClick={(e) => { e.stopPropagation(); setEditingId(null); }} className="text-white/40 hover:text-white/70" aria-label="Cancel"><X size={12} /></button>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); void saveEdit(); }} className="text-green-600 hover:text-green-700" aria-label="Save"><Check size={12} /></button>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); setEditingId(null); }} className="text-slate-400 hover:text-slate-600" aria-label="Cancel"><X size={12} /></button>
                         </div>
                       ) : (
                         <>
@@ -192,12 +192,12 @@ export default function AssistantPage() {
                             </span>
                             {/* Actions — appear on hover */}
                             <div className="relative hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                              <button type="button" onClick={(e) => { e.stopPropagation(); startEdit(c); }} className="rounded p-0.5 text-white/30 hover:text-white/80" aria-label="Rename"><Pencil size={11} /></button>
-                              <button type="button" onClick={(e) => { e.stopPropagation(); void onDelete(c.id); }} className="rounded p-0.5 text-white/30 hover:text-red-400" aria-label="Delete"><Trash2 size={11} /></button>
+                              <button type="button" onClick={(e) => { e.stopPropagation(); startEdit(c); }} className="rounded p-0.5 text-slate-400 hover:text-indigo-600" aria-label="Rename"><Pencil size={11} /></button>
+                              <button type="button" onClick={(e) => { e.stopPropagation(); void onDelete(c.id); }} className="rounded p-0.5 text-slate-400 hover:text-red-600" aria-label="Delete"><Trash2 size={11} /></button>
                             </div>
                           </div>
                           {/* Sub-row: time ago */}
-                          <span className="mt-0.5 text-[10px] text-white/25 group-hover:text-white/35">
+                          <span className="mt-0.5 text-[10px] text-slate-400 group-hover:text-slate-500">
                             {timeAgo(c.updated_at)}
                           </span>
                         </>
