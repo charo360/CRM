@@ -123,3 +123,5 @@ yarl==1.22.0
 zipp==3.23.0
 google-auth==2.28.0
 google-api-python-client==2.116.0
+pypdf==5.1.0
+python-docx==1.1.2

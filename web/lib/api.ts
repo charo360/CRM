@@ -600,18 +600,58 @@ export interface AssistantChatResponse {
   needs_confirmation: null | { tool: string; arguments: Record<string, unknown>; reason: string };
 }
 
+export interface AssistantDocument {
+  id: string;
+  filename: string;
+  kind: string;
+  mime_type: string;
+  size: number;
+  text_len: number;
+  has_text: boolean;
+  created_at?: string;
+}
+
 export const assistantApi = {
   models: () => api.get<{ default: string; models: AssistantModel[] }>("/assistant/models"),
   listConversations: () => api.get<AssistantConversationSummary[]>("/assistant/conversations"),
   getConversation: (id: string) => api.get<AssistantConversation>(`/assistant/conversations/${id}`),
   deleteConversation: (id: string) =>
     api.delete<{ status: string }>(`/assistant/conversations/${id}`),
+  renameConversation: (id: string, title: string) =>
+    api.patch<{ status: string; id: string; title: string }>(
+      `/assistant/conversations/${id}`,
+      { title }
+    ),
   chat: (body: {
     message: string;
     conversation_id?: string | null;
     model?: string;
     auto_approve?: boolean;
   }) => api.post<AssistantChatResponse>("/assistant/chat", body),
+  listDocuments: (conversationId: string) =>
+    api.get<{ documents: AssistantDocument[] }>(
+      `/assistant/conversations/${conversationId}/documents`
+    ),
+  deleteDocument: (docId: string) =>
+    api.delete<{ status: string }>(`/assistant/documents/${docId}`),
+  uploadDocument: async (file: File, conversationId?: string | null) => {
+    const token = getToken();
+    const form = new FormData();
+    form.append("file", file);
+    const qs = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+    const res = await fetch(`${API_BASE}/assistant/upload${qs}`, {
+      method: "POST",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: form,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(typeof err.detail === "string" ? err.detail : "Upload failed");
+    }
+    return res.json() as Promise<{ conversation_id: string; document: AssistantDocument }>;
+  },
 };
 
 export const metaApi = {

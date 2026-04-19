@@ -37,7 +37,7 @@ export default function AssistantLauncher() {
       {open && (
         <div className="fixed bottom-5 right-5 z-40 flex h-[560px] w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
           <div className="flex items-center justify-between bg-gradient-to-r from-indigo-500 to-purple-500 px-3 py-2 text-white">
-            <div className="text-sm font-semibold">AI Assistant</div>
+            <div className="text-sm font-semibold">Zilo Chat</div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close">
               <X size={16} />
             </button>

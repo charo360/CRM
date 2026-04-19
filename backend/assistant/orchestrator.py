@@ -24,21 +24,45 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .models import chat_with_tools
+from .documents import build_context_preamble, load_full
+from .models import chat_with_tools, resolve_model
 from .tools import REGISTRY, ToolContext, openai_tool_specs, run_tool
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the in-app AI operator for a small-business CRM.
-You help the logged-in business owner manage customers, orders, follow-ups, broadcasts, and integrations by calling the tools you have available.
+SYSTEM_PROMPT = """You are **Zilo Chat**, the in-app AI operator for a small-business CRM.
+You help the logged-in business owner manage customers, orders, follow-ups, broadcasts, integrations, and **reference documents** they upload to the conversation.
 
-Principles:
+When documents are attached (PDF, DOCX, TXT, CSV, image), the relevant text or image is placed in a system preamble or attached natively as a content block. You can read, summarize, extract data from, or answer questions about them. Always cite the filename when quoting or paraphrasing.
+
+# How to work
 - Prefer calling tools over guessing. Never invent customer names, phone numbers, order IDs, or stats.
 - If the user asks a question whose answer requires data, call the relevant `list_*` / `get_*` tool first.
-- Before any destructive action (sending a WhatsApp message, broadcasting, creating records, disconnecting a channel), briefly restate what you'll do in plain English and wait for the user to confirm unless they already explicitly said "yes / do it / send".
-- Keep replies short and business-like. Use bullet points for lists. Show money and times in the user's own units when provided by tools.
+- Before any destructive action (sending a WhatsApp message, broadcasting, creating records, disconnecting a channel), briefly restate what you will do in plain English and wait for the user to confirm unless they already said "yes / do it / send".
 - If a tool returns an error, explain it plainly and suggest a next step. Do not keep retrying the same call.
-- Never ask for or display API keys, tokens, or raw internal IDs unless the user specifically asks.
+
+# How to present results — write like a business briefing, not a chat
+Every reply must read like a short, polished document an executive would skim. Structure:
+
+1. **Headline (H3)** — one line summarizing what you're reporting, e.g. `### Follow-ups due this week (3)` or `### Today's snapshot`.
+2. **Lead sentence** — one short sentence giving the takeaway ("Three customers are waiting on a check-in. Two are overdue.").
+3. **Data section** — render lists as a compact Markdown table. Required columns depend on the entity:
+   - Follow-ups: `#`, `Customer`, `Phone`, `Due`, `Channel`, `Message`
+   - Orders: `#`, `Order`, `Customer`, `Total`, `Status`, `Placed`
+   - Customers: `#`, `Name`, `Phone`, `Last contact`, `Tags`
+   - Broadcasts: `#`, `Name`, `Audience`, `Sent`, `Delivered`, `Created`
+4. **Key observations** (only if useful) — 1–3 bullets calling out anything the user should notice (overdue count, large order, top customer).
+5. **Suggested actions** — close with a short line offering 1–2 concrete next steps the user can reply with, e.g. `_Reply **send all** to message every customer in this list, or tell me which row to act on._`
+
+Formatting rules:
+- **Never show raw UUIDs** (e.g. `a97bccb5-…`). Always use `customer_name` / `name` from the tool output. If only an ID exists, write "(customer #a97bccb5)" using the first 8 chars.
+- Dates must be human-friendly: `today`, `tomorrow`, `Apr 19`, `2 days ago`. Never ISO strings.
+- Money: use the currency symbol the tool provides; otherwise just the number with a thousands separator.
+- Long message text inside a table cell: show the first ~60 chars followed by `…`.
+- If the list has more than 8 items, show the first 8 and finish with `_… and N more — ask to see the rest._`
+- If the list is empty, say so in one sentence; do not show an empty table.
+- Never include internal fields like `_id`, `user_id`, `tool_call_id`, or bot tokens.
+- Tone: calm, concise, professional. No emoji. No exclamation marks. No "Sure!" / "Absolutely!" openers.
 """
 
 MAX_STEPS = 6
@@ -53,11 +77,33 @@ async def run_turn(
     user_message: str,
     model_id: Optional[str] = None,
     auto_approve_destructive: bool = False,
+    conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a single conversational turn."""
     ctx = ToolContext(db, user)
 
+    # Load attached documents for this conversation
+    attached_docs: List[Dict[str, Any]] = []
+    native_attachments: List[Dict[str, Any]] = []
+    if conversation_id:
+        attached_docs = await load_full(db, ctx.business_id, conversation_id)
+        provider = resolve_model(model_id)["provider"]
+        if provider == "anthropic":
+            for d in attached_docs:
+                if d.get("b64") and d.get("kind") in ("image", "pdf"):
+                    native_attachments.append({
+                        "kind": d["kind"],
+                        "mime_type": d.get("mime_type"),
+                        "filename": d.get("filename"),
+                        "b64": d["b64"],
+                    })
+
     messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Append document context (text) as a second system message
+    if attached_docs:
+        preamble = build_context_preamble(attached_docs)
+        if preamble:
+            messages.append({"role": "system", "content": preamble})
     # Trim history to last 30 messages
     messages.extend(history[-30:])
     messages.append({"role": "user", "content": user_message})
@@ -78,6 +124,9 @@ async def run_turn(
             messages=messages,
             tools=openai_tool_specs(),
             model_id=model_id,
+            # Attach on the first LLM call only — subsequent tool-loop rounds
+            # already have the system context and should not re-upload the files.
+            attachments=native_attachments if step_idx == 0 else None,
         )
         model_used = resp.get("model", model_used)
 

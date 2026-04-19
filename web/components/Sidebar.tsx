@@ -32,7 +32,7 @@ import { useBusiness } from "@/contexts/BusinessContext";
 
 const MAIN_NAV = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard, exact: true },
-  { href: "/dashboard/assistant", label: "Assistant", icon: Sparkles },
+  { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
   { href: "/dashboard/messages", label: "Messages", icon: MessageSquare },
   { href: "/dashboard/customers", label: "Customers", icon: Users },
   { href: "/dashboard/contacts", label: "Contacts", icon: UserCheck },

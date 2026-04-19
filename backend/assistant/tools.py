@@ -210,7 +210,29 @@ async def list_followups(ctx: ToolContext, args: Dict[str, Any]):
         q["status"] = st
     limit = min(int(args.get("limit") or 20), 100)
     rows = await ctx.db.followups.find(q).sort("reminder_date", 1).to_list(limit)
-    return {"count": len(rows), "followups": [_serialize(r) for r in rows]}
+
+    # Enrich with customer name/phone for any followups missing that snapshot
+    missing_ids = {r["customer_id"] for r in rows if not r.get("customer_name") and r.get("customer_id")}
+    name_by_id: Dict[str, Dict[str, str]] = {}
+    if missing_ids:
+        cust_rows = await ctx.db.customers.find(
+            {"_id": {"$in": list(missing_ids)}, "user_id": ctx.business_id}
+        ).to_list(len(missing_ids))
+        for c in cust_rows:
+            name_by_id[c["_id"]] = {
+                "name": c.get("name") or "",
+                "phone_number": c.get("phone_number") or "",
+            }
+
+    out = []
+    for r in rows:
+        s = _serialize(r)
+        cid = r.get("customer_id")
+        if (not s.get("customer_name")) and cid in name_by_id:
+            s["customer_name"] = name_by_id[cid]["name"]
+            s["customer_phone"] = name_by_id[cid].get("phone_number") or s.get("customer_phone")
+        out.append(s)
+    return {"count": len(out), "followups": out}
 
 
 @tool(

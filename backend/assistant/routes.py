@@ -8,8 +8,9 @@ from collections import defaultdict, deque
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
+from .documents import delete_document, list_for_conversation, store_upload
 from .models import DEFAULT_MODEL, list_available_models
 from .orchestrator import run_turn
 
@@ -125,6 +126,7 @@ def _mk_router(db, get_current_user):
                 user_message=msg,
                 model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
                 auto_approve_destructive=bool(body.get("auto_approve")),
+                conversation_id=conv_id,
             )
         except Exception as e:
             logger.exception("[assistant.chat] failure")
@@ -154,6 +156,82 @@ def _mk_router(db, get_current_user):
             "model": result.get("model"),
             "needs_confirmation": result.get("needs_confirmation"),
         }
+
+    @router.patch("/conversations/{conv_id}")
+    async def rename_conversation(conv_id: str, req: Request, user=Depends(get_current_user)):
+        body = await req.json()
+        title = (body.get("title") or "").strip()
+        if not title:
+            raise HTTPException(400, "title is required")
+        if len(title) > 120:
+            title = title[:120]
+        user_id = user.get("business_id", user["_id"])
+        res = await db.assistant_conversations.update_one(
+            {"_id": conv_id, "user_id": user_id},
+            {"$set": {"title": title, "updated_at": datetime.utcnow()}},
+        )
+        if res.matched_count == 0:
+            raise HTTPException(404, "Conversation not found")
+        return {"status": "renamed", "id": conv_id, "title": title}
+
+    # ── Document upload / management ──────────────────────────────────────────
+    @router.post("/upload")
+    async def upload_document(
+        file: UploadFile = File(...),
+        conversation_id: Optional[str] = None,
+        user=Depends(get_current_user),
+    ):
+        if not file:
+            raise HTTPException(400, "file is required")
+        user_id = user.get("business_id", user["_id"])
+
+        # If no conversation_id provided, create a new conversation so the upload
+        # has a home and the user can continue the chat from there.
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+            await db.assistant_conversations.insert_one({
+                "_id": conversation_id,
+                "user_id": user_id,
+                "title": file.filename or "New chat",
+                "model": DEFAULT_MODEL,
+                "messages": [],
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+            })
+        else:
+            conv = await db.assistant_conversations.find_one(
+                {"_id": conversation_id, "user_id": user_id}
+            )
+            if not conv:
+                raise HTTPException(404, "Conversation not found")
+
+        content = await file.read()
+        try:
+            meta = await store_upload(
+                db,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                filename=file.filename or "file",
+                mime_type=file.content_type or "application/octet-stream",
+                content=content,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"conversation_id": conversation_id, "document": meta}
+
+    @router.get("/conversations/{conv_id}/documents")
+    async def list_documents(conv_id: str, user=Depends(get_current_user)):
+        user_id = user.get("business_id", user["_id"])
+        docs = await list_for_conversation(db, user_id, conv_id)
+        return {"documents": docs}
+
+    @router.delete("/documents/{doc_id}")
+    async def remove_document(doc_id: str, user=Depends(get_current_user)):
+        user_id = user.get("business_id", user["_id"])
+        ok = await delete_document(db, user_id, doc_id)
+        if not ok:
+            raise HTTPException(404, "Document not found")
+        return {"status": "deleted"}
 
     @router.get("/audit")
     async def audit_log(limit: int = 50, user=Depends(get_current_user)):

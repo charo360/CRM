@@ -68,11 +68,14 @@ async def chat_with_tools(
     model_id: Optional[str] = None,
     temperature: float = 0.2,
     timeout: float = 60.0,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Run one round of chat completion with tool-calling enabled.
 
     `messages` follow OpenAI format: {role, content, tool_calls?, tool_call_id?}.
     `tools` is a list of OpenAI tool specs: {type:"function", function:{name, description, parameters}}.
+    `attachments` (optional) is a list of documents to pass natively when the
+        provider supports it (Anthropic). Each item: {kind, mime_type, filename, b64}.
     Returns: {content, tool_calls:[{id,name,arguments}], finish_reason, model, raw}.
     """
     cfg = resolve_model(model_id)
@@ -81,7 +84,7 @@ async def chat_with_tools(
     if provider in ("openai", "deepseek", "grok"):
         return await _call_openai_compatible(cfg, messages, tools, temperature, timeout)
     if provider == "anthropic":
-        return await _call_anthropic(cfg, messages, tools, temperature, timeout)
+        return await _call_anthropic(cfg, messages, tools, temperature, timeout, attachments=attachments)
     raise RuntimeError(f"Unsupported provider: {provider}")
 
 
@@ -157,6 +160,7 @@ async def _call_anthropic(
     tools: List[Dict[str, Any]],
     temperature: float,
     timeout: float,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     key = os.environ["ANTHROPIC_API_KEY"]
 
@@ -184,15 +188,60 @@ async def _call_anthropic(
             if m.get("content"):
                 blocks.append({"type": "text", "text": m["content"]})
             for tc in m["tool_calls"]:
+                # Support both OpenAI-format ({id, function:{name, arguments}})
+                # and the internal flat format ({id, name, arguments}).
+                if "function" in tc:
+                    fn = tc["function"] or {}
+                    tc_name = fn.get("name", "")
+                    raw_args = fn.get("arguments")
+                    if isinstance(raw_args, str):
+                        try:
+                            tc_input = json.loads(raw_args) if raw_args else {}
+                        except Exception:
+                            tc_input = {}
+                    else:
+                        tc_input = raw_args or {}
+                else:
+                    tc_name = tc.get("name", "")
+                    tc_input = tc.get("arguments") or {}
                 blocks.append({
                     "type": "tool_use",
-                    "id": tc["id"],
-                    "name": tc["name"],
-                    "input": tc["arguments"],
+                    "id": tc.get("id") or f"call_{len(blocks)}",
+                    "name": tc_name,
+                    "input": tc_input,
                 })
             a_messages.append({"role": "assistant", "content": blocks})
             continue
         a_messages.append({"role": role, "content": m.get("content") or ""})
+
+    # Attach documents/images natively to the FIRST user message (one-shot).
+    # Only done on the fresh turn; subsequent tool-use loops don't re-attach.
+    if attachments:
+        attach_blocks: List[Dict[str, Any]] = []
+        for a in attachments:
+            if not a.get("b64"):
+                continue
+            if a.get("kind") == "image":
+                attach_blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": a["mime_type"], "data": a["b64"]},
+                })
+            elif a.get("kind") == "pdf":
+                attach_blocks.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": a["b64"]},
+                    "title": a.get("filename") or "document.pdf",
+                })
+        if attach_blocks:
+            # Find last user message and prepend attachment blocks
+            for i in range(len(a_messages) - 1, -1, -1):
+                if a_messages[i]["role"] == "user":
+                    existing = a_messages[i].get("content")
+                    text_block = (
+                        [{"type": "text", "text": existing}] if isinstance(existing, str) else list(existing)
+                    )
+                    a_messages[i] = {"role": "user", "content": attach_blocks + text_block}
+                    break
 
     # Convert OpenAI tool spec → Anthropic tool spec
     a_tools = [{

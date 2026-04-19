@@ -4,11 +4,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   assistantApi,
   type AssistantConversation,
+  type AssistantDocument,
   type AssistantMessage,
   type AssistantModel,
   type AssistantStep,
 } from "@/lib/api";
-import { Loader2, Send, Sparkles, Wrench, AlertTriangle, CheckCircle2 } from "lucide-react";
+import {
+  Loader2,
+  Send,
+  Sparkles,
+  Wrench,
+  AlertTriangle,
+  CheckCircle2,
+  Paperclip,
+  FileText,
+  Image as ImageIcon,
+  X as XIcon,
+} from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface Props {
   conversationId?: string | null;
@@ -35,7 +49,10 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   >(null);
   const [convId, setConvId] = useState<string | null>(conversationId ?? null);
   const [error, setError] = useState<string | null>(null);
+  const [documents, setDocuments] = useState<AssistantDocument[]>([]);
+  const [uploading, setUploading] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     assistantApi
@@ -53,12 +70,43 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       const conv: AssistantConversation = await assistantApi.getConversation(id);
       setMessages(conv.messages || []);
       if (conv.model) setModelId(conv.model);
+      const docs = await assistantApi.listDocuments(id).catch(() => ({ documents: [] }));
+      setDocuments(docs.documents || []);
     } catch {
       setError("Could not load that conversation");
     } finally {
       setLoadingConv(false);
     }
   }, []);
+
+  async function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setError(null);
+    setUploading(true);
+    try {
+      const res = await assistantApi.uploadDocument(file, convId);
+      if (!convId) {
+        setConvId(res.conversation_id);
+        onConversationChange?.(res.conversation_id);
+      }
+      setDocuments((prev) => [...prev, res.document]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function removeDocument(docId: string) {
+    try {
+      await assistantApi.deleteDocument(docId);
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     if (conversationId && conversationId !== convId) {
@@ -114,8 +162,8 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <Sparkles size={14} />
           </div>
           <div>
-            <div className="text-sm font-semibold text-slate-900">Assistant</div>
-            <div className="text-[10px] text-slate-400">{compact ? "Ask me anything" : "Chat with your CRM"}</div>
+            <div className="text-sm font-semibold text-slate-900">Zilo Chat</div>
+            <div className="text-[10px] text-slate-400">{compact ? "Ask me anything" : "Chat with your CRM · attach documents"}</div>
           </div>
         </div>
         <select
@@ -202,6 +250,34 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         <div className="border-t border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{error}</div>
       )}
 
+      {/* Attachment chips */}
+      {documents.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 border-t border-slate-100 bg-slate-50/60 px-3 py-2">
+          {documents.map((d) => (
+            <div
+              key={d.id}
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-700 shadow-sm"
+              title={`${d.filename} · ${d.kind.toUpperCase()} · ${Math.round(d.size / 1024)} KB`}
+            >
+              {d.kind === "image" ? (
+                <ImageIcon size={11} className="text-indigo-500" />
+              ) : (
+                <FileText size={11} className="text-indigo-500" />
+              )}
+              <span className="max-w-[140px] truncate">{d.filename}</span>
+              <button
+                type="button"
+                onClick={() => void removeDocument(d.id)}
+                className="text-slate-400 hover:text-red-600"
+                aria-label="Remove attachment"
+              >
+                <XIcon size={10} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Composer */}
       <form
         onSubmit={(e) => {
@@ -210,6 +286,23 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         }}
         className="flex items-end gap-2 border-t border-slate-100 p-3"
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          accept=".pdf,.docx,.txt,.md,.csv,image/png,image/jpeg,image/webp,image/gif"
+          onChange={onFilePicked}
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50"
+          aria-label="Attach document"
+          title="Attach PDF, DOCX, TXT, CSV, or image"
+        >
+          {uploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+        </button>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -220,7 +313,11 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             }
           }}
           rows={1}
-          placeholder="Ask anything about your business…"
+          placeholder={
+            documents.length > 0
+              ? "Ask a question about the attached document…"
+              : "Ask anything about your business…"
+          }
           className="max-h-32 flex-1 resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400"
         />
         <button
@@ -249,16 +346,65 @@ function MessageBubble({ msg }: { msg: AssistantMessage }) {
   if (msg.role === "assistant") {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[90%] space-y-1.5">
+        <div className="max-w-[95%] space-y-1.5">
           {msg.steps && msg.steps.length > 0 && <StepsTrail steps={msg.steps} />}
-          <div className="whitespace-pre-wrap rounded-2xl rounded-bl-md bg-slate-100 px-3.5 py-2 text-sm text-slate-800">
-            {msg.content || <span className="italic text-slate-400">(no reply)</span>}
+          <div className="rounded-2xl rounded-bl-md bg-slate-50 px-4 py-3 text-sm text-slate-800 ring-1 ring-slate-200/60">
+            {msg.content ? (
+              <MarkdownBody content={msg.content} />
+            ) : (
+              <span className="italic text-slate-400">(no reply)</span>
+            )}
           </div>
         </div>
       </div>
     );
   }
   return null;
+}
+
+function MarkdownBody({ content }: { content: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: (p) => <h3 className="mb-2 mt-1 text-base font-semibold text-slate-900" {...p} />,
+          h2: (p) => <h3 className="mb-2 mt-1 text-base font-semibold text-slate-900" {...p} />,
+          h3: (p) => <h3 className="mb-2 mt-1 text-[15px] font-semibold text-slate-900" {...p} />,
+          p: (p) => <p className="mb-2 leading-relaxed last:mb-0" {...p} />,
+          ul: (p) => <ul className="mb-2 ml-4 list-disc space-y-0.5 last:mb-0" {...p} />,
+          ol: (p) => <ol className="mb-2 ml-4 list-decimal space-y-0.5 last:mb-0" {...p} />,
+          li: (p) => <li className="leading-relaxed" {...p} />,
+          strong: (p) => <strong className="font-semibold text-slate-900" {...p} />,
+          em: (p) => <em className="text-slate-600" {...p} />,
+          code: (p) => (
+            <code
+              className="rounded bg-slate-200/70 px-1 py-0.5 font-mono text-[12px] text-slate-800"
+              {...p}
+            />
+          ),
+          hr: () => <hr className="my-3 border-slate-200" />,
+          a: (p) => (
+            <a className="text-indigo-600 underline hover:text-indigo-700" target="_blank" rel="noreferrer" {...p} />
+          ),
+          table: (p) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="w-full border-collapse text-[12.5px]" {...p} />
+            </div>
+          ),
+          thead: (p) => <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-600" {...p} />,
+          th: (p) => <th className="border border-slate-200 px-2 py-1.5 text-left font-semibold" {...p} />,
+          tr: (p) => <tr className="even:bg-white odd:bg-slate-50/40" {...p} />,
+          td: (p) => <td className="border border-slate-200 px-2 py-1.5 align-top" {...p} />,
+          blockquote: (p) => (
+            <blockquote className="my-2 border-l-2 border-indigo-300 bg-indigo-50/50 px-3 py-1 text-slate-700" {...p} />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function StepsTrail({ steps }: { steps: AssistantStep[] }) {
