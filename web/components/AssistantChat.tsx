@@ -156,14 +156,16 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   return (
     <div className="flex h-full flex-col bg-white">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+      <div className="flex items-center justify-between border-b border-slate-100 bg-white/80 px-4 py-2.5 backdrop-blur">
         <div className="flex items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 text-white">
             <Sparkles size={14} />
           </div>
           <div>
             <div className="text-sm font-semibold text-slate-900">Zilo Chat</div>
-            <div className="text-[10px] text-slate-400">{compact ? "Ask me anything" : "Chat with your CRM · attach documents"}</div>
+            <div className="text-[10px] text-slate-400">
+              {compact ? "Ask me anything" : "Chat with your CRM · attach documents"}
+            </div>
           </div>
         </div>
         <select
@@ -181,41 +183,47 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         </select>
       </div>
 
-      {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3">
-        {empty && (
-          <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-500 text-white">
-              <Sparkles size={22} />
+      {/* Messages — centered ChatGPT/Claude column */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-4 py-6">
+          {empty ? (
+            <div className="flex min-h-[60vh] flex-col items-center justify-center gap-6 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-500 text-white shadow-lg">
+                <Sparkles size={26} />
+              </div>
+              <div>
+                <p className="text-2xl font-semibold text-slate-900">How can I help today?</p>
+                <p className="mx-auto mt-2 max-w-lg text-sm text-slate-500">
+                  Ask about customers, orders, follow-ups, or broadcasts — or attach a
+                  document and I’ll read through it with you.
+                </p>
+              </div>
+              <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
+                {QUICK_PROMPTS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => void send(p)}
+                    className="rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-sm text-slate-700 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50/60 hover:shadow"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                <Paperclip size={11} /> Click the paperclip below to attach a PDF, DOCX, or image.
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-800">How can I help?</p>
-              <p className="mt-1 text-xs text-slate-500">
-                I can look up customers, send WhatsApp messages, create follow-ups, run broadcasts, and more.
-              </p>
-            </div>
-            <div className="grid w-full max-w-md grid-cols-1 gap-2">
-              {QUICK_PROMPTS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => void send(p)}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-700 hover:border-indigo-300 hover:bg-indigo-50"
-                >
-                  {p}
-                </button>
+          ) : (
+            <div className="space-y-6">
+              {messages.map((m, i) => (
+                <MessageBubble key={i} msg={m} />
               ))}
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-3">
-          {messages.map((m, i) => (
-            <MessageBubble key={i} msg={m} />
-          ))}
-          {sending && (
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <Loader2 className="animate-spin" size={12} /> thinking…
+              {sending && (
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <Loader2 className="animate-spin" size={12} /> Zilo is thinking…
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -250,85 +258,92 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         <div className="border-t border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{error}</div>
       )}
 
-      {/* Attachment chips */}
-      {documents.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 border-t border-slate-100 bg-slate-50/60 px-3 py-2">
-          {documents.map((d) => (
-            <div
-              key={d.id}
-              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-700 shadow-sm"
-              title={`${d.filename} · ${d.kind.toUpperCase()} · ${Math.round(d.size / 1024)} KB`}
-            >
-              {d.kind === "image" ? (
-                <ImageIcon size={11} className="text-indigo-500" />
-              ) : (
-                <FileText size={11} className="text-indigo-500" />
-              )}
-              <span className="max-w-[140px] truncate">{d.filename}</span>
-              <button
-                type="button"
-                onClick={() => void removeDocument(d.id)}
-                className="text-slate-400 hover:text-red-600"
-                aria-label="Remove attachment"
-              >
-                <XIcon size={10} />
-              </button>
+      {/* Composer — centered Claude/ChatGPT-style pill */}
+      <div className="border-t border-slate-100 bg-gradient-to-b from-white to-slate-50/40">
+        <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3">
+          {/* Attachment chips */}
+          {documents.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {documents.map((d) => (
+                <div
+                  key={d.id}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-700 shadow-sm"
+                  title={`${d.filename} · ${d.kind.toUpperCase()} · ${Math.round(d.size / 1024)} KB`}
+                >
+                  {d.kind === "image" ? (
+                    <ImageIcon size={11} className="text-indigo-500" />
+                  ) : (
+                    <FileText size={11} className="text-indigo-500" />
+                  )}
+                  <span className="max-w-[180px] truncate">{d.filename}</span>
+                  <button
+                    type="button"
+                    onClick={() => void removeDocument(d.id)}
+                    className="text-slate-400 hover:text-red-600"
+                    aria-label="Remove attachment"
+                  >
+                    <XIcon size={10} />
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {/* Composer */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void send();
-        }}
-        className="flex items-end gap-2 border-t border-slate-100 p-3"
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          className="hidden"
-          accept=".pdf,.docx,.txt,.md,.csv,image/png,image/jpeg,image/webp,image/gif"
-          onChange={onFilePicked}
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50"
-          aria-label="Attach document"
-          title="Attach PDF, DOCX, TXT, CSV, or image"
-        >
-          {uploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
-        </button>
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+          <form
+            onSubmit={(e) => {
               e.preventDefault();
               void send();
-            }
-          }}
-          rows={1}
-          placeholder={
-            documents.length > 0
-              ? "Ask a question about the attached document…"
-              : "Ask anything about your business…"
-          }
-          className="max-h-32 flex-1 resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400"
-        />
-        <button
-          type="submit"
-          disabled={!input.trim() || sending}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
-          aria-label="Send"
-        >
-          {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-        </button>
-      </form>
+            }}
+            className="flex items-end gap-2 rounded-3xl border border-slate-200 bg-white px-2.5 py-2 shadow-[0_2px_14px_rgba(15,23,42,0.06)] focus-within:border-indigo-300 focus-within:shadow-[0_2px_18px_rgba(99,102,241,0.12)]"
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept=".pdf,.docx,.txt,.md,.csv,image/png,image/jpeg,image/webp,image/gif"
+              onChange={onFilePicked}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-indigo-600 disabled:opacity-50"
+              aria-label="Attach document"
+              title="Attach PDF, DOCX, TXT, CSV, or image"
+            >
+              {uploading ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
+            </button>
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              rows={1}
+              placeholder={
+                documents.length > 0
+                  ? "Ask a question about the attached document…"
+                  : "Message Zilo Chat…"
+              }
+              className="max-h-40 flex-1 resize-none bg-transparent px-1 py-2 text-[14px] text-slate-900 placeholder:text-slate-400 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || sending}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-indigo-600 disabled:bg-slate-200 disabled:text-slate-400"
+              aria-label="Send"
+            >
+              {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            </button>
+          </form>
+          <p className="mt-2 text-center text-[10.5px] text-slate-400">
+            Zilo may call tools on your CRM. Confirm destructive actions before they run.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -337,7 +352,7 @@ function MessageBubble({ msg }: { msg: AssistantMessage }) {
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-600 px-3.5 py-2 text-sm text-white shadow-sm">
+        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[14px] text-slate-900">
           {msg.content}
         </div>
       </div>
@@ -346,14 +361,19 @@ function MessageBubble({ msg }: { msg: AssistantMessage }) {
   if (msg.role === "assistant") {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[95%] space-y-1.5">
-          {msg.steps && msg.steps.length > 0 && <StepsTrail steps={msg.steps} />}
-          <div className="rounded-2xl rounded-bl-md bg-slate-50 px-4 py-3 text-sm text-slate-800 ring-1 ring-slate-200/60">
-            {msg.content ? (
-              <MarkdownBody content={msg.content} />
-            ) : (
-              <span className="italic text-slate-400">(no reply)</span>
-            )}
+        <div className="flex w-full max-w-full gap-3">
+          <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 text-white">
+            <Sparkles size={13} />
+          </div>
+          <div className="min-w-0 flex-1 space-y-1.5">
+            {msg.steps && msg.steps.length > 0 && <StepsTrail steps={msg.steps} />}
+            <div className="text-[14px] leading-relaxed text-slate-800">
+              {msg.content ? (
+                <MarkdownBody content={msg.content} />
+              ) : (
+                <span className="italic text-slate-400">(no reply)</span>
+              )}
+            </div>
           </div>
         </div>
       </div>

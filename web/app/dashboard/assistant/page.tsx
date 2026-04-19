@@ -11,6 +11,9 @@ export default function AssistantPage() {
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
+  // Bumped every time the user explicitly clicks "New" so the chat component
+  // remounts with a clean slate even if activeId was already null.
+  const [newNonce, setNewNonce] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -72,6 +75,7 @@ export default function AssistantPage() {
             onClick={() => {
               setActiveId(null);
               setEditingId(null);
+              setNewNonce((n) => n + 1);
             }}
             className="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2 py-0.5 text-[10.5px] font-semibold text-white hover:bg-indigo-700"
           >
@@ -178,7 +182,7 @@ export default function AssistantPage() {
       {/* Chat pane */}
       <main className="flex-1 overflow-hidden">
         <AssistantChat
-          key={activeId ?? "new"}
+          key={activeId ?? `new-${newNonce}`}
           conversationId={activeId}
           onConversationChange={(id) => {
             setActiveId(id);
