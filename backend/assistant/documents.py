@@ -40,6 +40,7 @@ SUPPORTED_MIME = {
 
 
 def _extract_pdf(data: bytes) -> str:
+    text = ""
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
@@ -49,9 +50,50 @@ def _extract_pdf(data: bytes) -> str:
                 out.append(page.extract_text() or "")
             except Exception:
                 continue
-        return "\n\n".join(out).strip()
+        text = "\n\n".join(out).strip()
     except Exception as e:
         logger.warning(f"[documents] PDF extract failed: {e}")
+
+    # If pypdf found no text (scanned/image-only PDF), fall back to AWS Textract
+    if not text:
+        text = _ocr_pdf_textract(data)
+    return text
+
+
+def _ocr_pdf_textract(data: bytes) -> str:
+    """Use AWS Textract to extract text from a scanned PDF. Returns '' on any failure."""
+    import os
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+    region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "us-east-1"
+    if not access_key or not secret_key:
+        logger.info("[documents] Textract OCR skipped — AWS credentials not configured.")
+        return ""
+    try:
+        import boto3
+        client = boto3.client(
+            "textract",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region,
+        )
+        # detect_document_text works on a single page at a time (bytes).
+        # For multi-page PDFs we use start_document_text_detection (async),
+        # but to keep it simple here we use the sync API (supports 1 page or single image).
+        # Multi-page PDFs need S3 upload; we cap at 5 MB to use sync path.
+        if len(data) <= 5 * 1024 * 1024:
+            resp = client.detect_document_text(Document={"Bytes": data})
+            lines: List[str] = [
+                blk["Text"]
+                for blk in (resp.get("Blocks") or [])
+                if blk.get("BlockType") == "LINE"
+            ]
+            return "\n".join(lines).strip()
+        # Larger PDFs: skip OCR and inform caller
+        logger.info("[documents] PDF too large for sync Textract (>5 MB). OCR skipped.")
+        return ""
+    except Exception as e:
+        logger.warning(f"[documents] Textract OCR failed: {e}")
         return ""
 
 

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from .documents import delete_document, list_for_conversation, store_upload
 from .models import DEFAULT_MODEL, list_available_models
 from .orchestrator import run_turn
+from .titler import generate_title
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,27 @@ def _mk_router(db, get_current_user):
         # Attach tool-trace to the last assistant message for UI display
         if result.get("steps") and new_msgs and new_msgs[-1].get("role") == "assistant":
             new_msgs[-1]["steps"] = result["steps"]
+
+        # Smart title: generated once after the first reply (background, best-effort).
+        is_first_turn = not conv.get("messages")
+        current_title = conv.get("title") or msg[:60]
+        reply_text = result.get("reply") or ""
+        if is_first_turn and reply_text:
+            import asyncio as _asyncio
+
+            async def _update_title() -> None:
+                try:
+                    smart = await generate_title(msg, reply_text)
+                    if smart:
+                        await db.assistant_conversations.update_one(
+                            {"_id": conv_id, "user_id": user_id},
+                            {"$set": {"title": smart}},
+                        )
+                except Exception:
+                    pass
+
+            _asyncio.create_task(_update_title())
+
         await db.assistant_conversations.update_one(
             {"_id": conv_id, "user_id": user_id},
             {
@@ -144,7 +166,7 @@ def _mk_router(db, get_current_user):
                 "$set": {
                     "updated_at": datetime.utcnow(),
                     "model": result.get("model") or conv.get("model"),
-                    "title": conv.get("title") or msg[:60],
+                    "title": current_title,
                 },
             },
         )

@@ -20,7 +20,9 @@ import {
   FileText,
   Image as ImageIcon,
   X as XIcon,
+  ShieldCheck,
 } from "lucide-react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -168,6 +170,16 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             </div>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          {!compact && (
+            <Link
+              href="/dashboard/assistant/audit"
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-500 hover:border-indigo-300 hover:text-indigo-600"
+              title="View audit log"
+            >
+              <ShieldCheck size={11} /> Audit
+            </Link>
+          )}
         <select
           value={modelId}
           onChange={(e) => setModelId(e.target.value)}
@@ -181,6 +193,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           ))}
           {!models.length && <option>No models</option>}
         </select>
+        </div>
       </div>
 
       {/* Messages — centered ChatGPT/Claude column */}
