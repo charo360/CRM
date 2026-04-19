@@ -21,6 +21,7 @@ import {
   Image as ImageIcon,
   X as XIcon,
   ShieldCheck,
+  Download,
 } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
@@ -365,6 +366,22 @@ export default function AssistantChat({ conversationId, onConversationChange, co
 }
 
 function MessageBubble({ msg }: { msg: AssistantMessage }) {
+  const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
+
+  async function handleExport(format: "pdf" | "docx") {
+    if (!msg.content || exporting) return;
+    setExporting(format);
+    try {
+      // Derive a filename from the first heading or first line
+      const firstLine = msg.content.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") ?? "zilo-export";
+      await assistantApi.exportDocument(msg.content, format, firstLine.slice(0, 60));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExporting(null);
+    }
+  }
+
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
@@ -375,6 +392,7 @@ function MessageBubble({ msg }: { msg: AssistantMessage }) {
     );
   }
   if (msg.role === "assistant") {
+    const hasContent = (msg.content ?? "").length > 80;
     return (
       <div className="flex justify-start">
         <div className="flex w-full max-w-full gap-3">
@@ -390,6 +408,30 @@ function MessageBubble({ msg }: { msg: AssistantMessage }) {
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
+            {/* Download buttons — shown for substantial replies */}
+            {hasContent && (
+              <div className="flex items-center gap-1.5 pt-1">
+                <span className="text-[10px] text-slate-400">Download as</span>
+                <button
+                  type="button"
+                  onClick={() => void handleExport("pdf")}
+                  disabled={!!exporting}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-50"
+                >
+                  {exporting === "pdf" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
+                  PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleExport("docx")}
+                  disabled={!!exporting}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-50"
+                >
+                  {exporting === "docx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
+                  Word
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

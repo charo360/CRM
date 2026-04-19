@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections import defaultdict, deque
@@ -9,6 +10,7 @@ from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 
 from .documents import delete_document, list_for_conversation, store_upload
 from .models import DEFAULT_MODEL, list_available_models
@@ -254,6 +256,43 @@ def _mk_router(db, get_current_user):
         if not ok:
             raise HTTPException(404, "Document not found")
         return {"status": "deleted"}
+
+    @router.post("/export")
+    async def export_document(req: Request, user=Depends(get_current_user)):
+        """Convert markdown content to PDF or DOCX and stream the file back."""
+        from .document_generator import cleanup_file, generate_docx, generate_pdf
+
+        body = await req.json()
+        content: str = (body.get("content") or "").strip()
+        fmt: str = (body.get("format") or "pdf").lower()
+        raw_name: str = (body.get("filename") or "zilo-export").strip()
+
+        if not content:
+            raise HTTPException(400, "content is required")
+        if fmt not in ("pdf", "docx"):
+            raise HTTPException(400, "format must be 'pdf' or 'docx'")
+
+        # Sanitise filename
+        safe = re.sub(r"[^\w\-]", "_", raw_name)[:60] or "zilo-export"
+        filename = f"{safe}.{fmt}"
+
+        try:
+            if fmt == "pdf":
+                filepath = generate_pdf(content, filename)
+                media = "application/pdf"
+            else:
+                filepath = generate_docx(content, filename)
+                media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        except Exception as e:
+            logger.exception("[assistant.export] generation failed")
+            raise HTTPException(500, f"Document generation failed: {e}")
+
+        return FileResponse(
+            path=filepath,
+            media_type=media,
+            filename=filename,
+            background=None,
+        )
 
     @router.get("/audit")
     async def audit_log(limit: int = 50, user=Depends(get_current_user)):

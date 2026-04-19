@@ -646,6 +646,32 @@ export const assistantApi = {
     api.delete<{ status: string }>(`/assistant/documents/${docId}`),
   audit: (limit = 50) =>
     api.get<AssistantAuditEntry[]>(`/assistant/audit?limit=${limit}`),
+  exportDocument: async (
+    content: string,
+    format: "pdf" | "docx",
+    filename?: string
+  ): Promise<void> => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/assistant/export`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ content, format, filename: filename || "zilo-export" }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(typeof err.detail === "string" ? err.detail : "Export failed");
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${filename || "zilo-export"}.${format}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
   uploadDocument: async (file: File, conversationId?: string | null) => {
     const token = getToken();
     const form = new FormData();
