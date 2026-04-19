@@ -110,12 +110,15 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     }
   }
 
+  // Load conversation once on mount (or when the id prop changes).
+  // We intentionally do NOT include convId so the check "!== convId" doesn't
+  // prevent loading when the component remounts with the same id.
   useEffect(() => {
-    if (conversationId && conversationId !== convId) {
-      setConvId(conversationId);
-      void loadConversation(conversationId);
-    }
-  }, [conversationId, convId, loadConversation]);
+    if (!conversationId) return;
+    setConvId(conversationId);
+    void loadConversation(conversationId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
