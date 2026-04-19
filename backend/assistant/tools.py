@@ -418,6 +418,239 @@ async def create_broadcast(ctx: ToolContext, args: Dict[str, Any]):
 # CHANNEL ADMIN
 # ═════════════════════════════════════════════════════════════════════════════
 @tool(
+    name="update_customer",
+    description="Update fields on an existing customer. Only the provided fields are changed.",
+    parameters={
+        "type": "object",
+        "required": ["customer_id"],
+        "properties": {
+            "customer_id": {"type": "string"},
+            "name": {"type": "string"},
+            "phone_number": {"type": "string"},
+            "email": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "notes": {"type": "string"},
+        },
+    },
+    destructive=True,
+)
+async def update_customer(ctx: ToolContext, args: Dict[str, Any]):
+    cid = args["customer_id"]
+    updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
+    for k in ("name", "phone_number", "email", "notes"):
+        if k in args and args[k] is not None:
+            updates[k] = args[k]
+    if "tags" in args and isinstance(args["tags"], list):
+        updates["tags"] = args["tags"]
+    res = await ctx.db.customers.update_one(
+        {"_id": cid, "user_id": ctx.business_id},
+        {"$set": updates},
+    )
+    if res.matched_count == 0:
+        return {"error": "Customer not found"}
+    return {"status": "updated", "customer_id": cid, "changed": list(updates.keys())}
+
+
+@tool(
+    name="delete_customer",
+    description="Delete a customer and all of their follow-ups. Messages are kept for audit. Irreversible.",
+    parameters={
+        "type": "object",
+        "required": ["customer_id"],
+        "properties": {"customer_id": {"type": "string"}},
+    },
+    destructive=True,
+)
+async def delete_customer(ctx: ToolContext, args: Dict[str, Any]):
+    cid = args["customer_id"]
+    cust = await ctx.db.customers.find_one({"_id": cid, "user_id": ctx.business_id})
+    if not cust:
+        return {"error": "Customer not found"}
+    await ctx.db.customers.delete_one({"_id": cid, "user_id": ctx.business_id})
+    await ctx.db.followups.delete_many({"customer_id": cid, "user_id": ctx.business_id})
+    return {"status": "deleted", "customer_id": cid, "name": cust.get("name")}
+
+
+@tool(
+    name="create_product",
+    description="Add a product to the catalog.",
+    parameters={
+        "type": "object",
+        "required": ["name", "price"],
+        "properties": {
+            "name": {"type": "string"},
+            "price": {"type": "number"},
+            "description": {"type": "string"},
+            "in_stock": {"type": "boolean", "default": True},
+        },
+    },
+    destructive=True,
+)
+async def create_product(ctx: ToolContext, args: Dict[str, Any]):
+    pid = str(uuid.uuid4())
+    await ctx.db.products.insert_one({
+        "_id": pid,
+        "user_id": ctx.business_id,
+        "name": (args.get("name") or "").strip(),
+        "price": float(args.get("price") or 0),
+        "description": (args.get("description") or "").strip() or None,
+        "in_stock": bool(args.get("in_stock", True)),
+        "images": [],
+        "created_at": datetime.utcnow(),
+    })
+    return {"status": "created", "product_id": pid}
+
+
+@tool(
+    name="update_product",
+    description="Update a product in the catalog (price, name, description, stock).",
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {
+            "product_id": {"type": "string"},
+            "name": {"type": "string"},
+            "price": {"type": "number"},
+            "description": {"type": "string"},
+            "in_stock": {"type": "boolean"},
+        },
+    },
+    destructive=True,
+)
+async def update_product(ctx: ToolContext, args: Dict[str, Any]):
+    pid = args["product_id"]
+    updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
+    for k in ("name", "description"):
+        if k in args and args[k] is not None:
+            updates[k] = args[k]
+    if "price" in args and args["price"] is not None:
+        updates["price"] = float(args["price"])
+    if "in_stock" in args and args["in_stock"] is not None:
+        updates["in_stock"] = bool(args["in_stock"])
+    res = await ctx.db.products.update_one(
+        {"_id": pid, "user_id": ctx.business_id},
+        {"$set": updates},
+    )
+    if res.matched_count == 0:
+        return {"error": "Product not found"}
+    return {"status": "updated", "product_id": pid, "changed": list(updates.keys())}
+
+
+@tool(
+    name="delete_product",
+    description="Remove a product from the catalog.",
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {"product_id": {"type": "string"}},
+    },
+    destructive=True,
+)
+async def delete_product(ctx: ToolContext, args: Dict[str, Any]):
+    pid = args["product_id"]
+    res = await ctx.db.products.delete_one({"_id": pid, "user_id": ctx.business_id})
+    if res.deleted_count == 0:
+        return {"error": "Product not found"}
+    return {"status": "deleted", "product_id": pid}
+
+
+@tool(
+    name="update_order_status",
+    description="Move an order through its fulfillment lifecycle. Allowed: New, Confirmed, Preparing, Ready, Done, Cancelled.",
+    parameters={
+        "type": "object",
+        "required": ["order_id", "status"],
+        "properties": {
+            "order_id": {"type": "string"},
+            "status": {"type": "string", "enum": ["New", "Confirmed", "Preparing", "Ready", "Done", "Cancelled"]},
+        },
+    },
+    destructive=True,
+)
+async def update_order_status(ctx: ToolContext, args: Dict[str, Any]):
+    oid = args["order_id"]
+    res = await ctx.db.orders.update_one(
+        {"_id": oid, "user_id": ctx.business_id},
+        {"$set": {"fulfillment_status": args["status"], "updated_at": datetime.utcnow()}},
+    )
+    if res.matched_count == 0:
+        return {"error": "Order not found"}
+    return {"status": "updated", "order_id": oid, "new_status": args["status"]}
+
+
+@tool(
+    name="record_sale",
+    description="Record a manual sale against a customer. Amount is in the business's default currency.",
+    parameters={
+        "type": "object",
+        "required": ["customer_id", "amount"],
+        "properties": {
+            "customer_id": {"type": "string"},
+            "amount": {"type": "number"},
+            "description": {"type": "string"},
+            "payment_method": {"type": "string"},
+        },
+    },
+    destructive=True,
+)
+async def record_sale(ctx: ToolContext, args: Dict[str, Any]):
+    cust = await ctx.db.customers.find_one({"_id": args["customer_id"], "user_id": ctx.business_id})
+    if not cust:
+        return {"error": "Customer not found"}
+    sid = str(uuid.uuid4())
+    await ctx.db.sales.insert_one({
+        "_id": sid,
+        "user_id": ctx.business_id,
+        "customer_id": cust["_id"],
+        "customer_name": cust.get("name", ""),
+        "amount": float(args["amount"]),
+        "description": (args.get("description") or "").strip() or None,
+        "payment_method": (args.get("payment_method") or "").strip() or None,
+        "source": "sale",
+        "sale_date": datetime.utcnow(),
+        "created_at": datetime.utcnow(),
+    })
+    return {"status": "recorded", "sale_id": sid, "amount": args["amount"]}
+
+
+@tool(
+    name="list_team",
+    description="List team members on this business account and their roles.",
+    parameters={"type": "object", "properties": {}},
+)
+async def list_team(ctx: ToolContext, args: Dict[str, Any]):
+    rows = await ctx.db.team_members.find({"business_id": ctx.business_id}).to_list(100)
+    return {"count": len(rows), "members": [_serialize(r) for r in rows]}
+
+
+@tool(
+    name="integrations_status",
+    description="Return the connection state of every integrated channel (WhatsApp, Telegram, Meta Messenger/Instagram).",
+    parameters={"type": "object", "properties": {}},
+)
+async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
+    out: Dict[str, Any] = {}
+    # WhatsApp
+    try:
+        from whatsapp_service import get_whatsapp_service
+        wa = get_whatsapp_service(ctx.db)
+        status = await wa.get_instance_status(ctx.business_id)
+        out["whatsapp"] = {"connected": bool(status.get("connected")), "state": status.get("state")}
+    except Exception as e:
+        out["whatsapp"] = {"connected": False, "error": str(e)}
+    # Telegram
+    tg = await ctx.db.telegram_connections.find_one({"user_id": ctx.business_id})
+    out["telegram"] = {"connected": bool(tg), "bot_username": (tg or {}).get("bot_username")}
+    # Meta
+    meta_rows = await ctx.db.meta_connections.find({"user_id": ctx.business_id}).to_list(10)
+    out["meta"] = [
+        {"channel": r.get("channel"), "page_id": r.get("page_id"), "connected": True}
+        for r in meta_rows
+    ]
+    return out
+
+
+@tool(
     name="telegram_status",
     description="Get the current Telegram bot connection state for this account.",
     parameters={"type": "object", "properties": {}},

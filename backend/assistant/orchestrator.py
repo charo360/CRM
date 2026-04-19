@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .models import chat_with_tools
@@ -123,6 +125,23 @@ async def run_turn(
 
             result = await run_tool(name, ctx, args)
             steps.append({"tool": name, "arguments": args, "result": result})
+
+            # Audit log for destructive actions
+            if spec and spec.get("destructive"):
+                try:
+                    await ctx.db.assistant_audit_log.insert_one({
+                        "_id": str(uuid.uuid4()),
+                        "user_id": ctx.business_id,
+                        "actor_id": ctx.user_id,
+                        "tool": name,
+                        "arguments": args,
+                        "result": result,
+                        "success": not (isinstance(result, dict) and "error" in result),
+                        "created_at": datetime.utcnow(),
+                    })
+                except Exception as e:
+                    logger.warning(f"[assistant.audit] failed to write log: {e}")
+
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],

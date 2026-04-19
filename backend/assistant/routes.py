@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -14,6 +16,25 @@ from .orchestrator import run_turn
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
+
+# ── Rate limit: 30 turns per 60 seconds per user ─────────────────────────────
+_RATE_WINDOW_SEC = 60
+_RATE_MAX = 30
+_rate_hits: Dict[str, Deque[float]] = defaultdict(deque)
+
+
+def _check_rate_limit(user_id: str) -> None:
+    now = time.time()
+    dq = _rate_hits[user_id]
+    while dq and now - dq[0] > _RATE_WINDOW_SEC:
+        dq.popleft()
+    if len(dq) >= _RATE_MAX:
+        retry = int(_RATE_WINDOW_SEC - (now - dq[0])) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many assistant requests. Try again in {retry}s.",
+        )
+    dq.append(now)
 
 
 def _mk_router(db, get_current_user):
@@ -72,6 +93,7 @@ def _mk_router(db, get_current_user):
             raise HTTPException(400, "message is required")
 
         user_id = user.get("business_id", user["_id"])
+        _check_rate_limit(user_id)
         conv_id = body.get("conversation_id")
         conv: Dict[str, Any]
         if conv_id:
@@ -132,6 +154,24 @@ def _mk_router(db, get_current_user):
             "model": result.get("model"),
             "needs_confirmation": result.get("needs_confirmation"),
         }
+
+    @router.get("/audit")
+    async def audit_log(limit: int = 50, user=Depends(get_current_user)):
+        """Return the last N destructive tool calls made by the assistant for this account."""
+        user_id = user.get("business_id", user["_id"])
+        limit = max(1, min(int(limit or 50), 200))
+        rows = await db.assistant_audit_log.find(
+            {"user_id": user_id}
+        ).sort("created_at", -1).to_list(limit)
+        return [{
+            "id": r.get("_id"),
+            "tool": r.get("tool"),
+            "arguments": r.get("arguments"),
+            "result": r.get("result"),
+            "success": r.get("success"),
+            "actor_id": r.get("actor_id"),
+            "created_at": r.get("created_at"),
+        } for r in rows]
 
     return router
 
