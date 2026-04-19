@@ -10666,6 +10666,15 @@ async def telegram_user_disconnect(user=Depends(get_current_user)):
     return {"status": "disconnected", "connected": False}
 
 
+# ── AI Assistant routes ──
+try:
+    from assistant.routes import _mk_router as _mk_assistant_router
+    _assistant_router = _mk_assistant_router(db, get_current_user)
+    api_router.include_router(_assistant_router)
+    logging.info("[assistant] routes mounted at /api/assistant/*")
+except Exception as _e:
+    logging.error(f"[assistant] failed to mount routes: {_e}")
+
 app.include_router(api_router)
 
 

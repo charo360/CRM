@@ -558,6 +558,62 @@ export const telegramApi = {
     api.delete<{ status: string; connected: boolean }>("/telegram/connect"),
 };
 
+// ── Assistant ────────────────────────────────────────────────────────────────
+export interface AssistantModel {
+  id: string;
+  label: string;
+  provider: string;
+}
+
+export interface AssistantStep {
+  tool: string;
+  arguments: Record<string, unknown>;
+  result: unknown;
+}
+
+export interface AssistantMessage {
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  steps?: AssistantStep[];
+  tool_calls?: unknown;
+}
+
+export interface AssistantConversationSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface AssistantConversation {
+  id: string;
+  title: string;
+  model: string | null;
+  messages: AssistantMessage[];
+}
+
+export interface AssistantChatResponse {
+  conversation_id: string;
+  reply: string;
+  steps: AssistantStep[];
+  model: string | null;
+  needs_confirmation: null | { tool: string; arguments: Record<string, unknown>; reason: string };
+}
+
+export const assistantApi = {
+  models: () => api.get<{ default: string; models: AssistantModel[] }>("/assistant/models"),
+  listConversations: () => api.get<AssistantConversationSummary[]>("/assistant/conversations"),
+  getConversation: (id: string) => api.get<AssistantConversation>(`/assistant/conversations/${id}`),
+  deleteConversation: (id: string) =>
+    api.delete<{ status: string }>(`/assistant/conversations/${id}`),
+  chat: (body: {
+    message: string;
+    conversation_id?: string | null;
+    model?: string;
+    auto_approve?: boolean;
+  }) => api.post<AssistantChatResponse>("/assistant/chat", body),
+};
+
 export const metaApi = {
   connections: () => api.get<MetaConnection[]>("/meta/connections"),
   connect: (body: { page_id: string; page_access_token: string; channel: string; instagram_id?: string }) =>

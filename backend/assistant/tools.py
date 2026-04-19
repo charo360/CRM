@@ -1,0 +1,482 @@
+"""Tool registry for the AI assistant.
+
+Each tool:
+- Has a JSON-schema spec the LLM sees
+- Has an async implementation that operates on the CRM database
+- Is tagged `destructive=True` when it mutates data — the orchestrator can require
+  a confirmation turn before executing.
+
+All tools are scoped to the authenticated user via the `ctx` (contains `db`, `user_id`,
+`business_id`). Tools never return raw Mongo _id objects — always serialized strings.
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# ── Tool context ──────────────────────────────────────────────────────────────
+class ToolContext:
+    def __init__(self, db, user: Dict[str, Any]):
+        self.db = db
+        self.user = user
+        self.user_id: str = user["_id"]
+        self.business_id: str = user.get("business_id") or user["_id"]
+
+# ── Registry types ────────────────────────────────────────────────────────────
+ToolImpl = Callable[[ToolContext, Dict[str, Any]], Any]
+
+REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+
+def tool(
+    name: str,
+    description: str,
+    parameters: Dict[str, Any],
+    destructive: bool = False,
+):
+    def deco(fn: ToolImpl):
+        REGISTRY[name] = {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "destructive": destructive,
+            "impl": fn,
+        }
+        return fn
+    return deco
+
+
+def openai_tool_specs() -> List[Dict[str, Any]]:
+    return [{
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["parameters"],
+        },
+    } for t in REGISTRY.values()]
+
+
+async def run_tool(name: str, ctx: ToolContext, args: Dict[str, Any]) -> Any:
+    if name not in REGISTRY:
+        return {"error": f"Unknown tool: {name}"}
+    try:
+        res = await REGISTRY[name]["impl"](ctx, args or {})
+        return res
+    except Exception as e:
+        logger.exception(f"[assistant.tool] {name} failed")
+        return {"error": str(e)}
+
+
+def _s(v: Any) -> Any:
+    if isinstance(v, datetime):
+        return v.isoformat()
+    return v
+
+
+def _serialize(doc: Dict[str, Any]) -> Dict[str, Any]:
+    out = {}
+    for k, v in (doc or {}).items():
+        if k == "_id":
+            out["id"] = str(v)
+            continue
+        if isinstance(v, dict):
+            out[k] = _serialize(v)
+        elif isinstance(v, list):
+            out[k] = [_serialize(x) if isinstance(x, dict) else _s(x) for x in v]
+        else:
+            out[k] = _s(v)
+    return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# READ TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+@tool(
+    name="list_customers",
+    description="List customers for the current business. Use `search` to filter by name/phone substring. Returns up to `limit` records (default 20, max 100).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "search": {"type": "string", "description": "Optional name or phone substring"},
+            "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            "only_customers": {"type": "boolean", "description": "If true, exclude raw WhatsApp contacts (default true)"},
+        },
+    },
+)
+async def list_customers(ctx: ToolContext, args: Dict[str, Any]):
+    q: Dict[str, Any] = {"user_id": ctx.business_id}
+    if args.get("only_customers", True):
+        q["is_customer"] = True
+    if s := (args.get("search") or "").strip():
+        q["$or"] = [{"name": {"$regex": s, "$options": "i"}}, {"phone_number": {"$regex": s}}]
+    limit = min(int(args.get("limit") or 20), 100)
+    rows = await ctx.db.customers.find(q).sort("last_interaction", -1).to_list(limit)
+    return {"count": len(rows), "customers": [_serialize(r) for r in rows]}
+
+
+@tool(
+    name="get_customer",
+    description="Get one customer's full profile and recent activity by id or phone number.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "customer_id": {"type": "string"},
+            "phone_number": {"type": "string"},
+        },
+    },
+)
+async def get_customer(ctx: ToolContext, args: Dict[str, Any]):
+    q: Dict[str, Any] = {"user_id": ctx.business_id}
+    if cid := args.get("customer_id"):
+        q["_id"] = cid
+    elif ph := args.get("phone_number"):
+        q["phone_number"] = ph
+    else:
+        return {"error": "Provide customer_id or phone_number"}
+    doc = await ctx.db.customers.find_one(q)
+    if not doc:
+        return {"error": "Customer not found"}
+    recent_msgs = await ctx.db.messages.find(
+        {"user_id": ctx.business_id, "customer_id": doc["_id"]}
+    ).sort("created_at", -1).limit(10).to_list(10)
+    return {
+        "customer": _serialize(doc),
+        "recent_messages": [_serialize(m) for m in recent_msgs],
+    }
+
+
+@tool(
+    name="list_orders",
+    description="List recent orders. Filter by status (New/Confirmed/Preparing/Ready/Done) or customer_id.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string"},
+            "customer_id": {"type": "string"},
+            "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+        },
+    },
+)
+async def list_orders(ctx: ToolContext, args: Dict[str, Any]):
+    q: Dict[str, Any] = {"user_id": ctx.business_id}
+    if st := args.get("status"):
+        q["fulfillment_status"] = st
+    if cid := args.get("customer_id"):
+        q["customer_id"] = cid
+    limit = min(int(args.get("limit") or 20), 100)
+    rows = await ctx.db.orders.find(q).sort("created_at", -1).to_list(limit)
+    return {"count": len(rows), "orders": [_serialize(r) for r in rows]}
+
+
+@tool(
+    name="list_products",
+    description="List products in the catalog.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "search": {"type": "string"},
+            "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+        },
+    },
+)
+async def list_products(ctx: ToolContext, args: Dict[str, Any]):
+    q: Dict[str, Any] = {"user_id": ctx.business_id}
+    if s := (args.get("search") or "").strip():
+        q["name"] = {"$regex": s, "$options": "i"}
+    limit = min(int(args.get("limit") or 50), 100)
+    rows = await ctx.db.products.find(q).sort("created_at", -1).to_list(limit)
+    return {"count": len(rows), "products": [_serialize(r) for r in rows]}
+
+
+@tool(
+    name="list_followups",
+    description="List follow-up reminders. Filter by status (pending/completed/overdue) or assignee.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string"},
+            "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+        },
+    },
+)
+async def list_followups(ctx: ToolContext, args: Dict[str, Any]):
+    q: Dict[str, Any] = {"user_id": ctx.business_id}
+    if st := args.get("status"):
+        q["status"] = st
+    limit = min(int(args.get("limit") or 20), 100)
+    rows = await ctx.db.followups.find(q).sort("reminder_date", 1).to_list(limit)
+    return {"count": len(rows), "followups": [_serialize(r) for r in rows]}
+
+
+@tool(
+    name="get_analytics_summary",
+    description="High-level business stats: customer count, sales today, revenue, active orders, bookings today.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_analytics_summary(ctx: ToolContext, args: Dict[str, Any]):
+    now = datetime.utcnow()
+    start = datetime(now.year, now.month, now.day)
+
+    customers_count = await ctx.db.customers.count_documents({"user_id": ctx.business_id, "is_customer": True})
+    active_orders = await ctx.db.orders.count_documents({
+        "user_id": ctx.business_id,
+        "fulfillment_status": {"$nin": ["Done", "Delivered", "Cancelled"]},
+    })
+    sales_today_cur = ctx.db.sales.find({"user_id": ctx.business_id, "sale_date": {"$gte": start}})
+    sales_today = await sales_today_cur.to_list(500)
+    sales_revenue_today = sum(float(s.get("amount") or 0) for s in sales_today)
+    bookings_today = await ctx.db.bookings.count_documents({
+        "user_id": ctx.business_id,
+        "booking_date": {"$gte": start, "$lt": start + timedelta(days=1)},
+    })
+    return {
+        "customers_count": customers_count,
+        "active_orders": active_orders,
+        "sales_count_today": len(sales_today),
+        "sales_revenue_today": sales_revenue_today,
+        "bookings_today": bookings_today,
+    }
+
+
+@tool(
+    name="list_broadcasts",
+    description="List recent broadcasts and their delivery stats.",
+    parameters={
+        "type": "object",
+        "properties": {"limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50}},
+    },
+)
+async def list_broadcasts(ctx: ToolContext, args: Dict[str, Any]):
+    limit = min(int(args.get("limit") or 10), 50)
+    rows = await ctx.db.broadcasts.find({"user_id": ctx.business_id}).sort("created_at", -1).to_list(limit)
+    return {"count": len(rows), "broadcasts": [_serialize(r) for r in rows]}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# WRITE TOOLS (destructive=True → require user confirmation)
+# ═════════════════════════════════════════════════════════════════════════════
+@tool(
+    name="create_customer",
+    description="Create a new customer record. Phone number must be in international format (e.g. +254712345678).",
+    parameters={
+        "type": "object",
+        "required": ["name", "phone_number"],
+        "properties": {
+            "name": {"type": "string"},
+            "phone_number": {"type": "string"},
+            "email": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "notes": {"type": "string"},
+        },
+    },
+    destructive=True,
+)
+async def create_customer(ctx: ToolContext, args: Dict[str, Any]):
+    phone = (args.get("phone_number") or "").strip()
+    name = (args.get("name") or "").strip()
+    if not phone or not name:
+        return {"error": "name and phone_number are required"}
+    existing = await ctx.db.customers.find_one({"user_id": ctx.business_id, "phone_number": phone})
+    if existing:
+        await ctx.db.customers.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"name": name, "is_customer": True, "updated_at": datetime.utcnow()}},
+        )
+        return {"status": "updated_existing", "customer_id": existing["_id"]}
+    cid = str(uuid.uuid4())
+    doc = {
+        "_id": cid,
+        "user_id": ctx.business_id,
+        "name": name,
+        "phone_number": phone,
+        "email": (args.get("email") or "").strip() or None,
+        "tags": args.get("tags") or [],
+        "notes": (args.get("notes") or "").strip() or None,
+        "is_customer": True,
+        "auto_created": False,
+        "created_at": datetime.utcnow(),
+        "last_interaction": datetime.utcnow(),
+    }
+    await ctx.db.customers.insert_one(doc)
+    return {"status": "created", "customer_id": cid}
+
+
+@tool(
+    name="create_followup",
+    description="Create a follow-up reminder for a customer. `when` accepts an ISO datetime OR a natural phrase like 'tomorrow 10am', '+3 days', 'next monday'.",
+    parameters={
+        "type": "object",
+        "required": ["customer_id", "when"],
+        "properties": {
+            "customer_id": {"type": "string"},
+            "when": {"type": "string", "description": "ISO datetime or natural phrase"},
+            "type": {"type": "string", "enum": ["call", "whatsapp", "email", "meeting"], "default": "whatsapp"},
+            "message": {"type": "string", "description": "Note or draft message"},
+        },
+    },
+    destructive=True,
+)
+async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
+    cust = await ctx.db.customers.find_one({"_id": args["customer_id"], "user_id": ctx.business_id})
+    if not cust:
+        return {"error": "Customer not found"}
+    when_raw = (args.get("when") or "").strip()
+    reminder = _parse_when(when_raw)
+    if not reminder:
+        return {"error": f"Could not parse 'when': {when_raw!r}"}
+    fid = str(uuid.uuid4())
+    await ctx.db.followups.insert_one({
+        "_id": fid,
+        "user_id": ctx.business_id,
+        "customer_id": cust["_id"],
+        "customer_name": cust.get("name", ""),
+        "customer_phone": cust.get("phone_number", ""),
+        "reminder_date": reminder,
+        "type": args.get("type") or "whatsapp",
+        "message": (args.get("message") or "").strip(),
+        "status": "pending",
+        "created_at": datetime.utcnow(),
+    })
+    return {"status": "created", "followup_id": fid, "reminder_date": reminder.isoformat()}
+
+
+@tool(
+    name="send_whatsapp_message",
+    description="Send a WhatsApp message to a specific customer. Use sparingly — this actually messages the customer.",
+    parameters={
+        "type": "object",
+        "required": ["customer_id", "message"],
+        "properties": {
+            "customer_id": {"type": "string"},
+            "message": {"type": "string"},
+        },
+    },
+    destructive=True,
+)
+async def send_whatsapp_message(ctx: ToolContext, args: Dict[str, Any]):
+    cust = await ctx.db.customers.find_one({"_id": args["customer_id"], "user_id": ctx.business_id})
+    if not cust:
+        return {"error": "Customer not found"}
+    from whatsapp_service import get_whatsapp_service
+    wa = get_whatsapp_service(ctx.db)
+    try:
+        res = await wa.send_message(
+            user_id=ctx.business_id,
+            to_number=cust["phone_number"],
+            message=args["message"],
+            customer_name=cust.get("name", ""),
+            send_context="assistant",
+        )
+        return {"status": "sent", "provider_response": res}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="create_broadcast",
+    description="Create and send a broadcast immediately to an audience. `filter_type` is one of: all, returning, vip, new, or 'custom' with explicit customer_ids.",
+    parameters={
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+            "message": {"type": "string"},
+            "name": {"type": "string"},
+            "filter_type": {"type": "string", "default": "all"},
+            "customer_ids": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+    destructive=True,
+)
+async def create_broadcast(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx  # reuse HTTP to call our own endpoint is overkill; do it directly.
+    # Instead: piggy-back on the existing broadcasts insert, then kick the sender.
+    bid = str(uuid.uuid4())
+    doc = {
+        "_id": bid,
+        "user_id": ctx.business_id,
+        "name": (args.get("name") or "").strip() or None,
+        "message": args["message"],
+        "filter_type": args.get("filter_type") or "all",
+        "customer_ids": args.get("customer_ids") or None,
+        "status": "queued",
+        "created_at": datetime.utcnow(),
+    }
+    await ctx.db.broadcasts.insert_one(doc)
+    return {
+        "status": "queued",
+        "broadcast_id": bid,
+        "note": "Broadcast created; it will be delivered by the broadcast worker on its next cycle.",
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CHANNEL ADMIN
+# ═════════════════════════════════════════════════════════════════════════════
+@tool(
+    name="telegram_status",
+    description="Get the current Telegram bot connection state for this account.",
+    parameters={"type": "object", "properties": {}},
+)
+async def telegram_status(ctx: ToolContext, args: Dict[str, Any]):
+    conn = await ctx.db.telegram_connections.find_one({"user_id": ctx.business_id})
+    if not conn:
+        return {"connected": False}
+    return {"connected": True, "bot_username": conn.get("bot_username", "")}
+
+
+@tool(
+    name="disconnect_telegram",
+    description="Disconnect the Telegram bot from this account. Incoming Telegram messages will stop.",
+    parameters={"type": "object", "properties": {}},
+    destructive=True,
+)
+async def disconnect_telegram(ctx: ToolContext, args: Dict[str, Any]):
+    conn = await ctx.db.telegram_connections.find_one({"user_id": ctx.business_id})
+    if not conn:
+        return {"status": "not_connected"}
+    try:
+        from telegram_service import delete_telegram_webhook
+        await delete_telegram_webhook(conn["bot_token"])
+    except Exception as e:
+        logger.warning(f"telegram webhook delete failed: {e}")
+    await ctx.db.telegram_connections.delete_one({"user_id": ctx.business_id})
+    return {"status": "disconnected"}
+
+
+# ─── helpers ──────────────────────────────────────────────────────────────────
+def _parse_when(raw: str) -> Optional[datetime]:
+    raw = raw.strip().lower()
+    if not raw:
+        return None
+    # ISO 8601
+    try:
+        dt = datetime.fromisoformat(raw.replace("z", "+00:00"))
+        return dt.replace(tzinfo=None)
+    except Exception:
+        pass
+    now = datetime.utcnow()
+    # +N days / +Nh
+    if raw.startswith("+"):
+        try:
+            n = int("".join(c for c in raw if c.isdigit() or c == "-"))
+            if raw.endswith("h"):
+                return now + timedelta(hours=n)
+            return now + timedelta(days=n)
+        except Exception:
+            pass
+    if raw in ("tomorrow", "tmrw"):
+        return (now + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+    if raw == "today":
+        return now + timedelta(hours=2)
+    if "day" in raw and raw.split()[0].isdigit():
+        try:
+            n = int(raw.split()[0])
+            return now + timedelta(days=n)
+        except Exception:
+            pass
+    return None

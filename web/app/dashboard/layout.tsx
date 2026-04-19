@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import { isAuthenticated } from "@/lib/auth";
 import { BusinessProvider } from "@/contexts/BusinessContext";
 import Sidebar from "@/components/Sidebar";
+import AssistantLauncher from "@/components/AssistantLauncher";
 
 /**
  * Auth uses localStorage, which is absent on the server. Without a client-only gate,
@@ -41,6 +42,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         )}
         <main className="flex-1 overflow-auto">{children}</main>
       </div>
+      {mounted && <AssistantLauncher />}
       <Toaster richColors position="top-center" />
     </BusinessProvider>
   );
