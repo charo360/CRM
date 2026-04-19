@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AssistantChat from "@/components/AssistantChat";
 import { assistantApi, type AssistantConversationSummary } from "@/lib/api";
 import { Plus, MessageSquare, Trash2, Loader2, Pencil, Check, X } from "lucide-react";
@@ -14,6 +14,9 @@ export default function AssistantPage() {
   // Bumped every time the user explicitly clicks "New" so the chat component
   // remounts with a clean slate even if activeId was already null.
   const [newNonce, setNewNonce] = useState(0);
+  // Track whether the initial auto-select has already happened so re-loads
+  // (e.g. after saving a new message) don't override an intentional "New" click.
+  const initialLoadDone = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -22,11 +25,15 @@ export default function AssistantPage() {
       // Latest first (backend already sorts by updated_at desc, but be safe)
       list.sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
       setConversations(list);
-      if (!activeId && list.length) setActiveId(list[0].id);
+      // Auto-select the most recent conversation only on the very first load.
+      if (!initialLoadDone.current && list.length) {
+        setActiveId(list[0].id);
+      }
+      initialLoadDone.current = true;
     } finally {
       setLoading(false);
     }
-  }, [activeId]);
+  }, []);
 
   useEffect(() => {
     void load();
