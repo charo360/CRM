@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
@@ -34,7 +34,7 @@ function InstagramGlyph({ className }: { className?: string }) {
 }
 
 /** Set NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=false to hide the Connect buttons (Bird-only mode). */
-const SHOW_DIRECT_META_OAUTH = process.env.NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH !== “false”;
+const SHOW_DIRECT_META_OAUTH = process.env.NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH !== "false";
 
 function MetaMessengerInstagramBirdIcons() {
   return (
@@ -169,6 +169,14 @@ function TelegramStatus({ connection }: { connection?: TelegramConnection }) {
 }
 
 export default function IntegrationsPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-slate-400">Loading…</div>}>
+      <IntegrationsPageInner />
+    </Suspense>
+  );
+}
+
+function IntegrationsPageInner() {
   const [metaConns, setMetaConns] = useState<MetaConnection[]>([]);
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
