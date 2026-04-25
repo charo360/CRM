@@ -38,6 +38,7 @@ _MAX_TEMPLATES_SHOWN = 60
 FLOW_STEPS = (
     "awaiting_product",
     "awaiting_platform",
+    "awaiting_creation_mode",
     "awaiting_template",
     "awaiting_copy_approval",
     "awaiting_greenlight",
@@ -48,29 +49,38 @@ FLOW_STEPS = (
 _STEP_NEXT_ACTION: Dict[str, str] = {
     "awaiting_product": (
         "MANDATORY FIRST STEP — run this before anything else this turn. "
-        "Silently call `list_products` right now and show the real product names as tap chips. "
-        "Even if the user already named a platform (e.g. 'Facebook post', 'Instagram'), "
-        "do NOT jump to templates yet — product must be chosen first. "
-        "FORBIDDEN THIS TURN (do not call under any circumstance): "
-        "`list_orshot_templates`, `render_orshot_template`, `get_orshot_template_fields`, "
-        "`generate_design_background`, `recreate_design_with_ai`, `verify_design_ready`. "
-        "Platform noted — it will be used later. One task only: show products and ask which one."
+        "Silently call `list_products` right now. Then present ALL of these options to the user:\n"
+        "1. Every real product from the catalog — show each as a chip (name + short tag).\n"
+        "2. '📎 I have my own image — I'll attach it via the paperclip' — for custom/non-catalog images.\n"
+        "3. '🎉 It's a promotion or offer — no specific product'\n"
+        "4. '📣 Announcement or news'\n"
+        "FORBIDDEN THIS TURN: `list_orshot_templates`, `render_orshot_template`, "
+        "`get_orshot_template_fields`, `generate_design_background`, `recreate_design_with_ai`, "
+        "`verify_design_ready`. Platform noted — it will be used later."
     ),
     "awaiting_platform": (
         "Product is locked. Now handle platform. "
         "Check the conversation history — did the user already state a platform "
         "(e.g. 'Facebook post', 'Instagram story', 'TikTok', 'LinkedIn')? "
-        "If YES: confirm it aloud (e.g. 'Facebook it is!') then immediately call `list_orshot_templates` "
-        "to show templates for that platform. Do NOT ask about platform again. "
+        "If YES: confirm it aloud (e.g. 'Facebook it is!') then move to creation mode — "
+        "ask HOW they want to create the design (see awaiting_creation_mode). "
         "If NO: ask ONE question — show platform options as tap chips and wait. "
-        "FORBIDDEN: `render_orshot_template`, `get_orshot_template_fields` (only after template picked)."
+        "FORBIDDEN: `list_orshot_templates`, `render_orshot_template`, `get_orshot_template_fields`."
+    ),
+    "awaiting_creation_mode": (
+        "Platform is locked. Now ask HOW the user wants to create the design. "
+        "Show these options as tap chips:\n"
+        "- 🖼️ **Pick from templates** — Browse layouts and choose one\n"
+        "- 🤖 **AI picks the best template** — Let me choose the perfect layout\n"
+        "- ✨ **AI generates a custom design** — Create something unique with AI\n"
+        "Do NOT call any design tools yet. Wait for their choice before proceeding."
     ),
     "awaiting_template": (
-        "Platform is locked. If you haven't shown templates yet this turn, call `list_orshot_templates` "
-        "and show 3 templates with the exact thumbnail_url values copied verbatim from the tool result — "
-        "never invent or retype a URL. Include 'See more options' and 'You pick the best one' chips. "
-        "If templates have already been shown and you are waiting for the user to pick, do NOT call "
-        "`list_orshot_templates` again — just wait. Do NOT ask any other questions this turn."
+        "User chose to pick from templates. Call `list_orshot_templates` and show 3 templates "
+        "with the exact thumbnail_url values copied verbatim from the tool result — "
+        "never invent or retype a URL. Always add 'See more options' and 'You pick the best one' chips. "
+        "If templates have already been shown and user is still picking, do NOT call "
+        "`list_orshot_templates` again — just wait."
     ),
     "awaiting_copy_approval": (
         "Template is locked and its fields have been studied. Propose copy for each text field "
