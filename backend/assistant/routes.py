@@ -138,7 +138,7 @@ def _mk_router(db, get_current_user):
         # design agent regardless of keywords — design is multi-turn stateful.
         prev_agent = conv.get("agent") or None
         design_flow_active = False
-        if "design" in AGENT_REGISTRY:
+        if "creative" in AGENT_REGISTRY or "design" in AGENT_REGISTRY:
             try:
                 from .design_state import load_design_state
                 _ds = await load_design_state(db, conv_id, user_id)
