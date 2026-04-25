@@ -47,13 +47,23 @@ FLOW_STEPS = (
 
 _STEP_NEXT_ACTION: Dict[str, str] = {
     "awaiting_product": (
-        "Ask the user which product they want to feature. "
-        "If catalog has items, silently call `list_products` first and offer them by name."
+        "MANDATORY FIRST STEP — run this before anything else this turn. "
+        "Silently call `list_products` right now and show the real product names as tap chips. "
+        "Even if the user already named a platform (e.g. 'Facebook post', 'Instagram'), "
+        "do NOT jump to templates yet — product must be chosen first. "
+        "FORBIDDEN THIS TURN (do not call under any circumstance): "
+        "`list_orshot_templates`, `render_orshot_template`, `get_orshot_template_fields`, "
+        "`generate_design_background`, `recreate_design_with_ai`, `verify_design_ready`. "
+        "Platform noted — it will be used later. One task only: show products and ask which one."
     ),
     "awaiting_platform": (
-        "Product is locked. Ask ONE question: which platform and format? "
-        "(e.g. Instagram Feed — square, Instagram Story — 9:16, Facebook Post). "
-        "Do NOT jump to templates yet."
+        "Product is locked. Now handle platform. "
+        "Check the conversation history — did the user already state a platform "
+        "(e.g. 'Facebook post', 'Instagram story', 'TikTok', 'LinkedIn')? "
+        "If YES: confirm it aloud (e.g. 'Facebook it is!') then immediately call `list_orshot_templates` "
+        "to show templates for that platform. Do NOT ask about platform again. "
+        "If NO: ask ONE question — show platform options as tap chips and wait. "
+        "FORBIDDEN: `render_orshot_template`, `get_orshot_template_fields` (only after template picked)."
     ),
     "awaiting_template": (
         "Platform is locked. If you haven't shown templates yet this turn, call `list_orshot_templates` "
