@@ -206,12 +206,34 @@ async def list_orders(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_products(ctx: ToolContext, args: Dict[str, Any]):
+    import os as _os
+
     q: Dict[str, Any] = {"user_id": ctx.business_id}
     if s := (args.get("search") or "").strip():
         q["name"] = {"$regex": s, "$options": "i"}
     limit = min(int(args.get("limit") or 50), 100)
     rows = await ctx.db.products.find(q).sort("created_at", -1).to_list(limit)
-    
+
+    backend_url = (
+        _os.environ.get("BACKEND_PUBLIC_URL")
+        or _os.environ.get("PUBLIC_BASE_URL")
+        or ""
+    ).rstrip("/")
+
+    def _to_public(url: str) -> str:
+        if not url or not backend_url or "amazonaws.com" not in url:
+            return url
+        if "X-Amz-Signature" in url or "x-amz-signature" in url:
+            return url
+        try:
+            from image_handler import S3Handler
+            _, key = S3Handler.parse_s3_source_to_bucket_key(url)
+            if key:
+                return f"{backend_url}/api/images/s3/{key}"
+        except Exception:
+            pass
+        return url
+
     products = []
     for p in rows:
         # Handle images like the backend API does
@@ -219,7 +241,7 @@ async def list_products(ctx: ToolContext, args: Dict[str, Any]):
         orig = p.get("image_url")
         if orig and orig not in imgs:
             imgs.insert(0, orig)
-            
+
         product = {
             "id": str(p["_id"]),
             "name": p.get("name", "Unnamed Product"),
@@ -227,8 +249,8 @@ async def list_products(ctx: ToolContext, args: Dict[str, Any]):
             "discount_price": p.get("discount_price"),
             "category": p.get("category") or "Other",
             "sub_category": p.get("sub_category"),
-            "image_url": orig,
-            "images": imgs,
+            "image_url": _to_public(orig),
+            "images": [_to_public(u) for u in imgs],
             "description": p.get("description"),
             "in_stock": p.get("in_stock", True),
             "stock_quantity": p.get("stock_quantity"),
@@ -237,10 +259,10 @@ async def list_products(ctx: ToolContext, args: Dict[str, Any]):
             "pricing_tiers": p.get("pricing_tiers") or None,
             "variants": p.get("variants") or None,
             "modifier_groups": p.get("modifier_groups") or None,
-            "created_at": p.get("created_at")
+            "created_at": p.get("created_at"),
         }
         products.append(product)
-    
+
     return {"count": len(products), "products": products}
 
 
@@ -256,23 +278,55 @@ async def list_products(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
+    import os as _os
+
     product_id = args["product_id"]
     product = await ctx.db.products.find_one({"_id": product_id, "user_id": ctx.business_id})
     if not product:
         return {"error": "Product not found"}
-    
+
     # Handle images like the backend API does
     imgs = list(product.get("images", []))
     orig = product.get("image_url")
     if orig and orig not in imgs:
         imgs.insert(0, orig)
-    
+
+    # Convert private S3 URLs to publicly accessible proxy URLs so that
+    # the AI can share them with users and pass them to Orshot without
+    # triggering S3 AccessDenied errors.
+    backend_url = (
+        _os.environ.get("BACKEND_PUBLIC_URL")
+        or _os.environ.get("PUBLIC_BASE_URL")
+        or ""
+    ).rstrip("/")
+
+    def _to_public(url: str) -> str:
+        if not url:
+            return url
+        if not backend_url:
+            return url
+        if "amazonaws.com" not in url:
+            return url
+        if "X-Amz-Signature" in url or "x-amz-signature" in url:
+            return url  # already presigned — keep as-is
+        try:
+            from image_handler import S3Handler
+            _, key = S3Handler.parse_s3_source_to_bucket_key(url)
+            if key:
+                return f"{backend_url}/api/images/s3/{key}"
+        except Exception:
+            pass
+        return url
+
+    public_imgs = [_to_public(u) for u in imgs]
+    public_orig = _to_public(orig)
+
     return {
         "product_id": product_id,
         "product_name": product.get("name", "Unnamed Product"),
-        "image_url": orig,
-        "images": imgs,
-        "image_count": len(imgs)
+        "image_url": public_orig,
+        "images": public_imgs,
+        "image_count": len(public_imgs),
     }
 
 
