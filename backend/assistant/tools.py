@@ -2603,7 +2603,11 @@ async def _presign_s3_url(url: str) -> str:
             bucket = (_os.environ.get("AWS_BUCKET_NAME") or "").strip()
 
         # Prefer backend proxy — Orshot's servers can call our own endpoint
-        backend_url = (_os.environ.get("BACKEND_PUBLIC_URL") or "").rstrip("/")
+        backend_url = (
+            _os.environ.get("BACKEND_PUBLIC_URL")
+            or _os.environ.get("PUBLIC_BASE_URL")
+            or ""
+        ).rstrip("/")
         if backend_url and key:
             proxy = f"{backend_url}/api/images/s3/{key}"
             logger.debug("[render_orshot] Using proxy URL for %s → %s", key[:60], proxy[:80])
