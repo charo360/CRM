@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -223,8 +224,6 @@ async def list_products(ctx: ToolContext, args: Dict[str, Any]):
     def _to_public(url: str) -> str:
         if not url or not backend_url or "amazonaws.com" not in url:
             return url
-        if "X-Amz-Signature" in url or "x-amz-signature" in url:
-            return url
         try:
             from image_handler import S3Handler
             _, key = S3Handler.parse_s3_source_to_bucket_key(url)
@@ -283,7 +282,14 @@ async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
     product_id = args["product_id"]
     product = await ctx.db.products.find_one({"_id": product_id, "user_id": ctx.business_id})
     if not product:
-        return {"error": "Product not found"}
+        # Fallback: agent may have passed a product name instead of a UUID.
+        # Try a case-insensitive name lookup within the same business scope.
+        product = await ctx.db.products.find_one({
+            "name": {"$regex": f"^{re.escape(product_id)}$", "$options": "i"},
+            "user_id": ctx.business_id,
+        })
+    if not product:
+        return {"error": f"Product not found (tried id and name lookup for {product_id!r}). Call list_products to get valid product ids."}
 
     # Handle images like the backend API does
     imgs = list(product.get("images", []))
@@ -307,8 +313,6 @@ async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
             return url
         if "amazonaws.com" not in url:
             return url
-        if "X-Amz-Signature" in url or "x-amz-signature" in url:
-            return url  # already presigned — keep as-is
         try:
             from image_handler import S3Handler
             _, key = S3Handler.parse_s3_source_to_bucket_key(url)
@@ -320,6 +324,22 @@ async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
 
     public_imgs = [_to_public(u) for u in imgs]
     public_orig = _to_public(orig)
+
+    # Advance design flow: product is now locked → ask for platform next
+    try:
+        from .design_state import load_design_state, update_design_state
+        conv_id = ctx.user.get("_active_conversation_id")
+        if conv_id:
+            ds = await load_design_state(ctx.db, conv_id, ctx.business_id)
+            if ds.get("flow_step") in ("awaiting_product", None):
+                await update_design_state(
+                    ctx.db, conv_id, ctx.business_id,
+                    product_id=product_id,
+                    product_name=product.get("name", "Unnamed Product"),
+                    flow_step="awaiting_platform",
+                )
+    except Exception:
+        logger.exception("[get_product_images] design_state update skipped")
 
     return {
         "product_id": product_id,
@@ -508,8 +528,11 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
     name="get_owner_info",
     description=(
         "Return the business owner's name, phone, business name, currency, country, "
-        "business_type (industry), and short hints from business knowledge. "
-        "Use for Meta/Google ads, proposals, and any time industry-aware advice is needed."
+        "business_type (industry), short hints from business knowledge, and the brand kit "
+        "(`default_logo_url`, `brand_primary_color`, `brand_font`). "
+        "Use for Meta/Google ads, proposals, and any time industry-aware advice is needed. "
+        "For design work, **always call this first** so you can pass the brand logo URL and "
+        "primary colour into `render_orshot_template.modifications` and `generate_design_background.logo_url`."
     ),
     parameters={"type": "object", "properties": {}},
     destructive=False,
@@ -520,6 +543,21 @@ async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": "Owner record not found"}
     settings = user.get("settings", {}) or {}
     bk = user.get("business_knowledge") or {}
+
+    # Brand assets — best-effort lookups so failures here don't break the tool.
+    default_logo_url = ""
+    brand_primary_color = ""
+    brand_font = ""
+    try:
+        from saved_designs import get_primary_logo_url, get_brand_settings
+
+        default_logo_url = (await get_primary_logo_url(ctx.db, ctx.business_id)) or ""
+        brand = await get_brand_settings(ctx.db, ctx.business_id)
+        brand_primary_color = (brand or {}).get("brand_primary_color", "") or ""
+        brand_font = (brand or {}).get("brand_font", "") or ""
+    except Exception:
+        logger.exception("[get_owner_info] brand asset lookup skipped")
+
     return {
         "owner_name":    user.get("owner_name") or user.get("name", ""),
         "business_name": user.get("business_name", ""),
@@ -531,6 +569,11 @@ async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
         "business_type":   (settings.get("business_type") or "").strip(),
         "business_description_hint": (bk.get("business_description") or "")[:400],
         "products_services_hint":    (bk.get("products_services") or "")[:400],
+        # Brand kit — pass these straight into render_orshot_template.modifications
+        # (logo image fields, brand colour fields) and generate_design_background.logo_url.
+        "default_logo_url":    default_logo_url,
+        "brand_primary_color": brand_primary_color,
+        "brand_font":          brand_font,
     }
 
 
@@ -2481,11 +2524,18 @@ async def generate_creative_image(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="list_orshot_templates",
     description=(
-        "List Orshot Studio templates in the workspace. Each template includes id, name, canvas size, "
-        "and thumbnail_url — a preview image of what the template looks like. "
-        "When presenting options to the user, show the thumbnail images using markdown "
-        "![Template Name](thumbnail_url) so they can see the actual design and pick visually "
-        "instead of guessing from a name. Show 2–4 of the best fits for the brief, not the full list."
+        "List Orshot Studio templates in the workspace. Each template object has id, name, canvas size, "
+        "and thumbnail_url. "
+        "CRITICAL — URL RULE: When showing templates to the user, you MUST copy the thumbnail_url value "
+        "character-for-character exactly as it appears in this tool's JSON response. Do not retype it, "
+        "do not reconstruct it, do not shorten it. Select the value from the JSON, paste it. "
+        "Every real thumbnail_url in this response starts with https://storage.orshot.com/ — "
+        "if what you are about to write does NOT start with https://storage.orshot.com/, stop and "
+        "fetch the value again from the tool result. "
+        "NEVER invent, guess, or approximate a URL. Forbidden examples: https://example.com/..., "
+        "template1.jpg, thumbnail_url_1, /images/..., or any string not present verbatim in the JSON. "
+        "If a template object has a null or empty thumbnail_url, skip it entirely and pick the next one. "
+        "Show 3 best fits for the brief, not the full list."
     ),
     parameters={
         "type": "object",
@@ -2502,10 +2552,47 @@ async def generate_creative_image(ctx: ToolContext, args: Dict[str, Any]):
 )
 async def list_orshot_templates(ctx: ToolContext, args: Dict[str, Any]):
     from orshot_service import list_studio_templates
+    from .design_state import update_design_state, load_design_state
 
     page = int(args.get("page") or 1)
     limit = int(args.get("limit") or 20)
-    return await list_studio_templates(page=page, limit=limit)
+    result = await list_studio_templates(page=page, limit=limit)
+
+    # Persist which template ids were surfaced this turn so "See more options"
+    # can skip them next time without the AI having to remember the full list.
+    # Also advance flow_step to awaiting_template if we are currently at
+    # awaiting_platform or awaiting_product (i.e. the first time templates are shown).
+    try:
+        templates = (result or {}).get("templates") or []
+        ids = [t.get("id") for t in templates if isinstance(t, dict) and t.get("id") is not None]
+        conv_id = ctx.user.get("_active_conversation_id")
+        if ids and conv_id:
+            existing = await load_design_state(ctx.db, conv_id, ctx.business_id)
+            current_step = existing.get("flow_step") or ""
+            advance = current_step in ("awaiting_product", "awaiting_platform", "")
+            await update_design_state(
+                ctx.db,
+                conv_id,
+                ctx.business_id,
+                add_templates_shown=ids,
+                **({"flow_step": "awaiting_template"} if advance else {}),
+            )
+    except Exception:
+        logger.exception("[list_orshot_templates] design_state update skipped")
+
+    # Annotate each template so the model can identify which thumbnail_url to use.
+    # The model MUST copy the thumbnail_url value verbatim from this response into markdown.
+    try:
+        templates = (result or {}).get("templates") or []
+        for t in templates:
+            if isinstance(t, dict) and t.get("thumbnail_url"):
+                t["_url_instruction"] = (
+                    f"USE EXACTLY: {t['thumbnail_url']}"
+                )
+    except Exception:
+        pass
+
+    return result
 
 
 @tool(
@@ -2531,13 +2618,31 @@ async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
 
     from orshot_service import get_studio_template
 
-    tid = (args.get("template_id") or "").strip() or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
+    explicit_tid = (args.get("template_id") or "").strip()
+    tid = explicit_tid or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
     if not tid:
         return {"error": "Pass template_id or set ORSHOT_DEFAULT_TEMPLATE_ID on the server."}
 
     data = await get_studio_template(tid)
     if data.get("error"):
-        return data
+        # Only fall back to the env default when the caller did NOT explicitly pass a
+        # template_id. If they did, surface the error so the AI doesn't silently end up
+        # reading a different template's fields and rendering with mismatched modifications.
+        default_tid = (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
+        if not explicit_tid and default_tid and default_tid != tid:
+            logger.warning("[get_orshot_template_fields] template %s failed (%s), retrying with default %s", tid, data["error"], default_tid)
+            data = await get_studio_template(default_tid)
+            if not data.get("error"):
+                data["_fallback_used"] = True
+                data["_original_template_id"] = tid
+        if data.get("error"):
+            err = data.get("error") or "unknown error"
+            return {
+                "error": f"Could not fetch fields for template {tid!r}: {err}. "
+                         "Check that the template_id is correct and the Orshot API key is valid. "
+                         "Call list_orshot_templates to get valid template ids.",
+                "template_id": tid,
+            }
 
     mods = data.get("modifications") or []
     fields: list = []
@@ -2561,6 +2666,30 @@ async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
     pages_raw = data.get("pages_data") or []
     page_count = len(pages_raw) if isinstance(pages_raw, list) else 0
 
+    # Persist the field list so the render-time guard and `verify_design_ready`
+    # can detect logo-incompatible templates without re-hitting Orshot.
+    try:
+        from .design_state import update_design_state, load_design_state
+
+        conv_id = ctx.user.get("_active_conversation_id")
+        if conv_id and fields:
+            existing = await load_design_state(ctx.db, conv_id, ctx.business_id)
+            current_step = existing.get("flow_step") or ""
+            # Only advance to awaiting_copy_approval if we are currently at
+            # awaiting_template (i.e. the user just picked a template and the
+            # agent is now studying its fields). Do NOT advance the step if called
+            # during template browsing or at any other phase.
+            advance_step = current_step == "awaiting_template"
+            await update_design_state(
+                ctx.db,
+                conv_id,
+                ctx.business_id,
+                locked_template_fields=fields,
+                **({"flow_step": "awaiting_copy_approval"} if advance_step else {}),
+            )
+    except Exception:
+        logger.exception("[get_orshot_template_fields] design_state update skipped")
+
     return {
         "success": True,
         "template_id": data.get("id"),
@@ -2570,7 +2699,14 @@ async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
         "thumbnail_url": data.get("thumbnail_url"),
         "page_count": page_count,
         "fields": fields,
-        "note": "Use `key` in `render_orshot_template.modifications`. Full `pages_data` is omitted here to keep chat storage small — use `page_count` and `fields` only.",
+        "note": (
+            "Use `key` in `render_orshot_template.modifications`. Any text field also accepts "
+            "style overrides via `<key>.color`, `<key>.fontFamily`, `<key>.fontSize`, "
+            "`<key>.backgroundColor`, `<key>.fontWeight`, `<key>.textAlign` — use these to "
+            "apply the brand colour/font from `get_owner_info` to any headline/CTA/body field, "
+            "even when the template has no dedicated brand-colour field. "
+            "Full `pages_data` is omitted to keep chat storage small."
+        ),
     }
 
 
@@ -2581,6 +2717,11 @@ async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
         "Requires server env **ORSHOT_API_KEY**. Optional **ORSHOT_DEFAULT_TEMPLATE_ID** supplies a default when `template_id` is omitted. "
         "**modifications** keys must match Orshot Studio dynamic parameters (often `pageN@field_name` on carousels). "
         "Use `get_orshot_template_fields` once to learn keys, then keep them in mind for refinements. "
+        "**Style overrides:** any text/image field accepts dot-notation style parameters in `modifications` — "
+        "e.g. `\"headline\": \"Big Sale\"` plus `\"headline.color\": \"#FF6600\"`, `\"headline.fontFamily\": \"Inter\"`, "
+        "`\"headline.fontSize\": \"48px\"`, `\"cta.backgroundColor\": \"#FF6600\"`, `\"cta.fontWeight\": \"700\"`. "
+        "This means brand colour/font from `get_owner_info` apply to *any* headline/CTA/body field even when the "
+        "template has no dedicated brand-colour field — just append `.color` / `.fontFamily` to the field key. "
         "Optional **`presentation_label`** (e.g. 'Option A', 'Final') helps you show two variants or a final pass. "
         "Default response_type is **base64**; the server re-uploads to your S3 so image links always work."
     ),
@@ -2593,7 +2734,13 @@ async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
             },
             "modifications": {
                 "type": "object",
-                "description": "Dynamic field values for the template (Studio parameter names → strings or image URLs).",
+                "description": (
+                    "Dynamic field values for the template (Studio parameter names → strings or image URLs). "
+                    "Supports per-field style overrides via dot notation: `<key>.color`, `<key>.fontFamily`, "
+                    "`<key>.fontSize`, `<key>.backgroundColor`, `<key>.fontWeight`, `<key>.textAlign`, "
+                    "`<key>.letterSpacing`, `<key>.lineHeight`, `<key>.opacity`, `<key>.borderRadius` (image), "
+                    "`<key>.borderColor` (image). Use these to apply brand colour/font to any field."
+                ),
                 "additionalProperties": True,
             },
             "response_type": {
@@ -2634,6 +2781,1201 @@ async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
         "required": ["modifications"],
     },
 )
+async def render_orshot_template(ctx: ToolContext, args: Dict[str, Any]):
+    import os as _os
+
+    from orshot_service import render_studio_template
+
+    explicit_tid = (args.get("template_id") or "").strip()
+    tid = explicit_tid or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
+    if not tid:
+        return {
+            "error": "No template_id: pass template_id in the tool call or set ORSHOT_DEFAULT_TEMPLATE_ID on the server.",
+        }
+    template_id_used = str(tid)
+
+    mods = args.get("modifications")
+    if not isinstance(mods, dict):
+        mods = {}
+
+    # ── Pre-render guard ─────────────────────────────────────────────────────
+    # Verify that user-stated requirements (recorded via note_design_requirement)
+    # are actually present in the modifications dict BEFORE we burn an Orshot
+    # credit. Runs against the original `mods` — pre-presigning — so substring
+    # matches against brand asset URLs are reliable. Best-effort: any failure
+    # in the guard itself never blocks the render.
+    original_mods = dict(mods)
+    try:
+        from .design_state import load_design_state
+
+        conv_id = ctx.user.get("_active_conversation_id")
+        if conv_id:
+            state = await load_design_state(ctx.db, conv_id, ctx.business_id)
+            pending = set(state.get("pending_requirements") or [])
+            quotes = state.get("requirement_quotes") or {}
+            staged_url = state.get("staged_image_url") or ""
+            template_fields = state.get("locked_template_fields") or None
+            brand = await _load_brand_kit(ctx) if pending else {}
+            business_email = await _load_business_email(ctx)
+
+            unmet: List[Dict[str, str]] = []
+            if pending:
+                unmet.extend(_evaluate_design_requirements(
+                    pending, original_mods, brand, staged_url, template_fields,
+                ))
+            # Anti-fabrication scanner runs on every render, regardless of pending.
+            unmet.extend(_detect_fabricated_facts(
+                original_mods, quotes, business_email, template_fields,
+            ))
+            if unmet:
+                logger.info(
+                    "[render_orshot_template] blocked by guard (conv=%s, unmet=%s)",
+                    conv_id, [u["code"] for u in unmet],
+                )
+                return {
+                    "error": "render_blocked_by_requirements",
+                    "reason": "One or more recorded user requirements are not satisfied by the modifications, "
+                              "or the modifications contain fabricated facts (offers/URLs the user never stated). "
+                              "Fix each item below, then call render_orshot_template again.",
+                    "unmet": unmet,
+                    "pending_requirements": sorted(pending),
+                }
+    except Exception:
+        logger.exception("[render_orshot_template] pre-render guard skipped")
+
+    # Auto-presign any private S3 image URLs so Orshot's server can fetch them
+    mods = await _presign_modifications(mods)
+
+    response_type = args.get("response_type") or "base64"
+    response_format = args.get("response_format") or "png"
+    if response_format == "jpeg":
+        response_format = "jpg"
+
+    platform = args.get("platform", "general")
+    content_type = args.get("content_type", "general")
+    fmt = args.get("format", "general")
+    pres = (args.get("presentation_label") or "").strip()
+    name = (args.get("name") or pres or "Orshot graphic")[:200]
+
+    result = await render_studio_template(
+        tid,
+        mods,
+        response_type=response_type,
+        response_format=response_format,
+    )
+    if result.get("error"):
+        # Only fall back to the env default when the caller did NOT explicitly pass a
+        # template_id. If they did, the user/AI explicitly chose this template — silently
+        # rendering with a different one would be a critical correctness bug (the design
+        # would not match the locked template). Surface the error so the AI can re-fetch
+        # fields with `get_orshot_template_fields` and retry with correct modifications.
+        default_tid = (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
+        if not explicit_tid and default_tid and default_tid != tid:
+            logger.warning("[render_orshot_template] template %s failed (%s), retrying with default %s", tid, result["error"], default_tid)
+            result = await render_studio_template(
+                default_tid,
+                mods,
+                response_type=response_type,
+                response_format=response_format,
+            )
+            if not result.get("error"):
+                template_id_used = default_tid
+        if result.get("error"):
+            return result
+
+    image_url = result.get("image_url")
+
+    # ── Logo compositor ──────────────────────────────────────────────────────
+    # When the user asked for their logo (`include_logo` in pending) and the
+    # rendered modifications don't already contain the logo URL, paste the
+    # brand logo onto the rendered image. This guarantees logo presence even
+    # on templates that have no dedicated logo field. Best-effort: any
+    # failure here falls back to the un-composited render.
+    if image_url:
+        try:
+            from .design_state import load_design_state
+
+            conv_id = ctx.user.get("_active_conversation_id")
+            if conv_id:
+                state = await load_design_state(ctx.db, conv_id, ctx.business_id)
+                pending = set(state.get("pending_requirements") or [])
+                if "include_logo" in pending:
+                    brand = await _load_brand_kit(ctx)
+                    logo = brand.get("default_logo_url") or ""
+                    mod_blob = " ".join(_norm(v) for v in original_mods.values())
+                    if logo and _norm(logo) not in mod_blob:
+                        composited = await _composite_logo_on_image(image_url, logo)
+                        if composited:
+                            logger.info(
+                                "[render_orshot_template] logo composited (conv=%s, tid=%s)",
+                                conv_id, template_id_used,
+                            )
+                            image_url = composited
+                            result["image_url"] = composited
+                            urls = result.get("image_urls")
+                            if isinstance(urls, list) and urls:
+                                urls[0] = composited
+        except Exception:
+            logger.exception("[render_orshot_template] logo compositing skipped")
+
+    if image_url:
+        try:
+            from saved_designs import insert_saved_design
+
+            await insert_saved_design(
+                ctx.db,
+                ctx.business_id,
+                name=name,
+                asset_kind="image",
+                file_url=image_url,
+                thumbnail_url=image_url,
+                source_tool="render_orshot_template",
+                conversation_id=ctx.user.get("_active_conversation_id"),
+                platform=platform,
+                content_type=content_type,
+                format=fmt,
+            )
+        except Exception:
+            logger.exception("[render_orshot_template] saved_designs insert skipped")
+
+        # Persist the locked template + last render so the next turn's prompt
+        # can show the AI exactly which template_id is in play (no silent swaps).
+        try:
+            from .design_state import update_design_state
+
+            explicit_name = (args.get("name") or "").strip() or (args.get("presentation_label") or "").strip()
+            await update_design_state(
+                ctx.db,
+                ctx.user.get("_active_conversation_id"),
+                ctx.business_id,
+                locked_template_id=str(template_id_used),
+                locked_template_name=explicit_name or None,
+                chosen_platform=(platform if platform and platform != "general" else None),
+                chosen_format=(fmt if fmt and fmt != "general" else None),
+                last_render_url=image_url,
+                # Persist the original (pre-presigning) modifications so
+                # verify_design_ready can audit logo / colour / copy presence
+                # against the stable URLs the AI actually passed.
+                last_render_modifications=original_mods,
+                flow_step="refining",
+            )
+        except Exception:
+            logger.exception("[render_orshot_template] design_state update skipped")
+
+    return {
+        "success": True,
+        "template_id_used": template_id_used,
+        "image_url": image_url,
+        "image_urls": result.get("image_urls"),
+        "presentation_label": pres or None,
+        "markdown": f"![{name}]({image_url})" if image_url else "",
+        "note": "Carousel templates may return multiple URLs in image_urls.",
+    }
+
+
+# ── AI-recreate design (Gemini-driven, template thumbnail as reference) ──────
+# Combines staging + render in one call: Gemini receives the locked template's
+# thumbnail (free) as a layout reference, the real product photo, the brand
+# logo, and a strict fact pack — then produces the final design. The logo
+# compositor still runs on top so the brand mark is pixel-identical, and an
+# OCR pass scans the rendered text for any fabricated offers/URLs the model
+# may have invented despite the prompt.
+
+
+async def _build_design_fact_pack(ctx: "ToolContext") -> Dict[str, Any]:
+    """Assemble the strict whitelist of facts the AI is allowed to render.
+
+    Combines the business profile (name/phone/email), the brand kit
+    (logo URL, primary colour, font), and any verbatim user quotes recorded
+    via ``note_design_requirement`` (offers, websites). The recreate tool uses
+    this both as prompt input *and* as the verification source for the OCR
+    fabrication scanner — one source of truth.
+    """
+    pack: Dict[str, Any] = {
+        "business_name": "",
+        "business_phone": "",
+        "business_email": "",
+        "default_logo_url": "",
+        "brand_primary_color": "",
+        "brand_font": "",
+        "requirement_quotes": {},
+        "pending_requirements": [],
+        "staged_image_url": "",
+        "locked_template_name": "",
+    }
+    try:
+        u = await ctx.db.users.find_one({"_id": ctx.business_id})
+        if u:
+            settings = u.get("settings", {}) or {}
+            pack["business_name"] = (u.get("business_name") or "").strip()
+            pack["business_phone"] = (u.get("phone_number") or settings.get("phone_number") or "").strip()
+            pack["business_email"] = (u.get("email") or "").strip()
+    except Exception:
+        logger.exception("[fact_pack] business profile lookup failed")
+
+    brand = await _load_brand_kit(ctx)
+    pack["default_logo_url"] = brand.get("default_logo_url") or ""
+    pack["brand_primary_color"] = brand.get("brand_primary_color") or ""
+    pack["brand_font"] = brand.get("brand_font") or ""
+
+    try:
+        from .design_state import load_design_state
+
+        conv_id = ctx.user.get("_active_conversation_id")
+        if conv_id:
+            state = await load_design_state(ctx.db, conv_id, ctx.business_id)
+            pack["requirement_quotes"] = state.get("requirement_quotes") or {}
+            pack["pending_requirements"] = list(state.get("pending_requirements") or [])
+            pack["staged_image_url"] = state.get("staged_image_url") or ""
+            pack["locked_template_name"] = state.get("locked_template_name") or ""
+    except Exception:
+        logger.exception("[fact_pack] design_state lookup failed")
+
+    return pack
+
+
+def _compose_recreate_prompt(
+    fact_pack: Dict[str, Any],
+    *,
+    headline: str,
+    tagline: str,
+    cta: str,
+    offer: str,
+    website: str,
+    extra_notes: str,
+) -> str:
+    """Build the strict instruction text Gemini sees alongside the reference image."""
+    allowed: List[str] = []
+    if fact_pack.get("business_name"):
+        allowed.append(f"- Business name: {fact_pack['business_name']}")
+    if fact_pack.get("business_phone"):
+        allowed.append(f"- Phone: {fact_pack['business_phone']}")
+    if fact_pack.get("business_email"):
+        allowed.append(f"- Email: {fact_pack['business_email']}")
+    if fact_pack.get("brand_primary_color"):
+        allowed.append(f"- Brand colour (use as accent): {fact_pack['brand_primary_color']}")
+    if fact_pack.get("brand_font"):
+        allowed.append(f"- Brand font: {fact_pack['brand_font']}")
+    if headline:
+        allowed.append(f"- Headline (use exactly): {headline}")
+    if tagline:
+        allowed.append(f"- Tagline (use exactly): {tagline}")
+    if cta:
+        allowed.append(f"- Call to action (use exactly): {cta}")
+    if offer:
+        allowed.append(f"- Offer wording (use exactly): {offer}")
+    if website:
+        allowed.append(f"- Website (use exactly): {website}")
+
+    allowed_block = "\n".join(allowed) if allowed else "- (none — leave all text slots empty)"
+
+    return (
+        "You are recreating a marketing design. The FIRST image is the layout reference — "
+        "reproduce its composition, proportions, and visual style EXACTLY. The SECOND image "
+        "(if present) is the real product to feature. The THIRD image (if present) is the "
+        "brand logo for context only.\n\n"
+        "STRICT RULES — read carefully, no exceptions:\n"
+        "1. Reproduce the reference layout 100% as it is — same panels, same hierarchy, "
+        "same shape and placement of headline, body text, image area, and call-to-action zone.\n"
+        "2. Use ONLY the facts listed below. If a slot in the reference has no matching fact, "
+        "LEAVE IT EMPTY — do not fill it with placeholder text, lorem ipsum, generic addresses, "
+        "fake URLs, or invented contact details.\n"
+        "3. NEVER invent prices, discounts, percentages, addresses, phone numbers, websites, "
+        "social handles, dates, or any factual claim that is not in the allowed list below.\n"
+        "4. Render text crisply and legibly. Spell every word EXACTLY as written below — "
+        "no substitutions, no creative variants, no abbreviations.\n"
+        "5. Replace the reference's product imagery with the supplied product photo when "
+        "present. Do not redraw or stylise the product — keep its real shape, colour, and "
+        "branding intact.\n"
+        "6. Do not include any logo placeholder text like 'YOUR BRAND' or 'LOGO HERE' — the "
+        "real brand logo is composited onto the output afterwards, leave clear space in the "
+        "bottom-right corner for it.\n\n"
+        "ALLOWED FACTS (the only text/data you may render):\n"
+        f"{allowed_block}\n\n"
+        + (f"ADDITIONAL DIRECTION:\n{extra_notes}\n\n" if extra_notes else "")
+        + "Output: a single finished marketing image, ready to publish."
+    )
+
+
+async def _ocr_extract_text(image_url: str) -> Optional[str]:
+    """Best-effort OCR via pytesseract. Returns the extracted text, or ``None``
+    when pytesseract / the Tesseract binary isn't available — callers must
+    treat ``None`` as "skip OCR check, don't block the render"."""
+    if not image_url:
+        return None
+    try:
+        import asyncio as _asyncio
+        import io as _io
+        import httpx as _httpx
+        try:
+            import pytesseract  # type: ignore[import]
+        except Exception:
+            logger.info("[ocr] pytesseract not installed — skipping OCR fabrication scan")
+            return None
+        from PIL import Image as _Image
+
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.get(image_url)
+            r.raise_for_status()
+            img_bytes = r.content
+
+        def _do_ocr() -> str:
+            img = _Image.open(_io.BytesIO(img_bytes))
+            try:
+                return pytesseract.image_to_string(img) or ""
+            except pytesseract.TesseractNotFoundError:  # type: ignore[attr-defined]
+                return ""
+
+        text = await _asyncio.get_event_loop().run_in_executor(None, _do_ocr)
+        return text or ""
+    except Exception:
+        logger.exception("[ocr] extract failed for %s", (image_url or "")[:80])
+        return None
+
+
+def _detect_fabricated_pixels(
+    ocr_text: str,
+    fact_pack: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    """Scan OCR-extracted text for fabricated offers / URLs not traceable to
+    the fact pack. Mirrors :func:`_detect_fabricated_facts` but operates on a
+    single text blob (no template-field filtering)."""
+    unmet: List[Dict[str, str]] = []
+    text = (ocr_text or "").strip()
+    if not text:
+        return unmet
+
+    quotes = fact_pack.get("requirement_quotes") or {}
+    offer_quote = _norm(quotes.get("include_offer", ""))
+    website_quote = _norm(quotes.get("include_website", ""))
+    email_domain = _email_domain(fact_pack.get("business_email") or "")
+
+    seen_offers: Set[str] = set()
+    for pat in _OFFER_PATTERNS:
+        for m in pat.finditer(text):
+            matched = m.group(0)
+            if not matched:
+                continue
+            allowed = bool(offer_quote) and _norm(matched) in offer_quote
+            key = matched.lower()
+            if not allowed and key not in seen_offers:
+                seen_offers.add(key)
+                unmet.append({
+                    "code": "ocr_unverified_offer",
+                    "fix": (
+                        f"The recreated design contains '{matched}' which the user never stated. "
+                        "Either confirm the exact offer wording with the user (then call "
+                        "`note_design_requirement('include_offer', user_quote=<their words>)`) "
+                        "and re-recreate, or re-recreate with the offer field empty."
+                    ),
+                })
+
+    seen_urls: Set[str] = set()
+    for pat in _URL_PATTERNS:
+        for m in pat.finditer(text):
+            url = m.group(0)
+            if not url:
+                continue
+            url_norm = _norm(url)
+            host = _url_host(url_norm)
+            allowed_by_quote = bool(website_quote) and (
+                url_norm in website_quote or (host and host in website_quote)
+            )
+            allowed_by_email = bool(email_domain) and email_domain in url_norm
+            if not (allowed_by_quote or allowed_by_email) and url_norm not in seen_urls:
+                seen_urls.add(url_norm)
+                unmet.append({
+                    "code": "ocr_unverified_url",
+                    "fix": (
+                        f"The recreated design contains URL '{url}' which the user never stated "
+                        "and doesn't match the business email domain. Confirm the exact website "
+                        "with the user (then call `note_design_requirement('include_website', "
+                        "user_quote=<their URL>)`) and re-recreate, or re-recreate with the "
+                        "website field empty."
+                    ),
+                })
+
+    return unmet
+
+
+@tool(
+    name="recreate_design_with_ai",
+    description=(
+        "Recreate a marketing design from a chosen template layout in one step — combines "
+        "product staging and final render. Pulls the locked template's preview as a layout "
+        "reference (free), then uses the renderer to recreate the design while swapping all "
+        "placeholder text for verified facts (business name, logo, brand colour, user-quoted "
+        "headline/CTA/offer/website). Empty slots stay empty — never invents prices, "
+        "addresses, URLs, or contact details. The brand logo is composited on top of the "
+        "result so it's pixel-identical to the file. Use this for the **final design** in "
+        "Phase 3 instead of staging + rendering separately."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["template_id"],
+        "properties": {
+            "template_id": {
+                "type": "string",
+                "description": "The template_id locked in Phase 1c. Used as the layout reference (free preview fetch).",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Real product photo URL from `get_product_images`. Optional for non-product designs.",
+            },
+            "headline": {"type": "string"},
+            "tagline": {"type": "string"},
+            "cta": {"type": "string", "description": "Call-to-action button label (e.g. 'Shop Now')."},
+            "offer": {
+                "type": "string",
+                "description": "Offer/discount wording — must match a `note_design_requirement('include_offer', user_quote=…)` you already recorded.",
+            },
+            "website": {
+                "type": "string",
+                "description": "Website/handle — must match a `note_design_requirement('include_website', user_quote=…)` you already recorded, or the business email domain on file.",
+            },
+            "extra_notes": {
+                "type": "string",
+                "description": "Optional extra direction for the renderer (e.g. 'leave the upper third clean for headline').",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["square", "story", "landscape", "portrait"],
+                "default": "square",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+            },
+            "platform": {
+                "type": "string",
+                "enum": ["instagram", "facebook", "tiktok", "youtube", "linkedin", "x", "general"],
+                "default": "general",
+            },
+            "content_type": {
+                "type": "string",
+                "enum": ["ad", "post", "story", "carousel", "general"],
+                "default": "general",
+            },
+            "name": {"type": "string", "description": "Label for Design library (e.g. 'Spring drop — Final')."},
+            "presentation_label": {"type": "string", "description": "Short echoed label e.g. 'Final', 'Option A'."},
+        },
+    },
+)
+async def recreate_design_with_ai(ctx: ToolContext, args: Dict[str, Any]):
+    from orshot_service import get_studio_template
+    from nano_banana_service import recreate_design_from_reference
+    from .design_state import update_design_state
+
+    tid = (args.get("template_id") or "").strip()
+    if not tid:
+        return {"error": "template_id is required — pass the locked template_id from Phase 1c."}
+
+    headline = (args.get("headline") or "").strip()
+    tagline = (args.get("tagline") or "").strip()
+    cta = (args.get("cta") or "").strip()
+    offer = (args.get("offer") or "").strip()
+    website = (args.get("website") or "").strip()
+    extra_notes = (args.get("extra_notes") or "").strip()
+    product_image_url = (args.get("product_image_url") or "").strip() or None
+    fmt = args.get("format", "square")
+    quality = args.get("quality", "pro")
+    platform = args.get("platform", "general")
+    content_type = args.get("content_type", "general")
+    pres = (args.get("presentation_label") or "").strip()
+    name = (args.get("name") or pres or "AI design")[:200]
+
+    fact_pack = await _build_design_fact_pack(ctx)
+
+    # Pre-flight: scan the AI-supplied input args for fabricated offers/URLs
+    # so we never burn a Gemini call when the inputs are obviously bad.
+    business_email = fact_pack.get("business_email") or ""
+    quotes = fact_pack.get("requirement_quotes") or {}
+    pre_args_blob = {"headline": headline, "tagline": tagline, "cta": cta,
+                     "offer": offer, "website": website}
+    pre_unmet = _detect_fabricated_facts(pre_args_blob, quotes, business_email, None)
+    if pre_unmet:
+        logger.info("[recreate_design_with_ai] blocked pre-flight (codes=%s)",
+                    [u["code"] for u in pre_unmet])
+        return {
+            "error": "recreate_blocked_by_requirements",
+            "reason": "One or more inputs (offer / website) look fabricated — they don't match "
+                      "any user quote on file. Fix each item below and retry.",
+            "unmet": pre_unmet,
+        }
+
+    # Fetch template thumbnail (free GET) for use as layout reference.
+    tpl = await get_studio_template(tid)
+    if tpl.get("error"):
+        return {"error": f"Could not load template preview: {tpl['error']}"}
+    reference_url = tpl.get("thumbnail_url") or ""
+    if not reference_url:
+        return {"error": "Template has no thumbnail/preview to use as a layout reference."}
+    template_name = tpl.get("name") or fact_pack.get("locked_template_name") or ""
+
+    prompt = _compose_recreate_prompt(
+        fact_pack,
+        headline=headline, tagline=tagline, cta=cta,
+        offer=offer, website=website, extra_notes=extra_notes,
+    )
+
+    result = await recreate_design_from_reference(
+        reference_image_url=reference_url,
+        prompt=prompt,
+        product_image_url=product_image_url,
+        logo_url=fact_pack.get("default_logo_url") or None,
+        format=fmt,
+        quality=quality,
+    )
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    image_url = result.get("image_url") or ""
+    if not image_url:
+        return {"error": "Renderer returned no image URL."}
+
+    # Composite the real brand logo on top so it's pixel-identical to the file.
+    logo = fact_pack.get("default_logo_url") or ""
+    if logo:
+        try:
+            composited = await _composite_logo_on_image(image_url, logo)
+            if composited:
+                logger.info("[recreate_design_with_ai] logo composited (tid=%s)", tid)
+                image_url = composited
+        except Exception:
+            logger.exception("[recreate_design_with_ai] logo compositing skipped")
+
+    # OCR fabrication check on the final pixels. Skipped silently when
+    # pytesseract / Tesseract binary isn't available on this deployment.
+    try:
+        ocr_text = await _ocr_extract_text(image_url)
+        if ocr_text is not None:
+            ocr_unmet = _detect_fabricated_pixels(ocr_text, fact_pack)
+            if ocr_unmet:
+                logger.info("[recreate_design_with_ai] OCR flagged fabrication (codes=%s)",
+                            [u["code"] for u in ocr_unmet])
+                return {
+                    "error": "recreate_blocked_by_pixel_fabrication",
+                    "reason": "The renderer baked in text the user never stated. "
+                              "Fix each item below and call recreate_design_with_ai again.",
+                    "unmet": ocr_unmet,
+                    "image_url": image_url,
+                }
+    except Exception:
+        logger.exception("[recreate_design_with_ai] OCR check skipped")
+
+    # Persist to design library.
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name, asset_kind="image",
+            file_url=image_url, thumbnail_url=image_url,
+            source_tool="recreate_design_with_ai",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+            platform=platform, content_type=content_type, format=fmt,
+        )
+    except Exception:
+        logger.exception("[recreate_design_with_ai] saved_designs insert skipped")
+
+    # Update design state. We set both staged_image_url and last_render_url
+    # to the recreated design so the staging requirement is implicitly
+    # satisfied (the product is in the design by construction) and the
+    # next-turn prompt shows the AI exactly what was rendered.
+    try:
+        await update_design_state(
+            ctx.db,
+            ctx.user.get("_active_conversation_id"),
+            ctx.business_id,
+            locked_template_id=str(tid),
+            locked_template_name=template_name or None,
+            chosen_platform=(platform if platform and platform != "general" else None),
+            chosen_format=(fmt if fmt and fmt != "general" else None),
+            staged_image_url=image_url,
+            last_render_url=image_url,
+        )
+    except Exception:
+        logger.exception("[recreate_design_with_ai] design_state update skipped")
+
+    return {
+        "success": True,
+        "template_id_used": str(tid),
+        "image_url": image_url,
+        "presentation_label": pres or None,
+        "markdown": f"![{name}]({image_url})",
+        "note": "Design produced via AI-recreate — staging + render combined. Logo composited deterministically.",
+    }
+
+
+# ── Design requirement tracking + pre-presentation verification ──────────────
+# Allowed values for note_design_requirement / pending_requirements. Keep this
+# list narrow on purpose — anything the deterministic guard cannot actually
+# verify against modifications has no business being here.
+_ALLOWED_DESIGN_REQUIREMENTS: Set[str] = {
+    "include_logo",
+    "use_brand_color",
+    "use_brand_font",
+    "stage_product",
+    "include_cta",
+    "include_headline",
+    "include_price",
+    "include_offer",
+    "include_website",
+}
+
+# Requirements where the AI must pass `user_quote` (the user's verbatim wording).
+# The fabrication scanner uses this to verify modification values weren't invented.
+_REQUIREMENTS_NEEDING_QUOTE: Set[str] = {"include_offer", "include_website"}
+
+
+def _norm(v: Any) -> str:
+    """Lowercase a value for case-insensitive substring matching in modifications."""
+    return str(v or "").lower()
+
+
+async def _load_brand_kit(ctx: "ToolContext") -> Dict[str, str]:
+    """Best-effort brand kit lookup shared by render guard and verify tool."""
+    out = {"default_logo_url": "", "brand_primary_color": "", "brand_font": ""}
+    try:
+        from saved_designs import get_primary_logo_url, get_brand_settings
+
+        out["default_logo_url"] = (await get_primary_logo_url(ctx.db, ctx.business_id)) or ""
+        brand = await get_brand_settings(ctx.db, ctx.business_id)
+        out["brand_primary_color"] = (brand or {}).get("brand_primary_color") or ""
+        out["brand_font"]          = (brand or {}).get("brand_font") or ""
+    except Exception:
+        logger.exception("[design_guard] brand kit lookup failed")
+    return out
+
+
+async def _composite_logo_on_image(
+    image_url: str,
+    logo_url: str,
+    *,
+    position: str = "bottom-right",
+    width_pct: float = 0.10,
+    margin_pct: float = 0.04,
+) -> Optional[str]:
+    """Paste the brand logo onto a rendered design and upload the result.
+
+    Used as a deterministic fallback when the locked Orshot template has no
+    image field for the logo (or the AI didn't place it). Both inputs are
+    fetched over HTTP; the composite is re-uploaded to this deployment's S3
+    bucket via ``S3Handler.upload_file`` and the new presigned URL is returned.
+
+    Returns ``None`` on any failure so the caller can fall back to the
+    un-composited render — this helper must never break the render path.
+    """
+    if not image_url or not logo_url:
+        return None
+    try:
+        import asyncio as _asyncio
+        import base64 as _b64
+        import io as _io
+        import httpx as _httpx
+        from PIL import Image as _Image
+        from image_handler import S3Handler
+
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            r1 = await client.get(image_url)
+            r1.raise_for_status()
+            r2 = await client.get(logo_url)
+            r2.raise_for_status()
+            img_bytes = r1.content
+            logo_bytes = r2.content
+
+        def _do_composite() -> bytes:
+            base = _Image.open(_io.BytesIO(img_bytes)).convert("RGBA")
+            logo = _Image.open(_io.BytesIO(logo_bytes)).convert("RGBA")
+
+            target_w = max(1, int(base.width * width_pct))
+            ratio = target_w / max(1, logo.width)
+            target_h = max(1, int(logo.height * ratio))
+            logo = logo.resize((target_w, target_h), _Image.LANCZOS)
+
+            margin = max(8, int(base.width * margin_pct))
+            if position == "top-left":
+                xy = (margin, margin)
+            elif position == "top-right":
+                xy = (base.width - logo.width - margin, margin)
+            elif position == "bottom-left":
+                xy = (margin, base.height - logo.height - margin)
+            else:  # bottom-right (default)
+                xy = (
+                    base.width - logo.width - margin,
+                    base.height - logo.height - margin,
+                )
+
+            base.alpha_composite(logo, dest=xy)
+
+            buf = _io.BytesIO()
+            base.convert("RGB").save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
+
+        composed = await _asyncio.get_event_loop().run_in_executor(None, _do_composite)
+        b64 = _b64.b64encode(composed).decode("ascii")
+        data_url = f"data:image/png;base64,{b64}"
+        fn = f"orshot-logo-{uuid.uuid4()}.png"
+        return await S3Handler.upload_file(data_url, fn)
+    except Exception:
+        logger.exception(
+            "[_composite_logo_on_image] compositing failed (logo=%s)",
+            (logo_url or "")[:80],
+        )
+        return None
+
+
+def _image_fields(template_fields: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Return only the image-typed entries from a template's field list."""
+    return [
+        f for f in (template_fields or [])
+        if isinstance(f, dict) and _norm(f.get("type")) == "image"
+    ]
+
+
+def _suggest_logo_field_key(image_fields: List[Dict[str, Any]]) -> Optional[str]:
+    """Pick the field key most likely intended for a logo (key or help_text contains 'logo')."""
+    for f in image_fields:
+        if "logo" in _norm(f.get("key")) or "logo" in _norm(f.get("help_text")):
+            return f.get("key")
+    return image_fields[0].get("key") if image_fields else None
+
+
+def _evaluate_design_requirements(
+    pending: Set[str],
+    mods: Dict[str, Any],
+    brand: Dict[str, str],
+    staged_image_url: str,
+    template_fields: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, str]]:
+    """Run the deterministic checks. Returns a list of unmet items, each with
+    a `code` and a human-readable `fix` string. Empty list = everything passes.
+
+    The ``include_logo`` check only blocks when no default brand logo is
+    configured at all — placement is handled deterministically by the
+    post-render compositor (see ``_composite_logo_on_image``), so a missing
+    logo field on the template or a logo absent from ``modifications`` is no
+    longer a hard error. ``template_fields`` is still accepted for future
+    template-aware checks but is no longer used for the logo branch.
+    """
+    unmet: List[Dict[str, str]] = []
+    mod_blob = " ".join(_norm(v) for v in mods.values())
+
+    if "include_logo" in pending:
+        logo = brand.get("default_logo_url") or ""
+        if not logo:
+            unmet.append({
+                "code": "logo_unavailable",
+                "fix": "User asked for the logo, but no default brand logo is configured. "
+                       "Tell them to add one in Settings → Brand or via the Design library, then retry.",
+            })
+
+    if "use_brand_color" in pending:
+        color = brand.get("brand_primary_color") or ""
+        if not color:
+            unmet.append({
+                "code": "brand_color_unavailable",
+                "fix": "User asked for brand colour, but none is set. Ask them to set one in Settings → Brand.",
+            })
+        elif _norm(color) not in mod_blob:
+            unmet.append({
+                "code": "brand_color_not_applied",
+                "fix": f"User asked for the brand colour ({color}). Place this hex value in the "
+                       "template's colour/accent field, then re-render.",
+            })
+
+    if "use_brand_font" in pending:
+        font = brand.get("brand_font") or ""
+        if not font:
+            unmet.append({
+                "code": "brand_font_unavailable",
+                "fix": "User asked for brand font, but none is set in Settings → Brand.",
+            })
+        elif _norm(font) not in mod_blob:
+            unmet.append({
+                "code": "brand_font_not_applied",
+                "fix": f"User asked for brand font '{font}'. Place this in the template's font field, then re-render.",
+            })
+
+    if "stage_product" in pending and not staged_image_url:
+        unmet.append({
+            "code": "staging_skipped",
+            "fix": "User asked for the product to be designed/staged, but staging was skipped. "
+                   "Call generate_design_background with the product_image_url first, then re-render "
+                   "using the returned background_url in the template's image field.",
+        })
+
+    # Copy presence checks — modifications must contain *some* non-empty value
+    # under a key that looks like the relevant field. We don't enforce content,
+    # only presence, because the AI/user picks the actual wording.
+    def _has_field_match(needles: List[str]) -> bool:
+        for k, v in mods.items():
+            if not _norm(v):
+                continue
+            kl = _norm(k)
+            if any(n in kl for n in needles):
+                return True
+        return False
+
+    if "include_headline" in pending and not _has_field_match(["headline", "title", "heading"]):
+        unmet.append({
+            "code": "headline_missing",
+            "fix": "User asked for a headline. Add a non-empty value to the template's headline/title field and re-render.",
+        })
+    if "include_cta" in pending and not _has_field_match(["cta", "button", "action"]):
+        unmet.append({
+            "code": "cta_missing",
+            "fix": "User asked for a CTA. Add a non-empty value to the template's CTA/button field and re-render.",
+        })
+    if "include_price" in pending and not _has_field_match(["price", "offer", "discount"]):
+        unmet.append({
+            "code": "price_missing",
+            "fix": "User asked for a price/offer. Add it to the template's price/offer field and re-render.",
+        })
+
+    return unmet
+
+
+# ── Anti-fabrication scanner ─────────────────────────────────────────────────
+# Detects discount/offer-shaped values and URLs in modifications that the AI
+# may have invented. Runs on every render regardless of `pending_requirements`.
+# Allow-list path: the AI must call note_design_requirement('include_offer'
+# or 'include_website', user_quote=<user's verbatim words>) so the scanner can
+# verify the modification value matches what the user actually said. URLs are
+# also allowed when they match the business email's domain (real fact on file).
+
+_OFFER_PATTERNS: List[re.Pattern] = [
+    re.compile(r"\b\d{1,3}\s*%(?:\s*(?:off|discount))?\b", re.IGNORECASE),
+    re.compile(r"\bsave\s+(?:up\s+to\s+)?\$?\d", re.IGNORECASE),
+    re.compile(r"\$\s?\d+(?:\.\d+)?\s*(?:off|discount)\b", re.IGNORECASE),
+    re.compile(r"\bbuy\s+\d+\s+get\s+\d+", re.IGNORECASE),
+    re.compile(r"\bfree\s+shipping\b", re.IGNORECASE),
+    re.compile(r"\blimited\s+time\b", re.IGNORECASE),
+    re.compile(r"\bflash\s+sale\b", re.IGNORECASE),
+]
+
+_URL_PATTERNS: List[re.Pattern] = [
+    re.compile(r"https?://[^\s)]+", re.IGNORECASE),
+    re.compile(r"\bwww\.[a-z0-9-]+\.[a-z]{2,}\b", re.IGNORECASE),
+    re.compile(
+        r"\b[a-z0-9][a-z0-9-]{1,62}\.(?:com|co|shop|io|net|org|app|store|biz|us|uk|in|me|dev|ai)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _email_domain(email: str) -> str:
+    e = (email or "").strip().lower()
+    if "@" not in e:
+        return ""
+    return e.split("@", 1)[1].split(">", 1)[0].strip()
+
+
+def _url_host(url_norm: str) -> str:
+    s = url_norm.strip()
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    s = s.split("/", 1)[0]
+    if s.startswith("www."):
+        s = s[4:]
+    return s
+
+
+async def _load_business_email(ctx: "ToolContext") -> str:
+    """Best-effort owner email lookup so the scanner can allow-list URLs that
+    match the business's real email domain."""
+    try:
+        u = await ctx.db.users.find_one(
+            {"_id": ctx.business_id},
+            {"email": 1, "_id": 0},
+        )
+        return ((u or {}).get("email") or "").strip()
+    except Exception:
+        logger.exception("[design_guard] business email lookup failed")
+        return ""
+
+
+def _detect_fabricated_facts(
+    mods: Dict[str, Any],
+    requirement_quotes: Dict[str, str],
+    business_email: str = "",
+    template_fields: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, str]]:
+    """Scan modification values for invented discounts/offers and URLs.
+
+    Skips dot-notation style overrides (e.g. ``headline.color``) and
+    image-typed template fields (logos / product shots are expected to contain
+    URLs). Returns a list of ``{code, fix}`` entries; empty list = nothing to
+    flag.
+    """
+    unmet: List[Dict[str, str]] = []
+    if not isinstance(mods, dict) or not mods:
+        return unmet
+
+    image_keys: Set[str] = set()
+    for f in (template_fields or []):
+        if isinstance(f, dict) and _norm(f.get("type")) == "image":
+            k = f.get("key")
+            if k:
+                image_keys.add(str(k))
+
+    quotes = requirement_quotes or {}
+    offer_quote = _norm(quotes.get("include_offer", ""))
+    website_quote = _norm(quotes.get("include_website", ""))
+    email_domain = _email_domain(business_email)
+
+    seen_offers: Set[str] = set()
+    seen_urls: Set[str] = set()
+
+    for raw_key, raw_val in mods.items():
+        key_str = str(raw_key)
+        if "." in key_str:
+            continue
+        if key_str in image_keys:
+            continue
+        text = str(raw_val or "").strip()
+        if not text:
+            continue
+
+        for pat in _OFFER_PATTERNS:
+            m = pat.search(text)
+            if not m:
+                continue
+            matched = m.group(0)
+            allowed = bool(offer_quote) and _norm(matched) in offer_quote
+            if not allowed and matched.lower() not in seen_offers:
+                seen_offers.add(matched.lower())
+                unmet.append({
+                    "code": "unverified_offer_claim",
+                    "fix": (
+                        f"Field `{key_str}` contains '{matched}' which looks like an offer/discount the "
+                        "user never explicitly stated. Either ask the user for the exact wording and "
+                        "call `note_design_requirement('include_offer', user_quote=<their exact words>)` "
+                        "first, or remove this field from `modifications` entirely. Do NOT retry with the "
+                        "same fabricated claim."
+                    ),
+                })
+            break
+
+        for pat in _URL_PATTERNS:
+            m = pat.search(text)
+            if not m:
+                continue
+            url = m.group(0)
+            url_norm = _norm(url)
+            host = _url_host(url_norm)
+            allowed_by_quote = bool(website_quote) and (
+                url_norm in website_quote or (host and host in website_quote)
+            )
+            allowed_by_email = bool(email_domain) and email_domain in url_norm
+            if not (allowed_by_quote or allowed_by_email) and url_norm not in seen_urls:
+                seen_urls.add(url_norm)
+                unmet.append({
+                    "code": "unverified_url_claim",
+                    "fix": (
+                        f"Field `{key_str}` contains URL/website '{url}' which the user never stated and "
+                        "doesn't match the business email domain on file. Either ask the user for their "
+                        "exact website/handle and call `note_design_requirement('include_website', "
+                        "user_quote=<their URL>)` first, or remove this field from `modifications`. "
+                        "Do NOT retry with a fabricated URL."
+                    ),
+                })
+            break
+
+    return unmet
+
+
+@tool(
+    name="note_design_requirement",
+    description=(
+        "Record a design requirement the user has explicitly stated this turn so the "
+        "server can verify it before any design is presented as final. Call this "
+        "**immediately** when the user says things like 'include my logo', 'use my "
+        "brand colours', 'design this product photo', 'add a CTA button', "
+        "'show the price', 'mention 20% off', 'add my website'. The pre-render guard "
+        "and `verify_design_ready` will block / flag any final design that doesn't "
+        "satisfy these. Allowed `requirement` values: `include_logo`, `use_brand_color`, "
+        "`use_brand_font`, `stage_product`, `include_cta`, `include_headline`, "
+        "`include_price`, `include_offer`, `include_website`. "
+        "**For `include_offer` and `include_website` you MUST pass `user_quote` "
+        "containing the user's verbatim wording** (e.g. `user_quote='20% off until "
+        "Friday'` or `user_quote='zilo.shop'`) — the anti-fabrication scanner uses it "
+        "to verify the modification value matches what the user actually said."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "requirement": {
+                "type": "string",
+                "enum": sorted(_ALLOWED_DESIGN_REQUIREMENTS),
+                "description": "The requirement code to record.",
+            },
+            "user_quote": {
+                "type": "string",
+                "description": (
+                    "The user's verbatim wording for this requirement. Required for "
+                    "`include_offer` and `include_website` (the scanner verifies the "
+                    "modification value contains this quote). Optional but recommended "
+                    "for other requirements as an audit trail."
+                ),
+            },
+        },
+        "required": ["requirement"],
+    },
+    destructive=False,
+)
+async def note_design_requirement(ctx: ToolContext, args: Dict[str, Any]):
+    req = (args.get("requirement") or "").strip()
+    if req not in _ALLOWED_DESIGN_REQUIREMENTS:
+        return {
+            "error": "unknown_requirement",
+            "allowed": sorted(_ALLOWED_DESIGN_REQUIREMENTS),
+        }
+
+    quote = (args.get("user_quote") or "").strip()[:200]
+    if req in _REQUIREMENTS_NEEDING_QUOTE and not quote:
+        return {
+            "error": "user_quote_required",
+            "fix": (
+                f"`{req}` requires `user_quote` containing the user's verbatim wording "
+                "so the anti-fabrication scanner can verify the modification value "
+                "matches what they actually said. Re-call this tool with `user_quote` set."
+            ),
+        }
+
+    conv_id = ctx.user.get("_active_conversation_id")
+    if not conv_id:
+        return {"error": "No active conversation_id — requirement not persisted."}
+
+    from .design_state import update_design_state
+
+    update_kwargs: Dict[str, Any] = {"add_pending_requirements": [req]}
+    if quote:
+        # Persist as a nested field (`requirement_quotes.<req>`) so each requirement
+        # keeps its own verbatim audit trail. update_design_state forwards arbitrary
+        # `**fields` kwargs into a Mongo `$set`, and dotted keys are valid there.
+        update_kwargs[f"requirement_quotes.{req}"] = quote
+
+    try:
+        await update_design_state(
+            ctx.db,
+            conv_id,
+            ctx.business_id,
+            **update_kwargs,
+        )
+    except Exception:
+        logger.exception("[note_design_requirement] persist failed")
+        return {"error": "persist_failed"}
+
+    return {
+        "success": True,
+        "recorded": req,
+        "user_quote": quote,
+        "note": "This requirement will be verified by the render-time guard and `verify_design_ready`.",
+    }
+
+
+@tool(
+    name="verify_design_ready",
+    description=(
+        "Run the deterministic pre-presentation check on the latest render. Returns "
+        "`ready=true` when every recorded requirement (logo, brand colour, staging, "
+        "headline, CTA, price) is satisfied by the most recent `render_orshot_template` "
+        "call's `modifications`. Returns `ready=false` with `unmet` (list of "
+        "`{code, fix}`) when something is missing — follow each `fix` exactly, "
+        "re-render, then call this tool again. **Always call this before telling "
+        "the user a design is final, ready, or done.**"
+    ),
+    parameters={"type": "object", "properties": {}},
+    destructive=False,
+)
+async def verify_design_ready(ctx: ToolContext, args: Dict[str, Any]):
+    conv_id = ctx.user.get("_active_conversation_id")
+    if not conv_id:
+        return {"ready": False, "error": "No active conversation_id."}
+
+    from .design_state import load_design_state, update_design_state
+
+    state = await load_design_state(ctx.db, conv_id, ctx.business_id)
+    pending = set(state.get("pending_requirements") or [])
+    quotes = state.get("requirement_quotes") or {}
+    last_mods = state.get("last_render_modifications") or {}
+    last_render_url = state.get("last_render_url") or ""
+    staged_url = state.get("staged_image_url") or ""
+    template_fields = state.get("locked_template_fields") or None
+
+    if not last_render_url:
+        return {
+            "ready": False,
+            "unmet": [{
+                "code": "no_render",
+                "fix": "No design has been rendered yet for this conversation. Walk through "
+                       "Phase 2 (generate_design_background) and Phase 3 (render_orshot_template) first.",
+            }],
+            "checked": {"pending_requirements": sorted(pending)},
+        }
+
+    business_email = await _load_business_email(ctx)
+    brand = await _load_brand_kit(ctx) if pending else {}
+
+    unmet: List[Dict[str, str]] = []
+    if pending:
+        unmet.extend(_evaluate_design_requirements(
+            pending, last_mods, brand, staged_url, template_fields,
+        ))
+    # Anti-fabrication scanner runs unconditionally so we never finalise a design
+    # with an invented discount or URL — even when no requirements were recorded.
+    unmet.extend(_detect_fabricated_facts(
+        last_mods, quotes, business_email, template_fields,
+    ))
+
+    async def _mark_done() -> None:
+        try:
+            await update_design_state(
+                ctx.db, conv_id, ctx.business_id, flow_step="done"
+            )
+        except Exception:
+            logger.exception("[verify_design_ready] flow_step update skipped")
+
+    if not pending and not unmet:
+        await _mark_done()
+        return {
+            "ready": True,
+            "unmet": [],
+            "checked": {
+                "pending_requirements": [],
+                "has_last_render": True,
+                "has_staged_image": bool(staged_url),
+            },
+            "note": "No explicit requirements were recorded for this conversation. "
+                    "If the user mentioned logo / brand colour / specific copy, call "
+                    "`note_design_requirement` first, then verify again.",
+        }
+
+    is_ready = len(unmet) == 0
+    if is_ready:
+        await _mark_done()
+
+    return {
+        "ready": is_ready,
+        "unmet": unmet,
+        "checked": {
+            "pending_requirements": sorted(pending),
+            "modification_keys": sorted(last_mods.keys()),
+            "has_logo_in_brand_kit": bool(brand.get("default_logo_url")),
+            "has_brand_color":       bool(brand.get("brand_primary_color")),
+            "has_brand_font":        bool(brand.get("brand_font")),
+            "has_staged_image":      bool(staged_url),
+            "has_image_field_in_template": bool(_image_fields(template_fields)),
+            "last_render_url":       last_render_url,
+        },
+    }
+
+
+
+
+
+
 async def _presign_s3_url(url: str) -> str:
     """Return a publicly accessible URL for a private S3 object.
 
@@ -2689,77 +4031,6 @@ async def _presign_modifications(mods: dict) -> dict:
         else:
             out[k] = v
     return out
-
-
-async def render_orshot_template(ctx: ToolContext, args: Dict[str, Any]):
-    import os as _os
-
-    from orshot_service import render_studio_template
-
-    tid = (args.get("template_id") or "").strip() or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-    if not tid:
-        return {
-            "error": "No template_id: pass template_id in the tool call or set ORSHOT_DEFAULT_TEMPLATE_ID on the server.",
-        }
-    template_id_used = str(tid)
-
-    mods = args.get("modifications")
-    if not isinstance(mods, dict):
-        mods = {}
-
-    # Auto-presign any private S3 image URLs so Orshot's server can fetch them
-    mods = await _presign_modifications(mods)
-
-    response_type = args.get("response_type") or "base64"
-    response_format = args.get("response_format") or "png"
-    if response_format == "jpeg":
-        response_format = "jpg"
-
-    platform = args.get("platform", "general")
-    content_type = args.get("content_type", "general")
-    fmt = args.get("format", "general")
-    pres = (args.get("presentation_label") or "").strip()
-    name = (args.get("name") or pres or "Orshot graphic")[:200]
-
-    result = await render_studio_template(
-        tid,
-        mods,
-        response_type=response_type,
-        response_format=response_format,
-    )
-    if result.get("error"):
-        return result
-
-    image_url = result.get("image_url")
-    if image_url:
-        try:
-            from saved_designs import insert_saved_design
-
-            await insert_saved_design(
-                ctx.db,
-                ctx.business_id,
-                name=name,
-                asset_kind="image",
-                file_url=image_url,
-                thumbnail_url=image_url,
-                source_tool="render_orshot_template",
-                conversation_id=ctx.user.get("_active_conversation_id"),
-                platform=platform,
-                content_type=content_type,
-                format=fmt,
-            )
-        except Exception:
-            logger.exception("[render_orshot_template] saved_designs insert skipped")
-
-    return {
-        "success": True,
-        "template_id_used": template_id_used,
-        "image_url": image_url,
-        "image_urls": result.get("image_urls"),
-        "presentation_label": pres or None,
-        "markdown": f"![{name}]({image_url})" if image_url else "",
-        "note": "Carousel templates may return multiple URLs in image_urls.",
-    }
 
 
 @tool(
@@ -2829,6 +4100,7 @@ async def render_orshot_template(ctx: ToolContext, args: Dict[str, Any]):
 )
 async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
     from nano_banana_service import generate_creative_image, edit_product_image
+    from .design_state import update_design_state
 
     import random as _random
     _BG_STYLES = ["bold", "minimal", "editorial", "luxury", "vibrant"]
@@ -2839,6 +4111,33 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
     fmt               = args.get("format", "square")
     logo_url          = args.get("logo_url")
     quality           = args.get("quality", "fast")
+
+    async def _persist(bg_url: str) -> None:
+        try:
+            from .design_state import load_design_state
+            conv_id = ctx.user.get("_active_conversation_id")
+            if conv_id:
+                existing = await load_design_state(ctx.db, conv_id, ctx.business_id)
+                current_step = existing.get("flow_step") or ""
+                # Only advance to awaiting_greenlight if copy has already been approved
+                # (i.e. we are coming from awaiting_greenlight itself during a re-stage,
+                # or from awaiting_copy_approval after copy was agreed). Never skip
+                # copy-approval by jumping here from an earlier step.
+                advance = current_step in ("awaiting_copy_approval", "awaiting_greenlight", "refining")
+            else:
+                advance = False
+            await update_design_state(
+                ctx.db,
+                conv_id or ctx.user.get("_active_conversation_id"),
+                ctx.business_id,
+                staged_image_url=bg_url,
+                staged_concept=(concept or None),
+                staged_style=(style or None),
+                staged_format=(fmt or None),
+                **({"flow_step": "awaiting_greenlight"} if advance else {}),
+            )
+        except Exception:
+            logger.exception("[generate_design_background] design_state update skipped")
 
     style_scene_hints = {
         "bold":      "dramatic cinematic lighting, deep shadows, high contrast, moody atmosphere — think Nike or Supreme campaign",
@@ -2867,6 +4166,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
         )
         if result.get("success"):
             bg_url = result["image_url"]
+            await _persist(bg_url)
             return {
                 "success": True,
                 "background_url": bg_url,
@@ -2878,6 +4178,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
             }
         # Fallback to raw product image if editing fails
         logger.warning("[generate_design_background] Gemini edit failed (%s), using raw product image", result.get("error"))
+        await _persist(product_image_url)
         return {
             "success": True,
             "background_url": product_image_url,
@@ -2905,6 +4206,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": result.get("error", "Gemini generation failed")}
 
     bg_url = result["image_url"]
+    await _persist(bg_url)
     return {
         "success": True,
         "background_url": bg_url,
@@ -2957,8 +4259,10 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": f"PDF generation failed: {e}"}
 
     try:
+        from pathlib import Path as _Path
         from image_handler import S3Handler
-        pdf_bytes = filepath.read_bytes()
+        _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
+        pdf_bytes = _filepath.read_bytes()
         b64 = base64.b64encode(pdf_bytes).decode()
         filename = f"doc-{_uuid.uuid4().hex[:8]}.pdf"
         pdf_url = await S3Handler.upload_file(b64, filename, content_type="application/pdf")
@@ -2967,7 +4271,8 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": f"PDF upload failed: {e}"}
     finally:
         try:
-            filepath.unlink(missing_ok=True)
+            _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
+            _filepath.unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -3024,15 +4329,15 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
     from presentation_service import generate_presentation
     title = args.get("title", "Presentation")
     slides_data = args.get("slides_data", [])
-    
+
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = owner.get("business_name") or owner.get("owner_name") or "My Business" if owner else "My Business"
 
     result = generate_presentation(title, slides_data, business_name)
-    
+
     if result.get("error"):
         return {"error": result["error"]}
-        
+
     url = result.get("url")
     if url:
         try:

@@ -10,9 +10,11 @@ from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .documents import delete_document, list_for_conversation, store_upload
+from .agents import AGENT_REGISTRY, list_agents_public, resolve_agent_id
+from .intent_router import route_to_agent
 from .models import DEFAULT_MODEL, list_available_models
 from .orchestrator import run_turn
 from .titler import generate_title
@@ -46,7 +48,16 @@ def _mk_router(db, get_current_user):
 
     @router.get("/models")
     async def models(user=Depends(get_current_user)):
-        return {"default": DEFAULT_MODEL, "models": list_available_models()}
+        payload = {"default": DEFAULT_MODEL, "models": list_available_models()}
+        return JSONResponse(
+            payload,
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    @router.get("/agents")
+    async def agents_list(user=Depends(get_current_user)):
+        """Specialist agents (e.g. Meta Ads) — each uses a dedicated prompt and tool set."""
+        return {"agents": list_agents_public()}
 
     @router.get("/conversations")
     async def list_conversations(user=Depends(get_current_user)):
@@ -59,6 +70,7 @@ def _mk_router(db, get_current_user):
             "title": r.get("title") or "New chat",
             "updated_at": r.get("updated_at"),
             "message_count": len(r.get("messages") or []),
+            "agent": r.get("agent") or "general",
         } for r in rows]
 
     @router.get("/conversations/{conv_id}")
@@ -72,6 +84,7 @@ def _mk_router(db, get_current_user):
             "title": row.get("title") or "New chat",
             "model": row.get("model"),
             "messages": row.get("messages") or [],
+            "agent": row.get("agent") or "general",
         }
 
     @router.delete("/conversations/{conv_id}")
@@ -87,7 +100,8 @@ def _mk_router(db, get_current_user):
             "conversation_id": "..." | null,   // if null a new one is created
             "message": "hi",
             "model": "gpt-4o-mini",            // optional
-            "auto_approve": false              // optional — skip confirm gate
+            "auto_approve": false,             // optional — skip confirm gate
+            "agent": "general" | "meta_ads" | "google_ads" | "x_ads"   // optional — specialist; locked after first message
         }
         Returns: { conversation_id, reply, steps, model, needs_confirmation }
         """
@@ -112,12 +126,32 @@ def _mk_router(db, get_current_user):
                 "title": msg[:60],
                 "model": body.get("model") or DEFAULT_MODEL,
                 "messages": [],
+                "agent": "general",
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow(),
             }
             await db.assistant_conversations.insert_one(conv)
 
         history: List[Dict[str, Any]] = conv.get("messages") or []
+        # Route to the best specialist — sticky for continuation messages.
+        # If a design flow is in progress (flow_step set and not 'done'), force
+        # design agent regardless of keywords — design is multi-turn stateful.
+        prev_agent = conv.get("agent") or None
+        design_flow_active = False
+        if "design" in AGENT_REGISTRY:
+            try:
+                from .design_state import load_design_state
+                _ds = await load_design_state(db, conv_id, user_id)
+                _step = _ds.get("flow_step")
+                design_flow_active = bool(_step and _step != "done")
+            except Exception:
+                pass
+        agent_resolved = await route_to_agent(
+            msg, history, AGENT_REGISTRY,
+            prev_agent=prev_agent,
+            design_flow_active=design_flow_active,
+        )
+
         # Strip non-serializable keys from history before passing to LLM
         clean_history = [_strip_storage_fields(m) for m in history]
 
@@ -130,16 +164,21 @@ def _mk_router(db, get_current_user):
                 model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
                 auto_approve_destructive=bool(body.get("auto_approve")),
                 conversation_id=conv_id,
+                agent_id=agent_resolved,
             )
         except Exception as e:
             logger.exception("[assistant.chat] failure")
             raise HTTPException(500, f"Assistant error: {e}")
 
+        active_agent = result.get("active_agent") or agent_resolved
+
         # Persist the new messages + step trace
         new_msgs = result["messages_to_append"]
-        # Attach tool-trace to the last assistant message for UI display
-        if result.get("steps") and new_msgs and new_msgs[-1].get("role") == "assistant":
-            new_msgs[-1]["steps"] = result["steps"]
+        # Attach tool-trace + agent badge to the last assistant message for UI display
+        if new_msgs and new_msgs[-1].get("role") == "assistant":
+            if result.get("steps"):
+                new_msgs[-1]["steps"] = result["steps"]
+            new_msgs[-1]["agent"] = active_agent
 
         # Smart title: generated once after the first reply (background, best-effort).
         is_first_turn = not conv.get("messages")
@@ -161,17 +200,25 @@ def _mk_router(db, get_current_user):
 
             _asyncio.create_task(_update_title())
 
-        await db.assistant_conversations.update_one(
-            {"_id": conv_id, "user_id": user_id},
-            {
-                "$push": {"messages": {"$each": new_msgs}},
-                "$set": {
-                    "updated_at": datetime.utcnow(),
-                    "model": result.get("model") or conv.get("model"),
-                    "title": current_title,
+        try:
+            await db.assistant_conversations.update_one(
+                {"_id": conv_id, "user_id": user_id},
+                {
+                    "$push": {"messages": {"$each": new_msgs}},
+                    "$set": {
+                        "updated_at": datetime.utcnow(),
+                        "model": result.get("model") or conv.get("model"),
+                        "title": current_title,
+                        "agent": active_agent,
+                    },
                 },
-            },
-        )
+            )
+        except Exception as db_exc:
+            logger.exception("[assistant.chat] failed to save conversation messages")
+            raise HTTPException(
+                500,
+                "Could not save this chat turn (payload may be too large). Try a shorter message or start a new chat.",
+            ) from db_exc
 
         return {
             "conversation_id": conv_id,
@@ -179,6 +226,9 @@ def _mk_router(db, get_current_user):
             "steps": result.get("steps") or [],
             "model": result.get("model"),
             "needs_confirmation": result.get("needs_confirmation"),
+            "active_agent": active_agent,
+            "active_agent_label": AGENT_REGISTRY.get(active_agent, {}).get("label", "Zilo"),
+            "reply_suggestions": result.get("reply_suggestions") or [],
         }
 
     @router.patch("/conversations/{conv_id}")
@@ -219,6 +269,7 @@ def _mk_router(db, get_current_user):
                 "title": file.filename or "New chat",
                 "model": DEFAULT_MODEL,
                 "messages": [],
+                "agent": resolve_agent_id("general"),
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow(),
             })
@@ -266,11 +317,21 @@ def _mk_router(db, get_current_user):
         content: str = (body.get("content") or "").strip()
         fmt: str = (body.get("format") or "pdf").lower()
         raw_name: str = (body.get("filename") or "zilo-export").strip()
+        business_name: str = (body.get("business_name") or "").strip()
 
         if not content:
             raise HTTPException(400, "content is required")
         if fmt not in ("pdf", "docx"):
             raise HTTPException(400, "format must be 'pdf' or 'docx'")
+
+        # If no business name supplied, try to look it up from the user record
+        if not business_name:
+            try:
+                user_record = await db.users.find_one({"_id": user.get("business_id", user["_id"])})
+                if user_record:
+                    business_name = user_record.get("business_name") or user_record.get("owner_name") or ""
+            except Exception:
+                pass
 
         # Sanitise filename
         safe = re.sub(r"[^\w\-]", "_", raw_name)[:60] or "zilo-export"
@@ -278,10 +339,10 @@ def _mk_router(db, get_current_user):
 
         try:
             if fmt == "pdf":
-                filepath = generate_pdf(content, filename)
+                filepath = generate_pdf(content, filename, business_name=business_name)
                 media = "application/pdf"
             else:
-                filepath = generate_docx(content, filename)
+                filepath = generate_docx(content, filename, business_name=business_name)
                 media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         except Exception as e:
             logger.exception("[assistant.export] generation failed")
@@ -293,6 +354,22 @@ def _mk_router(db, get_current_user):
             filename=filename,
             background=None,
         )
+
+    @router.get("/download/{key}")
+    async def download_generated_document(key: str, user=Depends(get_current_user)):
+        """Serve a file previously generated by the generate_document tool."""
+        from .tools import _doc_store
+        import os as _os
+        filepath = _doc_store.get(key)
+        if not filepath or not _os.path.exists(filepath):
+            raise HTTPException(404, "Document not found or expired")
+        filename = _os.path.basename(filepath)
+        ext = filename.rsplit(".", 1)[-1].lower()
+        media = (
+            "application/pdf" if ext == "pdf"
+            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        return FileResponse(path=filepath, media_type=media, filename=filename)
 
     @router.get("/audit")
     async def audit_log(limit: int = 50, user=Depends(get_current_user)):
@@ -309,6 +386,7 @@ def _mk_router(db, get_current_user):
             "result": r.get("result"),
             "success": r.get("success"),
             "actor_id": r.get("actor_id"),
+            "agent": r.get("agent"),
             "created_at": r.get("created_at"),
         } for r in rows]
 
