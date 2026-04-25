@@ -298,7 +298,10 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "stripe", "stripe payment", "stripe subscription", "stripe invoice",
         "stripe dashboard", "stripe charge", "stripe refund",
         "stripe dispute", "stripe webhook", "stripe customer",
-        "payment link", "stripe checkout",
+        "stripe balance", "stripe customers", "stripe subscriptions",
+        "payment link", "stripe checkout", "create payment link",
+        "stripe revenue", "stripe payout", "stripe account",
+        "overdue invoice", "paid invoice", "unpaid invoice",
     ],
 
     # ── Email marketing ───────────────────────────────────────────────────────
@@ -458,6 +461,10 @@ def _is_continuation_message(msg_lower: str) -> bool:
     words = msg_lower.split()
     if len(words) > 6:
         return False
+    # Any 1–2 word message is almost certainly a tap-chip pick (product name, option, etc.)
+    # Never re-route on a single word — it's always a continuation.
+    if len(words) <= 2:
+        return True
     # Pure affirmatives / negatives
     if msg_lower.strip() in {
         "yes", "y", "yep", "yeah", "yup", "sure", "ok", "okay", "go", "do it",
