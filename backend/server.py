@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 # Load env before ANY other imports
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env', override=True)
+load_dotenv(ROOT_DIR / '.env.local', override=True)
 
 import os
 # Check AWS immediately
@@ -74,7 +75,8 @@ _stream_handler.setFormatter(_log_formatter)
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 import asyncio
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
+from passlib.context import CryptContext
 from typing import List, Optional, Any
 import uuid
 from datetime import datetime, timedelta
@@ -181,6 +183,26 @@ async def _redis_get_ts(key: str) -> float:
             logging.warning(f"[Redis] _redis_get_ts error: {e}")
     return _ts_fallback.get(key, 0.0)
 
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _hash_password(plain: str) -> str:
+    return _pwd_context.hash(plain)
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return _pwd_context.verify(plain, hashed)
+    except Exception:
+        return False
+
+
+def _web_placeholder_phone(user_id: str) -> str:
+    """Unique E.164-shaped placeholder until the user links WhatsApp in Integrations."""
+    h = user_id.replace("-", "")[:11]
+    return f"+999{h}"
+
+
 def serialize_doc(doc):
     """Recursively convert MongoDB ObjectId fields to strings for JSON serialization."""
     if isinstance(doc, dict):
@@ -190,6 +212,56 @@ def serialize_doc(doc):
     elif isinstance(doc, _ObjectId):
         return str(doc)
     return doc
+
+
+def _dt_to_iso(val) -> str:
+    """Mongo may return datetimes as datetime or ISO strings (legacy / imports)."""
+    if val is None:
+        return datetime.utcnow().isoformat()
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return str(val)
+
+
+def _optional_dt_to_iso(val) -> Optional[str]:
+    """ISO string for optional date fields; None stays None (unlike _dt_to_iso)."""
+    if val is None:
+        return None
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return str(val)
+
+
+def _parse_dt(val, required: bool = False) -> Optional[datetime]:
+    """Coerce Mongo/string/datetime values for Pydantic datetime fields."""
+    if val is None:
+        return datetime.utcnow() if required else None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.utcnow() if required else None
+    return datetime.utcnow() if required else None
+
+
+def _safe_int(val, default: int = 0) -> int:
+    try:
+        if val is None:
+            return default
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    try:
+        if val is None:
+            return default
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
 def sanitize_string(value: str, max_length: int = 500) -> str:
     """Strip dangerous characters and limit length for user input."""
@@ -271,6 +343,24 @@ if not _jwt_secret_raw or _jwt_secret_raw == 'default-secret-key':
 JWT_SECRET = _jwt_secret_raw
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
 
+_jwt_user_id_hex = _re.compile(r"^[0-9a-fA-F]{24}$")
+
+
+async def find_user_by_jwt_id(uid) -> Optional[dict]:
+    """Load user by `_id` from JWT: string UUID, plain string id, or legacy 24-char ObjectId hex."""
+    if uid is None:
+        return None
+    user = await db.users.find_one({"_id": uid})
+    if user is not None:
+        return user
+    if isinstance(uid, str) and _jwt_user_id_hex.match(uid):
+        try:
+            return await db.users.find_one({"_id": _ObjectId(uid)})
+        except Exception:
+            return None
+    return None
+
+
 # Google Play / App Store IAP Config
 GOOGLE_PLAY_PACKAGE_NAME = os.environ.get('GOOGLE_PLAY_PACKAGE_NAME', '')
 
@@ -288,6 +378,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Return a JSON 500 with a readable message instead of an empty crash response.
+    Catches MongoDB timeouts, KeyErrors, and any other unhandled exceptions."""
+    from fastapi.responses import JSONResponse
+    err_type = type(exc).__name__
+    err_msg = str(exc)
+    logging.error(f"Unhandled exception on {request.method} {request.url.path}: {err_type}: {err_msg}", exc_info=True)
+    # Surface a human-readable hint for common errors
+    if "timed out" in err_msg or "ServerSelectionTimeout" in err_type:
+        detail = "Database temporarily unavailable — please retry in a moment"
+    elif "KeyError" in err_type:
+        detail = f"Data format error: missing field {err_msg}"
+    elif "LLM API error" in err_msg or "Anthropic API error" in err_msg:
+        # Pass the actual API error message through so it's visible in the UI
+        detail = err_msg
+    elif "RuntimeError" in err_type and "API error" in err_msg:
+        detail = err_msg
+    else:
+        detail = "Internal Server Error"
+    return JSONResponse(status_code=500, content={"detail": detail})
+
 
 @app.on_event("startup")
 async def fix_team_members_index():
@@ -604,10 +717,13 @@ async def health_check():
 
 # ============ HELPER FUNCTIONS ============
 
-def create_token(user_id: str, phone_number: str) -> str:
+def create_token(user_id, phone_number: str) -> str:
+    """Issue JWT. Coerces user_id to str so Mongo ObjectId / UUID values always JSON-serialize."""
+    uid = str(user_id) if user_id is not None else ""
+    phone = str(phone_number) if phone_number is not None else ""
     payload = {
-        "user_id": user_id,
-        "phone_number": phone_number,
+        "user_id": uid,
+        "phone_number": phone,
         "exp": datetime.utcnow() + timedelta(days=30)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -626,7 +742,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     payload = verify_token(credentials.credentials)
-    user = await db.users.find_one({"_id": payload["user_id"]})
+    user = await find_user_by_jwt_id(payload["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found", headers={"X-Account-Deleted": "true"})
     return user
@@ -740,6 +856,19 @@ class UserCreate(BaseModel):
     phone_number: str
     business_name: str
     owner_name: Optional[str] = None
+
+
+class WebRegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+    business_name: str = Field(..., min_length=1, max_length=200)
+    owner_name: Optional[str] = Field(None, max_length=200)
+
+
+class WebLoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=1, max_length=128)
+
 
 class UserResponse(BaseModel):
     id: str
@@ -1508,7 +1637,7 @@ class UserSettingsUpdate(BaseModel):
     push_token: Optional[str] = None
     daily_pulse_enabled: Optional[bool] = None
     daily_pulse_time: Optional[str] = None  # e.g. '20:00'
-    ai_model: Optional[str] = None  # standard, premium, claude-3.5, grok, etc.
+    ai_model: Optional[str] = None  # standard, premium, claude-4.7, grok, etc.
     auto_reply_audience: Optional[str] = None  # 'everyone', 'customers_only', 'new_contacts_only'
 
 # Business Knowledge Model
@@ -1953,6 +2082,117 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
         "pairing_data": result.get("pairing_data", {}),
     }
 
+
+@api_router.post("/auth/register-web")
+async def register_web(req: WebRegisterRequest):
+    """
+    Create an account with email + password (web). WhatsApp can be linked later under Integrations.
+    """
+    from country_utils import get_payment_methods_for_country
+
+    email = req.email.strip().lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="An account with this email already exists")
+
+    user_id = str(uuid.uuid4())
+    phone = _web_placeholder_phone(user_id)
+    country_code = "KE"
+    country_config = get_payment_methods_for_country(country_code)
+    now = datetime.utcnow()
+    business_name = req.business_name.strip()
+    owner_name = (req.owner_name or "").strip()
+
+    user_doc = {
+        "_id": user_id,
+        "email": email,
+        "password_hash": _hash_password(req.password),
+        "phone_number": phone,
+        "business_name": business_name,
+        "owner_name": owner_name,
+        "subscription_plan": None,
+        "subscription_active": False,
+        "country_code": country_code,
+        "currency": country_config["currency"],
+        "payment_methods": [{"name": m, "details": ""} for m in country_config["methods"][:3]],
+        "created_at": now,
+        "setup_complete": True,
+        "role": TeamMemberRole.OWNER,
+        "business_id": user_id,
+        "auth_provider": "email_web",
+        "settings": {"business_type": "retail", "onboarding_v1_completed": False},
+    }
+    await db.users.insert_one(user_doc)
+
+    team_member = {
+        "_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "name": owner_name or business_name,
+        "email": email,
+        "phone_number": phone,
+        "role": TeamMemberRole.OWNER,
+        "business_id": user_id,
+        "status": "active",
+        "invited_by": user_id,
+        "created_at": now,
+        "last_active": now,
+    }
+    await db.team_members.insert_one(team_member)
+
+    token = create_token(user_id, phone)
+    user = await db.users.find_one({"_id": user_id})
+    return serialize_doc({
+        "status": "success",
+        "token": token,
+        "access_token": token,
+        "is_new_user": False,
+        "user": {
+            "id": user_id,
+            "email": email,
+            "phone_number": phone,
+            "business_name": business_name,
+            "owner_name": owner_name,
+            "subscription_active": False,
+            "business_id": user_id,
+            "role": TeamMemberRole.OWNER,
+            "settings": user.get("settings", {}),
+            "auth_provider": "email_web",
+        },
+    })
+
+
+@api_router.post("/auth/login-web")
+async def login_web(req: WebLoginRequest):
+    """Sign in with email + password (web accounts)."""
+    email = req.email.strip().lower()
+    user = await db.users.find_one({"email": email})
+    if not user or not user.get("password_hash"):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not _verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    user_id = user["_id"]
+    phone = user.get("phone_number") or ""
+    token = create_token(user_id, phone)
+    return serialize_doc({
+        "status": "success",
+        "token": token,
+        "access_token": token,
+        "is_new_user": not user.get("setup_complete", True),
+        "user": {
+            "id": user_id,
+            "email": user.get("email", email),
+            "phone_number": phone,
+            "business_name": user.get("business_name", ""),
+            "owner_name": user.get("owner_name", ""),
+            "subscription_active": user.get("subscription_active", False),
+            "business_id": user.get("business_id", user_id),
+            "role": user.get("role", TeamMemberRole.OWNER),
+            "settings": user.get("settings", {}),
+            "auth_provider": user.get("auth_provider", "email_web"),
+        },
+    })
+
+
 @api_router.post("/auth/register")
 async def register_user(user_data: UserCreate, user = Depends(get_current_user)):
     """
@@ -2021,7 +2261,8 @@ async def get_me(user = Depends(get_current_user)):
     
     return serialize_doc({
         "id": user["_id"],
-        "phone_number": user["phone_number"],
+        "email": user.get("email"),
+        "phone_number": user.get("phone_number", ""),
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
         "role": user.get("role", TeamMemberRole.OWNER),
@@ -2031,7 +2272,8 @@ async def get_me(user = Depends(get_current_user)):
         "subscription_active": user.get("subscription_active", False),
         "country_code": user.get("country_code"),
         "currency": user.get("currency", "USD"),
-        "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"])
+        "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"]),
+        "auth_provider": user.get("auth_provider", "whatsapp"),
     })
 
 # ============ USER SETTINGS ============
@@ -2066,6 +2308,9 @@ async def get_settings(user = Depends(get_current_user)):
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
         "restaurant_has_reservations": s.get("restaurant_has_reservations", False),
+        "features": s.get("features"),
+        "account_mode": s.get("account_mode", "business"),
+        "onboarding_v1_completed": s.get("onboarding_v1_completed"),
     }
     await cache_set(cache_key, result, TTL_TENANT_SETTINGS)
     return result
@@ -3239,29 +3484,52 @@ async def get_customers(
 
     # Fetch team member names for assigned_to display
     team_members = await db.team_members.find({"business_id": business_id}).to_list(100)
-    member_map = {m.get("user_id"): m["name"] for m in team_members if m.get("user_id")}
+    member_map = {
+        m.get("user_id"): (m.get("name") or "Member")
+        for m in team_members
+        if m.get("user_id")
+    }
 
-    return [
-        CustomerResponse(
-            id=c["_id"],
-            user_id=c["user_id"],
-            name=c["name"],
-            phone_number=c.get("phone_number") or c.get("phone", ""),
-            notes=c.get("notes"),
-            tags=c.get("tags", []),
-            stage=c.get("stage", "lead"),
-            purchase_count=c.get("purchase_count", 0),
-            total_spent=c.get("total_spent", 0.0),
-            last_message=c.get("last_message"),
-            last_contacted=c.get("last_contacted"),
-            profile_picture=c.get("profile_picture"),
-            unread_count=unread_map.get(c["_id"], 0),
-            created_at=c.get("created_at", datetime.utcnow()),
-            assigned_to=assignment_map.get(c["_id"]),
-            assigned_to_name=member_map.get(assignment_map.get(c["_id"])) if assignment_map.get(c["_id"]) else None
-        )
-        for c in customers
-    ]
+    def _tags_list(raw) -> List[str]:
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return [str(t) for t in raw]
+        return [str(raw)]
+
+    out: List[CustomerResponse] = []
+    for c in customers:
+        uid = c.get("user_id") or business_id
+        created = _parse_dt(c.get("created_at"), required=True)
+        if not created:
+            created = datetime.utcnow()
+        try:
+            out.append(
+                CustomerResponse(
+                    id=str(c["_id"]),
+                    user_id=str(uid),
+                    name=(c.get("name") or "Unknown").strip() or "Unknown",
+                    phone_number=c.get("phone_number") or c.get("phone", "") or "",
+                    notes=c.get("notes"),
+                    tags=_tags_list(c.get("tags")),
+                    stage=c.get("stage", "lead"),
+                    purchase_count=_safe_int(c.get("purchase_count"), 0),
+                    total_spent=_safe_float(c.get("total_spent"), 0.0),
+                    last_message=c.get("last_message"),
+                    last_contacted=_parse_dt(c.get("last_contacted"), required=False),
+                    profile_picture=c.get("profile_picture"),
+                    unread_count=unread_map.get(c["_id"], 0),
+                    created_at=created,
+                    assigned_to=assignment_map.get(c["_id"]),
+                    assigned_to_name=member_map.get(assignment_map.get(c["_id"]))
+                    if assignment_map.get(c["_id"])
+                    else None,
+                )
+            )
+        except Exception as e:
+            logging.warning(f"[get_customers] skip bad customer {c.get('_id')}: {e}")
+            continue
+    return out
 
 @api_router.get("/customers/cold")
 async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
@@ -3303,14 +3571,14 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
             analyzed_customer_ids.add(c["_id"])
             auto_seq = await db.followups.find_one({"customer_id": c["_id"], "status": "pending", "is_auto_sequence": True})
             result.append({
-                "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+                "id": c["_id"], "name": c.get("name", "Unknown"), "phone_number": c.get("phone_number", ""),
                 "notes": c.get("notes"), "tags": c.get("tags", []),
                 "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
                 "days_since_contact": analysis.get("days_since_contact"),
                 "has_pending_followup": analysis.get("has_pending_followup", False),
                 "ai_reason": analysis.get("ai_reason") if analysis.get("ai_reason") else "Smart Follow-up",
-                "urgency_score": analysis.get("urgency_score", 0),
-                "created_at": c["created_at"],
+                "urgency_score": analysis.get("urgency_score") or 0,
+                "created_at": c.get("created_at"),
                 "ai_draft_message": auto_seq.get("message") if auto_seq else None,
                 "ai_draft_followup_id": auto_seq["_id"] if auto_seq else None,
                 "ai_draft_day": auto_seq.get("sequence_day") if auto_seq else None,
@@ -3339,18 +3607,24 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
         ai_reason = generate_simple_reason(c, days_since_contact)
 
         result.append({
-            "id": c["_id"], "name": c["name"], "phone_number": c["phone_number"],
+            "id": c["_id"], "name": c.get("name", "Unknown"), "phone_number": c.get("phone_number", ""),
             "notes": c.get("notes"), "tags": c.get("tags", []),
             "last_message": c.get("last_message"), "last_contacted": c.get("last_contacted"),
             "days_since_contact": days_since_contact, "has_pending_followup": pending_followup is not None,
-            "ai_reason": ai_reason, "created_at": c["created_at"],
+            "ai_reason": ai_reason, "created_at": c.get("created_at"),
             "ai_draft_message": auto_seq.get("message") if auto_seq else None,
             "ai_draft_followup_id": auto_seq["_id"] if auto_seq else None,
             "ai_draft_day": auto_seq.get("sequence_day") if auto_seq else None,
         })
-            
+
     # Sort by urgency/days and limit to top 30 most urgent
-    result.sort(key=lambda x: x.get("urgency_score", 0) if "urgency_score" in x else (x["days_since_contact"] if x["days_since_contact"] else 999), reverse=True)
+    def _sort_key(x):
+        score = x.get("urgency_score")
+        if score is not None:
+            return int(score)
+        days = x.get("days_since_contact")
+        return int(days) if days is not None else 999
+    result.sort(key=_sort_key, reverse=True)
     return serialize_doc(result[:30])  # Only return top 30 most urgent customers
 
 @api_router.get("/customers/cold-with-reasons")
@@ -3523,7 +3797,7 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
     aname = labels.get(resolved_assignee) if resolved_assignee else None
     
     return FollowUpResponse(
-        id=followup_id,
+        id=str(followup_id),
         user_id=business_id,
         customer_id=followup.customer_id,
         customer_name=customer["name"],
@@ -3577,20 +3851,20 @@ async def get_followups(
         customer = customers_map.get(f["customer_id"])
         aid = f.get("assigned_to")
         result.append(FollowUpResponse(
-            id=f["_id"],
+            id=str(f["_id"]),
             user_id=f["user_id"],
             customer_id=f["customer_id"],
             customer_name=customer["name"] if customer else "Unknown",
-            customer_phone=customer["phone_number"] if customer else None,
-            reminder_date=f["reminder_date"],
+            customer_phone=customer.get("phone_number") if customer else None,
+            reminder_date=f.get("reminder_date") or datetime.utcnow(),
             message=f.get("message"),
-            status=f["status"],
+            status=f.get("status", "pending"),
             type=f.get("type", "call"),
             outcome=f.get("outcome"),
             outcome_note=f.get("outcome_note"),
             is_auto_sequence=f.get("is_auto_sequence"),
             sequence_day=f.get("sequence_day"),
-            created_at=f["created_at"],
+            created_at=f.get("created_at") or datetime.utcnow(),
             assigned_to=aid,
             assigned_to_name=labels.get(aid) if aid else None,
         ))
@@ -3625,7 +3899,7 @@ async def update_followup(followup_id: str, update: FollowUpUpdate, user = Depen
     labels = await _followup_assignee_labels(business_id, {aid} if aid else set())
     
     return FollowUpResponse(
-        id=updated["_id"],
+        id=str(updated["_id"]),
         user_id=updated["user_id"],
         customer_id=updated["customer_id"],
         customer_name=customer["name"] if customer else "Unknown",
@@ -4580,48 +4854,65 @@ async def get_orders(user = Depends(get_current_user)):
     result = []
     for order in orders:
         # Get customer info
-        if order["customer_id"] == "walk-in":
+        cid = order.get("customer_id") or "walk-in"
+        if cid == "walk-in":
             customer_name = "Walk-in Customer"
             customer_phone = "N/A"
         else:
-            customer = await db.customers.find_one({"_id": order["customer_id"]})
-            customer_name = customer["name"] if customer else "Unknown"
-            customer_phone = customer["phone_number"] if customer else "N/A"
+            customer = await db.customers.find_one({"_id": cid})
+            if customer is None and isinstance(cid, str) and _jwt_user_id_hex.match(cid):
+                try:
+                    customer = await db.customers.find_one({"_id": _ObjectId(cid)})
+                except Exception:
+                    customer = None
+            customer_name = customer.get("name", "Unknown") if customer else "Unknown"
+            customer_phone = customer.get("phone_number", "N/A") if customer else "N/A"
         
         # Support both manual orders (product/quantity/price) and autoreply orders (product_name/items/total_amount)
-        items = order.get("items") or []
+        raw_items = order.get("items") or []
+        items = serialize_doc(raw_items) if raw_items else []
         product_label = (
             order.get("product")
             or order.get("product_name")
             or (", ".join(it.get("product_name", "") for it in items) if items else "Order")
         )
-        quantity = order.get("quantity") or (items[0].get("quantity", 1) if items else 1)
-        unit_price = order.get("price") or (items[0].get("unit_price", 0) if items else 0)
-        total = order.get("total_amount") or order.get("total") or 0
+        first_item = items[0] if items and isinstance(items[0], dict) else {}
+        quantity = _safe_int(
+            order.get("quantity") or (first_item.get("quantity", 1) if first_item else 1),
+            1,
+        )
+        unit_price = _safe_float(
+            order.get("price") or (first_item.get("unit_price", 0) if first_item else 0),
+            0.0,
+        )
+        total = _safe_float(order.get("total_amount") or order.get("total") or 0, 0.0)
+
+        assigned_raw = order.get("assigned_to")
+        assigned_str = str(assigned_raw) if assigned_raw is not None else None
 
         result.append(OrderResponse(
             id=str(order["_id"]),
-            customer_id=str(order.get("customer_id", "")),
+            customer_id=str(cid) if cid is not None else "",
             customer_name=customer_name,
             customer_phone=customer_phone,
             product=product_label,
             quantity=quantity,
             price=unit_price,
             total_amount=total,
-            payment_status=order.get("payment_status", "unpaid"),
-            delivery_status=order.get("delivery_status", order.get("status", "pending")),
-            notes=order.get("notes"),
-            due_date=order.get("due_date"),
-            created_at=order["created_at"].isoformat(),
+            payment_status=str(order.get("payment_status", "unpaid") or "unpaid"),
+            delivery_status=str(order.get("delivery_status", order.get("status", "pending")) or "pending"),
+            notes=order.get("notes") if isinstance(order.get("notes"), (str, type(None))) else str(order.get("notes")),
+            due_date=_optional_dt_to_iso(order.get("due_date")),
+            created_at=_dt_to_iso(order.get("created_at")),
             order_number=order.get("order_number"),
             delivery_type=order.get("delivery_type"),
             delivery_address=order.get("delivery_address"),
             table_number=order.get("table_number"),
             items=items if items else None,
             status=order.get("status"),
-            created_by=order.get("created_by"),
-            fulfillment_status=order.get("fulfillment_status", "New"),
-            assigned_to=order.get("assigned_to"),
+            created_by=str(cb) if (cb := order.get("created_by")) is not None else None,
+            fulfillment_status=str(order.get("fulfillment_status", "New") or "New"),
+            assigned_to=assigned_str,
         ))
     
     return result
@@ -5442,6 +5733,8 @@ class ProductResponse(BaseModel):
     unit: Optional[str] = None
     moq: Optional[int] = None
     pricing_tiers: Optional[List[dict]] = None
+    variants: Optional[List[dict]] = None
+    modifier_groups: Optional[List[dict]] = None
     created_at: datetime
 
 @api_router.get("/products", response_model=List[ProductResponse])
@@ -5471,6 +5764,8 @@ async def get_products(user = Depends(get_current_user)):
             unit=p.get("unit") or None,
             moq=p.get("moq"),
             pricing_tiers=p.get("pricing_tiers") or None,
+            variants=p.get("variants") or None,
+            modifier_groups=p.get("modifier_groups") or None,
             created_at=p.get("created_at", datetime.utcnow())
         ))
     return result
@@ -5603,6 +5898,8 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
         unit=product_doc.get("unit") or None,
         moq=product_doc.get("moq"),
         pricing_tiers=product_doc.get("pricing_tiers") or None,
+        variants=product_doc.get("variants") or None,
+        modifier_groups=product_doc.get("modifier_groups") or None,
         created_at=product_doc["created_at"]
     )
 
@@ -5665,6 +5962,8 @@ async def update_product(product_id: str, updates: ProductUpdate, user = Depends
         unit=result.get("unit") or None,
         moq=result.get("moq"),
         pricing_tiers=result.get("pricing_tiers") or None,
+        variants=result.get("variants") or None,
+        modifier_groups=result.get("modifier_groups") or None,
         created_at=result["created_at"]
     )
 
@@ -5779,6 +6078,104 @@ async def upload_broadcast_image(request: ImageUploadRequest, user = Depends(get
     except Exception as e:
         logging.error(f"Image upload error: {e}")
         raise HTTPException(status_code=500, detail="Failed to upload image")
+
+
+class S3PresignGetRequest(BaseModel):
+    """Refresh a presigned GET URL for an object in this deployment's image bucket."""
+
+    source: str = Field(
+        ...,
+        description="Full S3 HTTPS URL, s3://bucket/key, or bare key under products/",
+    )
+    expires_in: int = Field(
+        604800,
+        ge=60,
+        le=604800,
+        description="TTL in seconds (60–604800, i.e. up to 7 days)",
+    )
+
+
+@api_router.post("/s3/presign-get")
+async def s3_presign_get(request: S3PresignGetRequest, user=Depends(get_current_user)):
+    """
+    Return a new presigned GET URL for an existing object. Use when a stored URL was truncated,
+    expired, or the query string was mangled (e.g. HTML-escaped ampersands). Only the configured
+    AWS bucket and keys under products/ are allowed.
+    """
+    _ = user  # authenticated; object keys are unguessable UUID-based paths
+    if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        raise HTTPException(status_code=503, detail="S3 is not configured")
+    expected_bucket = (os.environ.get("AWS_BUCKET_NAME") or "").strip()
+    if not expected_bucket:
+        raise HTTPException(status_code=503, detail="AWS_BUCKET_NAME not set")
+    try:
+        bucket, key = S3Handler.parse_s3_source_to_bucket_key(request.source)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    use_bucket = bucket or expected_bucket
+    if use_bucket != expected_bucket:
+        raise HTTPException(status_code=403, detail="Bucket does not match this deployment")
+    try:
+        url = await S3Handler.async_generate_presigned_get_url(
+            use_bucket, key, expires_in=request.expires_in
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.error("s3 presign-get failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to presign URL")
+    return {"url": url, "bucket": use_bucket, "key": key, "expires_in": request.expires_in}
+
+
+@api_router.get("/images/s3/{key_path:path}")
+async def s3_image_proxy(key_path: str):
+    """
+    Public image proxy — downloads an object from S3 using server-side credentials
+    and streams it back. Used by Orshot (and other external services) to fetch
+    product images from the private bucket without needing presigned URLs.
+
+    The endpoint is intentionally unauthenticated so that Orshot's render servers
+    can access it. Key paths are UUID-based and unguessable in practice.
+    """
+    if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        raise HTTPException(status_code=503, detail="S3 is not configured on this server")
+    bucket = (os.environ.get("AWS_BUCKET_NAME") or "").strip()
+    if not bucket:
+        raise HTTPException(status_code=503, detail="AWS_BUCKET_NAME not set")
+
+    # Strip leading slash if any
+    key = key_path.lstrip("/")
+
+    try:
+        import boto3
+        from fastapi.responses import StreamingResponse as _StreamingResponse
+        import io as _io
+
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        content_type = obj.get("ContentType") or "application/octet-stream"
+        body = obj["Body"].read()
+
+        return _StreamingResponse(
+            _io.BytesIO(body),
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=3600",
+                "Content-Length": str(len(body)),
+            },
+        )
+    except Exception as e:
+        err_str = str(e)
+        if "NoSuchKey" in err_str or "404" in err_str:
+            raise HTTPException(status_code=404, detail="Image not found")
+        logging.error("s3_image_proxy error for key=%s: %s", key, e)
+        raise HTTPException(status_code=500, detail="Failed to fetch image from S3")
+
 
 # ============ SUBSCRIPTION ENDPOINTS ============
 
@@ -6126,7 +6523,7 @@ async def delete_account(request: Request):
         raise
 
     user_id = payload["user_id"]
-    user = await db.users.find_one({"_id": user_id})
+    user = await find_user_by_jwt_id(user_id)
 
     # If account is already gone (e.g. prior attempt crashed after delete), still clean up
     # any leftover team_members/settings records keyed by phone or user_id, then return success
@@ -6293,8 +6690,7 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
     """
     Start a QR-code based WhatsApp connection (no phone number required).
     Creates an Evolution API instance with qrcode=True and returns the QR image as base64.
-    Frontend should poll GET /whatsapp/qr every 20s for a fresh code, and
-    GET /whatsapp/status every 5s to detect when it goes connected.
+    QR is taken directly from the create response so it is fresh (no expiry delay).
     """
     import httpx as _httpx, uuid as _uuid, os as _os
     wa_service = get_whatsapp_service(db)
@@ -6315,26 +6711,51 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
         }
     }
 
-    async with _httpx.AsyncClient(timeout=30) as client:
-        # Delete stale instance if exists
-        await client.delete(f"{base_url}/instance/delete/{instance_name}", headers=headers)
-        await asyncio.sleep(1)
+    async with _httpx.AsyncClient(timeout=60) as client:
+        # Use the same proven delete method as the pairing code flow
+        await wa_service._delete_all_user_instances(client, user_id)
+        # Extra explicit delete by name in case list missed it
+        try:
+            await client.delete(f"{base_url}/instance/logout/{instance_name}", headers=headers)
+        except Exception:
+            pass
+        try:
+            await client.delete(f"{base_url}/instance/delete/{instance_name}", headers=headers)
+        except Exception:
+            pass
+        await asyncio.sleep(1)  # Give Evolution DB time to commit the deletion
 
-        # Create instance with qrcode=True (no phone number)
+        # Create instance WITHOUT qrcode:true — avoids Evolution's integrationSession bug.
+        # QR is fetched separately via GET /instance/connect (no number param).
+        create_payload = {
+            "instanceName": instance_name,
+            "token": str(_uuid.uuid4()),
+            "qrcode": False,
+            "integration": "WHATSAPP-BAILEYS",
+            "reject_call": False,
+            "groupsIgnore": True,
+        }
+
         create_resp = await client.post(
             f"{base_url}/instance/create",
-            json={
-                "instanceName": instance_name,
-                "token": str(_uuid.uuid4()),
-                "qrcode": True,
-                "integration": "WHATSAPP-BAILEYS",
-                "reject_call": False,
-                "groupsIgnore": True,
-            },
+            json=create_payload,
             headers=headers,
         )
+        logging.info(f"[QR] create status={create_resp.status_code} body={create_resp.text[:300]}")
+
         if create_resp.status_code not in (200, 201):
-            raise HTTPException(500, f"Failed to create QR instance: {create_resp.text[:200]}")
+            err = create_resp.text.lower()
+            if "already" in err or "in use" in err or "exists" in err or "forbidden" in err:
+                logging.info(f"[QR] Still in use after delete — waiting 5s and retrying…")
+                await asyncio.sleep(5)
+                create_resp = await client.post(
+                    f"{base_url}/instance/create",
+                    json={**create_payload, "token": str(_uuid.uuid4())},
+                    headers=headers,
+                )
+                logging.info(f"[QR] retry create status={create_resp.status_code} body={create_resp.text[:300]}")
+            if create_resp.status_code not in (200, 201):
+                raise HTTPException(500, f"Failed to create QR instance: {create_resp.text[:200]}")
 
         # Set webhook
         await client.post(f"{base_url}/webhook/set/{instance_name}", json=webhook_cfg, headers=headers)
@@ -6349,23 +6770,93 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
             }},
         )
 
-        # Wait a moment for the instance to initialise, then fetch QR
-        await asyncio.sleep(3)
-        qr_resp = await client.get(f"{base_url}/instance/connect/{instance_name}", headers=headers)
-        qr_data = qr_resp.json() if qr_resp.status_code == 200 else {}
+        # Wait for Baileys WebSocket to initialise, then fetch QR via /instance/connect
+        # (called WITHOUT a number param → returns QR code instead of pairing code)
+        # Retry up to 5 times with 2s gaps instead of a blind 5s sleep
+        qr_base64 = ""
+        for attempt in range(5):
+            await asyncio.sleep(2)
+            conn_resp = await client.get(
+                f"{base_url}/instance/connect/{instance_name}", headers=headers
+            )
+            logging.info(f"[QR] connect attempt {attempt+1} status={conn_resp.status_code} body={conn_resp.text[:400]}")
+            qr_base64 = _extract_qr(conn_resp.json() if conn_resp.status_code == 200 else {})
+            if qr_base64:
+                break
 
-    # The QR code is inside qr_data["base64"] or qr_data["qrcode"]["base64"]
-    qr_base64 = (
-        qr_data.get("base64")
-        or (qr_data.get("qrcode") or {}).get("base64")
+    return {"status": "qr_ready", "qr_base64": qr_base64}
+
+
+def _extract_qr(data: dict) -> str:
+    """
+    Extract a valid base64 PNG QR image from any Evolution API response shape.
+    Evolution sometimes returns the raw WA session string in 'base64' instead of a real PNG.
+    In that case we generate the PNG ourselves using the qrcode library.
+    """
+    import base64 as _b64, io as _io
+
+    if not data:
+        return ""
+
+    # Gather candidate values from different response shapes
+    qrcode_block = data.get("qrcode") or {}
+    raw_b64 = (
+        data.get("base64")
+        or qrcode_block.get("base64")
         or ""
     )
-    return {"status": "qr_ready", "qr_base64": qr_base64}
+    raw_code = (
+        data.get("code")
+        or qrcode_block.get("code")
+        or ""
+    )
+
+    # Helper: is this a real PNG base64?
+    def _is_real_png(b64_str: str) -> bool:
+        """PNG magic bytes start with 0x89 0x50 0x4E 0x47 (‰PNG)."""
+        try:
+            s = b64_str
+            if s.startswith("data:"):
+                s = s.split(",", 1)[1]
+            decoded = _b64.b64decode(s[:20])
+            return decoded[:4] == b'\x89PNG'
+        except Exception:
+            return False
+
+    # If the stored base64 is a real PNG, use it directly
+    if raw_b64 and _is_real_png(raw_b64):
+        return raw_b64
+
+    # Otherwise generate a PNG from the raw code text
+    code_text = raw_code
+    if not code_text and raw_b64:
+        # raw_b64 might actually be the session string mislabeled
+        if raw_b64.startswith("data:"):
+            code_text = raw_b64.split(",", 1)[1]  # strip fake data: prefix
+        else:
+            code_text = raw_b64
+
+    if not code_text:
+        return ""
+
+    try:
+        import qrcode as _qrcode
+        qr = _qrcode.QRCode(error_correction=_qrcode.constants.ERROR_CORRECT_L, box_size=8, border=2)
+        qr.add_data(code_text)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        png_b64 = _b64.b64encode(buf.getvalue()).decode()
+        return f"data:image/png;base64,{png_b64}"
+    except Exception as e:
+        logging.warning(f"[QR] Failed to generate QR PNG: {e}")
+        return ""
 
 
 @api_router.get("/whatsapp/qr")
 async def whatsapp_qr_fetch(user = Depends(get_current_user)):
-    """Fetch the latest QR code for an existing pending instance."""
+    """Fetch a refreshed QR code for an existing pending instance."""
     import httpx as _httpx
     wa_service = get_whatsapp_service(db)
     user_id = user.get("business_id", user["_id"])
@@ -6376,14 +6867,10 @@ async def whatsapp_qr_fetch(user = Depends(get_current_user)):
             f"{wa_service.base_url}/instance/connect/{instance_name}",
             headers=wa_service._headers(),
         )
+        logging.info(f"[QR refresh] status={resp.status_code} body={resp.text[:300]}")
         data = resp.json() if resp.status_code == 200 else {}
 
-    qr_base64 = (
-        data.get("base64")
-        or (data.get("qrcode") or {}).get("base64")
-        or ""
-    )
-    return {"qr_base64": qr_base64}
+    return {"qr_base64": _extract_qr(data)}
 
 
 @api_router.get("/whatsapp/status")
@@ -6486,7 +6973,7 @@ async def get_customer_profile_picture(customer_id: str, token: str = Query(defa
     except HTTPException:
         raise
 
-    user = await db.users.find_one({"_id": payload["user_id"]})
+    user = await find_user_by_jwt_id(payload["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
@@ -7187,6 +7674,23 @@ async def evolution_webhook(request: Request):
                         logging.debug(f"Could not fetch profile pic for new contact {phone}: {e}")
                 asyncio.create_task(_fetch_pic(user["_id"], customer_id, from_number))
 
+                # Fire customer_created workflow trigger
+                async def _fire_customer_created_wf(uid, cid, phone):
+                    try:
+                        from workflows.engine import fire_trigger as _wf_fire_cc
+                        from workflows.models import WorkflowEvent as _WFEvent_cc
+                        ws_cc = get_whatsapp_service(db)
+                        await _wf_fire_cc(db, _WFEvent_cc(
+                            trigger_type="customer_created",
+                            user_id=uid,
+                            customer_id=cid,
+                            from_number=phone,
+                            data={},
+                        ), ws_cc)
+                    except Exception as _wf_cc_err:
+                        logging.debug(f"[Workflow] customer_created trigger error: {_wf_cc_err}")
+                asyncio.create_task(_fire_customer_created_wf(user["_id"], customer_id, from_number))
+
                 # Notify owner of new contact messaging for the first time
                 async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
                     try:
@@ -7610,8 +8114,10 @@ async def evolution_webhook(request: Request):
                 # pre-router + router + agents pipeline.
                 # ──────────────────────────────────────────────────────────
                 from autoreply.engine import process_message as _v2_process
+                from workflows.engine import fire_trigger as _wf_fire
+                from workflows.models import WorkflowEvent as _WFEvent
                 _ws_v2 = get_whatsapp_service(db)
-                return await _v2_process(
+                _v2_result = await _v2_process(
                     db=db,
                     user=user,
                     customer=customer,
@@ -7620,6 +8126,27 @@ async def evolution_webhook(request: Request):
                     from_number=from_number,
                     whatsapp_service=_ws_v2,
                 )
+                # ── Fire workflow triggers (background, non-blocking) ──────────
+                _wf_intent = _v2_result.get("intent", "other") if isinstance(_v2_result, dict) else "other"
+                _wf_sentiment = _v2_result.get("sentiment", "neutral") if isinstance(_v2_result, dict) else "neutral"
+                _wf_msg_event = _WFEvent(
+                    trigger_type="incoming_message",
+                    user_id=user["_id"],
+                    customer_id=customer_id,
+                    from_number=from_number,
+                    data={"message": body, "intent": _wf_intent, "sentiment": _wf_sentiment},
+                )
+                asyncio.create_task(_wf_fire(db, _wf_msg_event, _ws_v2))
+                if _wf_intent and _wf_intent != "other":
+                    _wf_intent_event = _WFEvent(
+                        trigger_type="intent_detected",
+                        user_id=user["_id"],
+                        customer_id=customer_id,
+                        from_number=from_number,
+                        data={"intent": _wf_intent, "message": body, "sentiment": _wf_sentiment},
+                    )
+                    asyncio.create_task(_wf_fire(db, _wf_intent_event, _ws_v2))
+                return _v2_result
 
                 # Handle order button taps: "order_<product_id>"
                 body_lower = body.lower().strip()
@@ -9281,6 +9808,50 @@ async def send_daily_notifications_now(user = Depends(get_current_user)):
 
 # ============ PRODUCT CATALOG ENDPOINTS ============
 
+@api_router.post("/integrations/shopify/sync-products")
+async def api_sync_shopify_products(user = Depends(get_current_user)):
+    """Sync products from Shopify into Zilo CRM."""
+    try:
+        from shopify_sync import sync_shopify_products
+        result = await sync_shopify_products(db, user["_id"])
+        return result
+    except Exception as e:
+        logging.error(f"Shopify sync failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/integrations/zernio/sync-products")
+async def api_sync_zernio_products(user = Depends(get_current_user)):
+    """Sync products from Zernio Catalog into Zilo CRM."""
+    try:
+        from zernio_sync import sync_zernio_products
+        result = await sync_zernio_products(db, user["_id"])
+        return result
+    except Exception as e:
+        logging.error(f"Zernio sync failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/products/{product_id}/push-shopify")
+async def api_push_to_shopify(product_id: str, user = Depends(get_current_user)):
+    """Push a Zilo product to Shopify"""
+    try:
+        from shopify_push import push_to_shopify
+        result = await push_to_shopify(db, user["_id"], product_id)
+        return result
+    except Exception as e:
+        logging.error(f"Shopify push failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/products/{product_id}/push-zernio")
+async def api_push_to_zernio(product_id: str, user = Depends(get_current_user)):
+    """Push a Zilo product to Zernio Catalog (Meta/Google/TikTok)"""
+    try:
+        from zernio_push import push_to_zernio
+        result = await push_to_zernio(db, user["_id"], product_id)
+        return result
+    except Exception as e:
+        logging.error(f"Zernio push failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.post("/products/reanalyze")
 async def reanalyze_products(user = Depends(get_current_user)):
     """Re-analyze all product images with AI Vision to fix names/descriptions/categories"""
@@ -9483,11 +10054,19 @@ async def get_product(product_id: str, user = Depends(get_current_user)):
         "id": product["_id"],
         "name": product.get("name", "Unnamed Product"),
         "price": product.get("price") or 0.0,
+        "discount_price": product.get("discount_price"),
+        "sub_category": product.get("sub_category"),
         "image_url": orig,
         "images": imgs,
         "category": product.get("category", "Other"),
         "description": product.get("description", ""),
         "in_stock": product.get("in_stock", True),
+        "stock_quantity": product.get("stock_quantity"),
+        "unit": product.get("unit"),
+        "moq": product.get("moq"),
+        "pricing_tiers": product.get("pricing_tiers"),
+        "variants": product.get("variants") or [],
+        "modifier_groups": product.get("modifier_groups") or [],
         "ai_suggested_name": product.get("ai_suggested_name"),
         "ai_confidence": product.get("ai_confidence"),
         "created_at": product.get("created_at", datetime.utcnow()).isoformat() if hasattr(product.get("created_at", datetime.utcnow()), 'isoformat') else str(product.get("created_at", ""))
@@ -9613,32 +10192,46 @@ async def send_product_to_customer(
             if full:
                 all_images.append(full)
     
-    # Send via WhatsApp API
-    from whatsapp_service import get_whatsapp_service
-    whatsapp_service = get_whatsapp_service(db)
+    zernio_profile_id = user.get("zernio_profile_id")
+    zernio_conv_id = customer.get("zernio_conversation_id")
     
-    # Send extra images first (no caption), then last image with product details
     result = None
-    if len(all_images) > 1:
-        for extra_img in all_images[:-1]:
-            await whatsapp_service.send_message(
-                user_id=business_id,
-                to_number=customer["phone_number"],
-                message="",
-                customer_name=customer.get("name"),
-                media_url=extra_img,
-                send_context="product_send",
-            )
-    
-    # Send last image (or only image) with the product details caption
-    result = await whatsapp_service.send_message(
-        user_id=business_id,
-        to_number=customer["phone_number"],
-        message=message_text,
-        customer_name=customer.get("name"),
-        media_url=all_images[-1] if all_images else None,
-        send_context="product_send",
-    )
+    if zernio_profile_id and zernio_conv_id:
+        # --- ZERNIO ROUTER (Universal Meta/Google/TikTok/WhatsApp) ---
+        from zernio_service import send_zernio_message, save_outgoing_zernio_message
+        
+        if len(all_images) > 1:
+            for extra_img in all_images[:-1]:
+                await send_zernio_message(zernio_conv_id, "", media_url=extra_img)
+        
+        ok = await send_zernio_message(zernio_conv_id, message_text, media_url=all_images[-1] if all_images else None)
+        if ok:
+            await save_outgoing_zernio_message(db, business_id, customer["_id"], message_text, customer.get("channel", "unknown"))
+            result = {"status": "sent_via_zernio"}
+    else:
+        # --- EVOLUTION API ROUTER (Legacy WhatsApp Business) ---
+        from whatsapp_service import get_whatsapp_service
+        whatsapp_service = get_whatsapp_service(db)
+        
+        if len(all_images) > 1:
+            for extra_img in all_images[:-1]:
+                await whatsapp_service.send_message(
+                    user_id=business_id,
+                    to_number=customer["phone_number"],
+                    message="",
+                    customer_name=customer.get("name"),
+                    media_url=extra_img,
+                    send_context="product_send",
+                )
+        
+        result = await whatsapp_service.send_message(
+            user_id=business_id,
+            to_number=customer["phone_number"],
+            message=message_text,
+            customer_name=customer.get("name"),
+            media_url=all_images[-1] if all_images else None,
+            send_context="product_send",
+        )
     
     # Store as pending catalog so "Yes"/"Order" auto-creates the order
     await db.pending_catalogs.update_one(
@@ -9777,6 +10370,106 @@ async def generate_business_about(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to generate About description: {str(e)}")
+
+
+class OnboardingWebsiteBody(BaseModel):
+    url: str = Field(..., min_length=4, description="Business website URL")
+    business_type: Optional[str] = None
+
+
+def _strip_html_to_text(html: str, max_chars: int = 14000) -> str:
+    t = _re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=_re.I | _re.S)
+    t = _re.sub(r"<style[^>]*>.*?</style>", " ", t, flags=_re.I | _re.S)
+    t = _re.sub(r"<[^>]+>", " ", t)
+    t = _re.sub(r"\s+", " ", t).strip()
+    return t[:max_chars]
+
+
+@api_router.post("/onboarding/analyze-website")
+async def onboarding_analyze_website(body: OnboardingWebsiteBody, user=Depends(get_current_user)):
+    """
+    Fetch a public URL and use AI to summarize the business + suggest where to fill data in Zilo.
+    """
+    from ai_service import get_drafter
+
+    raw = (body.url or "").strip()
+    if not raw:
+        raise HTTPException(400, "url is required")
+    if not raw.startswith(("http://", "https://")):
+        raw = "https://" + raw
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=22.0, follow_redirects=True) as client:
+            r = await client.get(
+                raw,
+                headers={"User-Agent": "ZiloOnboarding/1.0 (+https://zilo)"},
+            )
+    except Exception as e:
+        raise HTTPException(502, f"Could not fetch URL: {e}")
+
+    if r.status_code >= 400:
+        raise HTTPException(502, f"Website returned HTTP {r.status_code}")
+
+    if len(r.text) > 600_000:
+        raise HTTPException(400, "Page is too large to analyze — try your homepage.")
+
+    text = _strip_html_to_text(r.text)
+    if len(text) < 80:
+        raise HTTPException(422, "Not enough readable text on that page — try another URL or use chat instead.")
+
+    industry = (body.business_type or "general").strip() or "general"
+    drafter = get_drafter()
+    prompt = f"""You are helping a new Zilo user (industry: {industry}) onboard their business.
+Read the website text and output ONLY valid JSON (no markdown fences) with this exact shape:
+{{
+  "summary": "2-3 sentences: what this business does and who it serves",
+  "business_about_draft": "A polished 'About' paragraph (max 120 words) for their profile",
+  "products_services_hint": "One short line on what they sell or offer",
+  "where_to_fill": [
+    {{"label": "string", "path": "/dashboard/settings", "tip": "why go there"}}
+  ]
+}}
+Use 3 to 6 items in where_to_fill. Paths MUST be one of:
+/dashboard/settings (business details & knowledge)
+/dashboard/features (turn modules on)
+/dashboard/integrations (connect tools)
+/dashboard/whatsapp
+/dashboard/shopify
+/dashboard/messages
+/dashboard/customers
+Website text:
+{text}
+"""
+    try:
+        raw_llm = await drafter._call_llm(prompt=prompt, model_pref="standard")
+    except Exception as e:
+        logging.exception("[onboarding.analyze-website] LLM failed")
+        raise HTTPException(500, f"AI analysis failed: {e}")
+
+    cleaned = raw_llm.strip()
+    if cleaned.startswith("```"):
+        cleaned = _re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = _re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        import json as _json
+        data = _json.loads(cleaned)
+    except Exception:
+        raise HTTPException(500, "AI returned invalid JSON — try again.")
+
+    if not isinstance(data, dict):
+        raise HTTPException(500, "Unexpected AI response shape")
+
+    return {
+        "status": "success",
+        "url": raw,
+        "summary": data.get("summary") or "",
+        "business_about_draft": data.get("business_about_draft") or "",
+        "products_services_hint": data.get("products_services_hint") or "",
+        "where_to_fill": data.get("where_to_fill") if isinstance(data.get("where_to_fill"), list) else [],
+    }
+
 
 class SendCatalogRequest(BaseModel):
     customer_id: str
@@ -10058,6 +10751,10 @@ async def startup_tasks():
 
         # Users
         await db.users.create_index("phone_number", unique=True)
+        try:
+            await db.users.create_index("email", unique=True, sparse=True)
+        except Exception as e:
+            logging.warning(f"[indexes] users.email sparse unique: {e}")
 
         # Customers — most queried collection
         await db.customers.create_index("user_id")
@@ -10206,6 +10903,14 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"Failed to start daily pulse scheduler: {e}")
     
+    # Ensure trend cache TTL index exists
+    try:
+        from trend_cache import ensure_ttl_index
+        await ensure_ttl_index(db)
+        logging.info("Trend cache TTL index ready")
+    except Exception as e:
+        logging.error(f"Failed to create trend cache index: {e}")
+
     # Start digest notification scheduler (8 AM and 3 PM)
     try:
         from scheduler import start_scheduler
@@ -10214,6 +10919,22 @@ async def startup_tasks():
         logging.info("Digest scheduler started - notifications at 8 AM and 3 PM EAT")
     except Exception as e:
         logging.error(f"Failed to start digest scheduler: {e}")
+
+    # Start workflow deferred step runner
+    try:
+        from workflows.engine import deferred_runner as _wf_deferred_runner
+        asyncio.create_task(_wf_deferred_runner(db, get_whatsapp_service))
+        logging.info("[workflows] Deferred step runner started")
+    except Exception as e:
+        logging.error(f"[workflows] Failed to start deferred runner: {e}")
+
+    # Start Shopify autopilot poller (polls every 5 min for new orders, abandoned carts, low stock)
+    try:
+        from workflows.engine import shopify_autopilot_runner as _shopify_runner
+        asyncio.create_task(_shopify_runner(db, get_whatsapp_service))
+        logging.info("[shopify-autopilot] Autopilot runner started")
+    except Exception as e:
+        logging.error(f"[shopify-autopilot] Failed to start runner: {e}")
 
 logger = logging.getLogger(__name__)
 
@@ -10773,7 +11494,91 @@ try:
 except Exception as _e:
     logging.error(f"[assistant] failed to mount routes: {_e}")
 
-app.include_router(api_router)
+# ── Marketing (Meta Ads drafts, etc.) ──
+try:
+    from marketing.routes import make_marketing_router as _mk_marketing_router
+    _marketing_router = _mk_marketing_router(db, Depends(get_current_user))
+    api_router.include_router(_marketing_router)
+    logging.info("[marketing] routes mounted at /api/marketing/*")
+except Exception as _e:
+    logging.error(f"[marketing] failed to mount routes: {_e}")
+
+# ── Workflow engine routes ──
+try:
+    from workflows.routes import make_workflow_router as _mk_wf_router
+    _wf_router = _mk_wf_router(db, Depends(get_current_user))
+    api_router.include_router(_wf_router)
+    logging.info("[workflows] routes mounted at /api/workflows/*")
+except Exception as _wf_e:
+    logging.error(f"[workflows] failed to mount routes: {_wf_e}")
+
+try:
+    from invoices.routes import make_invoices_router as _mk_inv_router
+    api_router.include_router(_mk_inv_router(db, Depends(get_current_user)))
+    logging.info("[invoices] routes mounted")
+except Exception as _e:
+    logging.error(f"[invoices] failed to mount routes: {_e}")
+
+try:
+    from inventory.routes import make_inventory_router as _mk_stock_router
+    api_router.include_router(_mk_stock_router(db, Depends(get_current_user)))
+    logging.info("[inventory] routes mounted")
+except Exception as _e:
+    logging.error(f"[inventory] failed to mount routes: {_e}")
+
+try:
+    from finance.routes import make_finance_router as _mk_fin_router
+    api_router.include_router(_mk_fin_router(db, Depends(get_current_user)))
+    logging.info("[finance] routes mounted")
+except Exception as _e:
+    logging.error(f"[finance] failed to mount routes: {_e}")
+
+try:
+    from quotes.routes import make_quotes_router as _mk_quo_router
+    api_router.include_router(_mk_quo_router(db, Depends(get_current_user)))
+    logging.info("[quotes] routes mounted")
+except Exception as _e:
+    logging.error(f"[quotes] failed to mount routes: {_e}")
+
+try:
+    from loyalty.routes import make_loyalty_router as _mk_loy_router
+    api_router.include_router(_mk_loy_router(db, Depends(get_current_user)))
+    logging.info("[loyalty] routes mounted")
+except Exception as _e:
+    logging.error(f"[loyalty] failed to mount routes: {_e}")
+
+try:
+    from feedback.routes import make_feedback_router as _mk_fb_router
+    api_router.include_router(_mk_fb_router(db, Depends(get_current_user)))
+    logging.info("[feedback] routes mounted")
+except Exception as _e:
+    logging.error(f"[feedback] failed to mount routes: {_e}")
+
+try:
+    from zernio.routes import make_zernio_router as _mk_zernio_router
+    api_router.include_router(_mk_zernio_router(db, Depends(get_current_user)))
+    logging.info("[zernio] routes mounted")
+except Exception as _e:
+    logging.error(f"[zernio] failed to mount routes: {_e}")
+
+# ── Design templates (optional catalog for marketing UI) ──
+try:
+    from design_templates_routes import make_design_templates_router as _mk_dt_router
+    api_router.include_router(_mk_dt_router(db, Depends(get_current_user)))
+    logging.info("[design-templates] routes mounted at /api/design-templates/*")
+except Exception as _e:
+    logging.error(f"[design-templates] failed to mount routes: {_e}")
+
+# ── Orshot (template schema + render for dashboard / integrations) ───────────
+try:
+    from orshot_routes import make_orshot_router as _mk_orshot_router
+    api_router.include_router(_mk_orshot_router(Depends(get_current_user)))
+    logging.info("[orshot] routes mounted at /api/orshot/*")
+except Exception as _e:
+    logging.error(f"[orshot] failed to mount routes: {_e}")
+
+# NOTE: app.include_router(api_router) is deferred to end of file so all routes and
+# sub-routers are registered first (avoids missing routes with uvicorn --reload on Windows).
 
 
 # ── Facebook OAuth callback (public — called by Facebook, no JWT) ─────────────
@@ -11334,6 +12139,202 @@ async def bird_webhook(request: Request):
         _process_bird_message(user, customer, text, workspace_id, conversation_id, user_pid)
     )
     return {"status": "ok"}
+
+# ============ ZERNIO INBOX WEBHOOK =========================================
+
+from zernio_service import (
+    get_user_by_zernio_profile,
+    get_or_create_zernio_customer,
+    save_incoming_zernio_message,
+    save_outgoing_zernio_message,
+    send_zernio_message
+)
+
+async def _process_zernio_message(
+    user: dict,
+    customer: dict,
+    text: str,
+    conversation_id: str,
+    platform: str
+):
+    from autoreply.engine import process_message as ar_process
+
+    user_id = user["_id"]
+
+    class _ZernioSender:
+        async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", media_url=None, media_type="image", **kwargs):
+            ok = await send_zernio_message(conversation_id, message, media_url=media_url)
+            if ok:
+                await save_outgoing_zernio_message(db, user_id, customer["_id"], message, platform)
+            return ok
+
+    try:
+        await ar_process(
+            db=db,
+            user=user,
+            customer=customer,
+            customer_id=customer["_id"],
+            message=text,
+            from_number=f"zernio_{conversation_id}",
+            whatsapp_service=_ZernioSender(),
+        )
+    except Exception as exc:
+        logging.error(f"[Zernio] AutoReply error: {exc}", exc_info=True)
+        await send_zernio_message(
+            conversation_id,
+            "Sorry, I'm having trouble right now. Please try again! 🙏",
+        )
+
+@app.post("/webhook/zernio")
+async def zernio_webhook(request: Request):
+    """Zernio Unified Inbox Webhook"""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Assuming Zernio payload: { profileId, platform, conversationId, messageId, senderId, senderName, text }
+    profile_id = payload.get("profileId")
+    if not profile_id:
+        return {"status": "ignored"}
+
+    user = await get_user_by_zernio_profile(db, profile_id)
+    if not user:
+        logging.warning(f"[Zernio] No CRM user found for profile {profile_id}")
+        return {"status": "ok"}
+
+    platform = payload.get("platform", "unknown")
+    sender_id = payload.get("senderId", "")
+    sender_name = payload.get("senderName", "")
+    text = payload.get("text", "")
+    conversation_id = payload.get("conversationId", "")
+    message_id = payload.get("messageId", "")
+
+    if not sender_id or not text or not conversation_id:
+        return {"status": "ok"}
+
+    customer = await get_or_create_zernio_customer(db, user["_id"], sender_id, sender_name, platform, conversation_id)
+    await save_incoming_zernio_message(db, user["_id"], customer["_id"], text, message_id, platform)
+
+    asyncio.create_task(
+        _process_zernio_message(user, customer, text, conversation_id, platform)
+    )
+    return {"status": "ok"}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KDS (Kitchen Display System) — PIN-protected, no JWT required
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _kds_validate_pin(business_id: str, pin: str) -> bool:
+    """Return True if the provided PIN matches the stored kds_pin for this business."""
+    settings_doc = await db.settings.find_one({"user_id": business_id})
+    stored_pin = (settings_doc or {}).get("kds_pin", "")
+    if not stored_pin:
+        return False
+    return str(stored_pin).strip() == str(pin).strip()
+
+
+@api_router.get("/kds/{business_id}/orders")
+async def kds_get_orders(business_id: str, pin: str = ""):
+    """Public endpoint — returns active (non-done) orders for the KDS display."""
+    if not await _kds_validate_pin(business_id, pin):
+        raise HTTPException(status_code=401, detail="Invalid KDS PIN")
+
+    cursor = db.orders.find(
+        {
+            "user_id": business_id,
+            "fulfillment_status": {"$nin": ["Done", "Cancelled", "cancelled", "done"]},
+        }
+    ).sort("created_at", 1)
+    raw = await cursor.to_list(200)
+
+    orders = []
+    for o in raw:
+        # Look up customer name
+        customer_name = o.get("customer_name", "")
+        if not customer_name:
+            cid = o.get("customer_id")
+            if cid and cid != "walk-in":
+                cust = await db.customers.find_one({"_id": cid}, {"name": 1})
+                customer_name = (cust or {}).get("name", "Walk-in")
+            else:
+                customer_name = "Walk-in"
+
+        created_at = o.get("created_at")
+        elapsed_s = int((datetime.utcnow() - created_at).total_seconds()) if created_at else 0
+
+        orders.append({
+            "id":                str(o.get("_id", "")),
+            "order_number":      o.get("order_number", ""),
+            "customer_name":     customer_name,
+            "fulfillment_status":o.get("fulfillment_status") or "New",
+            "delivery_type":     o.get("delivery_type", "pickup"),
+            "table_number":      o.get("table_number", ""),
+            "delivery_address":  o.get("delivery_address", ""),
+            "assigned_to":       o.get("assigned_to", ""),
+            "notes":             o.get("notes", ""),
+            "items":             o.get("items") or [{"product_name": o.get("product", "Order"), "quantity": o.get("quantity", 1)}],
+            "total_amount":      o.get("total_amount", 0),
+            "elapsed_seconds":   elapsed_s,
+            "created_at":        created_at.isoformat() if created_at else "",
+        })
+    return {"orders": orders, "count": len(orders)}
+
+
+@api_router.patch("/kds/{business_id}/orders/{order_id}/status")
+async def kds_update_status(business_id: str, order_id: str, pin: str = "", body: dict = None):
+    """Public endpoint — advances order to the next fulfillment status."""
+    if body is None:
+        body = {}
+    if not await _kds_validate_pin(business_id, body.get("pin", pin)):
+        raise HTTPException(status_code=401, detail="Invalid KDS PIN")
+
+    new_status = body.get("status")
+    if not new_status:
+        raise HTTPException(status_code=400, detail="status is required")
+
+    valid_statuses = ["New", "Confirmed", "Preparing", "Ready", "Done"]
+    if new_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"status must be one of {valid_statuses}")
+
+    # Try both UUID string and ObjectId
+    try:
+        from bson import ObjectId as _ObjId
+        oid = _ObjId(order_id)
+        res = await db.orders.update_one({"_id": oid, "user_id": business_id}, {"$set": {"fulfillment_status": new_status}})
+    except Exception:
+        res = await db.orders.update_one({"_id": order_id, "user_id": business_id}, {"$set": {"fulfillment_status": new_status}})
+
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {"ok": True, "status": new_status}
+
+
+@api_router.get("/kds/{business_id}/settings")
+async def kds_get_settings(business_id: str, user=Depends(get_current_user)):
+    """JWT-protected — owner reads their KDS PIN."""
+    owner_id = user.get("business_id", user["_id"])
+    if owner_id != business_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    doc = await db.settings.find_one({"user_id": business_id})
+    return {"kds_pin": (doc or {}).get("kds_pin", ""), "kds_enabled": bool((doc or {}).get("kds_pin"))}
+
+
+@api_router.put("/kds/{business_id}/settings")
+async def kds_put_settings(business_id: str, body: dict, user=Depends(get_current_user)):
+    """JWT-protected — owner sets their KDS PIN."""
+    owner_id = user.get("business_id", user["_id"])
+    if owner_id != business_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    pin = str(body.get("kds_pin", "")).strip()
+    if pin and (len(pin) < 4 or len(pin) > 8 or not pin.isdigit()):
+        raise HTTPException(status_code=400, detail="PIN must be 4-8 digits")
+    await db.settings.update_one({"user_id": business_id}, {"$set": {"kds_pin": pin}}, upsert=True)
+    return {"ok": True, "kds_pin": pin}
+
+
+# Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
+app.include_router(api_router)
 
 
 @app.on_event("shutdown")
