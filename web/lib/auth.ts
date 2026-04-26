@@ -49,3 +49,13 @@ export function getBusinessType(): string {
 export function isAuthenticated(): boolean {
   return !!getToken();
 }
+
+export function patchStoredUserSettings(patch: Record<string, unknown>) {
+  const user = getUser();
+  if (!user) return;
+  const updated = {
+    ...user,
+    settings: { ...(user.settings as Record<string, unknown> || {}), ...patch },
+  };
+  setUser(updated);
+}

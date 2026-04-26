@@ -88,3 +88,14 @@ export function timeAgo(dateStr: string) {
 export function elapsedMinutes(dateStr: string) {
   return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
 }
+
+export function downloadAsset(url: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.target = "_blank";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
