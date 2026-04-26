@@ -6,7 +6,7 @@ import {
   Loader2, Mail, MailOpen, Clock, Bot, ToggleLeft, ToggleRight,
   Star, Archive, Reply, Pencil, Zap, Check, AlertCircle,
   ArrowUpRight, Paperclip, ChevronDown, MessageSquarePlus,
-  Tag, Plus, UserCheck, Cpu, Trash2,
+  Tag, Plus, UserCheck, Cpu, Trash2, Brain, ChevronUp,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -42,14 +42,28 @@ type AutoreplyRule = {
   extraContext: string;
 };
 
+type CategoryAutoreply = {
+  enabled: boolean;
+  tone: "professional" | "friendly" | "concise";
+  context: string; // newline-separated chips
+};
+
 type Category = {
   id: string;
   name: string;
   colorBg: string;
   colorText: string;
   mode: "ai" | "vip";
-  description?: string;  // hint for AI classification
-  addresses?: string[];  // VIP: specific sender addresses
+  description?: string;
+  addresses?: string[];
+  autoreply?: CategoryAutoreply;
+};
+
+type ThreadSummary = {
+  threadId: string;
+  summary: string;
+  messageCount: number; // how many messages when summary was generated
+  generatedAt: string;
 };
 
 type Tab = "all" | "unread" | "starred" | string;
@@ -286,9 +300,27 @@ function CategoryManager({
   const [description, setDescription] = useState("");
   const [addresses, setAddresses] = useState("");
   const [colorIdx, setColorIdx] = useState(0);
+  // per-category autoreply
+  const [arEnabled, setArEnabled] = useState(false);
+  const [arTone, setArTone] = useState<"professional" | "friendly" | "concise">("professional");
+  const [arContext, setArContext] = useState("");
+  const [arInput, setArInput] = useState("");
+
+  const arItems = arContext ? arContext.split("\n").map((s) => s.trim()).filter(Boolean) : [];
+
+  function addArItem() {
+    const val = arInput.trim();
+    if (!val) return;
+    setArContext([...arItems, val].join("\n"));
+    setArInput("");
+  }
+  function removeArItem(i: number) {
+    setArContext(arItems.filter((_, idx) => idx !== i).join("\n"));
+  }
 
   function resetForm() {
     setName(""); setMode("ai"); setDescription(""); setAddresses(""); setColorIdx(0);
+    setArEnabled(false); setArTone("professional"); setArContext(""); setArInput("");
     setCreating(false); setEditId(null);
   }
 
@@ -300,6 +332,9 @@ function CategoryManager({
     setDescription(cat.description ?? "");
     setAddresses((cat.addresses ?? []).join(", "));
     setColorIdx(ci >= 0 ? ci : 0);
+    setArEnabled(cat.autoreply?.enabled ?? false);
+    setArTone(cat.autoreply?.tone ?? "professional");
+    setArContext(cat.autoreply?.context ?? "");
     setCreating(true);
   }
 
@@ -314,6 +349,7 @@ function CategoryManager({
       mode,
       description: mode === "ai" ? description.trim() || undefined : undefined,
       addresses: mode === "vip" ? addresses.split(",").map((a) => a.trim()).filter(Boolean) : undefined,
+      autoreply: { enabled: arEnabled, tone: arTone, context: arContext },
     };
     const next = editId ? cats.map((c) => (c.id === editId ? cat : c)) : [...cats, cat];
     setCats(next);
@@ -371,6 +407,9 @@ function CategoryManager({
                 {cat.mode === "vip" && cat.addresses?.length ? (
                   <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.addresses.join(", ")}</p>
                 ) : null}
+                {cat.autoreply?.enabled && (
+                  <span className="text-[9px] text-emerald-400 flex items-center gap-0.5 mt-0.5"><Bot size={8} /> auto-reply · {cat.autoreply.tone}</span>
+                )}
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button
@@ -460,6 +499,58 @@ function CategoryManager({
                     />
                   ))}
                 </div>
+              </div>
+
+              {/* Per-category auto-reply */}
+              <div className="rounded-xl border border-slate-600 bg-slate-700/50 p-3 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <Bot size={11} /> Auto-reply for this category
+                  </div>
+                  <button
+                    onClick={() => setArEnabled((v) => !v)}
+                    className={cn("flex items-center gap-1 text-[11px] font-medium transition-colors", arEnabled ? "text-emerald-400" : "text-slate-600")}
+                  >
+                    {arEnabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
+                  </button>
+                </div>
+                {arEnabled && (
+                  <>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {(["professional", "friendly", "concise"] as const).map((t) => (
+                        <button
+                          key={t}
+                          onClick={() => setArTone(t)}
+                          className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize transition-colors", arTone === t ? "bg-brand-dark text-white" : "bg-slate-600 text-slate-400 hover:bg-slate-500")}
+                        >
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+                    {arItems.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {arItems.map((item, i) => (
+                          <div key={i} className="flex items-center gap-1 bg-slate-600 rounded-lg px-2 py-0.5">
+                            <span className="text-[10px] text-slate-300 max-w-[140px] truncate">{item}</span>
+                            <button onClick={() => removeArItem(i)} className="text-slate-400 hover:text-rose-400 ml-0.5"><X size={8} /></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex gap-1.5">
+                      <input
+                        value={arInput}
+                        onChange={(e) => setArInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addArItem(); } }}
+                        placeholder="Context: hours, policies…"
+                        className="flex-1 bg-slate-600 text-[11px] text-slate-200 placeholder-slate-400 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-500 min-w-0"
+                      />
+                      <button onClick={addArItem} disabled={!arInput.trim()} className="px-2 rounded-lg bg-brand-dark hover:bg-brand text-white disabled:opacity-40 transition-colors">
+                        <Plus size={10} />
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="flex gap-2 pt-1">
@@ -666,6 +757,10 @@ export default function EmailPage() {
   const [threadCategories, setThreadCategories] = useState<Record<string, string>>({});
   const [showCategoryManager, setShowCategoryManager] = useState(false);
 
+  // Thread summaries
+  const [threadSummaries, setThreadSummaries] = useState<Record<string, ThreadSummary>>({});
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -695,6 +790,8 @@ export default function EmailPage() {
       if (savedCats) setCategories(JSON.parse(savedCats) as Category[]);
       const savedAssign = localStorage.getItem("email_thread_categories");
       if (savedAssign) setThreadCategories(JSON.parse(savedAssign) as Record<string, string>);
+      const savedSummaries = localStorage.getItem("email_thread_summaries");
+      if (savedSummaries) setThreadSummaries(JSON.parse(savedSummaries) as Record<string, ThreadSummary>);
     } catch { /* ignore */ }
   }, []);
 
@@ -728,6 +825,30 @@ export default function EmailPage() {
   function getCatForThread(threadId: string): Category | undefined {
     const catId = threadCategories[threadId];
     return catId ? categories.find((c) => c.id === catId) : undefined;
+  }
+
+  async function generateThreadSummary(thread: Thread, msgs: Message[]) {
+    if (msgs.length < 3) return; // only summarize when there's a real conversation
+    const existing = threadSummaries[thread.id];
+    if (existing && existing.messageCount >= msgs.length) return; // already up to date
+    try {
+      const data = await apiPost("/api/email/summarize", {
+        subject: thread.subject,
+        messages: msgs.map((m) => ({ from: m.from, date: m.date, body: stripHtml(m.body).slice(0, 600) })),
+      }) as { summary: string | null };
+      if (!data.summary) return;
+      const entry: ThreadSummary = {
+        threadId: thread.id,
+        summary: data.summary,
+        messageCount: msgs.length,
+        generatedAt: new Date().toISOString(),
+      };
+      setThreadSummaries((prev) => {
+        const next = { ...prev, [thread.id]: entry };
+        localStorage.setItem("email_thread_summaries", JSON.stringify(next));
+        return next;
+      });
+    } catch { /* ignore */ }
   }
 
   // Classify threads in background after load
@@ -800,6 +921,9 @@ export default function EmailPage() {
       }
       // Auto-generate quick replies
       if (msgs.length) generateQuickReplies(thread.subject, msgs[msgs.length - 1]);
+      // Auto-generate thread summary (background, 3+ messages)
+      if (msgs.length >= 3) generateThreadSummary(thread, msgs);
+      setSummaryExpanded(false);
       // Scroll to bottom
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
     } catch {
@@ -831,12 +955,22 @@ export default function EmailPage() {
     setDrafting(true);
     try {
       const latest = messages[messages.length - 1];
+      const cat = getCatForThread(selected.id);
+      const summary = threadSummaries[selected.id];
+      // Build rich context: user hint + category context + conversation summary
+      const contextParts: string[] = [];
+      if (extraContext.trim()) contextParts.push(extraContext.trim());
+      if (cat?.autoreply?.context) contextParts.push(`Category context (${cat.name}): ${cat.autoreply.context.replace(/\n/g, "; ")}`);
+      if (summary) contextParts.push(`Conversation summary: ${summary.summary}`);
+      const richContext = contextParts.join("\n");
+      // Use category tone if set, else user-selected tone
+      const effectiveTone = cat?.autoreply?.enabled ? cat.autoreply.tone : draftTone;
       const data = await apiPost("/api/email/draft", {
         threadSubject: selected.subject,
         latestMessage: stripHtml(latest.body).slice(0, 1500),
         senderName: latest.from,
-        tone: draftTone,
-        extraContext,
+        tone: effectiveTone,
+        extraContext: richContext || undefined,
       }) as { draft: string };
       setReplyText(data.draft);
       setShowReply(true);
@@ -1134,6 +1268,33 @@ export default function EmailPage() {
           </div>
 
           {/* Messages */}
+          {/* ── Conversation summary card ──────────────────────────────────── */}
+          {selected && threadSummaries[selected.id] && (
+            <div className="px-4 pt-3">
+              <div className="rounded-xl border border-brand-dark/30 bg-brand-dark/10 overflow-hidden">
+                <button
+                  onClick={() => setSummaryExpanded((v) => !v)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand-dark/10 transition-colors"
+                >
+                  <Brain size={12} className="text-brand shrink-0" />
+                  <span className="text-[11px] font-medium text-brand flex-1">Conversation memory</span>
+                  <span className="text-[10px] text-slate-500">{threadSummaries[selected.id].messageCount} messages</span>
+                  <ChevronUp size={12} className={cn("text-slate-500 transition-transform", !summaryExpanded && "rotate-180")} />
+                </button>
+                {summaryExpanded && (
+                  <div className="px-3 pb-3">
+                    <div className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-line">
+                      {threadSummaries[selected.id].summary}
+                    </div>
+                    <p className="text-[9px] text-slate-600 mt-2">
+                      Generated {new Date(threadSummaries[selected.id].generatedAt).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
             {threadLoading ? (
               <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-slate-600" /></div>
