@@ -1276,19 +1276,24 @@ export default function EmailPage() {
             </div>
           )}
         </div>
-      ) : connected === false ? null
-      : connected === true ? (
+      ) : (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-700">
-          <MailOpen size={40} className="text-slate-800" />
-          <p className="text-sm text-slate-600">Select a conversation</p>
-          <button
-            onClick={() => setShowCompose(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm text-slate-400 transition-colors mt-2"
-          >
-            <Pencil size={14} /> Compose new email
-          </button>
+          {connected === false ? (
+            <NoConnection inline />
+          ) : (
+            <>
+              <MailOpen size={40} className="text-slate-800" />
+              <p className="text-sm text-slate-600">Select a conversation</p>
+              <button
+                onClick={() => setShowCompose(true)}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm text-slate-400 transition-colors mt-2"
+              >
+                <Pencil size={14} /> Compose new email
+              </button>
+            </>
+          )}
         </div>
-      ) : null}
+      )}
 
       {/* ── Auto-reply right panel ─────────────────────────────────────────── */}
       {autoreply.enabled && (
