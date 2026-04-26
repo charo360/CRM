@@ -4,8 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Inbox, RefreshCw, Search, Send, Sparkles, X, ChevronLeft,
   Loader2, Mail, MailOpen, Clock, Bot, ToggleLeft, ToggleRight,
-  Star, Archive, Reply, Pencil, Zap, Check, AlertCircle,
-  ArrowUpRight, Paperclip, ChevronDown, MessageSquarePlus,
+  Star, Reply, Pencil, Zap, AlertCircle,
   Tag, Plus, UserCheck, Cpu, Trash2, Brain, ChevronUp,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
@@ -45,7 +44,7 @@ type AutoreplyRule = {
 type CategoryAutoreply = {
   enabled: boolean;
   tone: "professional" | "friendly" | "concise";
-  context: string; // newline-separated chips
+  context: string;
 };
 
 type Category = {
@@ -62,7 +61,7 @@ type Category = {
 type ThreadSummary = {
   threadId: string;
   summary: string;
-  messageCount: number; // how many messages when summary was generated
+  messageCount: number;
   generatedAt: string;
 };
 
@@ -130,7 +129,7 @@ function initials(from: string) {
 }
 
 const AVATAR_COLORS = [
-  "bg-brand", "bg-brand", "bg-emerald-500", "bg-amber-500",
+  "bg-brand-dark", "bg-emerald-500", "bg-blue-500", "bg-amber-500",
   "bg-rose-500", "bg-cyan-500", "bg-pink-500", "bg-orange-500",
 ];
 function avatarColor(from: string) {
@@ -140,14 +139,14 @@ function avatarColor(from: string) {
 }
 
 const CAT_COLORS = [
-  { bg: "bg-purple-500",  text: "text-purple-400",  label: "Purple" },
-  { bg: "bg-blue-500",    text: "text-blue-400",    label: "Blue"   },
-  { bg: "bg-emerald-500", text: "text-emerald-400", label: "Green"  },
-  { bg: "bg-orange-500",  text: "text-orange-400",  label: "Orange" },
-  { bg: "bg-pink-500",    text: "text-pink-400",    label: "Pink"   },
-  { bg: "bg-rose-500",    text: "text-rose-400",    label: "Red"    },
-  { bg: "bg-amber-500",   text: "text-amber-400",   label: "Yellow" },
-  { bg: "bg-cyan-500",    text: "text-cyan-400",    label: "Cyan"   },
+  { bg: "bg-purple-500",  text: "text-purple-600",  label: "Purple" },
+  { bg: "bg-blue-500",    text: "text-blue-600",    label: "Blue"   },
+  { bg: "bg-emerald-500", text: "text-emerald-600", label: "Green"  },
+  { bg: "bg-orange-500",  text: "text-orange-600",  label: "Orange" },
+  { bg: "bg-pink-500",    text: "text-pink-600",    label: "Pink"   },
+  { bg: "bg-rose-500",    text: "text-rose-600",    label: "Red"    },
+  { bg: "bg-amber-500",   text: "text-amber-600",   label: "Yellow" },
+  { bg: "bg-cyan-500",    text: "text-cyan-600",    label: "Cyan"   },
 ];
 
 function extractEmail(from: string): string {
@@ -160,14 +159,14 @@ function extractEmail(from: string): string {
 function NoConnection({ inline = false }: { inline?: boolean }) {
   return (
     <div className={cn("flex flex-col items-center justify-center gap-4 text-center px-8", inline ? "h-full" : "py-16")}>
-      <div className="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center">
+      <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center">
         <Mail size={26} className="text-slate-400" />
       </div>
       <div>
-        <p className="font-semibold text-slate-200 text-sm">No email connected</p>
+        <p className="font-semibold text-slate-700 text-sm">No email connected</p>
         <p className="text-xs text-slate-500 mt-1 leading-relaxed">
           Connect Gmail or Outlook in{" "}
-          <a href="/dashboard/integrations" className="text-brand underline underline-offset-2">
+          <a href="/dashboard/integrations" className="text-brand-dark underline underline-offset-2">
             Integrations
           </a>{" "}
           to unlock your inbox.
@@ -187,7 +186,6 @@ function AutoreplyPanel({
   onSave: (r: AutoreplyRule) => void;
 }) {
   const [input, setInput] = useState("");
-  // Parse existing extraContext into chips (split by newline)
   const items: string[] = autoreply.extraContext
     ? autoreply.extraContext.split("\n").map((s) => s.trim()).filter(Boolean)
     : [];
@@ -209,9 +207,9 @@ function AutoreplyPanel({
     <div className="flex flex-col h-full p-4 space-y-4">
       {/* Header */}
       <div className="flex items-center gap-2">
-        <Bot size={13} className="text-brand" />
-        <span className="text-xs font-semibold">Auto-reply</span>
-        <span className="ml-auto text-[10px] text-emerald-400 font-medium bg-emerald-900/30 px-2 py-0.5 rounded-full">Live</span>
+        <Bot size={13} className="text-brand-dark" />
+        <span className="text-xs font-semibold text-slate-800">Auto-reply</span>
+        <span className="ml-auto text-[10px] text-emerald-700 font-medium bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">Live</span>
       </div>
 
       <p className="text-[11px] text-slate-500 leading-relaxed">
@@ -220,15 +218,17 @@ function AutoreplyPanel({
 
       {/* Tone */}
       <div className="space-y-1.5">
-        <p className="text-[10px] text-slate-500">Tone</p>
+        <p className="text-[10px] text-slate-500 font-medium">Tone</p>
         <div className="flex flex-wrap gap-1.5">
           {(["professional", "friendly", "concise"] as const).map((t) => (
             <button
               key={t}
               onClick={() => onSave({ ...autoreply, tone: t })}
               className={cn(
-                "text-[10px] px-2.5 py-1 rounded-lg capitalize transition-colors",
-                autoreply.tone === t ? "bg-brand-dark text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+                "text-[10px] px-2.5 py-1 rounded-lg capitalize transition-colors font-medium",
+                autoreply.tone === t
+                  ? "bg-brand-dark text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
               )}
             >
               {t}
@@ -239,13 +239,13 @@ function AutoreplyPanel({
 
       {/* Business context chips */}
       <div className="space-y-2 flex-1">
-        <p className="text-[10px] text-slate-500">Business context</p>
+        <p className="text-[10px] text-slate-500 font-medium">Business context</p>
         {items.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {items.map((item, i) => (
-              <div key={i} className="flex items-center gap-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1">
-                <span className="text-[10px] text-slate-300 max-w-[160px] truncate">{item}</span>
-                <button onClick={() => removeItem(i)} className="text-slate-500 hover:text-rose-400 transition-colors ml-0.5">
+              <div key={i} className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                <span className="text-[10px] text-slate-700 max-w-[160px] truncate">{item}</span>
+                <button onClick={() => removeItem(i)} className="text-slate-400 hover:text-rose-500 transition-colors ml-0.5">
                   <X size={9} />
                 </button>
               </div>
@@ -258,7 +258,7 @@ function AutoreplyPanel({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(); } }}
             placeholder="Hours, policies, FAQs…"
-            className="flex-1 bg-slate-800 text-[11px] text-slate-200 placeholder-slate-500 rounded-xl px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-700 min-w-0"
+            className="flex-1 bg-white text-[11px] text-slate-700 placeholder-slate-400 rounded-xl px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0"
           />
           <button
             onClick={addItem}
@@ -273,7 +273,7 @@ function AutoreplyPanel({
       {/* Turn off */}
       <button
         onClick={() => onSave({ ...autoreply, enabled: false })}
-        className="flex items-center gap-1.5 text-[11px] text-rose-500 hover:text-rose-400 transition-colors"
+        className="flex items-center gap-1.5 text-[11px] text-rose-600 hover:text-rose-500 transition-colors"
       >
         <AlertCircle size={11} /> Turn off
       </button>
@@ -300,7 +300,6 @@ function CategoryManager({
   const [description, setDescription] = useState("");
   const [addresses, setAddresses] = useState("");
   const [colorIdx, setColorIdx] = useState(0);
-  // per-category autoreply
   const [arEnabled, setArEnabled] = useState(false);
   const [arTone, setArTone] = useState<"professional" | "friendly" | "concise">("professional");
   const [arContext, setArContext] = useState("");
@@ -365,21 +364,21 @@ function CategoryManager({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-[420px] shadow-2xl flex flex-col max-h-[85vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-[420px] shadow-xl flex flex-col max-h-[85vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2">
-            <Tag size={14} className="text-brand" />
-            <span className="font-semibold text-sm">Email Categories</span>
+            <Tag size={14} className="text-brand-dark" />
+            <span className="font-semibold text-sm text-slate-800">Email Categories</span>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-100"><X size={15} /></button>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition-colors"><X size={15} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           {/* Empty state */}
           {cats.length === 0 && !creating && (
-            <div className="text-center py-8 text-slate-600">
+            <div className="text-center py-8 text-slate-400">
               <Tag size={28} className="mx-auto mb-3 opacity-30" />
               <p className="text-xs leading-relaxed">
                 No categories yet.<br />Create one to auto-sort your inbox.
@@ -389,14 +388,14 @@ function CategoryManager({
 
           {/* Category list */}
           {cats.map((cat) => (
-            <div key={cat.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-800 border border-slate-700/60">
+            <div key={cat.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200">
               <div className={cn("w-2 h-2 rounded-full shrink-0", cat.colorBg)} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-slate-200">{cat.name}</span>
+                  <span className="text-xs font-medium text-slate-800">{cat.name}</span>
                   <span className={cn(
                     "text-[9px] px-1.5 py-0.5 rounded-full font-medium",
-                    cat.mode === "vip" ? "bg-amber-900/40 text-amber-400" : "bg-brand-dark/20 text-brand/70"
+                    cat.mode === "vip" ? "bg-amber-100 text-amber-700" : "bg-brand/10 text-brand-dark"
                   )}>
                     {cat.mode === "vip" ? "VIP" : "AI"}
                   </span>
@@ -408,19 +407,19 @@ function CategoryManager({
                   <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.addresses.join(", ")}</p>
                 ) : null}
                 {cat.autoreply?.enabled && (
-                  <span className="text-[9px] text-emerald-400 flex items-center gap-0.5 mt-0.5"><Bot size={8} /> auto-reply · {cat.autoreply.tone}</span>
+                  <span className="text-[9px] text-emerald-600 flex items-center gap-0.5 mt-0.5"><Bot size={8} /> auto-reply · {cat.autoreply.tone}</span>
                 )}
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button
                   onClick={() => startEdit(cat)}
-                  className="p-1.5 rounded-lg text-slate-500 hover:text-brand hover:bg-slate-700 transition-colors"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-brand-dark hover:bg-slate-100 transition-colors"
                 >
                   <Pencil size={10} />
                 </button>
                 <button
                   onClick={() => deleteCategory(cat.id)}
-                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-700 transition-colors"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 transition-colors"
                 >
                   <Trash2 size={10} />
                 </button>
@@ -430,15 +429,15 @@ function CategoryManager({
 
           {/* Create / edit form */}
           {creating ? (
-            <div className="rounded-xl border border-brand-dark/40 bg-slate-800/60 p-4 space-y-3">
-              <p className="text-xs font-semibold text-slate-300">{editId ? "Edit Category" : "New Category"}</p>
+            <div className="rounded-xl border border-brand/20 bg-brand/5 p-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-800">{editId ? "Edit Category" : "New Category"}</p>
 
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Name (e.g. Boss, Partners, Clients)"
                 autoFocus
-                className="w-full bg-slate-700 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-600"
+                className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
               />
 
               {/* Mode toggle */}
@@ -448,8 +447,8 @@ function CategoryManager({
                   className={cn(
                     "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors",
                     mode === "ai"
-                      ? "bg-brand-dark/20 border-brand-dark/60 text-brand"
-                      : "bg-slate-700 border-slate-600 text-slate-400 hover:bg-slate-600"
+                      ? "bg-brand/10 border-brand/30 text-brand-dark"
+                      : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
                   )}
                 >
                   <Cpu size={11} /> AI sorts
@@ -459,8 +458,8 @@ function CategoryManager({
                   className={cn(
                     "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors",
                     mode === "vip"
-                      ? "bg-amber-900/30 border-amber-700/60 text-amber-400"
-                      : "bg-slate-700 border-slate-600 text-slate-400 hover:bg-slate-600"
+                      ? "bg-amber-50 border-amber-300 text-amber-700"
+                      : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
                   )}
                 >
                   <UserCheck size={11} /> VIP senders
@@ -472,14 +471,14 @@ function CategoryManager({
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Hint: e.g. 'supplier invoices and business proposals'"
-                  className="w-full bg-slate-700 text-xs text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-600"
+                  className="w-full bg-white text-xs text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
                 />
               ) : (
                 <input
                   value={addresses}
                   onChange={(e) => setAddresses(e.target.value)}
                   placeholder="Emails comma-separated: boss@co.com, cfo@co.com"
-                  className="w-full bg-slate-700 text-xs text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-600"
+                  className="w-full bg-white text-xs text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
                 />
               )}
 
@@ -494,7 +493,7 @@ function CategoryManager({
                       className={cn(
                         "w-4 h-4 rounded-full transition-all",
                         c.bg,
-                        colorIdx === i ? "ring-2 ring-white ring-offset-1 ring-offset-slate-800 scale-110" : "hover:scale-105"
+                        colorIdx === i ? "ring-2 ring-brand-dark ring-offset-1 ring-offset-white scale-110" : "hover:scale-105"
                       )}
                     />
                   ))}
@@ -502,14 +501,14 @@ function CategoryManager({
               </div>
 
               {/* Per-category auto-reply */}
-              <div className="rounded-xl border border-slate-600 bg-slate-700/50 p-3 space-y-2.5">
+              <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-600">
                     <Bot size={11} /> Auto-reply for this category
                   </div>
                   <button
                     onClick={() => setArEnabled((v) => !v)}
-                    className={cn("flex items-center gap-1 text-[11px] font-medium transition-colors", arEnabled ? "text-emerald-400" : "text-slate-600")}
+                    className={cn("flex items-center gap-1 text-[11px] font-medium transition-colors", arEnabled ? "text-emerald-600" : "text-slate-400")}
                   >
                     {arEnabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
                   </button>
@@ -521,7 +520,7 @@ function CategoryManager({
                         <button
                           key={t}
                           onClick={() => setArTone(t)}
-                          className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize transition-colors", arTone === t ? "bg-brand-dark text-white" : "bg-slate-600 text-slate-400 hover:bg-slate-500")}
+                          className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize transition-colors font-medium", arTone === t ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}
                         >
                           {t}
                         </button>
@@ -530,9 +529,9 @@ function CategoryManager({
                     {arItems.length > 0 && (
                       <div className="flex flex-wrap gap-1">
                         {arItems.map((item, i) => (
-                          <div key={i} className="flex items-center gap-1 bg-slate-600 rounded-lg px-2 py-0.5">
-                            <span className="text-[10px] text-slate-300 max-w-[140px] truncate">{item}</span>
-                            <button onClick={() => removeArItem(i)} className="text-slate-400 hover:text-rose-400 ml-0.5"><X size={8} /></button>
+                          <div key={i} className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-0.5">
+                            <span className="text-[10px] text-slate-700 max-w-[140px] truncate">{item}</span>
+                            <button onClick={() => removeArItem(i)} className="text-slate-400 hover:text-rose-500 ml-0.5"><X size={8} /></button>
                           </div>
                         ))}
                       </div>
@@ -543,7 +542,7 @@ function CategoryManager({
                         onChange={(e) => setArInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addArItem(); } }}
                         placeholder="Context: hours, policies…"
-                        className="flex-1 bg-slate-600 text-[11px] text-slate-200 placeholder-slate-400 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-500 min-w-0"
+                        className="flex-1 bg-white text-[11px] text-slate-700 placeholder-slate-400 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0"
                       />
                       <button onClick={addArItem} disabled={!arInput.trim()} className="px-2 rounded-lg bg-brand-dark hover:bg-brand text-white disabled:opacity-40 transition-colors">
                         <Plus size={10} />
@@ -554,7 +553,7 @@ function CategoryManager({
               </div>
 
               <div className="flex gap-2 pt-1">
-                <button onClick={resetForm} className="flex-1 py-2 rounded-xl text-xs text-slate-400 bg-slate-700 hover:bg-slate-600 transition-colors">
+                <button onClick={resetForm} className="flex-1 py-2 rounded-xl text-xs text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors font-medium">
                   Cancel
                 </button>
                 <button onClick={saveCategory} className="flex-1 py-2 rounded-xl text-xs font-semibold bg-brand-dark hover:bg-brand text-white transition-colors">
@@ -565,15 +564,15 @@ function CategoryManager({
           ) : (
             <button
               onClick={() => setCreating(true)}
-              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-slate-700 text-xs text-slate-500 hover:text-slate-300 hover:border-slate-600 transition-colors"
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-slate-300 text-xs text-slate-400 hover:text-slate-600 hover:border-slate-400 transition-colors"
             >
               <Plus size={12} /> Add category
             </button>
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-slate-800">
-          <button onClick={onClose} className="w-full py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
+        <div className="px-5 py-3 border-t border-slate-100">
+          <button onClick={onClose} className="w-full py-2 rounded-xl text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors">
             Done
           </button>
         </div>
@@ -638,15 +637,15 @@ function ComposeModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:justify-end bg-black/40 backdrop-blur-sm p-4 md:pb-6 md:pr-6">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full md:w-[480px] shadow-2xl flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:justify-end bg-black/30 backdrop-blur-sm p-4 md:pb-6 md:pr-6">
+      <div className="bg-white border border-slate-200 rounded-2xl w-full md:w-[480px] shadow-xl flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
           <div className="flex items-center gap-2">
-            <Pencil size={13} className="text-brand" />
-            <span className="text-sm font-semibold">New Email</span>
+            <Pencil size={13} className="text-brand-dark" />
+            <span className="text-sm font-semibold text-slate-800">New Email</span>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-100"><X size={15} /></button>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition-colors"><X size={15} /></button>
         </div>
 
         {/* Fields */}
@@ -655,25 +654,25 @@ function ComposeModal({
             value={to}
             onChange={(e) => setTo(e.target.value)}
             placeholder="To"
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-4 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-700"
+            className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-brand border border-slate-200"
           />
           <input
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
             placeholder="Subject"
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-4 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-700"
+            className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-brand border border-slate-200"
           />
 
           {/* Tone selector */}
           <div className="flex items-center gap-1.5 pt-1">
-            <span className="text-[10px] text-slate-500">Tone:</span>
+            <span className="text-[10px] text-slate-500 font-medium">Tone:</span>
             {(["professional", "friendly", "concise"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTone(t)}
                 className={cn(
-                  "text-[10px] px-2 py-0.5 rounded-full capitalize transition-colors",
-                  tone === t ? "bg-brand-dark text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+                  "text-[10px] px-2 py-0.5 rounded-full capitalize transition-colors font-medium",
+                  tone === t ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"
                 )}
               >
                 {t}
@@ -686,28 +685,28 @@ function ComposeModal({
             onChange={(e) => setBody(e.target.value)}
             placeholder="Write your message…"
             rows={10}
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl border border-slate-700 p-3 outline-none focus:ring-1 focus:ring-brand resize-none leading-relaxed"
+            className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl border border-slate-200 p-3 outline-none focus:ring-2 focus:ring-brand resize-none leading-relaxed"
           />
         </div>
 
         {/* Footer */}
-        <div className="flex items-center gap-2 px-4 pb-4 pt-2 border-t border-slate-800">
+        <div className="flex items-center gap-2 px-4 pb-4 pt-2 border-t border-slate-100">
           <button
             onClick={aiWrite}
             disabled={drafting}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-medium disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs text-slate-600 font-medium disabled:opacity-50 transition-colors"
           >
-            {drafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} className="text-brand" />}
+            {drafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} className="text-brand-dark" />}
             AI Write
           </button>
           <div className="flex-1" />
-          <button onClick={onClose} className="px-3 py-2 text-xs text-slate-400 hover:text-slate-100 transition-colors">
+          <button onClick={onClose} className="px-3 py-2 text-xs text-slate-400 hover:text-slate-700 transition-colors">
             Discard
           </button>
           <button
             onClick={send}
             disabled={sending}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-medium disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-50 transition-colors"
           >
             {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
             Send
@@ -749,7 +748,6 @@ export default function EmailPage() {
 
   const [showCompose, setShowCompose] = useState(false);
 
-  // Starred stored locally (since no API for starring in our layer)
   const [starred, setStarred] = useState<Set<string>>(new Set());
 
   // Categories
@@ -828,9 +826,9 @@ export default function EmailPage() {
   }
 
   async function generateThreadSummary(thread: Thread, msgs: Message[]) {
-    if (msgs.length < 3) return; // only summarize when there's a real conversation
+    if (msgs.length < 3) return;
     const existing = threadSummaries[thread.id];
-    if (existing && existing.messageCount >= msgs.length) return; // already up to date
+    if (existing && existing.messageCount >= msgs.length) return;
     try {
       const data = await apiPost("/api/email/summarize", {
         subject: thread.subject,
@@ -851,7 +849,6 @@ export default function EmailPage() {
     } catch { /* ignore */ }
   }
 
-  // Classify threads in background after load
   const classifyThreadsInBackground = useCallback(async (ts: Thread[], cats: Category[]) => {
     if (cats.length === 0) return;
     const vipCats = cats.filter((c) => c.mode === "vip");
@@ -859,15 +856,10 @@ export default function EmailPage() {
     const saved = JSON.parse(localStorage.getItem("email_thread_categories") ?? "{}") as Record<string, string>;
 
     for (const thread of ts.slice(0, 30)) {
-      // VIP: instant match by sender address
       const email = extractEmail(thread.from);
       const vip = vipCats.find((c) => c.addresses?.some((a) => a.toLowerCase() === email.toLowerCase()));
       if (vip) { saveThreadCategory(thread.id, vip.id); continue; }
-
-      // Already classified by AI: skip to avoid extra API calls
       if (saved[thread.id]) continue;
-
-      // AI classify
       if (aiCats.length > 0) {
         try {
           const data = await apiPost("/api/email/classify", {
@@ -890,7 +882,6 @@ export default function EmailPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threads.length, categories.length]);
 
-  // Filtered threads for current tab
   const filteredThreads = threads.filter((t) => {
     if (tab === "unread") return t.unread;
     if (tab === "starred") return starred.has(t.id);
@@ -913,18 +904,14 @@ export default function EmailPage() {
       const data = await apiPost("/api/email", { action: "get_thread", threadId: thread.id }) as { messages: Message[] };
       const msgs = data.messages ?? [];
       setMessages(msgs);
-      // Mark read
       if (thread.unread && msgs.length) {
         const last = msgs[msgs.length - 1];
         await apiPost("/api/email", { action: "mark_read", messageId: last.id });
         setThreads((prev) => prev.map((t) => t.id === thread.id ? { ...t, unread: false } : t));
       }
-      // Auto-generate quick replies
       if (msgs.length) generateQuickReplies(thread.subject, msgs[msgs.length - 1]);
-      // Auto-generate thread summary (background, 3+ messages)
       if (msgs.length >= 3) generateThreadSummary(thread, msgs);
       setSummaryExpanded(false);
-      // Scroll to bottom
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
     } catch {
       toast.error("Failed to load thread");
@@ -957,13 +944,11 @@ export default function EmailPage() {
       const latest = messages[messages.length - 1];
       const cat = getCatForThread(selected.id);
       const summary = threadSummaries[selected.id];
-      // Build rich context: user hint + category context + conversation summary
       const contextParts: string[] = [];
       if (extraContext.trim()) contextParts.push(extraContext.trim());
       if (cat?.autoreply?.context) contextParts.push(`Category context (${cat.name}): ${cat.autoreply.context.replace(/\n/g, "; ")}`);
       if (summary) contextParts.push(`Conversation summary: ${summary.summary}`);
       const richContext = contextParts.join("\n");
-      // Use category tone if set, else user-selected tone
       const effectiveTone = cat?.autoreply?.enabled ? cat.autoreply.tone : draftTone;
       const data = await apiPost("/api/email/draft", {
         threadSubject: selected.subject,
@@ -1004,7 +989,6 @@ export default function EmailPage() {
     loadThreads(searchInput);
   }
 
-  // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement).tagName;
@@ -1019,21 +1003,21 @@ export default function EmailPage() {
   }, [selected]);
 
   return (
-    <div className="flex h-full bg-slate-950 text-slate-100 overflow-hidden">
+    <div className="flex h-full bg-slate-50 text-slate-900 overflow-hidden">
 
       {/* ── Left pane ─────────────────────────────────────────────────────── */}
       <div className={cn(
-        "flex flex-col border-r border-slate-800 bg-slate-900 shrink-0 transition-all duration-200",
+        "flex flex-col border-r border-slate-200 bg-white shrink-0 transition-all duration-200",
         selected ? "w-80 hidden md:flex" : "w-full md:w-96"
       )}>
         {/* Header */}
-        <div className="px-4 py-3 border-b border-slate-800">
+        <div className="px-4 py-3 border-b border-slate-100">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <Inbox size={15} className="text-brand" />
-              <span className="font-semibold text-sm">Inbox</span>
+              <Inbox size={15} className="text-brand-dark" />
+              <span className="font-bold text-sm text-slate-900">Inbox</span>
               {provider && (
-                <span className="text-[10px] text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full font-medium">
                   {provider === "gmail" ? "Gmail" : "Outlook"}
                 </span>
               )}
@@ -1041,19 +1025,19 @@ export default function EmailPage() {
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setShowCategoryManager(true)}
-                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-brand transition-colors"
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-brand-dark transition-colors"
                 title="Categories"
               >
                 <Tag size={12} />
               </button>
               <button
                 onClick={() => setShowCompose(true)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-xs font-medium transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-xs font-semibold transition-colors"
                 title="Compose (C)"
               >
                 <Pencil size={11} /> Compose
               </button>
-              <button onClick={() => loadThreads(activeSearch)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 transition-colors" title="Refresh">
+              <button onClick={() => loadThreads(activeSearch)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 transition-colors" title="Refresh">
                 <RefreshCw size={12} />
               </button>
             </div>
@@ -1061,17 +1045,17 @@ export default function EmailPage() {
 
           {/* Search */}
           <form onSubmit={handleSearch}>
-            <div className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-2 border border-slate-700/50">
-              <Search size={12} className="text-slate-500 shrink-0" />
+            <div className="flex items-center gap-2 bg-slate-50 rounded-xl px-3 py-2 border border-slate-200">
+              <Search size={12} className="text-slate-400 shrink-0" />
               <input
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Search emails…"
-                className="flex-1 bg-transparent text-xs text-slate-200 placeholder-slate-500 outline-none min-w-0"
+                className="flex-1 bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none min-w-0"
               />
               {searchInput && (
                 <button type="button" onClick={() => { setSearchInput(""); setActiveSearch(""); loadThreads(""); }}>
-                  <X size={11} className="text-slate-500" />
+                  <X size={11} className="text-slate-400" />
                 </button>
               )}
             </div>
@@ -1079,7 +1063,7 @@ export default function EmailPage() {
         </div>
 
         {/* Tabs */}
-        <div className="flex flex-wrap border-b border-slate-800">
+        <div className="flex flex-wrap border-b border-slate-100">
           {([
             { id: "all", label: "All" },
             { id: "unread", label: "Unread", count: unreadCount },
@@ -1091,15 +1075,15 @@ export default function EmailPage() {
               className={cn(
                 "shrink-0 px-3 py-2.5 text-xs font-medium flex items-center gap-1 transition-colors border-b-2",
                 tab === id
-                  ? "text-brand border-brand"
-                  : "text-slate-500 border-transparent hover:text-slate-300"
+                  ? "text-brand-dark border-brand-dark"
+                  : "text-slate-500 border-transparent hover:text-slate-700"
               )}
             >
               {label}
               {count != null && count > 0 && (
                 <span className={cn(
                   "text-[10px] px-1.5 py-0.5 rounded-full font-semibold",
-                  tab === id ? "bg-brand-dark text-white" : "bg-slate-800 text-slate-400"
+                  tab === id ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-500"
                 )}>{count}</span>
               )}
             </button>
@@ -1115,7 +1099,7 @@ export default function EmailPage() {
                   "shrink-0 px-3 py-2.5 text-xs font-medium flex items-center gap-1.5 transition-colors border-b-2",
                   tab === cat.id
                     ? `${cat.colorText} border-current`
-                    : "text-slate-500 border-transparent hover:text-slate-300"
+                    : "text-slate-500 border-transparent hover:text-slate-700"
                 )}
               >
                 <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", cat.colorBg)} />
@@ -1123,7 +1107,7 @@ export default function EmailPage() {
                 {count > 0 && (
                   <span className={cn(
                     "text-[9px] px-1.5 py-0.5 rounded-full font-semibold",
-                    tab === cat.id ? `${cat.colorBg} text-white` : "bg-slate-800 text-slate-400"
+                    tab === cat.id ? `${cat.colorBg} text-white` : "bg-slate-100 text-slate-500"
                   )}>{count}</span>
                 )}
               </button>
@@ -1132,14 +1116,14 @@ export default function EmailPage() {
         </div>
 
         {/* Auto-reply bar */}
-        <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+        <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
           <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
-            <Bot size={12} />
+            <Bot size={12} className="text-brand-dark" />
             Auto-reply
           </div>
           <button
             onClick={() => saveAutoreply({ ...autoreply, enabled: !autoreply.enabled })}
-            className={cn("flex items-center gap-1 text-[11px] font-medium transition-colors", autoreply.enabled ? "text-emerald-400" : "text-slate-600")}
+            className={cn("flex items-center gap-1 text-[11px] font-semibold transition-colors", autoreply.enabled ? "text-emerald-600" : "text-slate-400")}
           >
             {autoreply.enabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
             {autoreply.enabled ? "On" : "Off"}
@@ -1149,13 +1133,13 @@ export default function EmailPage() {
         {/* Thread list */}
         <div className="flex-1 overflow-y-auto">
           {loading ? (
-            <div className="flex justify-center py-12"><Loader2 size={20} className="animate-spin text-slate-600" /></div>
+            <div className="flex justify-center py-12"><Loader2 size={20} className="animate-spin text-slate-300" /></div>
           ) : connected === false ? (
             <NoConnection />
           ) : filteredThreads.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-12 text-slate-600">
+            <div className="flex flex-col items-center gap-2 py-12 text-slate-300">
               <MailOpen size={24} />
-              <p className="text-xs">{tab === "unread" ? "All caught up!" : tab === "starred" ? "No starred emails" : "No emails"}</p>
+              <p className="text-xs text-slate-400">{tab === "unread" ? "All caught up!" : tab === "starred" ? "No starred emails" : "No emails"}</p>
             </div>
           ) : (
             filteredThreads.map((thread) => {
@@ -1168,9 +1152,9 @@ export default function EmailPage() {
                   key={thread.id}
                   onClick={() => openThread(thread)}
                   className={cn(
-                    "group w-full text-left px-3 py-3 border-b border-slate-800/60 hover:bg-slate-800/40 transition-colors cursor-pointer relative",
-                    selected?.id === thread.id && "bg-slate-800/70",
-                    thread.unread && "border-l-2 border-l-brand"
+                    "group w-full text-left px-3 py-3 border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer relative",
+                    selected?.id === thread.id && "bg-brand/5 border-l-2 border-l-brand-dark",
+                    thread.unread && selected?.id !== thread.id && "border-l-2 border-l-brand"
                   )}
                 >
                   <div className="flex items-start gap-2.5">
@@ -1180,20 +1164,20 @@ export default function EmailPage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-1">
-                        <span className={cn("text-xs truncate", thread.unread ? "font-semibold text-slate-100" : "text-slate-300 font-medium")}>
+                        <span className={cn("text-xs truncate", thread.unread ? "font-bold text-slate-900" : "text-slate-700 font-medium")}>
                           {thread.from.split("<")[0].trim() || thread.from}
                         </span>
-                        <span className="text-[10px] text-slate-600 shrink-0">{formatDate(thread.date)}</span>
+                        <span className="text-[10px] text-slate-400 shrink-0">{formatDate(thread.date)}</span>
                       </div>
-                      <p className={cn("text-[11px] truncate mt-0.5", thread.unread ? "text-slate-200 font-medium" : "text-slate-400")}>
+                      <p className={cn("text-[11px] truncate mt-0.5", thread.unread ? "text-slate-800 font-semibold" : "text-slate-500")}>
                         {thread.subject}
                       </p>
                       <div className="flex items-center gap-1.5 mt-0.5">
-                        <p className="text-[10px] text-slate-600 line-clamp-1 flex-1">{thread.snippet}</p>
+                        <p className="text-[10px] text-slate-400 line-clamp-1 flex-1">{thread.snippet}</p>
                         {cat && (
                           <div className="flex items-center gap-0.5 shrink-0">
                             <div className={cn("w-1.5 h-1.5 rounded-full", cat.colorBg)} />
-                            <span className={cn("text-[9px] font-medium", cat.colorText)}>{cat.name}</span>
+                            <span className={cn("text-[9px] font-semibold", cat.colorText)}>{cat.name}</span>
                           </div>
                         )}
                       </div>
@@ -1201,17 +1185,17 @@ export default function EmailPage() {
                   </div>
 
                   {/* Hover quick actions */}
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-slate-800 rounded-lg p-1 shadow-lg border border-slate-700">
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-white rounded-lg p-1 shadow-md border border-slate-200">
                     <button
                       onClick={(e) => { e.stopPropagation(); toggleStar(thread.id); }}
-                      className={cn("p-1 rounded transition-colors", isStarred ? "text-amber-400" : "text-slate-500 hover:text-amber-400")}
+                      className={cn("p-1 rounded transition-colors", isStarred ? "text-amber-500" : "text-slate-400 hover:text-amber-500")}
                       title="Star (S)"
                     >
                       <Star size={11} fill={isStarred ? "currentColor" : "none"} />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); openThread(thread); setShowReply(true); }}
-                      className="p-1 rounded text-slate-500 hover:text-brand transition-colors"
+                      className="p-1 rounded text-slate-400 hover:text-brand-dark transition-colors"
                       title="Quick reply"
                     >
                       <Reply size={11} />
@@ -1228,10 +1212,10 @@ export default function EmailPage() {
         </div>
 
         {/* Keyboard hint */}
-        <div className="px-3 py-2 border-t border-slate-800 flex items-center gap-3 flex-wrap">
+        <div className="px-3 py-2 border-t border-slate-100 flex items-center gap-3 flex-wrap bg-slate-50/50">
           {[["C", "Compose"], ["R", "Reply"], ["S", "Star"], ["Esc", "Close"]].map(([k, label]) => (
-            <span key={k} className="text-[10px] text-slate-700 flex items-center gap-1">
-              <kbd className="text-[9px] bg-slate-800 text-slate-500 px-1 py-0.5 rounded font-mono">{k}</kbd>
+            <span key={k} className="text-[10px] text-slate-400 flex items-center gap-1">
+              <kbd className="text-[9px] bg-slate-100 text-slate-500 px-1 py-0.5 rounded font-mono border border-slate-200">{k}</kbd>
               {label}
             </span>
           ))}
@@ -1241,52 +1225,51 @@ export default function EmailPage() {
 
       {/* ── Right pane ────────────────────────────────────────────────────── */}
       {selected ? (
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
           {/* Thread header */}
-          <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/80 flex items-center gap-3">
-            <button onClick={() => setSelected(null)} className="md:hidden p-1.5 rounded-lg text-slate-400 hover:bg-slate-800">
+          <div className="px-4 py-3 border-b border-slate-100 bg-white flex items-center gap-3">
+            <button onClick={() => setSelected(null)} className="md:hidden p-1.5 rounded-lg text-slate-400 hover:bg-slate-100">
               <ChevronLeft size={16} />
             </button>
             <div className="flex-1 min-w-0">
-              <p className="font-semibold text-sm truncate">{selected.subject}</p>
+              <p className="font-bold text-sm truncate text-slate-900">{selected.subject}</p>
               <p className="text-xs text-slate-500 truncate">{selected.from}</p>
             </div>
             <div className="flex items-center gap-1 shrink-0">
               <button
                 onClick={() => toggleStar(selected.id)}
-                className={cn("p-2 rounded-lg transition-colors", starred.has(selected.id) ? "text-amber-400" : "text-slate-500 hover:text-amber-400 hover:bg-slate-800")}
+                className={cn("p-2 rounded-lg transition-colors", starred.has(selected.id) ? "text-amber-500" : "text-slate-400 hover:text-amber-500 hover:bg-slate-100")}
                 title="Star"
               >
                 <Star size={14} fill={starred.has(selected.id) ? "currentColor" : "none"} />
               </button>
               {selected.messageCount > 1 && (
-                <span className="text-[10px] text-slate-500 bg-slate-800 px-2 py-1 rounded-lg">
+                <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-1 rounded-lg font-medium">
                   {selected.messageCount} messages
                 </span>
               )}
             </div>
           </div>
 
-          {/* Messages */}
-          {/* ── Conversation summary card ──────────────────────────────────── */}
+          {/* Conversation summary card */}
           {selected && threadSummaries[selected.id] && (
             <div className="px-4 pt-3">
-              <div className="rounded-xl border border-brand-dark/30 bg-brand-dark/10 overflow-hidden">
+              <div className="rounded-xl border border-brand/20 bg-brand/5 overflow-hidden">
                 <button
                   onClick={() => setSummaryExpanded((v) => !v)}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand-dark/10 transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-brand/10 transition-colors"
                 >
-                  <Brain size={12} className="text-brand shrink-0" />
-                  <span className="text-[11px] font-medium text-brand flex-1">Conversation memory</span>
+                  <Brain size={12} className="text-brand-dark shrink-0" />
+                  <span className="text-[11px] font-semibold text-brand-dark flex-1">Conversation memory</span>
                   <span className="text-[10px] text-slate-500">{threadSummaries[selected.id].messageCount} messages</span>
-                  <ChevronUp size={12} className={cn("text-slate-500 transition-transform", !summaryExpanded && "rotate-180")} />
+                  <ChevronUp size={12} className={cn("text-slate-400 transition-transform", !summaryExpanded && "rotate-180")} />
                 </button>
                 {summaryExpanded && (
                   <div className="px-3 pb-3">
-                    <div className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-line">
+                    <div className="text-[11px] text-slate-700 leading-relaxed whitespace-pre-line">
                       {threadSummaries[selected.id].summary}
                     </div>
-                    <p className="text-[9px] text-slate-600 mt-2">
+                    <p className="text-[9px] text-slate-400 mt-2">
                       Generated {new Date(threadSummaries[selected.id].generatedAt).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </div>
@@ -1295,34 +1278,35 @@ export default function EmailPage() {
             </div>
           )}
 
+          {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
             {threadLoading ? (
-              <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-slate-600" /></div>
+              <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-slate-300" /></div>
             ) : messages.length === 0 ? (
-              <div className="text-center text-slate-600 text-sm py-10">No messages</div>
+              <div className="text-center text-slate-400 text-sm py-10">No messages</div>
             ) : (
               <>
                 {messages.map((msg, i) => {
                   const isLast = i === messages.length - 1;
                   return (
-                    <div key={msg.id} className={cn("rounded-2xl border p-4 transition-all", isLast ? "border-slate-700 bg-slate-900" : "border-slate-800/40 bg-slate-900/40")}>
+                    <div key={msg.id} className={cn("rounded-2xl border p-4 transition-all", isLast ? "border-slate-200 bg-white shadow-sm" : "border-slate-100 bg-slate-50")}>
                       <div className="flex items-start justify-between gap-3 mb-3">
                         <div className="flex items-center gap-2.5">
                           <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0", avatarColor(msg.from))}>
                             {initials(msg.from)}
                           </div>
                           <div>
-                            <p className="text-xs font-semibold text-slate-200">{msg.from.split("<")[0].trim()}</p>
-                            <p className="text-[10px] text-slate-500">To: {msg.to.split(",")[0]}</p>
+                            <p className="text-xs font-bold text-slate-900">{msg.from.split("<")[0].trim()}</p>
+                            <p className="text-[10px] text-slate-400">To: {msg.to.split(",")[0]}</p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-slate-500 shrink-0">
+                        <div className="flex items-center gap-1.5 text-[10px] text-slate-400 shrink-0">
                           <Clock size={10} />
                           {new Date(msg.date).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                         </div>
                       </div>
                       <div
-                        className="text-sm text-slate-300 leading-relaxed"
+                        className="text-sm text-slate-700 leading-relaxed"
                         dangerouslySetInnerHTML={{ __html: msg.body.includes("<") ? msg.body : msg.body.replace(/\n/g, "<br/>") }}
                       />
                     </div>
@@ -1335,16 +1319,16 @@ export default function EmailPage() {
 
           {/* Quick replies */}
           {!showReply && messages.length > 0 && (
-            <div className="px-4 pb-3 flex items-center gap-2 flex-wrap border-t border-slate-800 pt-3">
-              <span className="text-[10px] text-slate-500 shrink-0">Quick reply:</span>
+            <div className="px-4 pb-3 flex items-center gap-2 flex-wrap border-t border-slate-100 pt-3 bg-white">
+              <span className="text-[10px] text-slate-400 shrink-0 font-medium">Quick reply:</span>
               {loadingQuick ? (
-                <Loader2 size={12} className="animate-spin text-slate-600" />
+                <Loader2 size={12} className="animate-spin text-slate-400" />
               ) : (
                 quickReplies.map((qr, i) => (
                   <button
                     key={i}
                     onClick={() => { setReplyText(qr); setShowReply(true); setTimeout(() => replyRef.current?.focus(), 50); }}
-                    className="text-[11px] px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition-colors"
+                    className="text-[11px] px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 transition-colors shadow-sm"
                   >
                     {qr}
                   </button>
@@ -1352,7 +1336,7 @@ export default function EmailPage() {
               )}
               <button
                 onClick={() => { setShowReply(true); setTimeout(() => replyRef.current?.focus(), 50); }}
-                className="flex items-center gap-1 text-[11px] px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-brand-ink/30 border border-slate-700 hover:border-brand-dark/40 text-brand transition-colors ml-auto"
+                className="flex items-center gap-1 text-[11px] px-3 py-1.5 rounded-xl bg-white hover:bg-brand/5 border border-slate-200 hover:border-brand/30 text-brand-dark transition-colors ml-auto shadow-sm font-medium"
               >
                 <Reply size={11} /> Reply
               </button>
@@ -1361,32 +1345,32 @@ export default function EmailPage() {
 
           {/* Reply composer */}
           {showReply && (
-            <div className="border-t border-slate-800 bg-slate-900/80 p-4 space-y-3">
+            <div className="border-t border-slate-100 bg-white p-4 space-y-3">
               {/* AI draft settings */}
               {showDraftSettings && (
-                <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-3 space-y-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold text-brand/50 flex items-center gap-1.5"><Sparkles size={11} /> AI Draft</span>
-                    <button onClick={() => setShowDraftSettings(false)}><X size={12} className="text-slate-500" /></button>
+                    <span className="text-[11px] font-semibold text-brand-dark flex items-center gap-1.5"><Sparkles size={11} /> AI Draft</span>
+                    <button onClick={() => setShowDraftSettings(false)}><X size={12} className="text-slate-400" /></button>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-slate-500 w-8">Tone</span>
+                    <span className="text-[10px] text-slate-500 w-8 font-medium">Tone</span>
                     {(["professional", "friendly", "concise"] as const).map((t) => (
-                      <button key={t} onClick={() => setDraftTone(t)} className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize transition-colors", draftTone === t ? "bg-brand-dark text-white" : "bg-slate-700 text-slate-400 hover:bg-slate-600")}>
+                      <button key={t} onClick={() => setDraftTone(t)} className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize transition-colors font-medium", draftTone === t ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>
                         {t}
                       </button>
                     ))}
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-slate-500 w-8">Hint</span>
+                    <span className="text-[10px] text-slate-500 w-8 font-medium">Hint</span>
                     <input
                       value={extraContext}
                       onChange={(e) => setExtraContext(e.target.value)}
                       placeholder="e.g. mention 30-day return policy"
-                      className="flex-1 text-[11px] bg-slate-700 text-slate-200 placeholder-slate-500 rounded-lg px-3 py-1.5 outline-none focus:ring-1 focus:ring-brand"
+                      className="flex-1 text-[11px] bg-white border border-slate-200 text-slate-700 placeholder-slate-400 rounded-lg px-3 py-1.5 outline-none focus:ring-1 focus:ring-brand"
                     />
                   </div>
-                  <button onClick={handleAiDraft} disabled={drafting} className="w-full py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-xs font-medium flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors">
+                  <button onClick={handleAiDraft} disabled={drafting} className="w-full py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors">
                     {drafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
                     {drafting ? "Writing…" : "Generate"}
                   </button>
@@ -1394,7 +1378,7 @@ export default function EmailPage() {
               )}
 
               {autoreply.enabled && (
-                <div className="flex items-center gap-2 text-[11px] text-emerald-400 bg-emerald-900/20 border border-emerald-800/40 rounded-xl px-3 py-2">
+                <div className="flex items-center gap-2 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 font-medium">
                   <Zap size={11} /> Auto-reply active for new emails
                 </div>
               )}
@@ -1409,19 +1393,19 @@ export default function EmailPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleSend(); }
                   }}
-                  className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl border border-slate-700 p-3 pr-10 outline-none focus:ring-1 focus:ring-brand resize-none leading-relaxed"
+                  className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl border border-slate-200 p-3 pr-10 outline-none focus:ring-2 focus:ring-brand resize-none leading-relaxed"
                 />
-                <span className="absolute right-3 bottom-2 text-[9px] text-slate-600">⌘↵ send</span>
+                <span className="absolute right-3 bottom-2 text-[9px] text-slate-400">⌘↵ send</span>
               </div>
 
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setShowDraftSettings((v) => !v)}
-                  className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors", showDraftSettings ? "bg-brand-dark/20 text-brand/50 border border-brand-dark/30" : "bg-slate-800 text-slate-400 hover:bg-slate-700")}
+                  className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors", showDraftSettings ? "bg-brand/10 text-brand-dark border border-brand/20" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}
                 >
                   <Sparkles size={12} /> AI Draft
                 </button>
-                <button onClick={() => { setShowReply(false); setReplyText(""); }} className="px-3 py-2 rounded-xl text-xs text-slate-500 hover:text-slate-300 transition-colors">
+                <button onClick={() => { setShowReply(false); setReplyText(""); }} className="px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-700 transition-colors">
                   Cancel
                 </button>
                 <div className="flex-1" />
@@ -1438,18 +1422,18 @@ export default function EmailPage() {
           )}
         </div>
       ) : (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-700">
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 bg-slate-50">
           {connected === false ? (
             <NoConnection inline />
           ) : (
             <>
-              <MailOpen size={40} className="text-slate-800" />
-              <p className="text-sm text-slate-600">Select a conversation</p>
+              <MailOpen size={40} className="text-slate-200" />
+              <p className="text-sm text-slate-400">Select a conversation</p>
               <button
                 onClick={() => setShowCompose(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm text-slate-400 transition-colors mt-2"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-sm text-slate-600 transition-colors mt-2 shadow-sm"
               >
-                <Pencil size={14} /> Compose new email
+                <Pencil size={14} className="text-brand-dark" /> Compose new email
               </button>
             </>
           )}
@@ -1458,7 +1442,7 @@ export default function EmailPage() {
 
       {/* ── Auto-reply right panel ─────────────────────────────────────────── */}
       {autoreply.enabled && (
-        <div className="w-64 border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+        <div className="w-64 border-l border-slate-200 bg-white flex flex-col shrink-0">
           <AutoreplyPanel autoreply={autoreply} onSave={saveAutoreply} />
         </div>
       )}
