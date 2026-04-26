@@ -786,7 +786,7 @@ export default function EmailPage() {
       {/* ── Left pane ─────────────────────────────────────────────────────── */}
       <div className={cn(
         "flex flex-col border-r border-slate-800 bg-slate-900 shrink-0 transition-all duration-200",
-        selected ? "w-72 hidden md:flex" : "w-full md:w-80"
+        selected ? "w-80 hidden md:flex" : "w-full md:w-96"
       )}>
         {/* Header */}
         <div className="px-4 py-3 border-b border-slate-800">
@@ -1171,9 +1171,8 @@ export default function EmailPage() {
             </div>
           )}
         </div>
-      ) : connected === false ? (
-        <div className="flex-1 flex items-center justify-center"><NoConnection inline /></div>
-      ) : connected === true ? (
+      ) : connected === false ? null
+      : connected === true ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-700">
           <MailOpen size={40} className="text-slate-800" />
           <p className="text-sm text-slate-600">Select a conversation</p>
@@ -1187,7 +1186,7 @@ export default function EmailPage() {
       ) : null}
 
       {/* ── Auto-reply settings drawer ─────────────────────────────────────── */}
-      {autoreply.enabled && (
+      {autoreply.enabled && connected && (
         <div className="w-60 border-l border-slate-800 bg-slate-900 flex-col p-4 space-y-4 hidden xl:flex shrink-0">
           <div className="flex items-center gap-2">
             <Bot size={13} className="text-brand" />
