@@ -1,0 +1,60 @@
+2026-01-27 12:32:17,452 - server - INFO - === SERVER STARTING ===
+2026-01-27 12:56:19,984 - root - INFO - === DAILY INSIGHTS: Starting ===
+2026-01-27 12:56:19,990 - root - INFO - Step 1: Creating DailyCustomerAnalyzer
+2026-01-27 12:56:19,994 - root - INFO - Step 1: SUCCESS - Analyzer created
+2026-01-27 12:56:19,994 - root - INFO - Step 2: Checking for existing analysis
+2026-01-27 12:56:19,995 - root - INFO - Step 2: Today date = 2026-01-27 00:00:00
+2026-01-27 12:56:20,029 - root - INFO - Step 2: SUCCESS - Existing analysis found: True
+2026-01-27 12:56:20,030 - root - INFO - Step 3: SKIPPED - Using existing analysis
+2026-01-27 12:56:20,030 - root - INFO - Step 4: Fetching today's insights
+2026-01-27 12:56:20,057 - root - INFO - Step 4: SUCCESS - Found 10 insights
+2026-01-27 12:56:20,057 - root - INFO - === DAILY INSIGHTS: Complete ===
+2026-01-27 13:06:11,994 - root - INFO - === DAILY INSIGHTS: Starting ===
+2026-01-27 13:06:12,010 - root - INFO - Step 1: Creating DailyCustomerAnalyzer
+2026-01-27 13:06:12,014 - root - INFO - Step 1: SUCCESS - Analyzer created
+2026-01-27 13:06:12,015 - root - INFO - Step 2: Checking for existing analysis
+2026-01-27 13:06:12,015 - root - INFO - Step 2: Today date = 2026-01-27 00:00:00
+2026-01-27 13:06:12,051 - root - INFO - Step 2: SUCCESS - Existing analysis found: True
+2026-01-27 13:06:12,051 - root - INFO - Step 3: SKIPPED - Using existing analysis
+2026-01-27 13:06:12,051 - root - INFO - Step 4: Fetching today's insights
+2026-01-27 13:06:12,083 - root - INFO - Step 4: SUCCESS - Found 10 insights
+2026-01-27 13:06:12,083 - root - INFO - === DAILY INSIGHTS: Complete ===
+2026-01-27 13:06:23,876 - server - INFO - === SERVER STARTING ===
+2026-01-27 13:11:21,345 - server - INFO - === SERVER STARTING ===
+2026-01-27 13:19:53,857 - root - INFO - === DAILY INSIGHTS: Starting ===
+2026-01-27 13:19:53,864 - root - INFO - Step 1: Creating DailyCustomerAnalyzer
+2026-01-27 13:19:53,867 - root - INFO - Step 1: SUCCESS - Analyzer created
+2026-01-27 13:19:53,867 - root - INFO - Step 2: Checking for existing analysis
+2026-01-27 13:19:53,868 - root - INFO - Step 2: Today date = 2026-01-27 00:00:00
+2026-01-27 13:19:53,889 - root - INFO - Step 2: SUCCESS - Existing analysis found: True
+2026-01-27 13:19:53,889 - root - INFO - Step 3: SKIPPED - Using existing analysis
+2026-01-27 13:19:53,890 - root - INFO - Step 4: Fetching today's insights
+2026-01-27 13:19:53,917 - root - INFO - Step 4: SUCCESS - Found 10 insights
+2026-01-27 13:19:53,918 - root - INFO - Step 5: Serializing insights with json_util
+2026-01-27 13:19:53,946 - root - INFO - Step 5: SUCCESS - Serialized 10 insights
+2026-01-27 13:19:53,947 - root - INFO - === DAILY INSIGHTS: Complete ===
+2026-01-27 13:25:34,735 - server - INFO - === SERVER STARTING ===
+2026-01-27 13:29:06,987 - root - INFO - === DAILY INSIGHTS: Starting ===
+2026-01-27 13:29:06,991 - root - INFO - Step 1: Creating DailyCustomerAnalyzer
+2026-01-27 13:29:06,994 - root - INFO - Step 1: SUCCESS - Analyzer created
+2026-01-27 13:29:06,994 - root - INFO - Step 2: Checking for existing analysis
+2026-01-27 13:29:06,996 - root - INFO - Step 2: Today date = 2026-01-27 00:00:00
+2026-01-27 13:29:07,038 - root - INFO - Step 2: SUCCESS - Existing analysis found: True
+2026-01-27 13:29:07,039 - root - INFO - Step 3: SKIPPED - Using existing analysis
+2026-01-27 13:29:07,039 - root - INFO - Step 4: Fetching today's insights
+2026-01-27 13:29:07,074 - root - INFO - Step 4: SUCCESS - Found 10 insights
+2026-01-27 13:29:07,075 - root - INFO - Step 5: Serializing insights with json_util
+2026-01-27 13:29:07,094 - root - INFO - Step 5: SUCCESS - Serialized 10 insights
+2026-01-27 13:29:07,095 - root - INFO - === DAILY INSIGHTS: Complete ===
+2026-01-27 13:30:39,248 - root - INFO - === DAILY INSIGHTS: Starting ===
+2026-01-27 13:30:39,251 - root - INFO - Step 1: Creating DailyCustomerAnalyzer
+2026-01-27 13:30:39,251 - root - INFO - Step 1: SUCCESS - Analyzer created
+2026-01-27 13:30:39,251 - root - INFO - Step 2: Checking for existing analysis
+2026-01-27 13:30:39,253 - root - INFO - Step 2: Today date = 2026-01-27 00:00:00
+2026-01-27 13:30:39,285 - root - INFO - Step 2: SUCCESS - Existing analysis found: True
+2026-01-27 13:30:39,285 - root - INFO - Step 3: SKIPPED - Using existing analysis
+2026-01-27 13:30:39,285 - root - INFO - Step 4: Fetching today's insights
+2026-01-27 13:30:39,308 - root - INFO - Step 4: SUCCESS - Found 10 insights
+2026-01-27 13:30:39,308 - root - INFO - Step 5: Serializing insights with json_util
+2026-01-27 13:30:39,311 - root - INFO - Step 5: SUCCESS - Serialized 10 insights
+2026-01-27 13:30:39,312 - root - INFO - === DAILY INSIGHTS: Complete ===

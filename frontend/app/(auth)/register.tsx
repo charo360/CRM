@@ -14,65 +14,25 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
-import { settingsAPI } from '../../context/api';
-import { useBusiness } from '../../context/BusinessContext';
-import { COUNTRIES } from '../../components/CountryPicker';
-
-const BUSINESS_TYPES = [
-  { id: 'retail',     icon: '🛍️',  label: 'Retail / Shop',        desc: 'Physical or online store' },
-  { id: 'wholesale',  icon: '📦',   label: 'Wholesale / B2B',      desc: 'Bulk orders & distribution' },
-  { id: 'restaurant', icon: '🍽️',  label: 'Restaurant / Café',    desc: 'Dine-in, takeaway & delivery' },
-  { id: 'food',       icon: '🥡',   label: 'Food Delivery',        desc: 'Home kitchen & delivery-only' },
-  { id: 'bakery',     icon: '🍰',   label: 'Bakery',               desc: 'Cakes, pastries & custom orders' },
-  { id: 'grocery',    icon: '🛒',   label: 'Grocery / Supermarket',desc: 'Fresh produce & packaged goods' },
-  { id: 'salon',      icon: '✂️',   label: 'Salon & Beauty',       desc: 'Hair, nails & beauty services' },
-  { id: 'spa',        icon: '💆',   label: 'Spa & Wellness',       desc: 'Massages, treatments & relaxation' },
-  { id: 'services',   icon: '🔧',   label: 'Services / Freelance', desc: 'IT, trades, freelance & consulting' },
-  { id: 'repair',     icon: '🛠️',  label: 'Repair & Maintenance', desc: 'Electronics, appliances & vehicles' },
-  { id: 'cleaning',   icon: '🧹',   label: 'Cleaning Services',    desc: 'Home, office & commercial cleaning' },
-  { id: 'fitness',    icon: '🏋️',  label: 'Gym & Fitness',        desc: 'Memberships, classes & training' },
-  { id: 'events',     icon: '📸',   label: 'Events & Photography', desc: 'Events, shoots & productions' },
-  { id: 'healthcare', icon: '🏥',   label: 'Healthcare / Clinic',  desc: 'Consultations & medical services' },
-  { id: 'rental',     icon: '�',   label: 'Rental / Airbnb',      desc: 'Properties, cars & equipment' },
-  { id: 'creator',    icon: '�',   label: 'Creator / Digital',    desc: 'Courses, content & digital products' },
-  { id: 'general',    icon: '💬',   label: 'General / Other',      desc: 'Fintech, NGO, info & assistant' },
-];
 
 export default function RegisterScreen() {
-  const { countryCode } = useLocalSearchParams<{ countryCode: string }>();
-  const country = COUNTRIES.find(c => c.code === (countryCode || 'US'));
-  const [step, setStep] = useState<'info' | 'type'>('info');
+  const { phone } = useLocalSearchParams<{ phone: string }>();
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
-  const [businessType, setBusinessType] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { register, user } = useAuth();
-  const { refresh: refreshBusinessContext } = useBusiness();
+  const { register } = useAuth();
 
-  const handleNextStep = () => {
+  const handleRegister = async () => {
     if (!businessName.trim()) {
       Alert.alert('Error', 'Please enter your business name');
       return;
     }
-    setStep('type');
-  };
 
-  const handleRegister = async (selectedType: string) => {
-    setBusinessType(selectedType);
     setLoading(true);
     try {
-      const result = await register(businessName, ownerName, selectedType);
+      const result = await register(phone!, businessName, ownerName);
       if (result.success) {
-        const settingsPayload: any = { business_type: selectedType };
-        if (country) {
-          settingsPayload.country_code = country.code;
-          settingsPayload.currency = country.currency || 'USD';
-        }
-        try {
-          await settingsAPI.updateSettings(settingsPayload);
-          await refreshBusinessContext();
-        } catch (e) {}
         router.replace('/(tabs)/customers');
       } else {
         Alert.alert('Error', result.message || 'Registration failed');
@@ -84,55 +44,6 @@ export default function RegisterScreen() {
     }
   };
 
-  if (step === 'type') {
-    return (
-      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          <View style={styles.content}>
-            <TouchableOpacity style={styles.backBtn} onPress={() => setStep('info')}>
-              <Ionicons name="arrow-back" size={22} color="#94A3B8" />
-            </TouchableOpacity>
-
-            <View style={styles.header}>
-              <Text style={styles.stepLabel}>Step 2 of 2</Text>
-              <Text style={styles.title}>What kind of business?</Text>
-              <Text style={styles.subtitle}>
-                This personalises your dashboard, products, and booking features.
-              </Text>
-            </View>
-
-            <View style={styles.typeGrid}>
-              {BUSINESS_TYPES.map(bt => (
-                <TouchableOpacity
-                  key={bt.id}
-                  style={[styles.typeCard, businessType === bt.id && styles.typeCardActive]}
-                  onPress={() => !loading && handleRegister(bt.id)}
-                  disabled={loading}
-                  activeOpacity={0.8}
-                >
-                  {loading && businessType === bt.id ? (
-                    <ActivityIndicator color="#25D366" style={{ marginBottom: 8 }} />
-                  ) : (
-                    <Text style={styles.typeIcon}>{bt.icon}</Text>
-                  )}
-                  <Text style={[styles.typeLabel, businessType === bt.id && styles.typeLabelActive]}>
-                    {bt.label}
-                  </Text>
-                  <Text style={styles.typeDesc}>{bt.desc}</Text>
-                  {businessType === bt.id && !loading && (
-                    <View style={styles.typeCheck}>
-                      <Ionicons name="checkmark-circle" size={20} color="#25D366" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    );
-  }
-
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -140,14 +51,15 @@ export default function RegisterScreen() {
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.content}>
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+
           <View style={styles.header}>
-            <View style={styles.connectedBadge}>
-              <Ionicons name="checkmark-circle" size={20} color="#25D366" />
-              <Text style={styles.connectedText}>WhatsApp Connected</Text>
-            </View>
-            <Text style={styles.stepLabel}>Step 1 of 2</Text>
             <Text style={styles.title}>Setup Business</Text>
-            <Text style={styles.subtitle}>Tell us about your business to get started</Text>
+            <Text style={styles.subtitle}>
+              Tell us about your business to get started
+            </Text>
           </View>
 
           <View style={styles.form}>
@@ -161,7 +73,6 @@ export default function RegisterScreen() {
                   onChangeText={setBusinessName}
                   placeholder="e.g., Jane's Boutique"
                   placeholderTextColor="#666"
-                  autoFocus
                 />
               </View>
             </View>
@@ -180,25 +91,31 @@ export default function RegisterScreen() {
               </View>
             </View>
 
-            {user?.phone_number ? (
-              <View style={styles.phoneDisplay}>
-                <Text style={styles.phoneLabel}>WhatsApp Number</Text>
-                <Text style={styles.phoneValue}>{user.phone_number}</Text>
-              </View>
-            ) : null}
+            <View style={styles.phoneDisplay}>
+              <Text style={styles.phoneLabel}>Phone Number</Text>
+              <Text style={styles.phoneValue}>{phone}</Text>
+            </View>
 
-            <TouchableOpacity style={styles.button} onPress={handleNextStep}>
-              <Text style={styles.buttonText}>Next →</Text>
+            <TouchableOpacity
+              style={[styles.button, loading && styles.buttonDisabled]}
+              onPress={handleRegister}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.buttonText}>Get Started</Text>
+              )}
             </TouchableOpacity>
           </View>
 
           <View style={styles.features}>
             <Text style={styles.featuresTitle}>What you get:</Text>
             {[
-              'AI-powered customer management',
-              'Bookings & appointments',
-              'Sales & revenue tracking',
-              'WhatsApp automations',
+              'Manage customer contacts',
+              'Set follow-up reminders',
+              'Send receipts via WhatsApp',
+              'Broadcast promotions',
             ].map((feature, index) => (
               <View key={index} style={styles.featureItem}>
                 <Ionicons name="checkmark-circle" size={20} color="#25D366" />
@@ -223,52 +140,37 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 24,
-    paddingTop: 64,
-    paddingBottom: 40,
   },
-  connectedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(37,211,102,0.1)',
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    alignSelf: 'flex-start',
-    marginBottom: 16,
-  },
-  connectedText: {
-    color: '#25D366',
-    fontSize: 13,
-    fontWeight: '600',
-    marginLeft: 6,
+  backButton: {
+    marginTop: 48,
+    marginBottom: 24,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
   },
   header: {
-    marginBottom: 28,
+    marginBottom: 32,
   },
   title: {
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#FFFFFF',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   subtitle: {
-    fontSize: 14,
-    color: '#888',
-    lineHeight: 20,
+    fontSize: 16,
+    color: '#666',
   },
   form: {
-    marginBottom: 24,
+    marginBottom: 32,
   },
   inputGroup: {
     marginBottom: 20,
   },
   label: {
-    fontSize: 13,
-    color: '#AAAAAA',
+    fontSize: 14,
+    color: '#FFFFFF',
     marginBottom: 8,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -282,75 +184,60 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    height: 52,
+    height: 56,
     fontSize: 16,
     color: '#FFFFFF',
   },
-  typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 24 },
-  typeCard: {
-    width: '47%', backgroundColor: '#1A2942', borderRadius: 16,
-    padding: 18, borderWidth: 2, borderColor: '#1A2942',
-    alignItems: 'flex-start', position: 'relative',
-  },
-  typeCardActive: { borderColor: '#25D366', backgroundColor: 'rgba(37,211,102,0.08)' },
-  typeIcon: { fontSize: 32, marginBottom: 10 },
-  typeLabel: { fontSize: 15, fontWeight: '700', color: '#FFFFFF', marginBottom: 4 },
-  typeLabelActive: { color: '#25D366' },
-  typeDesc: { fontSize: 12, color: '#64748B', lineHeight: 17 },
-  typeCheck: { position: 'absolute', top: 10, right: 10 },
   phoneDisplay: {
     backgroundColor: '#1A2942',
     borderRadius: 12,
-    padding: 14,
-    marginBottom: 20,
+    padding: 16,
+    marginBottom: 24,
   },
   phoneLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#666',
     marginBottom: 4,
   },
   phoneValue: {
-    fontSize: 15,
+    fontSize: 16,
     color: '#25D366',
     fontWeight: '600',
   },
   button: {
     backgroundColor: '#25D366',
-    borderRadius: 14,
+    borderRadius: 12,
     height: 56,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
   },
   buttonDisabled: {
     opacity: 0.7,
   },
   buttonText: {
     color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '600',
   },
   features: {
-    marginTop: 28,
-    paddingBottom: 16,
-    backgroundColor: '#0A1628',
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+    padding: 20,
   },
   featuresTitle: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#8B9DC3',
-    marginBottom: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    color: '#FFFFFF',
+    marginBottom: 16,
   },
   featureItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   featureText: {
     fontSize: 14,
-    color: '#CBD5E1',
+    color: '#FFFFFF',
+    marginLeft: 12,
   },
 });

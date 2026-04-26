@@ -8,6 +8,7 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  Linking,
   Modal,
   TextInput,
   ScrollView,
@@ -17,7 +18,6 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { apiClient } from '../../context/api';
-import { useRouter } from 'expo-router';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 interface FollowUp {
@@ -29,10 +29,6 @@ interface FollowUp {
   message: string | null;
   status: string;
   type: 'call' | 'whatsapp' | 'meeting' | 'email';
-  outcome?: string | null;
-  outcome_note?: string | null;
-  is_auto_sequence?: boolean;
-  sequence_day?: number;
   created_at: string;
 }
 
@@ -48,10 +44,7 @@ interface ColdCustomer {
   has_pending_followup: boolean;
   ai_reason?: string;
   urgency_score?: number;
-  urgency_level?: 'critical' | 'high' | 'normal' | 'low';
-  ai_draft_message?: string | null;
-  ai_draft_followup_id?: string | null;
-  ai_draft_day?: number | null;
+  urgency_level?: 'high' | 'medium' | 'low';
 }
 
 interface Customer {
@@ -68,59 +61,16 @@ interface Suggestions {
   total_needing_attention: number;
 }
 
-interface Message {
-  id: string;
-  direction: 'incoming' | 'outgoing';
-  content: string;
-  created_at: string;
-}
-
-interface FollowUpAnalytics {
-  stats: {
-    period_days: number;
-    total_followups: number;
-    contacted: number;
-    converted: number;
-    responded: number;
-    no_response: number;
-    not_contacted: number;
-    conversion_rate: number;
-    response_rate: number;
-    avg_response_time_hours: number;
-    total_revenue: number;
-    revenue_per_followup: number;
-    needs_attention_contacted?: number;
-    total_all?: number;
-  };
-  best_times: {
-    best_day: string;
-    best_hour: number;
-    sample_size: number;
-  };
-  outcome_counts?: Record<string, number>;
-}
-
-type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week' | 'later';
-
-const getDisplayName = (name: string, phone: string): string => {
-  if (!name) return phone || 'Unknown';
-  if (name === phone) return phone || 'Unknown';
-  if (/^(Customer|Contact)\s+\d+$/.test(name.trim())) return phone || name;
-  return name;
-};
+type FilterType = 'all' | 'overdue' | 'today' | 'tomorrow' | 'this_week';
 
 export default function FollowupsScreen() {
-  const router = useRouter();
   const [followups, setFollowups] = useState<FollowUp[]>([]);
   const [coldCustomers, setColdCustomers] = useState<ColdCustomer[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestions | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'reminders' | 'needs_attention' | 'analytics'>('needs_attention');
-  const [analytics, setAnalytics] = useState<FollowUpAnalytics | null>(null);
-  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
-  const [analyticsPeriod, setAnalyticsPeriod] = useState(30);
+  const [activeTab, setActiveTab] = useState<'reminders' | 'needs_attention'>('needs_attention');
   const [filter, setFilter] = useState<FilterType>('all');
 
   // Add Reminder Modal State
@@ -144,87 +94,6 @@ export default function FollowupsScreen() {
   const [draftReason, setDraftReason] = useState('');
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [customDirection, setCustomDirection] = useState('');
-  const [regenerateCount, setRegenerateCount] = useState(0);
-  const [recentMessages, setRecentMessages] = useState<Message[]>([]);
-  const [loadingMessages, setLoadingMessages] = useState(false);
-  const [showRecentMessages, setShowRecentMessages] = useState(false);
-  const [analyzeRetries, setAnalyzeRetries] = useState(0);
-  const MAX_ANALYZE_RETRIES = 3;
-
-  useEffect(() => {
-    if (activeTab === 'analytics') {
-      fetchAnalytics(analyticsPeriod);
-    }
-  }, [activeTab, analyticsPeriod]);
-
-  // Snooze state
-  const [snoozingId, setSnoozingId] = useState<string | null>(null);
-
-  // Outcome modal state
-  const [outcomeModalVisible, setOutcomeModalVisible] = useState(false);
-  const [outcomeFollowup, setOutcomeFollowup] = useState<FollowUp | null>(null);
-  const [selectedOutcome, setSelectedOutcome] = useState('');
-  const [outcomeNote, setOutcomeNote] = useState('');
-  const [savingOutcome, setSavingOutcome] = useState(false);
-
-  // AI note draft state
-  const [noteAIDirection, setNoteAIDirection] = useState('');
-  const [generatingNoteAI, setGeneratingNoteAI] = useState(false);
-
-  // Auto-sequence redraft modal state
-  const [showSequenceRedraftModal, setShowSequenceRedraftModal] = useState(false);
-  const [sequenceRedraftFollowup, setSequenceRedraftFollowup] = useState<FollowUp | null>(null);
-  const [sequenceRedraftMessage, setSequenceRedraftMessage] = useState('');
-  const [sequenceRedraftDirection, setSequenceRedraftDirection] = useState('');
-  const [redraftLoading, setRedraftLoading] = useState(false);
-
-  // Cold customer Done modal state
-  const [coldDoneModalVisible, setColdDoneModalVisible] = useState(false);
-  const [coldDoneCustomer, setColdDoneCustomer] = useState<ColdCustomer | null>(null);
-  const [coldSelectedOutcome, setColdSelectedOutcome] = useState('');
-  const [coldOutcomeNote, setColdOutcomeNote] = useState('');
-  const [savingColdOutcome, setSavingColdOutcome] = useState(false);
-
-  const handleColdDone = async () => {
-    if (!coldDoneCustomer || !coldSelectedOutcome) return;
-    setSavingColdOutcome(true);
-    // Optimistic update - remove immediately so UI feels instant
-    const doneCustomer = coldDoneCustomer;
-    const doneOutcome = coldSelectedOutcome;
-    const doneNote = coldOutcomeNote;
-    setColdCustomers(prev => prev.filter(c => c.id !== doneCustomer.id));
-    setSuggestions(prev => prev ? { ...prev, neglected_week: Math.max(0, prev.neglected_week - 1), total_needing_attention: Math.max(0, prev.total_needing_attention - 1) } : prev);
-    setColdDoneModalVisible(false);
-    setColdDoneCustomer(null);
-    setColdSelectedOutcome('');
-    setColdOutcomeNote('');
-    try {
-      await apiClient.post('/followup-events', {
-        customer_id: doneCustomer.id,
-        outcome: doneOutcome,
-        note: doneNote || null,
-      });
-    } catch (e) {
-      // Silently fail - outcome wasn't logged but customer is already removed from UI
-      console.log('Could not save outcome:', e);
-    } finally {
-      setSavingColdOutcome(false);
-    }
-  };
-
-  const fetchAnalytics = useCallback(async (days = 30) => {
-    setLoadingAnalytics(true);
-    try {
-      const res = await apiClient.get(`/followups/analytics?days=${days}`);
-      // Backend now returns outcome_counts merged from reminders + needs-attention events
-      setAnalytics(res.data);
-    } catch (e) {
-      console.error('Analytics fetch error:', e);
-    } finally {
-      setLoadingAnalytics(false);
-    }
-  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -233,7 +102,7 @@ export default function FollowupsScreen() {
 
       const [followupsRes, coldRes, suggestionsRes, customersRes] = await Promise.all([
         apiClient.get('/followups?status=pending'),
-        apiClient.get('/customers/cold-with-reasons?days=7').catch(() => apiClient.get('/customers/cold?days=7')),
+        apiClient.get('/customers/cold-with-reasons?days=14').catch(() => apiClient.get('/customers/cold?days=14')),
         apiClient.get('/stats/followup-suggestions'),
         apiClient.get('/customers'),
       ]);
@@ -242,8 +111,12 @@ export default function FollowupsScreen() {
       setSuggestions(suggestionsRes.data);
       setCustomers(customersRes.data);
 
-      setIsAnalyzing(false);
-      setAnalyzeRetries(0);
+      // If we have no cold customers with reasons yet, it might be because analysis is running in background
+      if (coldRes.data.length === 0) {
+        setIsAnalyzing(true);
+      } else {
+        setIsAnalyzing(false);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -252,21 +125,18 @@ export default function FollowupsScreen() {
     }
   }, []);
 
-  // Poll for insights if analysis is running (max 3 retries, 15s interval)
+  // Poll for insights if analysis is running
   useEffect(() => {
     let interval: any;
-    if (isAnalyzing && coldCustomers.length === 0 && analyzeRetries < MAX_ANALYZE_RETRIES) {
+    if (isAnalyzing && coldCustomers.length === 0) {
       interval = setInterval(() => {
         fetchData();
-      }, 15000);
-    }
-    if (analyzeRetries >= MAX_ANALYZE_RETRIES) {
-      setIsAnalyzing(false);
+      }, 8000); // Check every 8 seconds
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isAnalyzing, coldCustomers.length, analyzeRetries, fetchData]);
+  }, [isAnalyzing, coldCustomers.length, fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -312,48 +182,12 @@ export default function FollowupsScreen() {
     later: filteredFollowups.filter(f => getDateCategory(f.reminder_date) === 'later'),
   };
 
-  const handleComplete = (followup: FollowUp) => {
-    setOutcomeFollowup(followup);
-    setSelectedOutcome('');
-    setOutcomeNote('');
-    setOutcomeModalVisible(true);
-  };
-
-  const handleSaveOutcome = async () => {
-    if (!outcomeFollowup || !selectedOutcome) {
-      Alert.alert('Select Outcome', 'Please select what happened with this follow-up.');
-      return;
-    }
-    setSavingOutcome(true);
+  const handleComplete = async (followup: FollowUp) => {
     try {
-      await apiClient.put(`/followups/${outcomeFollowup.id}`, {
-        status: 'completed',
-        outcome: selectedOutcome,
-        outcome_note: outcomeNote || null,
-      });
-      setFollowups(followups.filter(f => f.id !== outcomeFollowup.id));
-      setOutcomeModalVisible(false);
-      setOutcomeFollowup(null);
+      await apiClient.put(`/followups/${followup.id}`, { status: 'completed' });
+      setFollowups(followups.filter(f => f.id !== followup.id));
     } catch (error) {
-      Alert.alert('Error', 'Failed to save outcome');
-    } finally {
-      setSavingOutcome(false);
-    }
-  };
-
-  const handleSnooze = async (followup: FollowUp, days: number) => {
-    setSnoozingId(followup.id);
-    try {
-      const res = await apiClient.post(`/followups/${followup.id}/snooze?days=${days}`);
-      const newDate = res.data.new_date;
-      setFollowups(followups.map(f =>
-        f.id === followup.id ? { ...f, reminder_date: newDate } : f
-      ));
-      Alert.alert('Snoozed', `Reminder moved to ${new Date(newDate).toLocaleDateString('en-KE', { weekday: 'short', day: 'numeric', month: 'short' })}`);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to snooze reminder');
-    } finally {
-      setSnoozingId(null);
+      Alert.alert('Error', 'Failed to complete follow-up');
     }
   };
 
@@ -379,18 +213,11 @@ export default function FollowupsScreen() {
     );
   };
 
-  const handleSendMessage = (customerId: string, phone: string, name: string, message?: string | null) => {
-    // Optimistically remove from Needs Attention — owner is now engaging
-    setColdCustomers(prev => prev.filter(c => c.id !== customerId));
+  const handleSendMessage = (phone: string, name: string, message?: string | null) => {
     const text = message || `Hi ${name}, just checking in!`;
-    router.push({
-      pathname: '/chat',
-      params: {
-        customerId,
-        customerName: name,
-        customerPhone: phone,
-        prefill: text,
-      },
+    const url = `whatsapp://send?phone=${phone.replace(/\+/g, '')}&text=${encodeURIComponent(text)}`;
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Error', 'WhatsApp is not installed on this device');
     });
   };
 
@@ -406,26 +233,6 @@ export default function FollowupsScreen() {
     setSelectedType(followup.type);
     setIsEditing(true);
     setShowAddModal(true);
-  };
-
-  const scheduleLocalNotification = async (date: Date, customerName: string, message: string | null, followupType: string) => {
-    try {
-      const Notifications = await import('expo-notifications');
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') return;
-      const trigger = new Date(date);
-      if (trigger <= new Date()) return;
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `Follow-up: ${customerName}`,
-          body: message || `Time to ${followupType} ${customerName}`,
-          sound: true,
-        },
-        trigger: { date: trigger },
-      });
-    } catch (e) {
-      console.log('Notification scheduling error:', e);
-    }
   };
 
   const handleAddReminder = async () => {
@@ -446,7 +253,6 @@ export default function FollowupsScreen() {
         setFollowups(followups.map(f =>
           f.id === editingFollowup.id ? { ...f, ...response.data } : f
         ));
-        await scheduleLocalNotification(reminderDate, selectedCustomer.name, reminderMessage, selectedType);
         Alert.alert('Success', 'Reminder updated!');
       } else {
         const response = await apiClient.post('/followups', {
@@ -461,7 +267,6 @@ export default function FollowupsScreen() {
           customer_name: selectedCustomer.name,
           customer_phone: selectedCustomer.phone_number,
         }]);
-        await scheduleLocalNotification(reminderDate, selectedCustomer.name, reminderMessage, selectedType);
         Alert.alert('Success', 'Reminder added!');
       }
 
@@ -492,28 +297,18 @@ export default function FollowupsScreen() {
     setShowAddModal(true);
   };
 
-  const handleShowDraftMessage = async (customer: ColdCustomer, direction?: string, countOverride?: number) => {
+  const handleShowDraftMessage = async (customer: ColdCustomer) => {
     setDraftCustomer(customer);
     setShowDraftModal(true);
     setLoadingDraft(true);
-    setShowRecentMessages(false);
-    // Clear direction and reset count only when opening fresh (not during a regenerate call)
-    if (countOverride === undefined) {
-      setCustomDirection('');
-      setRegenerateCount(0);
-    }
-    fetchRecentMessages(customer.id);
 
     try {
-      const response = await apiClient.post(`/ai/draft-message`, {
-        customer_id: customer.id,
-        custom_instructions: direction || '',
-        regenerate_count: countOverride ?? 0,
-        mode: customer.is_personal ? 'personal' : 'auto'
+      const response = await apiClient.get(`/ai/draft-message`, {
+        params: { customer_id: customer.id }
       });
 
-      setDraftMessage(response.data.message || response.data.drafted_message || '');
-      setDraftReason(response.data.reason || response.data.ai_reason || customer.ai_reason || 'Based on your last interaction');
+      setDraftMessage(response.data.drafted_message || '');
+      setDraftReason(response.data.ai_reason || customer.ai_reason || 'Based on your last interaction');
     } catch (error) {
       console.error('Error fetching draft message:', error);
       setDraftMessage(`Hi ${customer.name}, just checking in!`);
@@ -522,72 +317,15 @@ export default function FollowupsScreen() {
     }
   };
 
-  const fetchRecentMessages = async (customerId: string) => {
-    setLoadingMessages(true);
-    try {
-      const response = await apiClient.get(`/customers/${customerId}/messages`);
-      setRecentMessages(response.data);
-    } catch (error) {
-      console.error('Error fetching recent messages:', error);
-    } finally {
-      setLoadingMessages(false);
-    }
-  };
-
-  const handleRegenerateWithDirection = () => {
-    if (!draftCustomer) return;
-    const nextCount = regenerateCount + 1;
-    setRegenerateCount(nextCount);
-    handleShowDraftMessage(draftCustomer, customDirection, nextCount);
-  };
-
   const handleSendDraftMessage = () => {
     if (!draftCustomer) return;
 
     setShowDraftModal(false);
-    handleSendMessage(draftCustomer.id, draftCustomer.phone_number, draftCustomer.name, draftMessage);
+    handleSendMessage(draftCustomer.phone_number, draftCustomer.name, draftMessage);
 
     // Reset
     setDraftCustomer(null);
     setDraftMessage('');
-  };
-
-  const openSequenceRedraftModal = (item: FollowUp) => {
-    setSequenceRedraftFollowup(item);
-    setSequenceRedraftMessage(item.message || '');
-    setSequenceRedraftDirection('');
-    setShowSequenceRedraftModal(true);
-  };
-
-  const handleSequenceRedraft = async () => {
-    if (!sequenceRedraftFollowup) return;
-    setRedraftLoading(true);
-    try {
-      const res = await apiClient.post(`/followups/${sequenceRedraftFollowup.id}/redraft`, {
-        direction: sequenceRedraftDirection,
-      });
-      const newMsg = res.data.message || '';
-      setSequenceRedraftMessage(newMsg);
-      // Update the local list so the card shows the new draft
-      setFollowups(prev =>
-        prev.map(f => f.id === sequenceRedraftFollowup.id ? { ...f, message: newMsg } : f)
-      );
-    } catch (e) {
-      Alert.alert('Error', 'Could not regenerate draft. Try again.');
-    } finally {
-      setRedraftLoading(false);
-    }
-  };
-
-  const handleSequenceSend = () => {
-    if (!sequenceRedraftFollowup) return;
-    setShowSequenceRedraftModal(false);
-    handleSendMessage(
-      sequenceRedraftFollowup.customer_id,
-      sequenceRedraftFollowup.customer_phone,
-      sequenceRedraftFollowup.customer_name,
-      sequenceRedraftMessage
-    );
   };
 
   const filteredCustomerList = customers.filter(c =>
@@ -615,32 +353,29 @@ export default function FollowupsScreen() {
 
     return (
       <View key={item.id} style={[styles.followupCard, isOverdue && styles.followupCardOverdue]}>
-        {item.is_auto_sequence && (
-          <View style={styles.aiDraftBadge}>
-            <Ionicons name="sparkles" size={11} color="#A78BFA" />
-            <Text style={styles.aiDraftBadgeText}>
-              AI Draft · Day {item.sequence_day}
-            </Text>
+        <View style={styles.followupInfo}>
+          <View style={styles.followupHeader}>
+            <Ionicons
+              name={typeIcons[item.type] as any || 'notifications'}
+              size={20}
+              color={isOverdue ? '#FF4444' : (typeColors[item.type] || '#25D366')}
+            />
+            <Text style={styles.customerName}>{item.customer_name}</Text>
           </View>
-        )}
-        <View style={styles.followupTop}>
-          <Ionicons
-            name={typeIcons[item.type] as any || 'notifications'}
-            size={16}
-            color={isOverdue ? '#FF4444' : (typeColors[item.type] || '#25D366')}
-          />
-          <View style={styles.followupInfo}>
-            <Text style={styles.customerName} numberOfLines={1}>{getDisplayName(item.customer_name, item.customer_phone)}</Text>
-            <Text style={styles.customerPhone}>{item.customer_phone}</Text>
-          </View>
-          <View style={styles.followupDateBadge}>
+          <Text style={styles.customerPhone}>{item.customer_phone}</Text>
+          {item.message && (
+            <Text style={styles.message} numberOfLines={2}>{item.message}</Text>
+          )}
+          <View style={styles.dateRow}>
             <Text style={[styles.dateText, isOverdue && styles.dateTextOverdue]}>
-              {isOverdue ? 'Overdue · ' : ''}
+              {isOverdue ? 'Overdue: ' : ''}
               {new Date(item.reminder_date).toLocaleDateString('en-KE', {
+                weekday: 'short',
                 month: 'short',
                 day: 'numeric',
               })}
-              {' · '}
+            </Text>
+            <Text style={styles.timeText}>
               {new Date(item.reminder_date).toLocaleTimeString('en-KE', {
                 hour: '2-digit',
                 minute: '2-digit',
@@ -648,69 +383,30 @@ export default function FollowupsScreen() {
             </Text>
           </View>
         </View>
-        {item.message && (
-          <Text style={styles.message} numberOfLines={1}>{item.message}</Text>
-        )}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() =>
-              item.is_auto_sequence
-                ? openSequenceRedraftModal(item)
-                : handleSendMessage(item.customer_id, item.customer_phone, item.customer_name, item.message)
-            }
+            style={styles.whatsappButton}
+            onPress={() => handleSendMessage(item.customer_phone, item.customer_name, item.message)}
           >
-            {item.is_auto_sequence ? (
-              <>
-                <Ionicons name="sparkles" size={16} color="#A78BFA" />
-                <Text style={[styles.actionBtnText, { color: '#A78BFA' }]}>Review & Send</Text>
-              </>
-            ) : (
-              <>
-                <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
-                <Text style={[styles.actionBtnText, { color: '#25D366' }]}>Message</Text>
-              </>
-            )}
+            <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() => Alert.alert(
-              'Snooze',
-              'Remind me again in...',
-              [
-                { text: '1 day', onPress: () => handleSnooze(item, 1) },
-                { text: '3 days', onPress: () => handleSnooze(item, 3) },
-                { text: '1 week', onPress: () => handleSnooze(item, 7) },
-                { text: 'Cancel', style: 'cancel' },
-              ]
-            )}
-            disabled={snoozingId === item.id}
-          >
-            {snoozingId === item.id
-              ? <ActivityIndicator size="small" color="#F59E0B" />
-              : <Ionicons name="alarm-outline" size={16} color="#F59E0B" />}
-            <Text style={[styles.actionBtnText, { color: '#F59E0B' }]}>Snooze</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() => handleComplete(item)}
-          >
-            <Ionicons name="checkmark-circle-outline" size={16} color="#25D366" />
-            <Text style={[styles.actionBtnText, { color: '#25D366' }]}>Done</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.actionBtn}
+            style={styles.editButton}
             onPress={() => openEditModal(item)}
           >
-            <Ionicons name="create-outline" size={16} color="#4A90D9" />
-            <Text style={[styles.actionBtnText, { color: '#4A90D9' }]}>Edit</Text>
+            <Ionicons name="create-outline" size={24} color="#4A90D9" />
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.actionBtn}
+            style={styles.completeButton}
+            onPress={() => handleComplete(item)}
+          >
+            <Ionicons name="checkmark" size={24} color="#25D366" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.deleteButton}
             onPress={() => handleDelete(item)}
           >
-            <Ionicons name="trash-outline" size={16} color="#FF4444" />
-            <Text style={[styles.actionBtnText, { color: '#FF4444' }]}>Delete</Text>
+            <Ionicons name="trash-outline" size={20} color="#FF4444" />
           </TouchableOpacity>
         </View>
       </View>
@@ -732,152 +428,103 @@ export default function FollowupsScreen() {
     );
   };
 
-  const urgencyConfig = {
-    critical: { color: '#FF4444', bg: '#2A0A0A', label: '🔴 Critical' },
-    high:     { color: '#FF9800', bg: '#2A1A00', label: '🟠 High' },
-    normal:   { color: '#4A90D9', bg: '#0A1A2A', label: '🔵 Normal' },
-    low:      { color: '#666',    bg: '#1A1A1A', label: 'Low' },
-  };
-
-  const renderColdCustomer = (customer: ColdCustomer) => {
-    const urgency = urgencyConfig[customer.urgency_level || 'normal'];
-    return (
-    <View key={customer.id} style={[styles.coldCustomerCard, { borderLeftWidth: 3, borderLeftColor: urgency.color }]}>
-      <View style={styles.coldCustomerHeader}>
-        <View style={[styles.coldAvatar, { backgroundColor: urgency.bg }]}>
-          <Text style={styles.coldAvatarText}>{customer.name.charAt(0)}</Text>
-        </View>
-        <View style={styles.coldCustomerDetails}>
-          <Text style={styles.coldCustomerName} numberOfLines={1}>{getDisplayName(customer.name, customer.phone_number)}</Text>
-          <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
-        </View>
-        <View style={styles.coldMetaRight}>
-          <View style={{ backgroundColor: urgency.bg, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginBottom: 2 }}>
-            <Text style={{ color: urgency.color, fontSize: 10, fontWeight: '700' }}>{urgency.label}</Text>
+  const renderColdCustomer = (customer: ColdCustomer) => (
+    <View key={customer.id} style={styles.coldCustomerCard}>
+      <View style={styles.coldCustomerInfo}>
+        <View style={styles.coldCustomerHeader}>
+          <View style={styles.coldAvatar}>
+            <Text style={styles.coldAvatarText}>{customer.name.charAt(0)}</Text>
           </View>
-          <Text style={styles.coldDaysText}>
-            {customer.days_since_contact !== null
-              ? `${customer.days_since_contact}d ago`
-              : 'Never replied'}
+          <View style={styles.coldCustomerDetails}>
+            <Text style={styles.coldCustomerName}>{customer.name}</Text>
+            <Text style={styles.coldCustomerPhone}>{customer.phone_number}</Text>
+          </View>
+        </View>
+
+        {/* Urgency Badge */}
+        {customer.urgency_level && (
+          <View style={[
+            styles.urgencyBadge,
+            customer.urgency_level === 'high' && styles.urgencyBadgeHigh,
+            customer.urgency_level === 'medium' && styles.urgencyBadgeMedium,
+            customer.urgency_level === 'low' && styles.urgencyBadgeLow,
+          ]}>
+            <Text style={styles.urgencyBadgeIcon}>
+              {customer.urgency_level === 'high' ? '🔥' : customer.urgency_level === 'medium' ? '⚡' : '📋'}
+            </Text>
+            <Text style={styles.urgencyBadgeText}>
+              {customer.urgency_level === 'high' ? 'High Priority' :
+                customer.urgency_level === 'medium' ? 'Medium Priority' : 'Low Priority'}
+            </Text>
+            {customer.urgency_score !== undefined && (
+              <Text style={styles.urgencyScore}>{customer.urgency_score}</Text>
+            )}
+          </View>
+        )}
+
+        {/* AI-Generated Reason */}
+        <View style={styles.aiReasonContainer}>
+          <Ionicons name="bulb" size={14} color="#FFD700" />
+          <Text style={styles.aiReasonText}>
+            {customer.ai_reason || (customer.days_since_contact !== null
+              ? `No contact in ${customer.days_since_contact} days`
+              : 'Never contacted')}
           </Text>
         </View>
+
+        {customer.last_message && (
+          <Text style={styles.coldLastMessage} numberOfLines={1}>
+            Last: "{customer.last_message}"
+          </Text>
+        )}
+
+        <View style={styles.coldCustomerMeta}>
+          <Ionicons name="time-outline" size={14} color="#FF6B6B" />
+          <Text style={styles.coldDaysText}>
+            {customer.days_since_contact !== null
+              ? `${customer.days_since_contact} days ago`
+              : 'Never'}
+          </Text>
+          {customer.has_pending_followup && (
+            <View style={styles.hasFollowupBadge}>
+              <Text style={styles.hasFollowupText}>Has reminder</Text>
+            </View>
+          )}
+        </View>
       </View>
 
-      {/* AI-Generated Reason */}
-      <View style={styles.aiReasonContainer}>
-        <Ionicons name="bulb" size={12} color="#FFD700" />
-        <Text style={styles.aiReasonText} numberOfLines={1}>
-          {customer.ai_reason || (customer.days_since_contact !== null
-            ? `No contact in ${customer.days_since_contact} days`
-            : 'New customer - never contacted')}
-        </Text>
-        {customer.ai_draft_message && (
-          <View style={[styles.hasFollowupBadge, { backgroundColor: '#2D1F5E' }]}>
-            <Ionicons name="sparkles" size={10} color="#A78BFA" />
-            <Text style={[styles.hasFollowupText, { color: '#A78BFA' }]}>AI Draft · Day {customer.ai_draft_day}</Text>
-          </View>
-        )}
-        {!customer.ai_draft_message && customer.has_pending_followup && (
-          <View style={styles.hasFollowupBadge}>
-            <Text style={styles.hasFollowupText}>Reminder</Text>
-          </View>
-        )}
-      </View>
-
-      {/* Action Bar */}
       <View style={styles.coldActions}>
         <TouchableOpacity
-          style={styles.coldActionBtn}
-          onPress={() => handleSendMessage(customer.id, customer.phone_number, customer.name)}
+          style={styles.coldWhatsappButton}
+          onPress={() => handleSendMessage(customer.phone_number, customer.name)}
         >
-          <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
-          <Text style={[styles.coldActionText, { color: '#25D366' }]}>Message</Text>
+          <Ionicons name="logo-whatsapp" size={22} color="#FFFFFF" />
         </TouchableOpacity>
+
+        {/* AI Draft Button */}
         <TouchableOpacity
-          style={styles.coldActionBtn}
-          onPress={() => {
-            if (customer.ai_draft_message) {
-              router.push({
-                pathname: '/chat',
-                params: {
-                  customerId: customer.id,
-                  customerName: getDisplayName(customer.name, customer.phone_number),
-                  customerPhone: customer.phone_number,
-                  prefill: customer.ai_draft_message,
-                },
-              });
-            } else {
-              handleShowDraftMessage(customer);
-            }
-          }}
+          style={styles.aiDraftButton}
+          onPress={() => handleShowDraftMessage(customer)}
         >
-          <Ionicons name="sparkles" size={16} color="#FFD700" />
-          <Text style={[styles.coldActionText, { color: '#FFD700' }]}>{customer.ai_draft_message ? 'Review & Send' : 'AI Draft'}</Text>
+          <Ionicons name="sparkles" size={20} color="#FFFFFF" />
         </TouchableOpacity>
+
         <TouchableOpacity
-          style={styles.coldActionBtn}
+          style={styles.addReminderButton}
           onPress={() => handleCreateFollowupFromCold(customer)}
         >
-          <Ionicons name="alarm-outline" size={16} color="#4A90D9" />
-          <Text style={[styles.coldActionText, { color: '#4A90D9' }]}>Remind</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.coldActionBtn}
-          onPress={() => {
-            setColdDoneCustomer(customer);
-            setColdSelectedOutcome('');
-            setColdOutcomeNote('');
-            setColdDoneModalVisible(true);
-          }}
-        >
-          <Ionicons name="checkmark-circle" size={16} color="#A8FF78" />
-          <Text style={[styles.coldActionText, { color: '#A8FF78' }]}>Done</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.coldActionBtn}
-          onPress={() => {
-            Alert.alert(
-              'Remove from List',
-              `Remove ${customer.name} without logging outcome?`,
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Remove',
-                  style: 'destructive',
-                  onPress: async () => {
-                    try {
-                      await apiClient.post('/followup-events', {
-                        customer_id: customer.id,
-                        outcome: 'contacted',
-                        note: null,
-                      });
-                    } catch (e) {
-                      console.log('Could not log removal:', e);
-                    } finally {
-                      setColdCustomers(prev => prev.filter(c => c.id !== customer.id));
-                      setSuggestions(prev => prev ? { ...prev, neglected_week: Math.max(0, prev.neglected_week - 1), total_needing_attention: Math.max(0, prev.total_needing_attention - 1) } : prev);
-                    }
-                  },
-                },
-              ]
-            );
-          }}
-        >
-          <Ionicons name="close-circle-outline" size={16} color="#FF6B6B" />
-          <Text style={[styles.coldActionText, { color: '#FF6B6B' }]}>Remove</Text>
+          <Ionicons name="alarm-outline" size={20} color="#4A90D9" />
         </TouchableOpacity>
       </View>
     </View>
   );
-  };
 
   const filters: { key: FilterType; label: string }[] = [
     { key: 'all', label: 'All' },
-    { key: 'overdue', label: '🔴 Overdue' },
-    { key: 'today', label: '📅 Today' },
-    { key: 'tomorrow', label: '🌅 Tomorrow' },
-    { key: 'this_week', label: '📆 This Week' },
-    { key: 'later', label: '🗓 Later' },
+    { key: 'overdue', label: 'Overdue' },
+    { key: 'today', label: 'Today' },
+    { key: 'tomorrow', label: 'Tomorrow' },
+    { key: 'this_week', label: 'This Week' },
   ];
 
   if (loading) {
@@ -902,18 +549,12 @@ export default function FollowupsScreen() {
         <View style={styles.statsRow}>
           <View style={[styles.statCard, styles.statCardWarning]}>
             <Text style={styles.statNumber}>{suggestions.neglected_week}</Text>
-            <Text style={styles.statLabel}>7+ days no contact</Text>
+            <Text style={styles.statLabel}>14+ days no contact</Text>
           </View>
           <View style={[styles.statCard, styles.statCardDanger]}>
             <Text style={styles.statNumber}>{suggestions.neglected_month}</Text>
-            <Text style={styles.statLabel}>30+ days no contact</Text>
+            <Text style={styles.statLabel}>30+ days cold</Text>
           </View>
-          {suggestions.vip_neglected > 0 && (
-            <View style={[styles.statCard, { borderLeftColor: '#FFD700', borderLeftWidth: 3 }]}>
-              <Text style={[styles.statNumber, { color: '#FFD700' }]}>{suggestions.vip_neglected}</Text>
-              <Text style={styles.statLabel}>VIP neglected</Text>
-            </View>
-          )}
         </View>
       )}
 
@@ -923,27 +564,26 @@ export default function FollowupsScreen() {
           style={[styles.tab, activeTab === 'needs_attention' && styles.tabActive]}
           onPress={() => setActiveTab('needs_attention')}
         >
-          <Ionicons name="alert-circle" size={18} color={activeTab === 'needs_attention' ? '#FFFFFF' : '#666'} />
+          <Ionicons
+            name="alert-circle"
+            size={18}
+            color={activeTab === 'needs_attention' ? '#FFFFFF' : '#666'}
+          />
           <Text style={[styles.tabText, activeTab === 'needs_attention' && styles.tabTextActive]}>
-            Attention
+            Needs Attention ({coldCustomers.filter(c => !c.has_pending_followup).length})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'reminders' && styles.tabActive]}
           onPress={() => setActiveTab('reminders')}
         >
-          <Ionicons name="notifications" size={18} color={activeTab === 'reminders' ? '#FFFFFF' : '#666'} />
+          <Ionicons
+            name="notifications"
+            size={18}
+            color={activeTab === 'reminders' ? '#FFFFFF' : '#666'}
+          />
           <Text style={[styles.tabText, activeTab === 'reminders' && styles.tabTextActive]}>
             Reminders ({followups.length})
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'analytics' && styles.tabActive]}
-          onPress={() => setActiveTab('analytics')}
-        >
-          <Ionicons name="bar-chart" size={18} color={activeTab === 'analytics' ? '#FFFFFF' : '#666'} />
-          <Text style={[styles.tabText, activeTab === 'analytics' && styles.tabTextActive]}>
-            Results
           </Text>
         </TouchableOpacity>
       </View>
@@ -970,189 +610,7 @@ export default function FollowupsScreen() {
         </ScrollView>
       )}
 
-      {/* Analytics Tab */}
-      {activeTab === 'analytics' && (
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-          {/* Period picker */}
-          <View style={{ flexDirection: 'row', gap: 8, marginBottom: 20 }}>
-            {[7, 30, 90].map(d => (
-              <TouchableOpacity
-                key={d}
-                style={{
-                  flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center',
-                  backgroundColor: analyticsPeriod === d ? '#25D366' : '#1A2942',
-                }}
-                onPress={() => setAnalyticsPeriod(d)}
-              >
-                <Text style={{ color: analyticsPeriod === d ? '#FFF' : '#888', fontWeight: '600', fontSize: 13 }}>
-                  {d === 7 ? '7 days' : d === 30 ? '30 days' : '90 days'}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {loadingAnalytics ? (
-            <View style={{ alignItems: 'center', paddingTop: 40 }}>
-              <ActivityIndicator size="large" color="#25D366" />
-              <Text style={{ color: '#666', marginTop: 12 }}>Calculating results...</Text>
-            </View>
-          ) : !analytics ? (
-            <View style={{ alignItems: 'center', paddingTop: 40 }}>
-              <Ionicons name="bar-chart-outline" size={48} color="#333" />
-              <Text style={{ color: '#666', marginTop: 12, textAlign: 'center' }}>
-                No data yet. Complete some follow-ups to see results.
-              </Text>
-            </View>
-          ) : (
-            <>
-              {/* Summary strip */}
-              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
-                <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
-                  <Text style={{ color: '#25D366', fontSize: 22, fontWeight: '800' }}>{analytics.stats.total_all ?? analytics.stats.total_followups}</Text>
-                  <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Total Done</Text>
-                </View>
-                <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
-                  <Text style={{ color: '#FFD700', fontSize: 22, fontWeight: '800' }}>{Math.round(analytics.stats.response_rate)}%</Text>
-                  <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Response Rate</Text>
-                </View>
-                <View style={{ flex: 1, backgroundColor: '#1A2942', borderRadius: 12, padding: 14, alignItems: 'center' }}>
-                  <Text style={{ color: '#4A90D9', fontSize: 22, fontWeight: '800' }}>{Math.round(analytics.stats.conversion_rate)}%</Text>
-                  <Text style={{ color: '#888', fontSize: 11, marginTop: 2 }}>Converted</Text>
-                </View>
-              </View>
-              {/* Breakdown: reminders vs needs-attention */}
-              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 20 }}>
-                <View style={{ flex: 1, backgroundColor: '#0F1E33', borderRadius: 10, padding: 10, alignItems: 'center' }}>
-                  <Text style={{ color: '#4A90D9', fontSize: 16, fontWeight: '700' }}>{analytics.stats.total_followups}</Text>
-                  <Text style={{ color: '#555', fontSize: 10, marginTop: 2 }}>Reminders</Text>
-                </View>
-                <View style={{ flex: 1, backgroundColor: '#0F1E33', borderRadius: 10, padding: 10, alignItems: 'center' }}>
-                  <Text style={{ color: '#A8FF78', fontSize: 16, fontWeight: '700' }}>{analytics.stats.needs_attention_contacted ?? 0}</Text>
-                  <Text style={{ color: '#555', fontSize: 10, marginTop: 2 }}>Needs Attention</Text>
-                </View>
-              </View>
-
-              {/* Manual outcome breakdown (from Done button) */}
-              {analytics.outcome_counts && Object.values(analytics.outcome_counts).some(v => v > 0) && (
-                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
-                  <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 14 }}>What happened?</Text>
-                  {[
-                    { id: 'called',          label: 'Called — answered',        icon: 'call',                color: '#25D366' },
-                    { id: 'replied',         label: 'Replied on WhatsApp',       icon: 'logo-whatsapp',       color: '#25D366' },
-                    { id: 'converted',       label: 'Made a sale',               icon: 'trophy',              color: '#FFD700' },
-                    { id: 'no_answer',       label: 'No answer / no reply',      icon: 'phone-portrait',      color: '#FF6B6B' },
-                    { id: 'rescheduled',     label: 'Rescheduled',               icon: 'calendar',            color: '#4A90D9' },
-                    { id: 'not_interested',  label: 'Not interested',            icon: 'close-circle',        color: '#666' },
-                  ].map(o => {
-                    const count = analytics.outcome_counts?.[o.id] || 0;
-                    if (count === 0) return null;
-                    const total = Object.values(analytics.outcome_counts || {}).reduce((a, b) => a + b, 0);
-                    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-                    return (
-                      <View key={o.id} style={{ marginBottom: 12 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <Ionicons name={o.icon as any} size={15} color={o.color} />
-                            <Text style={{ color: '#CCD6E0', fontSize: 13 }}>{o.label}</Text>
-                          </View>
-                          <Text style={{ color: o.color, fontWeight: '700', fontSize: 13 }}>{count}  <Text style={{ color: '#555', fontWeight: '400' }}>({pct}%)</Text></Text>
-                        </View>
-                        <View style={{ height: 5, backgroundColor: '#0A1628', borderRadius: 3 }}>
-                          <View style={{ height: 5, width: `${pct}%`, backgroundColor: o.color, borderRadius: 3 }} />
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-
-              {/* Auto-detected outcomes (from message analysis) */}
-              {(analytics.stats.converted + analytics.stats.responded + analytics.stats.no_response + analytics.stats.not_contacted) > 0 && (
-                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
-                  <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 4 }}>Auto-detected Activity</Text>
-                  <Text style={{ color: '#555', fontSize: 11, marginBottom: 14 }}>Based on messages sent/received after each follow-up</Text>
-                  {[
-                    { key: 'converted',     label: 'Led to a sale',     color: '#FFD700', val: analytics.stats.converted },
-                    { key: 'responded',     label: 'Customer replied',   color: '#25D366', val: analytics.stats.responded },
-                    { key: 'no_response',   label: 'No reply',           color: '#FF6B6B', val: analytics.stats.no_response },
-                    { key: 'not_contacted', label: 'Never messaged',     color: '#444',    val: analytics.stats.not_contacted },
-                  ].map(row => (
-                    <View key={row.key} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#0A1628' }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: row.color }} />
-                        <Text style={{ color: '#CCD6E0', fontSize: 13 }}>{row.label}</Text>
-                      </View>
-                      <Text style={{ color: row.color, fontSize: 15, fontWeight: '700' }}>{row.val}</Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              {/* Revenue */}
-              {analytics.stats.total_revenue > 0 && (
-                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <View>
-                    <Text style={{ color: '#888', fontSize: 12 }}>Revenue from follow-ups</Text>
-                    <Text style={{ color: '#FFD700', fontSize: 22, fontWeight: '800', marginTop: 2 }}>
-                      {analytics.stats.total_revenue.toLocaleString()}
-                    </Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={{ color: '#888', fontSize: 12 }}>Per follow-up</Text>
-                    <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '700', marginTop: 2 }}>
-                      {Math.round(analytics.stats.revenue_per_followup).toLocaleString()}
-                    </Text>
-                  </View>
-                </View>
-              )}
-
-              {/* Avg response time */}
-              {analytics.stats.avg_response_time_hours > 0 && (
-                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
-                  <Text style={{ color: '#888', fontSize: 12, marginBottom: 4 }}>Avg. time for customer to reply</Text>
-                  <Text style={{ color: '#4A90D9', fontSize: 20, fontWeight: '700' }}>
-                    {analytics.stats.avg_response_time_hours < 1
-                      ? `${Math.round(analytics.stats.avg_response_time_hours * 60)} min`
-                      : `${Math.round(analytics.stats.avg_response_time_hours)} hrs`}
-                  </Text>
-                </View>
-              )}
-
-              {/* Best time to follow up */}
-              {analytics.best_times.sample_size > 0 && (
-                <View style={{ backgroundColor: '#1A2942', borderRadius: 14, padding: 16, marginBottom: 16 }}>
-                  <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '700', marginBottom: 12 }}>Best time to follow up</Text>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
-                    <View style={{ alignItems: 'center' }}>
-                      <Ionicons name="calendar-outline" size={24} color="#25D366" />
-                      <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '700', marginTop: 6 }}>{analytics.best_times.best_day}</Text>
-                      <Text style={{ color: '#555', fontSize: 11 }}>Best day</Text>
-                    </View>
-                    <View style={{ alignItems: 'center' }}>
-                      <Ionicons name="time-outline" size={24} color="#FFD700" />
-                      <Text style={{ color: '#FFD700', fontSize: 16, fontWeight: '700', marginTop: 6 }}>
-                        {analytics.best_times.best_hour < 12
-                          ? `${analytics.best_times.best_hour || 12}am`
-                          : analytics.best_times.best_hour === 12
-                            ? '12pm'
-                            : `${analytics.best_times.best_hour - 12}pm`}
-                      </Text>
-                      <Text style={{ color: '#555', fontSize: 11 }}>Best hour</Text>
-                    </View>
-                    <View style={{ alignItems: 'center' }}>
-                      <Ionicons name="checkmark-circle-outline" size={24} color="#4A90D9" />
-                      <Text style={{ color: '#4A90D9', fontSize: 16, fontWeight: '700', marginTop: 6 }}>{analytics.best_times.sample_size}</Text>
-                      <Text style={{ color: '#555', fontSize: 11 }}>Sample size</Text>
-                    </View>
-                  </View>
-                </View>
-              )}
-            </>
-          )}
-        </ScrollView>
-      )}
-
-      {activeTab === 'analytics' ? null : activeTab === 'needs_attention' ? (
+      {activeTab === 'needs_attention' ? (
         <>
           {isAnalyzing && coldCustomers.length === 0 && (
             <View style={{ padding: 20, alignItems: 'center', backgroundColor: '#1A2942', margin: 16, borderRadius: 12 }}>
@@ -1172,23 +630,11 @@ export default function FollowupsScreen() {
               <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
             }
             ListEmptyComponent={
-              !isAnalyzing ? (
-                <View style={styles.emptyContainer}>
-                  {customers.length === 0 ? (
-                    <>
-                      <Ionicons name="people-outline" size={64} color="#25D366" />
-                      <Text style={styles.emptyText}>Add customers to get started</Text>
-                      <Text style={styles.emptySubtext}>AI will analyze your conversations and suggest follow-ups</Text>
-                    </>
-                  ) : (
-                    <>
-                      <Ionicons name="checkmark-circle-outline" size={64} color="#25D366" />
-                      <Text style={styles.emptyText}>All caught up!</Text>
-                      <Text style={styles.emptySubtext}>No customers need immediate attention</Text>
-                    </>
-                  )}
-                </View>
-              ) : null
+              <View style={styles.emptyContainer}>
+                <Ionicons name="checkmark-circle-outline" size={64} color="#25D366" />
+                <Text style={styles.emptyText}>All caught up!</Text>
+                <Text style={styles.emptySubtext}>No customers need immediate attention</Text>
+              </View>
             }
           />
         </>
@@ -1236,7 +682,7 @@ export default function FollowupsScreen() {
         style={styles.addButton}
         onPress={() => setShowAddModal(true)}
       >
-        <Ionicons name="add" size={22} color="#FFFFFF" />
+        <Ionicons name="add" size={30} color="#FFFFFF" />
       </TouchableOpacity>
 
 
@@ -1438,46 +884,8 @@ export default function FollowupsScreen() {
                   />
                 )}
 
-                {/* Note with AI draft */}
+                {/* Message */}
                 <Text style={styles.inputLabel}>Note (Optional)</Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <TextInput
-                    style={[styles.messageInput, { flex: 1, marginBottom: 0, minHeight: 40 }]}
-                    placeholder="Tell AI what to write..."
-                    placeholderTextColor="#555"
-                    value={noteAIDirection}
-                    onChangeText={setNoteAIDirection}
-                  />
-                  <TouchableOpacity
-                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#1A2942', paddingHorizontal: 10, paddingVertical: 10, borderRadius: 8 }}
-                    disabled={generatingNoteAI}
-                    onPress={async () => {
-                      if (!selectedCustomer) { Alert.alert('Select a customer first'); return; }
-                      setGeneratingNoteAI(true);
-                      try {
-                        const dir = noteAIDirection.trim();
-                        const res = await apiClient.post('/ai/generate-broadcast-message', {
-                          prompt: dir
-                            ? `You are writing a WhatsApp follow-up message to send to a customer named ${selectedCustomer.name}. Write ONLY the message text, nothing else. The message should: ${dir}. Keep it short (1-2 sentences), friendly and natural.`
-                            : `You are writing a WhatsApp follow-up message to send to a customer named ${selectedCustomer.name}. Write ONLY the message text, nothing else. It is a ${selectedType} follow-up. Keep it short (1-2 sentences), friendly and natural.`,
-                        });
-                        setReminderMessage(res.data.message);
-                        setNoteAIDirection('');
-                      } catch (e: any) {
-                        Alert.alert('Error', 'Failed to generate note');
-                      } finally {
-                        setGeneratingNoteAI(false);
-                      }
-                    }}
-                  >
-                    {generatingNoteAI
-                      ? <ActivityIndicator size="small" color="#FFD700" />
-                      : <Ionicons name="sparkles" size={14} color="#FFD700" />}
-                    <Text style={{ color: '#FFD700', fontSize: 12, fontWeight: '600' }}>
-                      {generatingNoteAI ? '...' : 'Draft'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
                 <TextInput
                   style={styles.messageInput}
                   placeholder="What should you follow up about?"
@@ -1521,14 +929,8 @@ export default function FollowupsScreen() {
                 {/* Save Button */}
                 <TouchableOpacity
                   style={[styles.saveButton, (!selectedCustomer || saving) && styles.saveButtonDisabled]}
-                  onPress={() => {
-                    if (!selectedCustomer) {
-                      Alert.alert('Select a Customer', 'Please select a customer before setting a reminder.');
-                      return;
-                    }
-                    handleAddReminder();
-                  }}
-                  disabled={saving}
+                  onPress={handleAddReminder}
+                  disabled={!selectedCustomer || saving}
                 >
                   {saving ? (
                     <ActivityIndicator color="#FFFFFF" />
@@ -1540,157 +942,23 @@ export default function FollowupsScreen() {
                   )}
                 </TouchableOpacity>
               </ScrollView>
-            </View>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
-
-      {/* Outcome Modal */}
-      <Modal
-        visible={outcomeModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setOutcomeModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '70%' }]}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>What happened?</Text>
-              <TouchableOpacity onPress={() => setOutcomeModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#666" />
-              </TouchableOpacity>
-            </View>
-            {outcomeFollowup && (
-              <Text style={{ color: '#666', fontSize: 13, marginBottom: 16 }}>
-                Follow-up with {outcomeFollowup.customer_name}
-              </Text>
-            )}
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {[
-                { id: 'called', label: '📞 Called — They answered', color: '#25D366' },
-                { id: 'replied', label: '💬 Replied on WhatsApp', color: '#25D366' },
-                { id: 'converted', label: '🎉 Made a sale!', color: '#FFD700' },
-                { id: 'no_answer', label: '📵 No answer / No reply', color: '#FF6B6B' },
-                { id: 'rescheduled', label: '📅 Rescheduled for later', color: '#4A90D9' },
-                { id: 'not_interested', label: '❌ Not interested', color: '#666' },
-              ].map(outcome => (
-                <TouchableOpacity
-                  key={outcome.id}
-                  style={{
-                    flexDirection: 'row', alignItems: 'center', padding: 14,
-                    backgroundColor: selectedOutcome === outcome.id ? outcome.color + '22' : '#1A2942',
-                    borderRadius: 10, marginBottom: 8,
-                    borderWidth: selectedOutcome === outcome.id ? 1.5 : 0,
-                    borderColor: selectedOutcome === outcome.id ? outcome.color : 'transparent',
-                  }}
-                  onPress={() => setSelectedOutcome(outcome.id)}
-                >
-                  <Text style={{ color: selectedOutcome === outcome.id ? outcome.color : '#CCD6E0', fontSize: 15, fontWeight: selectedOutcome === outcome.id ? '700' : '400' }}>
-                    {outcome.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-              <TextInput
-                style={[styles.messageInput, { marginTop: 8 }]}
-                placeholder="Add a note (optional)..."
-                placeholderTextColor="#555"
-                value={outcomeNote}
-                onChangeText={setOutcomeNote}
-                multiline
-              />
-              <TouchableOpacity
-                style={[styles.saveButton, (!selectedOutcome || savingOutcome) && styles.saveButtonDisabled, { marginTop: 8 }]}
-                onPress={handleSaveOutcome}
-                disabled={!selectedOutcome || savingOutcome}
-              >
-                {savingOutcome
-                  ? <ActivityIndicator color="#FFF" />
-                  : <Text style={styles.saveButtonText}>Save & Close</Text>}
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Cold Customer Done Modal */}
-      <Modal
-        visible={coldDoneModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setColdDoneModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '70%' }]}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>What happened?</Text>
-              <TouchableOpacity onPress={() => setColdDoneModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#666" />
-              </TouchableOpacity>
-            </View>
-            {coldDoneCustomer && (
-              <Text style={{ color: '#666', fontSize: 13, marginBottom: 16 }}>
-                Follow-up with {coldDoneCustomer.name}
-              </Text>
-            )}
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {[
-                { id: 'called',         label: '📞 Called — They answered',  color: '#25D366' },
-                { id: 'replied',        label: '💬 Replied on WhatsApp',      color: '#25D366' },
-                { id: 'converted',      label: '🎉 Made a sale!',             color: '#FFD700' },
-                { id: 'no_answer',      label: '📵 No answer / No reply',     color: '#FF6B6B' },
-                { id: 'rescheduled',    label: '📅 Rescheduled for later',    color: '#4A90D9' },
-                { id: 'not_interested', label: '❌ Not interested',           color: '#666' },
-              ].map(o => (
-                <TouchableOpacity
-                  key={o.id}
-                  style={{
-                    flexDirection: 'row', alignItems: 'center', padding: 14,
-                    backgroundColor: coldSelectedOutcome === o.id ? o.color + '22' : '#1A2942',
-                    borderRadius: 10, marginBottom: 8,
-                    borderWidth: coldSelectedOutcome === o.id ? 1.5 : 0,
-                    borderColor: coldSelectedOutcome === o.id ? o.color : 'transparent',
-                  }}
-                  onPress={() => setColdSelectedOutcome(o.id)}
-                >
-                  <Text style={{ color: coldSelectedOutcome === o.id ? o.color : '#CCD6E0', fontSize: 15, fontWeight: coldSelectedOutcome === o.id ? '700' : '400' }}>
-                    {o.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-              <TextInput
-                style={[styles.messageInput, { marginTop: 8 }]}
-                placeholder="Add a note (optional)..."
-                placeholderTextColor="#555"
-                value={coldOutcomeNote}
-                onChangeText={setColdOutcomeNote}
-                multiline
-              />
-              <TouchableOpacity
-                style={[styles.saveButton, (!coldSelectedOutcome || savingColdOutcome) && styles.saveButtonDisabled, { marginTop: 8 }]}
-                onPress={handleColdDone}
-                disabled={!coldSelectedOutcome || savingColdOutcome}
-              >
-                {savingColdOutcome
-                  ? <ActivityIndicator color="#FFF" />
-                  : <Text style={styles.saveButtonText}>Save & Close</Text>}
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+            </View >
+          </KeyboardAvoidingView >
+        </View >
+      </Modal >
 
       {/* AI Draft Message Modal */}
-      <Modal
+      < Modal
         visible={showDraftModal}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setShowDraftModal(false)}
+        onRequestClose={() => setShowDraftModal(false)
+        }
       >
         <View style={styles.modalOverlay}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={styles.keyboardView}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
           >
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
@@ -1703,111 +971,28 @@ export default function FollowupsScreen() {
                 </TouchableOpacity>
               </View>
 
-              <ScrollView
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={{ paddingBottom: 20 }}
-                >
+              {loadingDraft ? (
+                <View style={styles.draftLoadingContainer}>
+                  <ActivityIndicator size="large" color="#4A90D9" />
+                  <Text style={styles.draftLoadingText}>Writing perfect message...</Text>
+                </View>
+              ) : (
+                <>
                   <Text style={styles.inputLabel}>Message Preview (tap to edit)</Text>
-                  {loadingDraft ? (
-                    <View style={[styles.messageInput, { minHeight: 120, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 10 }]}>
-                      <ActivityIndicator size="small" color="#4A90D9" />
-                      <Text style={{ color: '#555', fontSize: 13 }}>Writing message...</Text>
-                    </View>
-                  ) : (
-                    <TextInput
-                      style={[styles.messageInput, { minHeight: 120 }]}
-                      placeholder="Message..."
-                      placeholderTextColor="#666"
-                      value={draftMessage}
-                      onChangeText={setDraftMessage}
-                      multiline
-                    />
-                  )}
+                  <TextInput
+                    style={[styles.messageInput, { minHeight: 120 }]}
+                    placeholder="Message..."
+                    placeholderTextColor="#666"
+                    value={draftMessage}
+                    onChangeText={setDraftMessage}
+                    multiline
+                  />
 
                   <View style={styles.aiReasonBox}>
                     <Text style={styles.aiReasonLabel}>Why this message?</Text>
                     <Text style={styles.aiReasonTextSmall}>
-                      {loadingDraft ? '...' : draftReason}
+                      {draftReason}
                     </Text>
-                  </View>
-
-                  {/* Recent Messages Section */}
-                  <View style={styles.recentMessagesSection}>
-                    <TouchableOpacity
-                      style={styles.recentMessagesHeader}
-                      onPress={() => setShowRecentMessages(!showRecentMessages)}
-                    >
-                      <View style={styles.recentMessagesTitleRow}>
-                        <Ionicons name="chatbubbles-outline" size={18} color="#4A90D9" />
-                        <Text style={styles.inputLabelRecent}>Recent Messages</Text>
-                      </View>
-                      <Ionicons
-                        name={showRecentMessages ? "chevron-up" : "chevron-down"}
-                        size={20}
-                        color="#666"
-                      />
-                    </TouchableOpacity>
-
-                    {showRecentMessages && (
-                      <View style={styles.messagesList}>
-                        {loadingMessages ? (
-                          <ActivityIndicator size="small" color="#4A90D9" />
-                        ) : recentMessages.length > 0 ? (
-                          recentMessages.map((msg) => (
-                            <View
-                              key={msg.id}
-                              style={[
-                                styles.messageBubble,
-                                msg.direction === 'incoming'
-                                  ? styles.incomingBubble
-                                  : styles.outgoingBubble,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.messageText,
-                                  msg.direction === 'incoming'
-                                    ? styles.incomingText
-                                    : styles.outgoingText,
-                                ]}
-                              >
-                                {msg.content}
-                              </Text>
-                              <Text style={styles.messageTime}>
-                                {new Date(msg.created_at).toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })}
-                              </Text>
-                            </View>
-                          ))
-                        ) : (
-                          <Text style={styles.noMessagesText}>No recent messages</Text>
-                        )}
-                      </View>
-                    )}
-                  </View>
-
-                  <View style={styles.regenerateSection}>
-                    <Text style={styles.inputLabel}>Give AI Direction (Optional):</Text>
-                    <TextInput
-                      style={styles.directionInput}
-                      value={customDirection}
-                      onChangeText={setCustomDirection}
-                      placeholder="e.g., Make it more casual, mention discount..."
-                      placeholderTextColor="#666"
-                      multiline
-                    />
-                    <TouchableOpacity
-                      style={styles.regenerateButton}
-                      onPress={handleRegenerateWithDirection}
-                    >
-                      <Ionicons name="refresh" size={20} color="#4A90D9" />
-                      <Text style={styles.regenerateButtonText}>
-                        {customDirection ? 'Regenerate with Direction' : 'Regenerate'}
-                      </Text>
-                    </TouchableOpacity>
                   </View>
 
                   <TouchableOpacity
@@ -1817,102 +1002,12 @@ export default function FollowupsScreen() {
                     <Ionicons name="logo-whatsapp" size={24} color="#FFFFFF" />
                     <Text style={styles.whatsappSendText}>Open in WhatsApp</Text>
                   </TouchableOpacity>
-                </ScrollView>
+                </>
+              )}
             </View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
-
-      {/* ── Auto-sequence Redraft Modal ── */}
-      <Modal
-        visible={showSequenceRedraftModal}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setShowSequenceRedraftModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={{ width: '100%' }}
-          >
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Ionicons name="sparkles" size={18} color="#A78BFA" />
-                  <Text style={styles.modalTitle}>
-                    AI Draft · Day {sequenceRedraftFollowup?.sequence_day}
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={() => setShowSequenceRedraftModal(false)}>
-                  <Ionicons name="close" size={24} color="#666" />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Customer info */}
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-                  <View style={styles.coldAvatar}>
-                    <Text style={styles.coldAvatarText}>
-                      {(sequenceRedraftFollowup?.customer_name || '?').charAt(0)}
-                    </Text>
-                  </View>
-                  <View>
-                    <Text style={styles.coldCustomerName}>{sequenceRedraftFollowup?.customer_name}</Text>
-                    <Text style={styles.coldCustomerPhone}>{sequenceRedraftFollowup?.customer_phone}</Text>
-                  </View>
-                </View>
-
-                {/* Editable draft */}
-                <Text style={styles.inputLabel}>Draft Message (edit freely):</Text>
-                <TextInput
-                  style={[styles.directionInput, { minHeight: 100 }]}
-                  value={sequenceRedraftMessage}
-                  onChangeText={setSequenceRedraftMessage}
-                  multiline
-                  placeholderTextColor="#666"
-                />
-
-                {/* Direction input */}
-                <Text style={[styles.inputLabel, { marginTop: 14 }]}>Direction for AI (optional):</Text>
-                <TextInput
-                  style={styles.directionInput}
-                  value={sequenceRedraftDirection}
-                  onChangeText={setSequenceRedraftDirection}
-                  placeholder="e.g., Be more formal, mention the discount, ask about their order..."
-                  placeholderTextColor="#666"
-                  multiline
-                />
-
-                {/* Redraft button */}
-                <TouchableOpacity
-                  style={[styles.regenerateButton, redraftLoading && { opacity: 0.6 }]}
-                  onPress={handleSequenceRedraft}
-                  disabled={redraftLoading}
-                >
-                  {redraftLoading ? (
-                    <ActivityIndicator size="small" color="#A78BFA" />
-                  ) : (
-                    <Ionicons name="sparkles" size={18} color="#A78BFA" />
-                  )}
-                  <Text style={[styles.regenerateButtonText, { color: '#A78BFA' }]}>
-                    {redraftLoading ? 'Redrafting...' : 'Redraft with AI'}
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Send button */}
-                <TouchableOpacity
-                  style={[styles.whatsappSendButton, { marginTop: 12 }]}
-                  onPress={handleSequenceSend}
-                >
-                  <Ionicons name="logo-whatsapp" size={22} color="#FFFFFF" />
-                  <Text style={styles.whatsappSendText}>Send via WhatsApp</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </View>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
-
     </SafeAreaView>
   );
 }
@@ -1928,8 +1023,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   header: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
   },
   headerTop: {
     flexDirection: 'row',
@@ -1937,43 +1032,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
   headerSubtitle: {
-    fontSize: 12,
+    fontSize: 14,
     color: '#25D366',
-    marginTop: 2,
+    marginTop: 4,
   },
   addButton: {
     position: 'absolute',
-    right: 16,
+    right: 20,
     bottom: 20,
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 6,
+    elevation: 5,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
+    shadowOpacity: 0.3,
     shadowRadius: 4,
     zIndex: 10,
   },
   statsRow: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    marginBottom: 10,
-    gap: 8,
+    paddingHorizontal: 20,
+    marginBottom: 16,
+    gap: 12,
   },
   statCard: {
     flex: 1,
     backgroundColor: '#1A2942',
-    borderRadius: 10,
-    padding: 10,
+    borderRadius: 12,
+    padding: 16,
     alignItems: 'center',
   },
   statCardWarning: {
@@ -1985,37 +1080,37 @@ const styles = StyleSheet.create({
     borderLeftColor: '#FF4444',
   },
   statNumber: {
-    fontSize: 22,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
   statLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#666',
-    marginTop: 2,
+    marginTop: 4,
   },
   tabContainer: {
     flexDirection: 'row',
-    marginHorizontal: 16,
+    marginHorizontal: 20,
     backgroundColor: '#1A2942',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 8,
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 12,
   },
   tab: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
-    borderRadius: 8,
-    gap: 4,
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 6,
   },
   tabActive: {
     backgroundColor: '#25D366',
   },
   tabText: {
-    fontSize: 11,
+    fontSize: 13,
     color: '#666',
     fontWeight: '500',
   },
@@ -2023,42 +1118,42 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   filterContainer: {
-    maxHeight: 36,
-    marginBottom: 8,
+    maxHeight: 44,
+    marginBottom: 12,
   },
   filterContent: {
-    paddingHorizontal: 16,
-    gap: 6,
+    paddingHorizontal: 20,
+    gap: 8,
   },
   filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     backgroundColor: '#1A2942',
-    borderRadius: 14,
-    marginRight: 6,
+    borderRadius: 20,
+    marginRight: 8,
   },
   filterChipActive: {
     backgroundColor: '#25D366',
   },
   filterText: {
     color: '#666',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '500',
   },
   filterTextActive: {
     color: '#FFFFFF',
   },
   listContent: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingBottom: 100,
   },
   section: {
-    marginBottom: 16,
+    marginBottom: 24,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 12,
   },
   sectionDot: {
     width: 8,
@@ -2067,7 +1162,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   sectionTitle: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
     flex: 1,
@@ -2081,67 +1176,72 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   followupCard: {
+    flexDirection: 'row',
     backgroundColor: '#1A2942',
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 8,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
   },
   followupCardOverdue: {
     borderLeftWidth: 3,
     borderLeftColor: '#FF4444',
   },
-  followupTop: {
+  followupInfo: {
+    flex: 1,
+  },
+  followupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 4,
   },
-  followupInfo: {
-    flex: 1,
-    marginLeft: 8,
-  },
-  followupDateBadge: {
-    marginLeft: 8,
-  },
   customerName: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+    marginLeft: 8,
   },
   customerPhone: {
-    fontSize: 11,
+    fontSize: 14,
     color: '#666',
+    marginBottom: 4,
   },
   message: {
-    fontSize: 12,
+    fontSize: 13,
     color: '#888',
-    marginBottom: 6,
-    marginLeft: 24,
+    marginBottom: 8,
   },
   dateText: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#666',
   },
   dateTextOverdue: {
     color: '#FF4444',
   },
   actions: {
-    flexDirection: 'row',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
-    paddingTop: 8,
-    marginTop: 4,
-  },
-  actionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 2,
+    alignItems: 'center',
+    gap: 8,
   },
-  actionBtnText: {
-    fontSize: 11,
-    fontWeight: '500',
+  whatsappButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  completeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1A2942',
+    borderWidth: 2,
+    borderColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteButton: {
+    padding: 8,
   },
   emptyContainer: {
     alignItems: 'center',
@@ -2160,29 +1260,33 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   coldCustomerCard: {
+    flexDirection: 'row',
     backgroundColor: '#1A2942',
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 8,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
     borderLeftWidth: 3,
     borderLeftColor: '#FF6B6B',
+  },
+  coldCustomerInfo: {
+    flex: 1,
   },
   coldCustomerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   coldAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#FF6B6B',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 10,
+    marginRight: 12,
   },
   coldAvatarText: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
@@ -2190,37 +1294,43 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   coldCustomerName: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
   },
   coldCustomerPhone: {
-    fontSize: 11,
+    fontSize: 13,
     color: '#666',
-  },
-  coldMetaRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
   },
   aiReasonContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 215, 0, 0.08)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    backgroundColor: 'rgba(255, 215, 0, 0.1)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
     marginBottom: 8,
   },
   aiReasonText: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#FFD700',
-    marginLeft: 5,
+    marginLeft: 6,
     flex: 1,
   },
+  coldLastMessage: {
+    fontSize: 12,
+    color: '#888',
+    fontStyle: 'italic',
+    marginBottom: 8,
+  },
+  coldCustomerMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   coldDaysText: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#FF6B6B',
+    marginLeft: 4,
   },
   hasFollowupBadge: {
     backgroundColor: '#25D366',
@@ -2235,23 +1345,25 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   coldActions: {
-    flexDirection: 'row',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
-    paddingTop: 8,
-    marginTop: 6,
-  },
-  coldActionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 2,
+    alignItems: 'center',
+    gap: 8,
   },
-  coldActionText: {
-    fontSize: 11,
-    fontWeight: '500',
+  coldWhatsappButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addReminderButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(74, 144, 217, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   // Modal Styles
   modalOverlay: {
@@ -2268,7 +1380,6 @@ const styles = StyleSheet.create({
   },
   keyboardView: {
     width: '100%',
-    justifyContent: 'flex-end' as const,
   },
   modalScrollContent: {
     paddingBottom: 40,
@@ -2504,11 +1615,9 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: 'rgba(255, 215, 0, 0.15)', // Light gold background
+    backgroundColor: '#FFD700', // Gold
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 215, 0, 0.3)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
@@ -2574,101 +1683,6 @@ const styles = StyleSheet.create({
   editButton: {
     padding: 8,
   },
-  recentMessagesSection: {
-    marginBottom: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  recentMessagesHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 12,
-  },
-  recentMessagesTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  inputLabelRecent: {
-    fontSize: 14,
-    color: '#888',
-    fontWeight: '600',
-  },
-  messagesList: {
-    paddingHorizontal: 12,
-    paddingBottom: 12,
-    gap: 8,
-  },
-  messageBubble: {
-    padding: 10,
-    borderRadius: 12,
-    maxWidth: '85%',
-  },
-  incomingBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#0A1628',
-    borderBottomLeftRadius: 2,
-  },
-  outgoingBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#25D366',
-    borderBottomRightRadius: 2,
-  },
-  messageText: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  incomingText: {
-    color: '#FFFFFF',
-  },
-  outgoingText: {
-    color: '#FFFFFF',
-  },
-  messageTime: {
-    fontSize: 10,
-    color: '#666',
-    marginTop: 4,
-    alignSelf: 'flex-end',
-  },
-  noMessagesText: {
-    color: '#666',
-    fontSize: 14,
-    fontStyle: 'italic',
-    textAlign: 'center',
-  },
-  regenerateSection: {
-    marginTop: 16,
-    marginBottom: 20,
-  },
-  directionInput: {
-    backgroundColor: '#0A1628',
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 14,
-    color: '#FFFFFF',
-    minHeight: 60,
-    textAlignVertical: 'top',
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#4A90D9',
-  },
-  regenerateButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1A2942',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    gap: 8,
-  },
-  regenerateButtonText: {
-    color: '#4A90D9',
-    fontSize: 16,
-    fontWeight: '600',
-  },
   // Urgency Badge Styles
   urgencyBadge: {
     flexDirection: 'row',
@@ -2709,23 +1723,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFD700',
     marginLeft: 4,
-  },
-  aiDraftBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1E1433',
-    borderWidth: 1,
-    borderColor: '#7C3AED',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    alignSelf: 'flex-start',
-    marginBottom: 8,
-    gap: 4,
-  },
-  aiDraftBadgeText: {
-    fontSize: 11,
-    color: '#A78BFA',
-    fontWeight: '600',
   },
 });

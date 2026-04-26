@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apiClient, whatsappAPI } from './api';
+import { apiClient } from './api';
 
 interface User {
   id: string;
@@ -9,28 +9,6 @@ interface User {
   owner_name?: string;
   subscription_active: boolean;
   subscription_plan?: string;
-  role?: string;
-  business_id?: string;
-  team_members_count?: number;
-}
-
-interface WhatsAppStartResult {
-  success: boolean;
-  message?: string;
-  sessionToken?: string;
-  pairingCode?: string;
-  pairingData?: any;
-  isNewUser?: boolean;
-  alreadyConnected?: boolean;
-  token?: string;
-}
-
-interface WhatsAppCheckResult {
-  success: boolean;
-  connected: boolean;
-  message?: string;
-  isNewUser?: boolean;
-  pairingCode?: string;
 }
 
 interface AuthContextType {
@@ -38,10 +16,9 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  startWhatsAppAuth: (phone: string, countryCode?: string) => Promise<WhatsAppStartResult>;
-  checkWhatsAppAuth: (sessionToken: string) => Promise<WhatsAppCheckResult>;
-  refreshPairingCode: (sessionToken: string) => Promise<{ success: boolean; pairingCode?: string; pairingData?: any; message?: string }>;
-  register: (businessName: string, ownerName?: string, businessType?: string) => Promise<{ success: boolean; message?: string }>;
+  sendOTP: (phone: string) => Promise<{ success: boolean; message?: string; devOtp?: string }>;
+  verifyOTP: (phone: string, code: string) => Promise<{ success: boolean; message?: string; isNewUser?: boolean }>;
+  register: (phone: string, businessName: string, ownerName?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -57,17 +34,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadStoredAuth();
   }, []);
 
-  // Keep Render free-tier services alive (ping every 4 minutes)
-  useEffect(() => {
-    if (!token) return;
-    const keepAlive = setInterval(async () => {
-      try {
-        await apiClient.get('/health', { timeout: 10000 });
-      } catch (_) {}
-    }, 4 * 60 * 1000);
-    return () => clearInterval(keepAlive);
-  }, [token]);
-
   const loadStoredAuth = async () => {
     try {
       const storedToken = await AsyncStorage.getItem('auth_token');
@@ -75,35 +41,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setToken(storedToken);
         apiClient.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
 
-        // Try to fetch fresh user data from server
+        // Fetch current user
         try {
           const response = await apiClient.get('/auth/me');
           setUser(response.data);
-          // Cache user data for offline use
-          await AsyncStorage.setItem('cached_user', JSON.stringify(response.data));
-          // Trigger background profile picture refresh (fire-and-forget)
-          whatsappAPI.refreshProfilePictures();
-        } catch (error: any) {
-          const status = error?.response?.status;
-          if (status === 401 || status === 403) {
-            // Token actually invalid/expired — force re-login
-            await AsyncStorage.removeItem('auth_token');
-            await AsyncStorage.removeItem('cached_user');
-            setToken(null);
-            delete apiClient.defaults.headers.common['Authorization'];
-          } else {
-            // Network error (offline) — use cached user data so owner stays logged in
-            const cachedUser = await AsyncStorage.getItem('cached_user');
-            if (cachedUser) {
-              setUser(JSON.parse(cachedUser));
-              console.log('[Auth] Offline: using cached user data');
-            } else {
-              // No cached user, can't proceed — clear token
-              await AsyncStorage.removeItem('auth_token');
-              setToken(null);
-              delete apiClient.defaults.headers.common['Authorization'];
-            }
-          }
+        } catch (error) {
+          // Token invalid, clear it
+          await AsyncStorage.removeItem('auth_token');
+          setToken(null);
+          delete apiClient.defaults.headers.common['Authorization'];
         }
       }
     } catch (error) {
@@ -113,110 +59,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const startWhatsAppAuth = async (phone: string, countryCode?: string): Promise<WhatsAppStartResult> => {
+  const sendOTP = async (phone: string) => {
     try {
-      const response = await apiClient.post('/auth/whatsapp-start', {
-        phone_number: phone,
-        country_code: countryCode,
-      }, { timeout: 300000 });
-
-      // If user already has WhatsApp connected, backend returns token directly
-      if (response.data.status === 'success' && response.data.token) {
-        const newToken = response.data.token;
-        setToken(newToken);
-        await AsyncStorage.setItem('auth_token', newToken);
-        apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
-        if (response.data.user) {
-          setUser(response.data.user);
-        }
-        return {
-          success: true,
-          alreadyConnected: true,
-          token: newToken,
-          isNewUser: response.data.is_new_user,
-        };
-      }
-
-      // Normal pairing flow
+      const response = await apiClient.post('/auth/send-otp', { phone_number: phone });
       return {
         success: true,
-        sessionToken: response.data.session_token,
-        pairingCode: response.data.pairing_code,
-        pairingData: response.data.pairing_data,
-        isNewUser: response.data.is_new_user,
+        devOtp: response.data.dev_otp // For development testing
       };
     } catch (error: any) {
       return {
         success: false,
-        message: error.response?.data?.detail || 'Failed to start WhatsApp pairing',
+        message: error.response?.data?.detail || 'Failed to send OTP',
       };
     }
   };
 
-  const checkWhatsAppAuth = async (sessionToken: string): Promise<WhatsAppCheckResult> => {
+  const verifyOTP = async (phone: string, code: string) => {
     try {
-      const response = await apiClient.post('/auth/whatsapp-check', {
-        session_token: sessionToken,
+      const response = await apiClient.post('/auth/verify-otp', {
+        phone_number: phone,
+        code: code,
       });
 
-      if (response.data.connected && response.data.token) {
-        const newToken = response.data.token;
-        setToken(newToken);
-        await AsyncStorage.setItem('auth_token', newToken);
-        apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+      const { token: newToken, is_new_user, user: userData } = response.data;
 
-        if (response.data.user) {
-          setUser(response.data.user);
-        }
+      setToken(newToken);
+      await AsyncStorage.setItem('auth_token', newToken);
+      apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
 
-        return {
-          success: true,
-          connected: true,
-          isNewUser: response.data.is_new_user,
-        };
+      if (!is_new_user && userData) {
+        setUser(userData);
       }
 
-      return { success: true, connected: false, pairingCode: response.data.pairing_code };
-    } catch (error: any) {
-      return {
-        success: false,
-        connected: false,
-        message: error.response?.data?.detail || 'Connection check failed',
-      };
-    }
-  };
-
-  const refreshPairingCode = async (sessionToken: string) => {
-    try {
-      const response = await apiClient.post('/auth/whatsapp-refresh', {
-        session_token: sessionToken,
-      }, { timeout: 300000 });
       return {
         success: true,
-        pairingCode: response.data.pairing_code,
-        pairingData: response.data.pairing_data,
+        isNewUser: is_new_user,
       };
     } catch (error: any) {
       return {
         success: false,
-        message: error.response?.data?.detail || 'Failed to refresh code',
-        pairingData: null,
+        message: error.response?.data?.detail || 'Verification failed',
       };
     }
   };
 
-  const register = async (businessName: string, ownerName?: string, businessType?: string) => {
+  const register = async (phone: string, businessName: string, ownerName?: string) => {
     try {
       const response = await apiClient.post('/auth/register', {
-        phone_number: user?.phone_number || '',
+        phone_number: phone,
         business_name: businessName,
         owner_name: ownerName,
-        business_type: businessType,
       });
 
-      if (response.data.user) {
-        setUser(response.data.user);
-      }
+      const { token: newToken, user: userData } = response.data;
+
+      setToken(newToken);
+      await AsyncStorage.setItem('auth_token', newToken);
+      apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+      setUser(userData);
 
       return { success: true };
     } catch (error: any) {
@@ -231,7 +131,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setToken(null);
     await AsyncStorage.removeItem('auth_token');
-    await AsyncStorage.removeItem('cached_user');
     delete apiClient.defaults.headers.common['Authorization'];
   };
 
@@ -239,7 +138,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const response = await apiClient.get('/auth/me');
       setUser(response.data);
-      await AsyncStorage.setItem('cached_user', JSON.stringify(response.data));
     } catch (error) {
       console.error('Error refreshing user:', error);
     }
@@ -252,9 +150,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         token,
         isAuthenticated: !!user,
         isLoading,
-        startWhatsAppAuth,
-        checkWhatsAppAuth,
-        refreshPairingCode,
+        sendOTP,
+        verifyOTP,
         register,
         logout,
         refreshUser,

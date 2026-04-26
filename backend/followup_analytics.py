@@ -29,7 +29,6 @@ class FollowUpAnalytics:
             return {"outcome": "unknown"}
         
         customer_id = followup["customer_id"]
-        user_id = followup.get("user_id")
         reminder_date = followup["reminder_date"]
         
         # Check if completed
@@ -40,13 +39,10 @@ class FollowUpAnalytics:
         seven_days_after = reminder_date + timedelta(days=7)
         
         # 1. Check for sale (CONVERTED)
-        sale_query = {
+        sale = await self.db.sales.find_one({
             "customer_id": customer_id,
             "created_at": {"$gte": reminder_date, "$lte": seven_days_after}
-        }
-        if user_id:
-            sale_query["user_id"] = user_id
-        sale = await self.db.sales.find_one(sale_query)
+        })
         
         if sale:
             return {
@@ -57,11 +53,8 @@ class FollowUpAnalytics:
             }
         
         # 2. Check for customer response (RESPONDED)
-        msg_query_base = {"customer_id": customer_id}
-        if user_id:
-            msg_query_base["user_id"] = user_id
         incoming_message = await self.db.messages.find_one({
-            **msg_query_base,
+            "customer_id": customer_id,
             "direction": "incoming",
             "created_at": {"$gte": reminder_date, "$lte": seven_days_after}
         })
@@ -75,7 +68,7 @@ class FollowUpAnalytics:
         
         # 3. Check if we sent message (CONTACTED)
         outgoing_message = await self.db.messages.find_one({
-            **msg_query_base,
+            "customer_id": customer_id,
             "direction": "outgoing",
             "created_at": {"$gte": reminder_date, "$lte": seven_days_after}
         })
@@ -116,9 +109,7 @@ class FollowUpAnalytics:
                 "total_followups": 0,
                 "conversion_rate": 0,
                 "response_rate": 0,
-                "avg_response_time_hours": 0,
-                "total_revenue": 0,
-                "revenue_per_followup": 0
+                "avg_response_time_hours": 0
             }
         
         # Analyze each follow-up
@@ -224,43 +215,6 @@ class FollowUpAnalytics:
             "day_distribution": {days[k]: v for k, v in day_counts.items()},
             "hour_distribution": hour_counts
         }
-
-    async def get_product_insights(self, user_id: str, days: int = 30) -> List[Dict]:
-        """
-        Get top selling products for the period
-        """
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
-        
-        # Aggregate top products from orders
-        pipeline = [
-            {"$match": {
-                "user_id": user_id,
-                "created_at": {"$gte": cutoff_date}
-            }},
-            {"$group": {
-                "_id": "$product",
-                "total_quantity": {"$sum": "$quantity"},
-                "total_revenue": {"$sum": "$total_amount"},
-                "order_count": {"$sum": 1}
-            }},
-            {"$sort": {"total_quantity": -1}},
-            {"$limit": 5}
-        ]
-        
-        cursor = self.db.orders.aggregate(pipeline)
-        top_products = await cursor.to_list(5)
-        
-        # Format results
-        results = []
-        for p in top_products:
-            results.append({
-                "name": p["_id"],
-                "quantity": p["total_quantity"],
-                "revenue": p["total_revenue"],
-                "orders": p["order_count"]
-            })
-            
-        return results
 
 # Singleton
 _analytics = None

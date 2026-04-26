@@ -17,39 +17,28 @@ class ProductOrganizer:
     """AI-powered product organization using OpenAI Vision"""
     
     def __init__(self, api_key: str = None):
-        """Initialize with OpenAI API key — always uses OpenAI for Vision regardless of AI_PROVIDER"""
-        # Try provided key, then env var, then load directly from .env file
+        """Initialize with OpenAI API key"""
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         
-        if not self.api_key:
-            # Load directly from .env since start_server.ps1 may clear the env var
-            try:
-                from dotenv import dotenv_values
-                env_vals = dotenv_values(os.path.join(os.path.dirname(__file__), '.env'))
-                self.api_key = env_vals.get('OPENAI_API_KEY', '')
-            except Exception:
-                pass
-        
-        if self.api_key and self.api_key not in ('your_openai_api_key_here', ''):
+        if self.api_key and self.api_key != 'your_openai_api_key_here':
             try:
                 self.client = OpenAI(api_key=self.api_key)
                 self.model_name = 'gpt-4o-mini'
                 self.vision_available = True
-                logger.info(f"OpenAI Vision client initialized for product analysis (key ends: ...{self.api_key[-6:]})")
+                logger.info("OpenAI client initialized for product organization")
             except Exception as e:
                 logger.error(f"Failed to configure OpenAI client: {e}")
                 self.vision_available = False
         else:
             self.vision_available = False
-            logger.warning("OpenAI API key not configured - product image analysis will use fallback mode")
+            logger.warning("OpenAI API key not configured - using fallback mode")
     
-    async def analyze_product_image(self, image_path: str, business_context: str = None) -> Dict[str, any]:
+    async def analyze_product_image(self, image_path: str) -> Dict[str, any]:
         """
         Analyze a product image and extract information
         
         Args:
             image_path: Path to product image
-            business_context: Optional context about the business (e.g. "Fashion store", "Electronics shop")
             
         Returns:
             Dict with suggested name, category, description, price (if visible)
@@ -58,31 +47,20 @@ class ProductOrganizer:
             return self._fallback_analysis(image_path)
         
         try:
-            # Determine image source: URL or local file
-            if image_path.startswith("http://") or image_path.startswith("https://"):
-                image_content = {"type": "image_url", "image_url": {"url": image_path}}
-            else:
-                # Load local image and convert to base64
-                img = Image.open(image_path)
-                buffered = io.BytesIO()
-                img.save(buffered, format="PNG")
-                img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-                image_content = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}}
+            # Load image
+            img = Image.open(image_path)
+            
+            # Convert image to base64 for OpenAI Vision API
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
             
             # Create prompt for OpenAI Vision
-            context_snippet = f"\nBusiness Context: {business_context}\n" if business_context else ""
-            prompt = f"""Analyze this product image and provide the following information in a structured format.{context_snippet}
+            prompt = """Analyze this product image and provide the following information in a structured format:
 
-CRITICAL INSTRUCTIONS:
-- FOCUS ON THE PRODUCT ITEM(S) ONLY. 
-- If a person or model is wearing the product, IGNORE the person. Do NOT describe the person's pose, appearance, or actions (e.g., "person taking a selfie", "man smiling").
-- Instead, describe the garment or object (e.g., "White cotton T-shirt", "Sleek matte headphones").
-- Use the Business Context above to guide your identification and terminology.
-
-FIELDS TO EXTRACT:
 1. Product Name: What is this product? Be specific (brand, model if visible)
 2. Category: Choose ONE from: Electronics, Clothing, Food & Beverages, Beauty & Health, Home & Garden, Sports & Fitness, Books & Media, Toys & Games, Automotive, Other
-3. Description: Brief 1-2 sentence description focusing ONLY on features/styling of the item.
+3. Description: Brief 1-2 sentence description
 4. Visible Price: If you can see a price tag or price in the image, extract it. Otherwise say "Not visible"
 5. Confidence: How confident are you in this analysis? (High/Medium/Low)
 
@@ -101,7 +79,12 @@ CONFIDENCE: [High/Medium/Low]"""
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
-                            image_content
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}"
+                                }
+                            }
                         ]
                     }
                 ],
@@ -175,18 +158,17 @@ CONFIDENCE: [High/Medium/Low]"""
         return {
             "name": f"Product {filename[:8]}",
             "category": "Other",
-            "description": "",
+            "description": "Add product description",
             "suggested_price": None,
             "confidence": 0.3
         }
     
-    async def analyze_multiple_images(self, image_paths: List[str], business_context: str = None) -> List[Dict[str, any]]:
+    async def analyze_multiple_images(self, image_paths: List[str]) -> List[Dict[str, any]]:
         """
         Analyze multiple product images
         
         Args:
             image_paths: List of image paths
-            business_context: Optional context about the business
             
         Returns:
             List of analysis results
@@ -195,7 +177,7 @@ CONFIDENCE: [High/Medium/Low]"""
         
         for image_path in image_paths:
             try:
-                result = await self.analyze_product_image(image_path, business_context)
+                result = await self.analyze_product_image(image_path)
                 result['image_path'] = image_path
                 results.append(result)
             except Exception as e:
