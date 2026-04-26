@@ -841,7 +841,7 @@ export default function EmailPage() {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-slate-800 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
+        <div className="flex flex-wrap border-b border-slate-800">
           {([
             { id: "all", label: "All" },
             { id: "unread", label: "Unread", count: unreadCount },
