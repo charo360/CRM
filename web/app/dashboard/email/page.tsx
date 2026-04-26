@@ -1186,7 +1186,7 @@ export default function EmailPage() {
       ) : null}
 
       {/* ── Auto-reply settings drawer ─────────────────────────────────────── */}
-      {autoreply.enabled && connected && (
+      {autoreply.enabled && (
         <div className="w-60 border-l border-slate-800 bg-slate-900 flex-col p-4 space-y-4 hidden xl:flex shrink-0">
           <div className="flex items-center gap-2">
             <Bot size={13} className="text-brand" />
