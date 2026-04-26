@@ -241,7 +241,7 @@ def _mk_router(db, get_current_user):
         msg = (body.get("message") or "").strip()
         if not msg:
             async def _err():
-                yield json.dumps({"type": "error", "message": "message is required"}) + "\n\n"
+                yield "data: " + json.dumps({"type": "error", "message": "message is required"}) + "\n\n"
             return StreamingResponse(_err(), media_type="text/event-stream")
 
         user_id = user.get("business_id", user["_id"])
@@ -250,7 +250,7 @@ def _mk_router(db, get_current_user):
             try:
                 _check_rate_limit(user_id)
             except HTTPException as e:
-                yield json.dumps({"type": "error", "message": e.detail}) + "\n\n"
+                yield "data: " + json.dumps({"type": "error", "message": e.detail}) + "\n\n"
                 return
 
             conv_id = body.get("conversation_id")
@@ -258,7 +258,7 @@ def _mk_router(db, get_current_user):
             if conv_id:
                 conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
                 if not conv:
-                    yield json.dumps({"type": "error", "message": "Conversation not found"}) + "\n\n"
+                    yield "data: " + json.dumps({"type": "error", "message": "Conversation not found"}) + "\n\n"
                     return
             else:
                 conv_id = str(uuid.uuid4())
@@ -288,7 +288,7 @@ def _mk_router(db, get_current_user):
             )
             agent_label = AGENT_REGISTRY.get(agent_resolved, {}).get("label", "Zilo")
 
-            yield json.dumps({"type": "thinking", "agent": agent_resolved, "agent_label": agent_label}) + "\n\n"
+            yield "data: " + json.dumps({"type": "thinking", "agent": agent_resolved, "agent_label": agent_label}) + "\n\n"
 
             try:
                 result = await run_turn(
@@ -299,7 +299,7 @@ def _mk_router(db, get_current_user):
                 )
             except Exception as e:
                 logger.exception("[assistant.chat/stream] failure")
-                yield json.dumps({"type": "error", "message": str(e)}) + "\n\n"
+                yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
                 return
 
             active_agent = result.get("active_agent") or agent_resolved
@@ -311,7 +311,7 @@ def _mk_router(db, get_current_user):
             for i, w in enumerate(words):
                 chunk += ("" if i == 0 else " ") + w
                 if len(chunk) >= 30 or i == len(words) - 1:
-                    yield json.dumps({"type": "token", "text": chunk}) + "\n\n"
+                    yield "data: " + json.dumps({"type": "token", "text": chunk}) + "\n\n"
                     chunk = ""
 
             # Persist
@@ -347,7 +347,7 @@ def _mk_router(db, get_current_user):
             except Exception:
                 logger.exception("[assistant.chat/stream] failed to save")
 
-            yield json.dumps({
+            yield "data: " + json.dumps({
                 "type": "done",
                 "conversation_id": conv_id,
                 "reply": reply_text,
