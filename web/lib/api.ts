@@ -342,6 +342,9 @@ export interface BusinessSettings {
   daily_pulse_enabled?: boolean;
   daily_pulse_time?: string;
   restaurant_has_reservations?: boolean;
+  features?: Record<string, boolean>;
+  account_mode?: string;
+  onboarding_v1_completed?: boolean;
 }
 
 /** Backend `/business-knowledge` payload (journey + AI fields). */
@@ -637,6 +640,8 @@ export const assistantApi = {
     conversation_id?: string | null;
     model?: string;
     auto_approve?: boolean;
+    agent?: string;
+    [key: string]: unknown;
   }) => api.post<AssistantChatResponse>("/assistant/chat", body),
   listDocuments: (conversationId: string) =>
     api.get<{ documents: AssistantDocument[] }>(
@@ -789,4 +794,356 @@ export const aiApi = {
 export const kdsApi = {
   listByBusiness: (businessId: string) =>
     fetch(`${API_BASE}/orders?business_id=${businessId}`).then((r) => r.json()) as Promise<Order[]>,
+};
+
+// ── Onboarding ───────────────────────────────────────────────────────────────
+export const onboardingApi = {
+  analyzeWebsite: (payload: Record<string, unknown>) =>
+    api.post<{
+      summary?: string;
+      business_about_draft?: string;
+      products_services_hint?: string;
+      where_to_fill?: string[];
+    }>("/onboarding/analyze-website", payload),
+};
+
+// ── Social / Zernio ──────────────────────────────────────────────────────────
+export const zernioApi = {
+  inbox: (platform?: string) => {
+    const q = platform ? `?platform=${platform}` : "";
+    return api.get<Record<string, unknown>[]>(`/zernio/inbox${q}`);
+  },
+  accounts: () => api.get<Record<string, unknown>[]>("/zernio/accounts"),
+  conversation: (id: string) => api.get<Record<string, unknown>>(`/zernio/conversations/${id}`),
+  send: (convIdOrPayload: string | Record<string, unknown>, message?: string) =>
+    api.post<Record<string, unknown>>("/zernio/send",
+      typeof convIdOrPayload === "string" ? { conversation_id: convIdOrPayload, message } : convIdOrPayload
+    ),
+  status: () => api.get<Record<string, unknown>>("/zernio/status"),
+  connect: (platform: string) => api.post<{ authUrl?: string }>("/zernio/connect", { platform }),
+  disconnect: (platform: string) => api.post<Record<string, unknown>>("/zernio/disconnect", { platform }),
+};
+
+// ── Design Templates ─────────────────────────────────────────────────────────
+export const designTemplatesApi = {
+  uploadBrandKitImages: (files: File[], meta: Record<string, unknown>) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    Object.entries(meta).forEach(([k, v]) => fd.append(k, String(v)));
+    return fetch(`${API_BASE}/design/brand-kit/images`, {
+      method: "POST",
+      headers: { ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) },
+      body: fd,
+    }).then((r) => r.json()) as Promise<Record<string, unknown>>;
+  },
+  uploadBrandKitFile: (file: File, meta: Record<string, unknown>) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    Object.entries(meta).forEach(([k, v]) => fd.append(k, String(v)));
+    return fetch(`${API_BASE}/design/brand-kit/file`, {
+      method: "POST",
+      headers: { ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) },
+      body: fd,
+    }).then((r) => r.json()) as Promise<Record<string, unknown>>;
+  },
+};
+
+// ── Orshot ───────────────────────────────────────────────────────────────────
+export interface OrshotTemplateField {
+  name: string;
+  key?: string;
+  type: string;
+  value?: string;
+  default_value?: string;
+  label?: string;
+  example?: string;
+  placeholder?: string;
+  page_number?: number;
+  required?: boolean;
+  category?: string;
+  help_text?: string;
+}
+
+export const orshotApi = {
+  getTemplate: (templateId: string | number) =>
+    api.get<{ fields: OrshotTemplateField[]; name?: string; preview_url?: string }>(`/orshot/templates/${templateId}`),
+  render: (payload: Record<string, unknown>) => api.post<{ url?: string; image_url?: string; [key: string]: unknown }>("/orshot/render", payload),
+};
+
+// ── NPS / Feedback ───────────────────────────────────────────────────────────
+export const feedbackApi = {
+  listSurveys: () => api.get<Record<string, unknown>[]>("/nps/surveys"),
+  createSurvey: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/nps/surveys", payload),
+  deleteSurvey: (id: string) => api.delete<Record<string, unknown>>(`/nps/surveys/${id}`),
+  listResponses: (surveyId?: string) => {
+    const path = surveyId ? `/nps/surveys/${surveyId}/responses` : "/nps/responses";
+    return api.get<Record<string, unknown>[]>(path);
+  },
+  submitResponse: (payload: Record<string, unknown>) =>
+    api.post<Record<string, unknown>>("/nps/responses", payload),
+  nps: (surveyId?: string) => {
+    const path = surveyId ? `/nps/score?survey_id=${surveyId}` : "/nps/score";
+    return api.get<Record<string, unknown>>(path);
+  },
+};
+
+// ── Finance ──────────────────────────────────────────────────────────────────
+export const financeApi = {
+  listEntries: (params?: Record<string, string | undefined>) => {
+    const q = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null) as [string, string][])).toString() : "";
+    return api.get<Record<string, unknown>[]>(`/finance/entries${q}`);
+  },
+  createEntry: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/finance/entries", payload),
+  updateEntry: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>(`/finance/entries/${id}`, payload),
+  deleteEntry: (id: string) => api.delete<Record<string, unknown>>(`/finance/entries/${id}`),
+  summary: (params?: Record<string, string | undefined>) => {
+    const q = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null) as [string, string][])).toString() : "";
+    return api.get<Record<string, unknown>>(`/finance/summary${q}`);
+  },
+  categories: () => api.get<{ income: string[]; expense: string[] }>("/finance/categories"),
+  addTransaction: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/finance/entries", payload),
+};
+
+// ── Inventory ────────────────────────────────────────────────────────────────
+export const inventoryApi = {
+  listProducts: (params?: Record<string, unknown>) => {
+    const q = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))).toString() : "";
+    return api.get<Record<string, unknown>[]>(`/inventory/products${q}`);
+  },
+  summary: () => api.get<Record<string, unknown>>("/inventory/summary"),
+  createProduct: (payload: Record<string, unknown>) =>
+    api.post<Record<string, unknown>>("/inventory/products", payload),
+  updateProduct: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>(`/inventory/products/${id}`, payload),
+  deleteProduct: (id: string) => api.delete<Record<string, unknown>>(`/inventory/products/${id}`),
+  recordMovement: (payload: Record<string, unknown>) =>
+    api.post<Record<string, unknown>>("/inventory/movement", payload),
+};
+
+// ── Invoices ─────────────────────────────────────────────────────────────────
+export const invoicesApi = {
+  list: () => api.get<Record<string, unknown>[]>("/invoices"),
+  listEntries: () => api.get<Record<string, unknown>[]>("/invoices"),
+  summary: () => api.get<Record<string, unknown>>("/invoices/summary"),
+  create: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/invoices", payload),
+  createEntry: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/invoices", payload),
+  update: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>(`/invoices/${id}`, payload),
+  updateEntry: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>(`/invoices/${id}`, payload),
+  delete: (id: string) => api.delete<Record<string, unknown>>(`/invoices/${id}`),
+  deleteEntry: (id: string) => api.delete<Record<string, unknown>>(`/invoices/${id}`),
+  setStatus: (id: string, status: string) =>
+    api.patch<Record<string, unknown>>(`/invoices/${id}`, { status }),
+  convertToInvoice: (id: string) => api.post<Record<string, unknown>>(`/invoices/${id}/convert`, {}),
+};
+
+// ── Loyalty ──────────────────────────────────────────────────────────────────
+export const loyaltyApi = {
+  summary: () => api.get<Record<string, unknown>>("/loyalty/summary"),
+  listMembers: () => api.get<Record<string, unknown>[]>("/loyalty/members"),
+  getSettings: () => api.get<Record<string, unknown>>("/loyalty/settings"),
+  updateSettings: (payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>("/loyalty/settings", payload),
+  addTransaction: (payload: Record<string, unknown>) =>
+    api.post<Record<string, unknown>>("/loyalty/transactions", payload),
+  listEntries: () => api.get<Record<string, unknown>[]>("/loyalty/entries"),
+};
+
+// ── Quotes ───────────────────────────────────────────────────────────────────
+export const quotesApi = {
+  list: () => api.get<Record<string, unknown>[]>("/quotes"),
+  listEntries: () => api.get<Record<string, unknown>[]>("/quotes"),
+  summary: () => api.get<Record<string, unknown>>("/quotes/summary"),
+  create: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/quotes", payload),
+  createEntry: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/quotes", payload),
+  update: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>(`/quotes/${id}`, payload),
+  updateEntry: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>(`/quotes/${id}`, payload),
+  delete: (id: string) => api.delete<Record<string, unknown>>(`/quotes/${id}`),
+  deleteEntry: (id: string) => api.delete<Record<string, unknown>>(`/quotes/${id}`),
+  convertToInvoice: (id: string) => api.post<Record<string, unknown>>(`/quotes/${id}/convert`, {}),
+};
+
+// ── SEO ──────────────────────────────────────────────────────────────────────
+export interface SeoAuditIssue {
+  type: "critical" | "warning" | "info";
+  message: string;
+  field?: string;
+  severity?: string;
+}
+
+export interface SeoAudit {
+  id?: string;
+  score?: number;
+  grade?: string;
+  url?: string;
+  created_at?: string;
+  issues: SeoAuditIssue[];
+  word_count?: number;
+  total_images?: number;
+  images_missing_alt?: number;
+  h1_count?: number;
+  h2_count?: number;
+  title?: string;
+  meta_description?: string;
+  [key: string]: unknown;
+}
+
+export interface SeoKeyword {
+  keyword: string;
+  volume?: number;
+  difficulty?: string | number;
+  content_idea?: string;
+  search_intent?: string;
+  intent?: string;
+  priority?: number;
+  [key: string]: unknown;
+}
+
+export interface BlogPost {
+  id: string;
+  title: string;
+  content?: string;
+  status?: string;
+  created_at?: string;
+  tags?: string[];
+  word_count?: number;
+  meta_description?: string;
+  [key: string]: unknown;
+}
+
+export interface BlogGenerateResult {
+  title: string;
+  content: string;
+  word_count?: number;
+  tags?: string[];
+  meta_description?: string;
+  meta_title?: string;
+  outline?: string[];
+  [key: string]: unknown;
+}
+
+export interface ContentCalendarItem {
+  id?: string;
+  date?: string;
+  title: string;
+  type?: string;
+  week?: number;
+  day?: string;
+  format?: string;
+  keywords?: string[];
+  cta?: string;
+  [key: string]: unknown;
+}
+
+export interface SeoSummary {
+  score?: number;
+  keywords?: number;
+  posts?: number;
+  total_posts?: number;
+  published_posts?: number;
+  draft_posts?: number;
+  total_audits?: number;
+  avg_seo_score?: number;
+  last_audit?: SeoAudit;
+  [key: string]: unknown;
+}
+
+export interface SeoAgentToolStep {
+  tool: string;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+}
+
+export const seoApi = {
+  summary: () => api.get<SeoSummary>("/seo/summary"),
+  generateKeywords: (businessTypeOrPayload: string | Record<string, unknown>, location?: string) =>
+    api.post<Record<string, unknown>>("/seo/keywords",
+      typeof businessTypeOrPayload === "string"
+        ? { business_type: businessTypeOrPayload, location }
+        : businessTypeOrPayload
+    ),
+  generateBlog: (payload: Record<string, unknown>) => api.post<BlogGenerateResult>("/seo/blog", payload),
+  contentCalendar: (businessType?: string, postsPerWeek?: number, weeks?: number, location?: string) => {
+    if (!businessType) return api.get<{ calendar: ContentCalendarItem[] }>("/seo/calendar");
+    return api.post<{ calendar: ContentCalendarItem[] }>("/seo/calendar/generate", { business_type: businessType, posts_per_week: postsPerWeek, weeks, location });
+  },
+  listAudits: () => api.get<SeoAudit[]>("/seo/audits"),
+  audit: (urlOrPayload: string | Record<string, unknown>) =>
+    api.post<SeoAudit>("/seo/audit", typeof urlOrPayload === "string" ? { url: urlOrPayload } : urlOrPayload),
+  aiFixSuggestions: (auditId: string) => api.post<Record<string, unknown>>(`/seo/audits/${auditId}/fix-suggestions`, {}),
+  listPosts: () => api.get<BlogPost[]>("/seo/posts"),
+  createPost: (payload: Record<string, unknown>) => api.post<BlogPost>("/seo/posts", payload),
+  deletePost: (id: string) => api.delete<Record<string, unknown>>(`/seo/posts/${id}`),
+  publishPost: (idOrPayload: string | Record<string, unknown>) =>
+    typeof idOrPayload === "string"
+      ? api.post<BlogPost>(`/seo/posts/${idOrPayload}/publish`, {})
+      : api.post<BlogPost>("/seo/posts/publish", idOrPayload),
+};
+
+export const seoAgentApi = {
+  chat: (msgOrPayload: string | Record<string, unknown>, convId?: string, history?: { role: string; content: string }[]) =>
+    api.post<{ reply: string; conversation_id: string; tool_steps?: SeoAgentToolStep[] }>("/seo/agent/chat",
+      typeof msgOrPayload === "string" ? { message: msgOrPayload, conversation_id: convId, history } : msgOrPayload
+    ),
+  conversation: (id: string) => api.get<Record<string, unknown>>(`/seo/agent/conversations/${id}`),
+  getConversation: (id: string) => api.get<{ messages: { role: string; content: string; tool_steps?: SeoAgentToolStep[] }[] }>(`/seo/agent/conversations/${id}`),
+  listConversations: () => api.get<{ id: string; title: string }[]>("/seo/agent/conversations"),
+  deleteConversation: (id: string) => api.delete<Record<string, unknown>>(`/seo/agent/conversations/${id}`),
+};
+
+// ── Marketing / Ads ──────────────────────────────────────────────────────────
+export interface MetaAdsCampaignDraft {
+  id: string;
+  name: string;
+  objective?: string;
+  budget?: number;
+  daily_budget: number;
+  status: string;
+  currency?: string;
+  notes?: string;
+  source?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface XAdsCampaignDraft {
+  id: string;
+  name: string;
+  objective?: string;
+  budget?: number;
+  daily_budget: number;
+  status: string;
+  currency?: string;
+  notes?: string;
+  source?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export const marketingApi = {
+  listMetaAdsDrafts: () => api.get<{ drafts: MetaAdsCampaignDraft[] }>("/marketing/meta-ads"),
+  createMetaAdsDraft: (payload: Record<string, unknown>) =>
+    api.post<MetaAdsCampaignDraft>("/marketing/meta-ads", payload),
+  updateMetaAdsDraft: (id: string, payload: Record<string, unknown>) =>
+    api.patch<MetaAdsCampaignDraft>(`/marketing/meta-ads/${id}`, payload),
+  deleteMetaAdsDraft: (id: string) => api.delete<Record<string, unknown>>(`/marketing/meta-ads/${id}`),
+  listXAdsDrafts: () => api.get<{ drafts: XAdsCampaignDraft[] }>("/marketing/x-ads"),
+  createXAdsDraft: (payload: Record<string, unknown>) =>
+    api.post<XAdsCampaignDraft>("/marketing/x-ads", payload),
+  updateXAdsDraft: (id: string, payload: Record<string, unknown>) =>
+    api.patch<XAdsCampaignDraft>(`/marketing/x-ads/${id}`, payload),
+  deleteXAdsDraft: (id: string) => api.delete<Record<string, unknown>>(`/marketing/x-ads/${id}`),
+  draftSocialPost: (payload: Record<string, unknown>) =>
+    api.post<{ title?: string; body?: string; content?: string }>("/marketing/social/draft", payload),
+  listPosts: () => api.get<Record<string, unknown>[]>("/marketing/social/posts"),
+  createPost: (payload: Record<string, unknown>) =>
+    api.post<Record<string, unknown>>("/marketing/social/posts", payload),
+  updatePost: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Record<string, unknown>>(`/marketing/social/posts/${id}`, payload),
+  deletePost: (id: string) => api.delete<Record<string, unknown>>(`/marketing/social/posts/${id}`),
+  publishPost: (id: string) => api.post<Record<string, unknown>>(`/marketing/social/posts/${id}/publish`, {}),
 };
