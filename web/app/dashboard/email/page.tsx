@@ -6,6 +6,7 @@ import {
   Loader2, Mail, MailOpen, Clock, Bot, ToggleLeft, ToggleRight,
   Star, Archive, Reply, Pencil, Zap, Check, AlertCircle,
   ArrowUpRight, Paperclip, ChevronDown, MessageSquarePlus,
+  Tag, Plus, UserCheck, Cpu, Trash2,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -41,7 +42,17 @@ type AutoreplyRule = {
   extraContext: string;
 };
 
-type Tab = "all" | "unread" | "starred";
+type Category = {
+  id: string;
+  name: string;
+  colorBg: string;
+  colorText: string;
+  mode: "ai" | "vip";
+  description?: string;  // hint for AI classification
+  addresses?: string[];  // VIP: specific sender addresses
+};
+
+type Tab = "all" | "unread" | "starred" | string;
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -114,6 +125,22 @@ function avatarColor(from: string) {
   return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
 }
 
+const CAT_COLORS = [
+  { bg: "bg-purple-500",  text: "text-purple-400",  label: "Purple" },
+  { bg: "bg-blue-500",    text: "text-blue-400",    label: "Blue"   },
+  { bg: "bg-emerald-500", text: "text-emerald-400", label: "Green"  },
+  { bg: "bg-orange-500",  text: "text-orange-400",  label: "Orange" },
+  { bg: "bg-pink-500",    text: "text-pink-400",    label: "Pink"   },
+  { bg: "bg-rose-500",    text: "text-rose-400",    label: "Red"    },
+  { bg: "bg-amber-500",   text: "text-amber-400",   label: "Yellow" },
+  { bg: "bg-cyan-500",    text: "text-cyan-400",    label: "Cyan"   },
+];
+
+function extractEmail(from: string): string {
+  const m = from.match(/<([^>]+)>/);
+  return m ? m[1] : from.trim();
+}
+
 // ── No-connection state ───────────────────────────────────────────────────────
 
 function NoConnection({ inline = false }: { inline?: boolean }) {
@@ -131,6 +158,230 @@ function NoConnection({ inline = false }: { inline?: boolean }) {
           </a>{" "}
           to unlock your inbox.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Category Manager modal ────────────────────────────────────────────────────
+
+function CategoryManager({
+  categories,
+  onSave,
+  onClose,
+}: {
+  categories: Category[];
+  onSave: (cats: Category[]) => void;
+  onClose: () => void;
+}) {
+  const [cats, setCats] = useState<Category[]>(categories);
+  const [creating, setCreating] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [mode, setMode] = useState<"ai" | "vip">("ai");
+  const [description, setDescription] = useState("");
+  const [addresses, setAddresses] = useState("");
+  const [colorIdx, setColorIdx] = useState(0);
+
+  function resetForm() {
+    setName(""); setMode("ai"); setDescription(""); setAddresses(""); setColorIdx(0);
+    setCreating(false); setEditId(null);
+  }
+
+  function startEdit(cat: Category) {
+    const ci = CAT_COLORS.findIndex((c) => c.bg === cat.colorBg);
+    setEditId(cat.id);
+    setName(cat.name);
+    setMode(cat.mode);
+    setDescription(cat.description ?? "");
+    setAddresses((cat.addresses ?? []).join(", "));
+    setColorIdx(ci >= 0 ? ci : 0);
+    setCreating(true);
+  }
+
+  function saveCategory() {
+    if (!name.trim()) { toast.error("Name required"); return; }
+    const color = CAT_COLORS[colorIdx];
+    const cat: Category = {
+      id: editId ?? Date.now().toString(),
+      name: name.trim(),
+      colorBg: color.bg,
+      colorText: color.text,
+      mode,
+      description: mode === "ai" ? description.trim() || undefined : undefined,
+      addresses: mode === "vip" ? addresses.split(",").map((a) => a.trim()).filter(Boolean) : undefined,
+    };
+    const next = editId ? cats.map((c) => (c.id === editId ? cat : c)) : [...cats, cat];
+    setCats(next);
+    onSave(next);
+    resetForm();
+    toast.success(editId ? "Category updated" : "Category created");
+  }
+
+  function deleteCategory(id: string) {
+    const next = cats.filter((c) => c.id !== id);
+    setCats(next);
+    onSave(next);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-[420px] shadow-2xl flex flex-col max-h-[85vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <Tag size={14} className="text-brand" />
+            <span className="font-semibold text-sm">Email Categories</span>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-100"><X size={15} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {/* Empty state */}
+          {cats.length === 0 && !creating && (
+            <div className="text-center py-8 text-slate-600">
+              <Tag size={28} className="mx-auto mb-3 opacity-30" />
+              <p className="text-xs leading-relaxed">
+                No categories yet.<br />Create one to auto-sort your inbox.
+              </p>
+            </div>
+          )}
+
+          {/* Category list */}
+          {cats.map((cat) => (
+            <div key={cat.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-800 border border-slate-700/60">
+              <div className={cn("w-2 h-2 rounded-full shrink-0", cat.colorBg)} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-slate-200">{cat.name}</span>
+                  <span className={cn(
+                    "text-[9px] px-1.5 py-0.5 rounded-full font-medium",
+                    cat.mode === "vip" ? "bg-amber-900/40 text-amber-400" : "bg-brand-dark/20 text-brand/70"
+                  )}>
+                    {cat.mode === "vip" ? "VIP" : "AI"}
+                  </span>
+                </div>
+                {cat.mode === "ai" && cat.description && (
+                  <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.description}</p>
+                )}
+                {cat.mode === "vip" && cat.addresses?.length ? (
+                  <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.addresses.join(", ")}</p>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => startEdit(cat)}
+                  className="p-1.5 rounded-lg text-slate-500 hover:text-brand hover:bg-slate-700 transition-colors"
+                >
+                  <Pencil size={10} />
+                </button>
+                <button
+                  onClick={() => deleteCategory(cat.id)}
+                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-700 transition-colors"
+                >
+                  <Trash2 size={10} />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {/* Create / edit form */}
+          {creating ? (
+            <div className="rounded-xl border border-brand-dark/40 bg-slate-800/60 p-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-300">{editId ? "Edit Category" : "New Category"}</p>
+
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Name (e.g. Boss, Partners, Clients)"
+                autoFocus
+                className="w-full bg-slate-700 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-600"
+              />
+
+              {/* Mode toggle */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setMode("ai")}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors",
+                    mode === "ai"
+                      ? "bg-brand-dark/20 border-brand-dark/60 text-brand"
+                      : "bg-slate-700 border-slate-600 text-slate-400 hover:bg-slate-600"
+                  )}
+                >
+                  <Cpu size={11} /> AI sorts
+                </button>
+                <button
+                  onClick={() => setMode("vip")}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors",
+                    mode === "vip"
+                      ? "bg-amber-900/30 border-amber-700/60 text-amber-400"
+                      : "bg-slate-700 border-slate-600 text-slate-400 hover:bg-slate-600"
+                  )}
+                >
+                  <UserCheck size={11} /> VIP senders
+                </button>
+              </div>
+
+              {mode === "ai" ? (
+                <input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Hint: e.g. 'supplier invoices and business proposals'"
+                  className="w-full bg-slate-700 text-xs text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-600"
+                />
+              ) : (
+                <input
+                  value={addresses}
+                  onChange={(e) => setAddresses(e.target.value)}
+                  placeholder="Emails comma-separated: boss@co.com, cfo@co.com"
+                  className="w-full bg-slate-700 text-xs text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-600"
+                />
+              )}
+
+              {/* Color picker */}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500 shrink-0">Color</span>
+                <div className="flex gap-1.5 flex-wrap">
+                  {CAT_COLORS.map((c, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setColorIdx(i)}
+                      className={cn(
+                        "w-4 h-4 rounded-full transition-all",
+                        c.bg,
+                        colorIdx === i ? "ring-2 ring-white ring-offset-1 ring-offset-slate-800 scale-110" : "hover:scale-105"
+                      )}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button onClick={resetForm} className="flex-1 py-2 rounded-xl text-xs text-slate-400 bg-slate-700 hover:bg-slate-600 transition-colors">
+                  Cancel
+                </button>
+                <button onClick={saveCategory} className="flex-1 py-2 rounded-xl text-xs font-semibold bg-brand-dark hover:bg-brand text-white transition-colors">
+                  {editId ? "Save changes" : "Create"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setCreating(true)}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-slate-700 text-xs text-slate-500 hover:text-slate-300 hover:border-slate-600 transition-colors"
+            >
+              <Plus size={12} /> Add category
+            </button>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-slate-800">
+          <button onClick={onClose} className="w-full py-2 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
+            Done
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -306,6 +557,11 @@ export default function EmailPage() {
   // Starred stored locally (since no API for starring in our layer)
   const [starred, setStarred] = useState<Set<string>>(new Set());
 
+  // Categories
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [threadCategories, setThreadCategories] = useState<Record<string, string>>({});
+  const [showCategoryManager, setShowCategoryManager] = useState(false);
+
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -331,6 +587,10 @@ export default function EmailPage() {
       if (saved) setAutoreply(JSON.parse(saved) as AutoreplyRule);
       const savedStarred = localStorage.getItem("email_starred");
       if (savedStarred) setStarred(new Set(JSON.parse(savedStarred) as string[]));
+      const savedCats = localStorage.getItem("email_categories");
+      if (savedCats) setCategories(JSON.parse(savedCats) as Category[]);
+      const savedAssign = localStorage.getItem("email_thread_categories");
+      if (savedAssign) setThreadCategories(JSON.parse(savedAssign) as Record<string, string>);
     } catch { /* ignore */ }
   }, []);
 
@@ -348,10 +608,68 @@ export default function EmailPage() {
     });
   }
 
+  function saveCategories(cats: Category[]) {
+    setCategories(cats);
+    localStorage.setItem("email_categories", JSON.stringify(cats));
+  }
+
+  function saveThreadCategory(threadId: string, categoryId: string) {
+    setThreadCategories((prev) => {
+      const next = { ...prev, [threadId]: categoryId };
+      localStorage.setItem("email_thread_categories", JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function getCatForThread(threadId: string): Category | undefined {
+    const catId = threadCategories[threadId];
+    return catId ? categories.find((c) => c.id === catId) : undefined;
+  }
+
+  // Classify threads in background after load
+  const classifyThreadsInBackground = useCallback(async (ts: Thread[], cats: Category[]) => {
+    if (cats.length === 0) return;
+    const vipCats = cats.filter((c) => c.mode === "vip");
+    const aiCats = cats.filter((c) => c.mode === "ai");
+    const saved = JSON.parse(localStorage.getItem("email_thread_categories") ?? "{}") as Record<string, string>;
+
+    for (const thread of ts.slice(0, 30)) {
+      // VIP: instant match by sender address
+      const email = extractEmail(thread.from);
+      const vip = vipCats.find((c) => c.addresses?.some((a) => a.toLowerCase() === email.toLowerCase()));
+      if (vip) { saveThreadCategory(thread.id, vip.id); continue; }
+
+      // Already classified by AI: skip to avoid extra API calls
+      if (saved[thread.id]) continue;
+
+      // AI classify
+      if (aiCats.length > 0) {
+        try {
+          const data = await apiPost("/api/email/classify", {
+            subject: thread.subject,
+            from: thread.from,
+            snippet: thread.snippet,
+            categories: aiCats.map((c) => ({ id: c.id, name: c.name, description: c.description })),
+          }) as { categoryId: string | null };
+          if (data.categoryId) saveThreadCategory(thread.id, data.categoryId);
+        } catch { /* ignore */ }
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (threads.length > 0 && categories.length > 0) {
+      classifyThreadsInBackground(threads, categories);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threads.length, categories.length]);
+
   // Filtered threads for current tab
   const filteredThreads = threads.filter((t) => {
     if (tab === "unread") return t.unread;
     if (tab === "starred") return starred.has(t.id);
+    if (tab !== "all") return threadCategories[t.id] === tab;
     return true;
   });
 
@@ -484,6 +802,13 @@ export default function EmailPage() {
             </div>
             <div className="flex items-center gap-1">
               <button
+                onClick={() => setShowCategoryManager(true)}
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-brand transition-colors"
+                title="Categories"
+              >
+                <Tag size={12} />
+              </button>
+              <button
                 onClick={() => setShowCompose(true)}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-xs font-medium transition-colors"
                 title="Compose (C)"
@@ -516,7 +841,7 @@ export default function EmailPage() {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-slate-800">
+        <div className="flex border-b border-slate-800 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
           {([
             { id: "all", label: "All" },
             { id: "unread", label: "Unread", count: unreadCount },
@@ -526,7 +851,7 @@ export default function EmailPage() {
               key={id}
               onClick={() => setTab(id)}
               className={cn(
-                "flex-1 py-2.5 text-xs font-medium flex items-center justify-center gap-1 transition-colors border-b-2",
+                "shrink-0 px-3 py-2.5 text-xs font-medium flex items-center gap-1 transition-colors border-b-2",
                 tab === id
                   ? "text-brand border-brand"
                   : "text-slate-500 border-transparent hover:text-slate-300"
@@ -541,6 +866,31 @@ export default function EmailPage() {
               )}
             </button>
           ))}
+          {/* Category tabs */}
+          {categories.map((cat) => {
+            const count = threads.filter((t) => threadCategories[t.id] === cat.id).length;
+            return (
+              <button
+                key={cat.id}
+                onClick={() => setTab(cat.id)}
+                className={cn(
+                  "shrink-0 px-3 py-2.5 text-xs font-medium flex items-center gap-1.5 transition-colors border-b-2",
+                  tab === cat.id
+                    ? `${cat.colorText} border-current`
+                    : "text-slate-500 border-transparent hover:text-slate-300"
+                )}
+              >
+                <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", cat.colorBg)} />
+                {cat.name}
+                {count > 0 && (
+                  <span className={cn(
+                    "text-[9px] px-1.5 py-0.5 rounded-full font-semibold",
+                    tab === cat.id ? `${cat.colorBg} text-white` : "bg-slate-800 text-slate-400"
+                  )}>{count}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {/* Auto-reply bar */}
@@ -574,6 +924,7 @@ export default function EmailPage() {
               const isStarred = starred.has(thread.id);
               const initStr = initials(thread.from);
               const color = avatarColor(thread.from);
+              const cat = getCatForThread(thread.id);
               return (
                 <div
                   key={thread.id}
@@ -599,7 +950,15 @@ export default function EmailPage() {
                       <p className={cn("text-[11px] truncate mt-0.5", thread.unread ? "text-slate-200 font-medium" : "text-slate-400")}>
                         {thread.subject}
                       </p>
-                      <p className="text-[10px] text-slate-600 mt-0.5 line-clamp-1">{thread.snippet}</p>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <p className="text-[10px] text-slate-600 line-clamp-1 flex-1">{thread.snippet}</p>
+                        {cat && (
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <div className={cn("w-1.5 h-1.5 rounded-full", cat.colorBg)} />
+                            <span className={cn("text-[9px] font-medium", cat.colorText)}>{cat.name}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -870,6 +1229,15 @@ export default function EmailPage() {
           provider={provider}
           onClose={() => setShowCompose(false)}
           onSent={() => loadThreads(activeSearch)}
+        />
+      )}
+
+      {/* Category manager */}
+      {showCategoryManager && (
+        <CategoryManager
+          categories={categories}
+          onSave={saveCategories}
+          onClose={() => setShowCategoryManager(false)}
         />
       )}
     </div>
