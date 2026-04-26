@@ -4,9 +4,11 @@
  */
 
 export interface WebBusinessUi {
+  /** Main dashboard heading (e.g. Overview vs Home) */
+  overviewTitle: string;
   /** First link under Sales (usually matches POS / revenue tab) */
   salesNavLabel: string;
-  /** Main CRM people list (still the same `/customers` route) */
+  /** Main people list (same `/customers` route) */
   customersNavLabel: string;
   /** `/dashboard/shop` sidebar label */
   shopNavLabel: string;
@@ -25,10 +27,11 @@ export interface WebBusinessUi {
 }
 
 const DEFAULT_UI: WebBusinessUi = {
+  overviewTitle: "Overview",
   salesNavLabel: "Sales",
   customersNavLabel: "Customers",
   shopNavLabel: "Shop",
-  overviewSubtitle: "Welcome back. Here's what's happening.",
+  overviewSubtitle: "Selling and growing in one workspace — revenue, people, and today's momentum.",
   recentOrdersTitle: "Recent Orders",
   activeOrdersLabel: "Active Orders",
   paidOrdersLabel: "Paid Orders",
@@ -142,12 +145,29 @@ const BY_TYPE: Record<string, Partial<WebBusinessUi>> = {
     customerTerm: "customers",
   },
   other: {
-    overviewSubtitle: "Here's what's happening across your business.",
+    overviewSubtitle: "Sales, pipeline, and growth activity across your business in one view.",
     customerTerm: "customers",
   },
 };
 
-export function getWebBusinessUi(businessType: string): WebBusinessUi {
+export function getWebBusinessUi(
+  businessType: string,
+  accountMode: "individual" | "business" = "business"
+): WebBusinessUi {
   const patch = BY_TYPE[businessType] ?? {};
-  return { ...DEFAULT_UI, ...patch };
+  const merged: WebBusinessUi = { ...DEFAULT_UI, ...patch };
+
+  if (accountMode === "individual") {
+    const typeNice = businessType.replace(/_/g, " ");
+    return {
+      ...merged,
+      overviewTitle: "Home",
+      overviewSubtitle: `Conversations, Zilo Chat, and automations — plus reach and campaigns when you need them. Personalized for ${typeNice}.`,
+      recentOrdersTitle: "Recent activity",
+      activeOrdersLabel: "Open",
+      paidOrdersLabel: "Done",
+    };
+  }
+
+  return merged;
 }

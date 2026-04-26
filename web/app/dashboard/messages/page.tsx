@@ -44,7 +44,7 @@ export default function MessagesPage() {
       .finally(() => setLoadingCustomers(false));
   }, []);
 
-  // Deep-link from other pages (Customers list, profile, Contacts → open thread in CRM, not wa.me)
+  // Deep-link from other pages (Customers list, profile, Contacts → open thread in Zilo, not wa.me)
   useEffect(() => {
     if (loadingCustomers) return;
     let cancelled = false;
@@ -180,7 +180,7 @@ export default function MessagesPage() {
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={search} onChange={(e) => setSearch(e.target.value)}
               placeholder="Search conversations…"
-              className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:ring-1 focus:ring-indigo-500 bg-slate-50" />
+              className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:ring-1 focus:ring-brand bg-slate-50" />
           </div>
         </div>
 
@@ -205,17 +205,17 @@ export default function MessagesPage() {
               return (
                 <button key={c.id} onClick={() => setSelectedId(c.id)}
                   className={`w-full flex items-center gap-3 px-4 py-3 border-b border-slate-50 text-left transition-colors ${
-                    isSelected ? "bg-indigo-50 border-l-2 border-l-indigo-500" : "hover:bg-slate-50"
+                    isSelected ? "bg-brand/10 border-l-2 border-l-brand" : "hover:bg-slate-50"
                   }`}
                 >
                   {/* Avatar */}
                   <div className="relative shrink-0">
-                    <div className="w-9 h-9 rounded-full bg-indigo-100 flex items-center justify-center">
+                    <div className="w-9 h-9 rounded-full bg-brand/15 flex items-center justify-center">
                       {c.profile_picture ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={c.profile_picture} alt={c.name} className="w-9 h-9 rounded-full object-cover" />
                       ) : (
-                        <span className="text-indigo-600 font-semibold text-xs">{c.name.charAt(0).toUpperCase()}</span>
+                        <span className="text-brand-dark font-semibold text-xs">{c.name.charAt(0).toUpperCase()}</span>
                       )}
                     </div>
                     {/* Channel dot */}
@@ -236,7 +236,7 @@ export default function MessagesPage() {
                     </p>
                   </div>
                   {unread && (
-                    <span className="w-4 h-4 rounded-full bg-indigo-600 text-white text-[9px] font-bold flex items-center justify-center shrink-0">
+                    <span className="w-4 h-4 rounded-full bg-brand-dark text-white text-[9px] font-bold flex items-center justify-center shrink-0">
                       {c.unread_count}
                     </span>
                   )}
@@ -259,12 +259,12 @@ export default function MessagesPage() {
           {/* Chat header */}
           <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-slate-200">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-indigo-100 flex items-center justify-center">
+              <div className="w-9 h-9 rounded-full bg-brand/15 flex items-center justify-center">
                 {selectedCustomer?.profile_picture ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={selectedCustomer.profile_picture} alt={selectedCustomer.name} className="w-9 h-9 rounded-full object-cover" />
                 ) : (
-                  <span className="text-indigo-600 font-semibold text-sm">
+                  <span className="text-brand-dark font-semibold text-sm">
                     {selectedCustomer?.name.charAt(0).toUpperCase()}
                   </span>
                 )}
@@ -304,7 +304,7 @@ export default function MessagesPage() {
                   <div key={msg.id} className={`flex ${isOut ? "justify-end" : "justify-start"}`}>
                     <div className={`max-w-[72%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
                       isOut
-                        ? "bg-indigo-600 text-white rounded-br-sm"
+                        ? "bg-brand-dark text-white rounded-br-sm"
                         : "bg-white text-slate-800 shadow-sm border border-slate-100 rounded-bl-sm"
                     }`}>
                       {msg.image_url && (
@@ -312,7 +312,7 @@ export default function MessagesPage() {
                         <img src={msg.image_url} alt="attachment" className="rounded-lg mb-1.5 max-w-full" />
                       )}
                       <p>{msg.content}</p>
-                      <p className={`text-[10px] mt-1 ${isOut ? "text-indigo-200" : "text-slate-400"} text-right`}>
+                      <p className={`text-[10px] mt-1 ${isOut ? "text-brand/30" : "text-slate-400"} text-right`}>
                         {msg.created_at ? timeAgo(msg.created_at) : ""}
                       </p>
                     </div>
@@ -331,7 +331,7 @@ export default function MessagesPage() {
                 <button
                   onClick={handleAIDraft}
                   disabled={aiDrafting || !selectedId}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded-lg disabled:opacity-50 transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand-dark hover:text-brand-dark hover:bg-brand/10 rounded-lg disabled:opacity-50 transition-colors"
                 >
                   <Sparkles size={12} className={aiDrafting ? "animate-spin" : ""} />
                   {aiDrafting ? "Drafting..." : "AI Draft"}
@@ -342,7 +342,7 @@ export default function MessagesPage() {
                     id="personal-mode"
                     checked={personalMode}
                     onChange={(e) => setPersonalMode(e.target.checked)}
-                    className="w-3 h-3 text-purple-600 rounded focus:ring-purple-500"
+                    className="w-3 h-3 text-brand-dark rounded focus:ring-brand"
                   />
                   <label htmlFor="personal-mode" className="text-xs text-slate-600">
                     Personal mode
@@ -366,11 +366,11 @@ export default function MessagesPage() {
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e as unknown as React.FormEvent); } }}
                 placeholder={`Message via ${CHANNEL_CONFIG[channel].label}…`}
                 rows={1}
-                className="flex-1 px-4 py-2.5 text-sm border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 resize-none max-h-32"
+                className="flex-1 px-4 py-2.5 text-sm border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-brand resize-none max-h-32"
                 style={{ minHeight: "42px" }}
               />
               <button type="submit" disabled={sending || !draft.trim()}
-                className="w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 transition-colors shrink-0">
+                className="w-10 h-10 rounded-full bg-brand-dark text-white flex items-center justify-center hover:bg-brand disabled:opacity-50 transition-colors shrink-0">
                 {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
               </button>
             </form>

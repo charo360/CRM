@@ -1,6 +1,27 @@
 import { getToken } from "./auth";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
+
+function formatErrorBody(res: Response, rawText: string): string {
+  let err: { detail?: unknown } = {};
+  try {
+    err = rawText ? (JSON.parse(rawText) as { detail?: unknown }) : {};
+  } catch {
+    err = { detail: rawText || res.statusText };
+  }
+  const d = err.detail as unknown;
+  const msg =
+    typeof d === "string"
+      ? d
+      : Array.isArray(d)
+        ? d
+            .map((x: { msg?: string }) => (typeof x === "object" && x && "msg" in x ? x.msg : String(x)))
+            .join("; ")
+        : typeof d === "object" && d !== null
+          ? JSON.stringify(d)
+          : rawText || res.statusText || "Request failed";
+  return msg ? `${res.status}: ${msg}` : `${res.status}: Request failed`;
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
@@ -13,23 +34,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     },
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    const d = err.detail as unknown;
-    const msg =
-      typeof d === "string"
-        ? d
-        : Array.isArray(d)
-          ? d
-              .map((x: { msg?: string }) => (typeof x === "object" && x && "msg" in x ? x.msg : String(x)))
-              .join("; ")
-          : "Request failed";
-    throw new Error(msg || "Request failed");
+    const rawText = await res.text();
+    throw new Error(formatErrorBody(res, rawText));
   }
   return res.json();
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, init?: RequestInit) => request<T>(path, init ?? {}),
   post: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "POST", body: JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) =>
@@ -93,6 +105,23 @@ export interface Customer {
 }
 
 /** Matches backend `ProductResponse` / `ProductCreate` (shop catalog). */
+export interface ProductVariant {
+  name: string;
+  price: number;
+}
+
+export interface ProductModifierOption {
+  name: string;
+  price_delta: number;
+}
+
+export interface ProductModifierGroup {
+  name: string;
+  required?: boolean;
+  multi_select?: boolean;
+  options: ProductModifierOption[];
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -105,12 +134,13 @@ export interface Product {
   images?: string[];
   in_stock?: boolean;
   stock_quantity?: number | null;
-  variants?: Array<{ name: string; price: number }>;
-  modifier_groups?: Array<Record<string, unknown>>;
+  variants?: ProductVariant[];
+  modifier_groups?: ProductModifierGroup[];
   unit?: string | null;
   moq?: number | null;
   pricing_tiers?: Array<{ min_qty: number; price: number }>;
   created_at?: string;
+  ai_failed?: boolean;
 }
 
 export interface TeamMember {
@@ -342,9 +372,11 @@ export interface BusinessSettings {
   daily_pulse_enabled?: boolean;
   daily_pulse_time?: string;
   restaurant_has_reservations?: boolean;
+  /** Optional sidebar modules; omit = all enabled. */
   features?: Record<string, boolean>;
   account_mode?: string;
-  onboarding_v1_completed?: boolean;
+  /** Web onboarding wizard; `false` = show wizard for new web signups. */
+  onboarding_v1_completed?: boolean | null;
 }
 
 /** Backend `/business-knowledge` payload (journey + AI fields). */
@@ -434,12 +466,124 @@ export const customerGroupsApi = {
 
 export const productsApi = {
   list: () => api.get<Product[]>("/products"),
-  create: (body: Partial<Product>) => api.post<Product>("/products", body),
-  update: (id: string, body: Partial<Product>) => api.put<Product>(`/products/${id}`, body),
+  get: (id: string) => api.get<Product>(`/products/${id}`),
+  create: (body: Record<string, unknown>) => api.post<Product>("/products", body),
+  update: (id: string, body: Record<string, unknown>) => api.put<Product>(`/products/${id}`, body),
   delete: (id: string) => api.delete<void>(`/products/${id}`),
   /** Same as mobile: WhatsApp catalog blast to a segment. */
   broadcastCatalog: (body: { product_ids: string[]; filter_type: string; customer_ids?: string[] }) =>
     api.post<{ broadcast_id?: string; status?: string }>("/products/broadcast-catalog", body),
+  /** AI: one new catalog item per image (same as mobile `uploadProducts`). */
+  uploadWithAI: async (files: File[]) => {
+    const token = getToken();
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120_000);
+    try {
+      const res = await fetch(`${API_BASE}/products/upload`, {
+        method: "POST",
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: form,
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const rawText = await res.text();
+        throw new Error(formatErrorBody(res, rawText));
+      }
+      return res.json() as Promise<{
+        status: string;
+        uploaded_count: number;
+        products_created: number;
+        products: Product[];
+      }>;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+  addImages: async (productId: string, files: File[]) => {
+    const token = getToken();
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    const res = await fetch(`${API_BASE}/products/${encodeURIComponent(productId)}/images`, {
+      method: "POST",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: form,
+    });
+    if (!res.ok) {
+      const rawText = await res.text();
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return res.json() as Promise<{ status: string; images_added: number; total_images: number }>;
+  },
+  deleteImage: async (productId: string, imageIndex: number) => {
+    const token = getToken();
+    const res = await fetch(
+      `${API_BASE}/products/${encodeURIComponent(productId)}/images/${imageIndex}`,
+      {
+        method: "DELETE",
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      }
+    );
+    if (!res.ok) {
+      const rawText = await res.text();
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return res.json() as Promise<{ status: string; remaining_images: number }>;
+  },
+  aiDescription: (body: {
+    product_name: string;
+    category?: string;
+    business_type?: string;
+    current_description?: string;
+    mode?: "generate" | "improve";
+  }) => api.post<{ status: string; description: string }>("/products/ai-description", body),
+};
+
+/** Design library — same multipart pattern as `productsApi.addImages` (`files` field). */
+export const designTemplatesApi = {
+  uploadBrandKitImages: async (
+    files: File[],
+    fields: { material_type: string; name_base: string; is_default_logo: boolean }
+  ) => {
+    const token = getToken();
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    form.append("material_type", fields.material_type);
+    form.append("name_base", fields.name_base.trim());
+    form.append("is_default_logo", fields.is_default_logo ? "true" : "false");
+    const res = await fetch(`${API_BASE}/design-templates/brand-assets`, {
+      method: "POST",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: form,
+    });
+    if (!res.ok) {
+      const rawText = await res.text();
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return res.json() as Promise<{ status: string; created: number; items: unknown[] }>;
+  },
+  uploadBrandKitFile: async (
+    file: File,
+    fields: { name: string; material_type: string; is_default_logo: boolean }
+  ) => {
+    const token = getToken();
+    const form = new FormData();
+    form.append("file", file);
+    form.append("name", fields.name.trim());
+    form.append("material_type", fields.material_type);
+    form.append("is_default_logo", fields.is_default_logo ? "true" : "false");
+    const res = await fetch(`${API_BASE}/design-templates/brand-asset`, {
+      method: "POST",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: form,
+    });
+    if (!res.ok) {
+      const rawText = await res.text();
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return res.json() as Promise<Record<string, unknown>>;
+  },
 };
 
 export const teamApi = {
@@ -451,13 +595,26 @@ export const teamApi = {
 
 export const authApi = {
   whatsappStart: (phoneNumber: string) =>
-    api.post<{ session_token?: string; pairing_code?: string; access_token?: string; user?: Record<string, unknown> }>(
+    api.post<{ session_token?: string; pairing_code?: string; access_token?: string; token?: string; user?: Record<string, unknown> }>(
       "/auth/whatsapp-start", { phone_number: phoneNumber }
     ),
   whatsappCheck: (sessionToken: string) =>
-    api.post<{ access_token?: string; user?: Record<string, unknown>; status?: string }>(
+    api.post<{ access_token?: string; token?: string; user?: Record<string, unknown>; status?: string }>(
       "/auth/whatsapp-check", { session_token: sessionToken }
     ),
+  /** Web: email + password — then link WhatsApp under Integrations. */
+  registerWeb: (body: { email: string; password: string; business_name: string; owner_name?: string }) =>
+    api.post<{
+      token?: string;
+      access_token?: string;
+      user?: Record<string, unknown>;
+    }>("/auth/register-web", body),
+  loginWeb: (body: { email: string; password: string }) =>
+    api.post<{
+      token?: string;
+      access_token?: string;
+      user?: Record<string, unknown>;
+    }>("/auth/login-web", body),
   register: (data: { business_name: string; owner_name: string }) =>
     api.post<Record<string, unknown>>("/auth/register", data),
   me: () => api.get<Record<string, unknown>>("/auth/me"),
@@ -561,6 +718,38 @@ export const telegramApi = {
     api.delete<{ status: string; connected: boolean }>("/telegram/connect"),
 };
 
+export interface PaystackConnection {
+  connected: boolean;
+  business_name?: string;
+}
+
+export const paystackApi = {
+  connection: () => api.get<PaystackConnection>("/paystack/connection"),
+  connect: (secret_key: string) =>
+    api.post<{ status: string; connected: boolean; business_name: string }>(
+      "/paystack/connect",
+      { secret_key }
+    ),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/paystack/connect"),
+};
+
+export interface PayheroConnection {
+  connected: boolean;
+  username?: string;
+}
+
+export const payheroApi = {
+  connection: () => api.get<PayheroConnection>("/payhero/connection"),
+  connect: (username: string, password: string) =>
+    api.post<{ status: string; connected: boolean; username: string }>(
+      "/payhero/connect",
+      { username, password }
+    ),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/payhero/connect"),
+};
+
 // ── Assistant ────────────────────────────────────────────────────────────────
 export interface AssistantModel {
   id: string;
@@ -579,6 +768,16 @@ export interface AssistantMessage {
   content: string;
   steps?: AssistantStep[];
   tool_calls?: unknown;
+  /** Which specialist agent produced this assistant message */
+  agent?: string;
+  /** Tap-to-send follow-ups (e.g. Meta / Google Ads step-by-step) */
+  suggestions?: string[];
+}
+
+export interface AssistantAgent {
+  id: string;
+  label: string;
+  description: string;
 }
 
 export interface AssistantConversationSummary {
@@ -586,6 +785,8 @@ export interface AssistantConversationSummary {
   title: string;
   updated_at: string;
   message_count: number;
+  /** Specialist agent for this thread (`general` = default Zilo) */
+  agent?: string;
 }
 
 export interface AssistantConversation {
@@ -593,6 +794,7 @@ export interface AssistantConversation {
   title: string;
   model: string | null;
   messages: AssistantMessage[];
+  agent?: string;
 }
 
 export interface AssistantChatResponse {
@@ -601,6 +803,11 @@ export interface AssistantChatResponse {
   steps: AssistantStep[];
   model: string | null;
   needs_confirmation: null | { tool: string; arguments: Record<string, unknown>; reason: string };
+  /** Agent that handled this turn — updates every message (seamless handoff) */
+  active_agent: string;
+  active_agent_label: string;
+  /** Shown as tap chips below the assistant reply (advertising specialists) */
+  reply_suggestions?: string[];
 }
 
 export interface AssistantAuditEntry {
@@ -610,6 +817,9 @@ export interface AssistantAuditEntry {
   arguments: Record<string, unknown>;
   result_summary?: string | null;
   status: string;
+  /** Which specialist agent triggered this action */
+  agent?: string | null;
+  success?: boolean;
   created_at: string;
 }
 
@@ -625,7 +835,12 @@ export interface AssistantDocument {
 }
 
 export const assistantApi = {
-  models: () => api.get<{ default: string; models: AssistantModel[] }>("/assistant/models"),
+  models: () =>
+    api.get<{ default: string; models: AssistantModel[] }>(
+      `/assistant/models?_=${Date.now()}`,
+      { cache: "no-store" },
+    ),
+  agents: () => api.get<{ agents: AssistantAgent[] }>("/assistant/agents"),
   listConversations: () => api.get<AssistantConversationSummary[]>("/assistant/conversations"),
   getConversation: (id: string) => api.get<AssistantConversation>(`/assistant/conversations/${id}`),
   deleteConversation: (id: string) =>
@@ -641,8 +856,57 @@ export const assistantApi = {
     model?: string;
     auto_approve?: boolean;
     agent?: string;
-    [key: string]: unknown;
   }) => api.post<AssistantChatResponse>("/assistant/chat", body),
+
+  /** Streaming version — returns a ReadableStream of SSE events. */
+  chatStream: (body: {
+    message: string;
+    conversation_id?: string | null;
+    model?: string;
+    auto_approve?: boolean;
+    agent?: string;
+  }): ReadableStream<string> => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/chat/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
   listDocuments: (conversationId: string) =>
     api.get<{ documents: AssistantDocument[] }>(
       `/assistant/conversations/${conversationId}/documents`
@@ -697,6 +961,108 @@ export const assistantApi = {
   },
 };
 
+// ── Orshot (design templates — schema + render for assistant chat manual edit) ─
+
+export interface OrshotTemplateField {
+  key?: string | null;
+  type?: string | null;
+  help_text?: string | null;
+  example?: string | null;
+  page_number?: number;
+  page_id?: string | null;
+}
+
+export interface OrshotTemplateSchemaResponse {
+  success: boolean;
+  template_id?: number;
+  name?: string;
+  description?: string;
+  canvas_width?: number;
+  canvas_height?: number;
+  thumbnail_url?: string;
+  pages?: unknown[];
+  fields: OrshotTemplateField[];
+}
+
+export const orshotApi = {
+  getTemplate: (templateId: number) =>
+    api.get<OrshotTemplateSchemaResponse>(`/orshot/templates/${templateId}`),
+  render: (body: {
+    template_id: number;
+    modifications: Record<string, unknown>;
+    response_type?: "url" | "base64" | "binary";
+    response_format?: "png" | "jpg" | "jpeg" | "webp" | "pdf";
+  }) =>
+    api.post<{ success: boolean; image_url?: string; image_urls?: string[] }>("/orshot/render", body),
+};
+
+/** Meta Ads campaign drafts — Mongo-backed, shared with the Meta Ads assistant agent. */
+export interface MetaAdsCampaignDraft {
+  id: string;
+  name: string;
+  objective: string;
+  daily_budget: number;
+  currency: string;
+  notes: string;
+  status: string;
+  /** e.g. `meta_ads_agent` (chat) or `meta_ads_ui` (this page) */
+  source?: string;
+  created_at: string | null;
+}
+
+/** X Ads campaign drafts — same document shape as Meta; `source` is `x_ads_agent` or `x_ads_ui`. */
+export type XAdsCampaignDraft = MetaAdsCampaignDraft;
+
+export const marketingApi = {
+  listMetaAdsDrafts: () => api.get<{ drafts: MetaAdsCampaignDraft[] }>("/marketing/meta-ads/drafts"),
+  createMetaAdsDraft: (body: {
+    name: string;
+    objective?: string;
+    daily_budget?: number;
+    currency?: string;
+    notes?: string;
+    status?: string;
+  }) => api.post<{ draft: MetaAdsCampaignDraft }>("/marketing/meta-ads/drafts", body),
+  updateMetaAdsDraft: (
+    id: string,
+    body: Partial<{
+      name: string;
+      objective: string;
+      daily_budget: number;
+      currency: string;
+      notes: string;
+      status: string;
+    }>
+  ) => api.patch<{ draft: MetaAdsCampaignDraft }>(`/marketing/meta-ads/drafts/${id}`, body),
+  deleteMetaAdsDraft: (id: string) =>
+    api.delete<{ status: string; id: string }>(`/marketing/meta-ads/drafts/${id}`),
+  listXAdsDrafts: () => api.get<{ drafts: XAdsCampaignDraft[] }>("/marketing/x-ads/drafts"),
+  createXAdsDraft: (body: {
+    name: string;
+    objective?: string;
+    daily_budget?: number;
+    currency?: string;
+    notes?: string;
+    status?: string;
+  }) => api.post<{ draft: XAdsCampaignDraft }>("/marketing/x-ads/drafts", body),
+  updateXAdsDraft: (
+    id: string,
+    body: Partial<{
+      name: string;
+      objective: string;
+      daily_budget: number;
+      currency: string;
+      notes: string;
+      status: string;
+    }>
+  ) => api.patch<{ draft: XAdsCampaignDraft }>(`/marketing/x-ads/drafts/${id}`, body),
+  deleteXAdsDraft: (id: string) =>
+    api.delete<{ status: string; id: string }>(`/marketing/x-ads/drafts/${id}`),
+  /** AI-generated title + caption for the social scheduler (uses server AI config). */
+  draftSocialPost: (body: { prompt: string; channels?: string[] }) =>
+    api.post<{ title: string; body: string }>("/marketing/social-post-draft", body),
+};
+
 export const metaApi = {
   connections: () => api.get<MetaConnection[]>("/meta/connections"),
   connect: (body: { page_id: string; page_access_token: string; channel: string; instagram_id?: string }) =>
@@ -716,6 +1082,18 @@ export const whatsappApi = {
   qrStart: () => api.post<{ status: string; qr_base64: string }>("/whatsapp/qr-start", {}),
   /** Fetch a refreshed QR code for the pending instance. */
   qrFetch: () => api.get<{ qr_base64: string }>("/whatsapp/qr"),
+};
+
+export const onboardingApi = {
+  analyzeWebsite: (body: { url: string; business_type?: string }) =>
+    api.post<{
+      status: string;
+      url: string;
+      summary: string;
+      business_about_draft: string;
+      products_services_hint: string;
+      where_to_fill: { label: string; path: string; tip: string }[];
+    }>("/onboarding/analyze-website", body),
 };
 
 export const settingsApi = {
@@ -796,354 +1174,272 @@ export const kdsApi = {
     fetch(`${API_BASE}/orders?business_id=${businessId}`).then((r) => r.json()) as Promise<Order[]>,
 };
 
-// ── Onboarding ───────────────────────────────────────────────────────────────
-export const onboardingApi = {
-  analyzeWebsite: (payload: Record<string, unknown>) =>
-    api.post<{
-      summary?: string;
-      business_about_draft?: string;
-      products_services_hint?: string;
-      where_to_fill?: string[];
-    }>("/onboarding/analyze-website", payload),
+// ── Invoices ──────────────────────────────────────────────────────────────────
+export const invoicesApi = {
+  list: (status?: string) => api.get<Record<string, unknown>[]>(`/invoices${status ? `?status=${status}` : ""}`),
+  create: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/invoices", body),
+  get: (id: string) => api.get<Record<string, unknown>>(`/invoices/${id}`),
+  update: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/invoices/${id}`, body),
+  setStatus: (id: string, status: string) => api.patch<{ status: string }>(`/invoices/${id}/status`, { status }),
+  delete: (id: string) => api.delete<{ deleted: boolean }>(`/invoices/${id}`),
+  summary: () => api.get<Record<string, unknown>>("/invoices/meta/summary"),
 };
 
-// ── Social / Zernio ──────────────────────────────────────────────────────────
-export const zernioApi = {
-  inbox: (platform?: string) => {
-    const q = platform ? `?platform=${platform}` : "";
-    return api.get<Record<string, unknown>[]>(`/zernio/inbox${q}`);
+// ── Inventory ─────────────────────────────────────────────────────────────────
+export const inventoryApi = {
+  listProducts: (params?: { category?: string; low_stock?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.category) q.set("category", params.category);
+    if (params?.low_stock) q.set("low_stock", "true");
+    return api.get<Record<string, unknown>[]>(`/inventory/products${q.toString() ? `?${q}` : ""}`);
   },
-  accounts: () => api.get<Record<string, unknown>[]>("/zernio/accounts"),
-  conversation: (id: string) => api.get<Record<string, unknown>>(`/zernio/conversations/${id}`),
-  send: (convIdOrPayload: string | Record<string, unknown>, message?: string) =>
-    api.post<Record<string, unknown>>("/zernio/send",
-      typeof convIdOrPayload === "string" ? { conversation_id: convIdOrPayload, message } : convIdOrPayload
-    ),
-  status: () => api.get<Record<string, unknown>>("/zernio/status"),
-  connect: (platform: string) => api.post<{ authUrl?: string }>("/zernio/connect", { platform }),
-  disconnect: (platform: string) => api.post<Record<string, unknown>>("/zernio/disconnect", { platform }),
+  createProduct: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/inventory/products", body),
+  updateProduct: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/inventory/products/${id}`, body),
+  deleteProduct: (id: string) => api.delete<{ deleted: boolean }>(`/inventory/products/${id}`),
+  recordMovement: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/inventory/movements", body),
+  listMovements: (productId?: string) => api.get<Record<string, unknown>[]>(`/inventory/movements${productId ? `?product_id=${productId}` : ""}`),
+  summary: () => api.get<Record<string, unknown>>("/inventory/summary"),
 };
 
-// ── Design Templates ─────────────────────────────────────────────────────────
-export const designTemplatesApi = {
-  uploadBrandKitImages: (files: File[], meta: Record<string, unknown>) => {
-    const fd = new FormData();
-    files.forEach((f) => fd.append("files", f));
-    Object.entries(meta).forEach(([k, v]) => fd.append(k, String(v)));
-    return fetch(`${API_BASE}/design/brand-kit/images`, {
-      method: "POST",
-      headers: { ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) },
-      body: fd,
-    }).then((r) => r.json()) as Promise<Record<string, unknown>>;
-  },
-  uploadBrandKitFile: (file: File, meta: Record<string, unknown>) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    Object.entries(meta).forEach(([k, v]) => fd.append(k, String(v)));
-    return fetch(`${API_BASE}/design/brand-kit/file`, {
-      method: "POST",
-      headers: { ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) },
-      body: fd,
-    }).then((r) => r.json()) as Promise<Record<string, unknown>>;
-  },
-};
-
-// ── Orshot ───────────────────────────────────────────────────────────────────
-export interface OrshotTemplateField {
-  name: string;
-  key?: string;
-  type: string;
-  value?: string;
-  default_value?: string;
-  label?: string;
-  example?: string;
-  placeholder?: string;
-  page_number?: number;
-  required?: boolean;
-  category?: string;
-  help_text?: string;
-}
-
-export const orshotApi = {
-  getTemplate: (templateId: string | number) =>
-    api.get<{ fields: OrshotTemplateField[]; name?: string; preview_url?: string }>(`/orshot/templates/${templateId}`),
-  render: (payload: Record<string, unknown>) => api.post<{ url?: string; image_url?: string; [key: string]: unknown }>("/orshot/render", payload),
-};
-
-// ── NPS / Feedback ───────────────────────────────────────────────────────────
-export const feedbackApi = {
-  listSurveys: () => api.get<Record<string, unknown>[]>("/nps/surveys"),
-  createSurvey: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/nps/surveys", payload),
-  deleteSurvey: (id: string) => api.delete<Record<string, unknown>>(`/nps/surveys/${id}`),
-  listResponses: (surveyId?: string) => {
-    const path = surveyId ? `/nps/surveys/${surveyId}/responses` : "/nps/responses";
-    return api.get<Record<string, unknown>[]>(path);
-  },
-  submitResponse: (payload: Record<string, unknown>) =>
-    api.post<Record<string, unknown>>("/nps/responses", payload),
-  nps: (surveyId?: string) => {
-    const path = surveyId ? `/nps/score?survey_id=${surveyId}` : "/nps/score";
-    return api.get<Record<string, unknown>>(path);
-  },
-};
-
-// ── Finance ──────────────────────────────────────────────────────────────────
+// ── Finance ───────────────────────────────────────────────────────────────────
 export const financeApi = {
-  listEntries: (params?: Record<string, string | undefined>) => {
-    const q = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null) as [string, string][])).toString() : "";
-    return api.get<Record<string, unknown>[]>(`/finance/entries${q}`);
+  listEntries: (params?: { type?: string; from_date?: string; to_date?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.type) q.set("type", params.type);
+    if (params?.from_date) q.set("from_date", params.from_date);
+    if (params?.to_date) q.set("to_date", params.to_date);
+    return api.get<Record<string, unknown>[]>(`/finance/entries${q.toString() ? `?${q}` : ""}`);
   },
-  createEntry: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/finance/entries", payload),
-  updateEntry: (id: string, payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>(`/finance/entries/${id}`, payload),
-  deleteEntry: (id: string) => api.delete<Record<string, unknown>>(`/finance/entries/${id}`),
-  summary: (params?: Record<string, string | undefined>) => {
-    const q = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null) as [string, string][])).toString() : "";
-    return api.get<Record<string, unknown>>(`/finance/summary${q}`);
+  createEntry: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/finance/entries", body),
+  updateEntry: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/finance/entries/${id}`, body),
+  deleteEntry: (id: string) => api.delete<{ deleted: boolean }>(`/finance/entries/${id}`),
+  summary: (params?: { from_date?: string; to_date?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.from_date) q.set("from_date", params.from_date);
+    if (params?.to_date) q.set("to_date", params.to_date);
+    return api.get<Record<string, unknown>>(`/finance/summary${q.toString() ? `?${q}` : ""}`);
   },
   categories: () => api.get<{ income: string[]; expense: string[] }>("/finance/categories"),
-  addTransaction: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/finance/entries", payload),
 };
 
-// ── Inventory ────────────────────────────────────────────────────────────────
-export const inventoryApi = {
-  listProducts: (params?: Record<string, unknown>) => {
-    const q = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]))).toString() : "";
-    return api.get<Record<string, unknown>[]>(`/inventory/products${q}`);
-  },
-  summary: () => api.get<Record<string, unknown>>("/inventory/summary"),
-  createProduct: (payload: Record<string, unknown>) =>
-    api.post<Record<string, unknown>>("/inventory/products", payload),
-  updateProduct: (id: string, payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>(`/inventory/products/${id}`, payload),
-  deleteProduct: (id: string) => api.delete<Record<string, unknown>>(`/inventory/products/${id}`),
-  recordMovement: (payload: Record<string, unknown>) =>
-    api.post<Record<string, unknown>>("/inventory/movement", payload),
-};
-
-// ── Invoices ─────────────────────────────────────────────────────────────────
-export const invoicesApi = {
-  list: () => api.get<Record<string, unknown>[]>("/invoices"),
-  listEntries: () => api.get<Record<string, unknown>[]>("/invoices"),
-  summary: () => api.get<Record<string, unknown>>("/invoices/summary"),
-  create: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/invoices", payload),
-  createEntry: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/invoices", payload),
-  update: (id: string, payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>(`/invoices/${id}`, payload),
-  updateEntry: (id: string, payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>(`/invoices/${id}`, payload),
-  delete: (id: string) => api.delete<Record<string, unknown>>(`/invoices/${id}`),
-  deleteEntry: (id: string) => api.delete<Record<string, unknown>>(`/invoices/${id}`),
-  setStatus: (id: string, status: string) =>
-    api.patch<Record<string, unknown>>(`/invoices/${id}`, { status }),
-  convertToInvoice: (id: string) => api.post<Record<string, unknown>>(`/invoices/${id}/convert`, {}),
-};
-
-// ── Loyalty ──────────────────────────────────────────────────────────────────
-export const loyaltyApi = {
-  summary: () => api.get<Record<string, unknown>>("/loyalty/summary"),
-  listMembers: () => api.get<Record<string, unknown>[]>("/loyalty/members"),
-  getSettings: () => api.get<Record<string, unknown>>("/loyalty/settings"),
-  updateSettings: (payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>("/loyalty/settings", payload),
-  addTransaction: (payload: Record<string, unknown>) =>
-    api.post<Record<string, unknown>>("/loyalty/transactions", payload),
-  listEntries: () => api.get<Record<string, unknown>[]>("/loyalty/entries"),
-};
-
-// ── Quotes ───────────────────────────────────────────────────────────────────
+// ── Quotes ────────────────────────────────────────────────────────────────────
 export const quotesApi = {
-  list: () => api.get<Record<string, unknown>[]>("/quotes"),
-  listEntries: () => api.get<Record<string, unknown>[]>("/quotes"),
-  summary: () => api.get<Record<string, unknown>>("/quotes/summary"),
-  create: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/quotes", payload),
-  createEntry: (payload: Record<string, unknown>) => api.post<Record<string, unknown>>("/quotes", payload),
-  update: (id: string, payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>(`/quotes/${id}`, payload),
-  updateEntry: (id: string, payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>(`/quotes/${id}`, payload),
-  delete: (id: string) => api.delete<Record<string, unknown>>(`/quotes/${id}`),
-  deleteEntry: (id: string) => api.delete<Record<string, unknown>>(`/quotes/${id}`),
-  convertToInvoice: (id: string) => api.post<Record<string, unknown>>(`/quotes/${id}/convert`, {}),
+  list: (status?: string) => api.get<Record<string, unknown>[]>(`/quotes${status ? `?status=${status}` : ""}`),
+  create: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/quotes", body),
+  get: (id: string) => api.get<Record<string, unknown>>(`/quotes/${id}`),
+  update: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/quotes/${id}`, body),
+  setStatus: (id: string, status: string) => api.patch<{ status: string }>(`/quotes/${id}/status`, { status }),
+  convertToInvoice: (id: string) => api.post<Record<string, unknown>>(`/quotes/${id}/convert-to-invoice`, {}),
+  delete: (id: string) => api.delete<{ deleted: boolean }>(`/quotes/${id}`),
+  summary: () => api.get<Record<string, unknown>>("/quotes/meta/summary"),
 };
 
-// ── SEO ──────────────────────────────────────────────────────────────────────
+// ── Loyalty ───────────────────────────────────────────────────────────────────
+export const loyaltyApi = {
+  getSettings: () => api.get<Record<string, unknown>>("/loyalty/settings"),
+  updateSettings: (body: Record<string, unknown>) => api.put<Record<string, unknown>>("/loyalty/settings", body),
+  listMembers: (tier?: string) => api.get<Record<string, unknown>[]>(`/loyalty/members${tier ? `?tier=${tier}` : ""}`),
+  getMember: (customerId: string) => api.get<Record<string, unknown>>(`/loyalty/members/${customerId}`),
+  addTransaction: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/loyalty/transactions", body),
+  listTransactions: (customerId?: string) => api.get<Record<string, unknown>[]>(`/loyalty/transactions${customerId ? `?customer_id=${customerId}` : ""}`),
+  summary: () => api.get<Record<string, unknown>>("/loyalty/summary"),
+};
+
+// ── Feedback / NPS ────────────────────────────────────────────────────────────
+export const feedbackApi = {
+  listSurveys: (active?: boolean) => api.get<Record<string, unknown>[]>(`/feedback/surveys${active !== undefined ? `?active=${active}` : ""}`),
+  createSurvey: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/feedback/surveys", body),
+  updateSurvey: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/feedback/surveys/${id}`, body),
+  deleteSurvey: (id: string) => api.delete<{ deleted: boolean }>(`/feedback/surveys/${id}`),
+  listResponses: (surveyId?: string) => api.get<Record<string, unknown>[]>(`/feedback/responses${surveyId ? `?survey_id=${surveyId}` : ""}`),
+  submitResponse: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/feedback/responses", body),
+  nps: (surveyId?: string) => api.get<Record<string, unknown>>(`/feedback/nps${surveyId ? `?survey_id=${surveyId}` : ""}`),
+};
+
+// ── Zernio Social Inbox ───────────────────────────────────────────────────────
+export const zernioApi = {
+  status: () => api.get<{ connected: boolean; profile_id?: string; accounts?: unknown[] }>("/zernio/status"),
+  accounts: () => api.get<{ accounts: unknown[] }>("/zernio/accounts"),
+  connect: (platform: string) => api.get<{ authUrl: string; platform: string }>(`/zernio/connect/${platform}`),
+  disconnect: (accountId: string) => api.delete<Record<string, unknown>>(`/zernio/accounts/${accountId}`),
+  inbox: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/inbox${platform ? `?platform=${platform}` : ""}`),
+  conversation: (id: string) => api.get<Record<string, unknown>>(`/zernio/inbox/${id}`),
+  send: (conversation_id: string, message: string) => api.post<Record<string, unknown>>("/zernio/inbox/send", { conversation_id, message }),
+  newConversation: (platform: string, recipient: string, message: string) => api.post<Record<string, unknown>>("/zernio/inbox/new", { platform, recipient, message }),
+  posts: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/posts${platform ? `?platform=${platform}` : ""}`),
+};
+
+// ── SEO + Auto-Blogging ───────────────────────────────────────────────────────
+
 export interface SeoAuditIssue {
   type: "critical" | "warning" | "info";
+  field: string;
   message: string;
-  field?: string;
-  severity?: string;
 }
 
 export interface SeoAudit {
-  id?: string;
-  score?: number;
-  grade?: string;
-  url?: string;
-  created_at?: string;
+  id: string;
+  url: string;
+  score: number;
+  grade: string;
+  title: string;
+  meta_description: string;
+  h1_count: number;
+  h2_count: number;
+  word_count: number;
+  total_images: number;
+  images_missing_alt: number;
   issues: SeoAuditIssue[];
-  word_count?: number;
-  total_images?: number;
-  images_missing_alt?: number;
-  h1_count?: number;
-  h2_count?: number;
-  title?: string;
-  meta_description?: string;
-  [key: string]: unknown;
+  created_at: string;
 }
 
 export interface SeoKeyword {
   keyword: string;
-  volume?: number;
-  difficulty?: string | number;
-  content_idea?: string;
-  search_intent?: string;
-  intent?: string;
-  priority?: number;
-  [key: string]: unknown;
+  intent: string;
+  difficulty: string;
+  priority: number;
+  content_idea: string;
 }
 
 export interface BlogPost {
   id: string;
   title: string;
-  content?: string;
-  status?: string;
-  created_at?: string;
-  tags?: string[];
-  word_count?: number;
-  meta_description?: string;
-  [key: string]: unknown;
+  content: string;
+  meta_title: string;
+  meta_description: string;
+  tags: string[];
+  status: "draft" | "scheduled" | "published";
+  scheduled_at?: string;
+  platform: string;
+  created_at: string;
+  updated_at: string;
+  published_at?: string;
 }
 
 export interface BlogGenerateResult {
   title: string;
   content: string;
-  word_count?: number;
-  tags?: string[];
-  meta_description?: string;
-  meta_title?: string;
-  outline?: string[];
-  [key: string]: unknown;
+  meta_title: string;
+  meta_description: string;
+  tags: string[];
+  word_count: number;
+  topic: string;
+  keywords: string[];
 }
 
 export interface ContentCalendarItem {
-  id?: string;
-  date?: string;
+  week: number;
+  day: string;
   title: string;
-  type?: string;
-  week?: number;
-  day?: string;
-  format?: string;
-  keywords?: string[];
-  cta?: string;
-  [key: string]: unknown;
+  topic: string;
+  keywords: string[];
+  intent: string;
+  estimated_traffic: string;
 }
 
 export interface SeoSummary {
-  score?: number;
-  keywords?: number;
-  posts?: number;
-  total_posts?: number;
-  published_posts?: number;
-  draft_posts?: number;
-  total_audits?: number;
-  avg_seo_score?: number;
-  last_audit?: SeoAudit;
-  [key: string]: unknown;
-}
-
-export interface SeoAgentToolStep {
-  tool: string;
-  input?: Record<string, unknown>;
-  output?: Record<string, unknown>;
+  total_posts: number;
+  published_posts: number;
+  draft_posts: number;
+  total_audits: number;
+  avg_seo_score: number | null;
+  last_audit: SeoAudit | null;
 }
 
 export const seoApi = {
-  summary: () => api.get<SeoSummary>("/seo/summary"),
-  generateKeywords: (businessTypeOrPayload: string | Record<string, unknown>, location?: string) =>
-    api.post<Record<string, unknown>>("/seo/keywords",
-      typeof businessTypeOrPayload === "string"
-        ? { business_type: businessTypeOrPayload, location }
-        : businessTypeOrPayload
-    ),
-  generateBlog: (payload: Record<string, unknown>) => api.post<BlogGenerateResult>("/seo/blog", payload),
-  contentCalendar: (businessType?: string, postsPerWeek?: number, weeks?: number, location?: string) => {
-    if (!businessType) return api.get<{ calendar: ContentCalendarItem[] }>("/seo/calendar");
-    return api.post<{ calendar: ContentCalendarItem[] }>("/seo/calendar/generate", { business_type: businessType, posts_per_week: postsPerWeek, weeks, location });
-  },
+  // Audit
+  audit: (url: string) => api.post<SeoAudit>("/seo/audit", { url }),
   listAudits: () => api.get<SeoAudit[]>("/seo/audits"),
-  audit: (urlOrPayload: string | Record<string, unknown>) =>
-    api.post<SeoAudit>("/seo/audit", typeof urlOrPayload === "string" ? { url: urlOrPayload } : urlOrPayload),
-  aiFixSuggestions: (auditId: string) => api.post<Record<string, unknown>>(`/seo/audits/${auditId}/fix-suggestions`, {}),
-  listPosts: () => api.get<BlogPost[]>("/seo/posts"),
-  createPost: (payload: Record<string, unknown>) => api.post<BlogPost>("/seo/posts", payload),
-  deletePost: (id: string) => api.delete<Record<string, unknown>>(`/seo/posts/${id}`),
-  publishPost: (idOrPayload: string | Record<string, unknown>) =>
-    typeof idOrPayload === "string"
-      ? api.post<BlogPost>(`/seo/posts/${idOrPayload}/publish`, {})
-      : api.post<BlogPost>("/seo/posts/publish", idOrPayload),
+  aiFixSuggestions: (url: string) =>
+    api.post<{ url: string; score: number; grade: string; suggestions: { field: string; issue: string; fix: string; example: string }[] }>("/seo/audit/ai-fix", { url }),
+
+  // Keywords
+  generateKeywords: (business_type: string, location?: string, language?: string) =>
+    api.post<{ keywords: SeoKeyword[]; business_type: string; location: string }>("/seo/keywords", {
+      business_type,
+      location: location ?? "",
+      language: language ?? "English",
+    }),
+
+  // Blog generation
+  generateBlog: (body: {
+    topic: string;
+    keywords?: string[];
+    tone?: string;
+    length?: string;
+    language?: string;
+    business_name?: string;
+    include_faq?: boolean;
+    model_pref?: string;
+  }) => api.post<BlogGenerateResult>("/seo/blog/generate", body),
+
+  // Blog CRUD
+  listPosts: () => api.get<BlogPost[]>("/seo/blog/posts"),
+  getPost: (id: string) => api.get<BlogPost>(`/seo/blog/posts/${id}`),
+  createPost: (body: Partial<BlogPost>) => api.post<BlogPost>("/seo/blog/posts", body),
+  updatePost: (id: string, body: Partial<BlogPost>) => api.patch<BlogPost>(`/seo/blog/posts/${id}`, body),
+  deletePost: (id: string) => api.delete<{ ok: boolean }>(`/seo/blog/posts/${id}`),
+
+  // Publish
+  publishPost: (body: {
+    post_id: string;
+    platform: string;
+    wp_url?: string;
+    wp_username?: string;
+    wp_password?: string;
+    shopify_domain?: string;
+    shopify_token?: string;
+  }) => api.post<{ ok: boolean; platform: string; post_url?: string; error?: string }>("/seo/blog/publish", body),
+
+  // Content calendar
+  contentCalendar: (business_type: string, posts_per_week?: number, weeks?: number, location?: string) =>
+    api.post<{ calendar: ContentCalendarItem[]; weeks: number; posts_per_week: number }>(
+      `/seo/blog/content-calendar?business_type=${encodeURIComponent(business_type)}&posts_per_week=${posts_per_week ?? 2}&weeks=${weeks ?? 4}&location=${encodeURIComponent(location ?? "")}`,
+      {}
+    ),
+
+  // Summary
+  summary: () => api.get<SeoSummary>("/seo/summary"),
 };
+
+// ── SEO LangGraph Agent ───────────────────────────────────────────────────────
+
+export interface SeoAgentToolStep {
+  tool: string;
+  args?: Record<string, unknown>;
+  output?: string;
+}
+
+export interface SeoAgentChatResponse {
+  reply: string;
+  conversation_id: string;
+  tool_steps: SeoAgentToolStep[];
+}
+
+export interface SeoAgentConversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SeoAgentConversationDetail extends SeoAgentConversation {
+  messages: { role: "user" | "assistant"; content: string; tool_steps?: SeoAgentToolStep[]; ts: string }[];
+}
 
 export const seoAgentApi = {
-  chat: (msgOrPayload: string | Record<string, unknown>, convId?: string, history?: { role: string; content: string }[]) =>
-    api.post<{ reply: string; conversation_id: string; tool_steps?: SeoAgentToolStep[] }>("/seo/agent/chat",
-      typeof msgOrPayload === "string" ? { message: msgOrPayload, conversation_id: convId, history } : msgOrPayload
-    ),
-  conversation: (id: string) => api.get<Record<string, unknown>>(`/seo/agent/conversations/${id}`),
-  getConversation: (id: string) => api.get<{ messages: { role: string; content: string; tool_steps?: SeoAgentToolStep[] }[] }>(`/seo/agent/conversations/${id}`),
-  listConversations: () => api.get<{ id: string; title: string }[]>("/seo/agent/conversations"),
-  deleteConversation: (id: string) => api.delete<Record<string, unknown>>(`/seo/agent/conversations/${id}`),
-};
+  chat: (message: string, conversation_id?: string, history?: { role: string; content: string }[]) =>
+    api.post<SeoAgentChatResponse>("/seo-agent/chat", {
+      message,
+      conversation_id: conversation_id ?? null,
+      history: history ?? [],
+    }),
 
-// ── Marketing / Ads ──────────────────────────────────────────────────────────
-export interface MetaAdsCampaignDraft {
-  id: string;
-  name: string;
-  objective?: string;
-  budget?: number;
-  daily_budget: number;
-  status: string;
-  currency?: string;
-  notes?: string;
-  source?: string;
-  created_at?: string;
-  [key: string]: unknown;
-}
+  listConversations: () => api.get<SeoAgentConversation[]>("/seo-agent/conversations"),
 
-export interface XAdsCampaignDraft {
-  id: string;
-  name: string;
-  objective?: string;
-  budget?: number;
-  daily_budget: number;
-  status: string;
-  currency?: string;
-  notes?: string;
-  source?: string;
-  created_at?: string;
-  [key: string]: unknown;
-}
+  getConversation: (id: string) => api.get<SeoAgentConversationDetail>(`/seo-agent/conversations/${id}`),
 
-export const marketingApi = {
-  listMetaAdsDrafts: () => api.get<{ drafts: MetaAdsCampaignDraft[] }>("/marketing/meta-ads"),
-  createMetaAdsDraft: (payload: Record<string, unknown>) =>
-    api.post<MetaAdsCampaignDraft>("/marketing/meta-ads", payload),
-  updateMetaAdsDraft: (id: string, payload: Record<string, unknown>) =>
-    api.patch<MetaAdsCampaignDraft>(`/marketing/meta-ads/${id}`, payload),
-  deleteMetaAdsDraft: (id: string) => api.delete<Record<string, unknown>>(`/marketing/meta-ads/${id}`),
-  listXAdsDrafts: () => api.get<{ drafts: XAdsCampaignDraft[] }>("/marketing/x-ads"),
-  createXAdsDraft: (payload: Record<string, unknown>) =>
-    api.post<XAdsCampaignDraft>("/marketing/x-ads", payload),
-  updateXAdsDraft: (id: string, payload: Record<string, unknown>) =>
-    api.patch<XAdsCampaignDraft>(`/marketing/x-ads/${id}`, payload),
-  deleteXAdsDraft: (id: string) => api.delete<Record<string, unknown>>(`/marketing/x-ads/${id}`),
-  draftSocialPost: (payload: Record<string, unknown>) =>
-    api.post<{ title?: string; body?: string; content?: string }>("/marketing/social/draft", payload),
-  listPosts: () => api.get<Record<string, unknown>[]>("/marketing/social/posts"),
-  createPost: (payload: Record<string, unknown>) =>
-    api.post<Record<string, unknown>>("/marketing/social/posts", payload),
-  updatePost: (id: string, payload: Record<string, unknown>) =>
-    api.patch<Record<string, unknown>>(`/marketing/social/posts/${id}`, payload),
-  deletePost: (id: string) => api.delete<Record<string, unknown>>(`/marketing/social/posts/${id}`),
-  publishPost: (id: string) => api.post<Record<string, unknown>>(`/marketing/social/posts/${id}/publish`, {}),
+  deleteConversation: (id: string) => api.delete<{ ok: boolean }>(`/seo-agent/conversations/${id}`),
+
+  status: () => api.get<{ available: boolean; tools: string[] }>("/seo-agent/status"),
 };

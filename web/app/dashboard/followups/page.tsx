@@ -40,7 +40,7 @@ interface Analytics {
 const TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; bg: string }> = {
   call:     { icon: Phone,         color: "text-blue-600",   bg: "bg-blue-50" },
   whatsapp: { icon: MessageSquare, color: "text-green-600",  bg: "bg-green-50" },
-  meeting:  { icon: Users,         color: "text-purple-600", bg: "bg-purple-50" },
+  meeting:  { icon: Users,         color: "text-brand-dark", bg: "bg-brand/10" },
   email:    { icon: Mail,          color: "text-amber-600",  bg: "bg-amber-50" },
 };
 const STATUS_COLORS: Record<string, string> = {
@@ -350,7 +350,7 @@ function RemindersTab({
               key={x.k}
               type="button"
               onClick={() => setMainTab("attention")}
-              className="text-left rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50/50"
+              className="text-left rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm transition hover:border-brand/50 hover:bg-brand/5"
             >
               <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">{x.sub}</p>
               <p className="text-xl font-bold text-slate-900">{suggestions[x.k]}</p>
@@ -386,7 +386,7 @@ function RemindersTab({
               setEditing(null);
               setShowAdd(true);
             }}
-            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-700"
+            className="flex items-center gap-2 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand"
           >
             <Plus size={15} /> Add Follow-up
           </button>
@@ -435,7 +435,7 @@ function RemindersTab({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search name, phone, note… (press /)"
-          className="w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+          className="w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-brand"
         />
       </div>
 
@@ -453,7 +453,7 @@ function RemindersTab({
               onClick={() => setDateFilter(f)}
               className={`rounded-full px-3 py-1 text-xs font-medium transition ${
                 dateFilter === f
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-brand-dark text-white"
                   : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
               }`}
             >
@@ -466,18 +466,18 @@ function RemindersTab({
 
       {/* Bulk bar */}
       {selected.size > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm">
-          <span className="font-medium text-indigo-900">{selected.size} selected</span>
-          <button type="button" onClick={() => bulkSnooze(1)} className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-indigo-800 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-brand/30 bg-brand/10 px-3 py-2 text-sm">
+          <span className="font-medium text-brand-ink">{selected.size} selected</span>
+          <button type="button" onClick={() => bulkSnooze(1)} className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-brand-ink shadow-sm">
             Snooze 1d
           </button>
-          <button type="button" onClick={() => bulkSnooze(3)} className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-indigo-800 shadow-sm">
+          <button type="button" onClick={() => bulkSnooze(3)} className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-brand-ink shadow-sm">
             Snooze 3d
           </button>
           <button type="button" onClick={bulkDelete} className="rounded-lg bg-red-100 px-2 py-1 text-xs font-semibold text-red-800">
             Delete
           </button>
-          <button type="button" onClick={() => setSelected(new Set())} className="text-xs text-indigo-600 underline">
+          <button type="button" onClick={() => setSelected(new Set())} className="text-xs text-brand-dark underline">
             Clear
           </button>
         </div>
@@ -498,7 +498,7 @@ function RemindersTab({
       ) : (
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-xs text-slate-500">
-            <button type="button" onClick={selectAllVisible} className="font-medium text-indigo-600 hover:underline">
+            <button type="button" onClick={selectAllVisible} className="font-medium text-brand-dark hover:underline">
               Select all pending (visible)
             </button>
           </div>
@@ -530,7 +530,7 @@ function RemindersTab({
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
                       href={`/dashboard/customers/${fu.customer_id}`}
-                      className="font-semibold text-slate-800 hover:text-indigo-600 hover:underline"
+                      className="font-semibold text-slate-800 hover:text-brand-dark hover:underline"
                     >
                       {fu.customer_name}
                     </Link>
@@ -544,7 +544,7 @@ function RemindersTab({
                       </span>
                     )}
                     {fu.is_auto_sequence && (
-                      <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                      <span className="rounded-full bg-brand/15 px-2 py-0.5 text-xs font-medium text-brand-dark">
                         AI Draft · Day {fu.sequence_day}
                       </span>
                     )}
@@ -567,7 +567,7 @@ function RemindersTab({
                       })}
                     </span>
                     <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-slate-700">
-                      <Clock size={10} className="text-indigo-400" />
+                      <Clock size={10} className="text-brand" />
                       {new Date(fu.reminder_date).toLocaleTimeString(undefined, {
                         hour: "numeric",
                         minute: "2-digit",
@@ -580,7 +580,7 @@ function RemindersTab({
                         type="button"
                         onClick={() => setWhatsappFor(fu)}
                         className="rounded-lg p-1.5 text-green-600 hover:bg-green-50"
-                        title="Compose WhatsApp (send from CRM)"
+                        title="Compose WhatsApp (send from Zilo)"
                       >
                         <MessageSquare size={15} />
                       </button>
@@ -767,7 +767,7 @@ function AttentionTab() {
           {[7, 14, 30].map(d => (
             <button key={d} onClick={() => setDays(d)}
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
-                days === d ? "bg-indigo-600 text-white" : "bg-white border border-slate-200 text-slate-600"
+                days === d ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-600"
               }`}>
               {d}d
             </button>
@@ -807,10 +807,10 @@ function AttentionTab() {
                         </span>
                       )}
                       {c.has_pending_followup && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-medium">Reminder set</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-brand/15 text-brand-dark font-medium">Reminder set</span>
                       )}
                       {c.ai_draft_message && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-brand/15 text-brand-dark font-medium">
                           AI Draft · Day {c.ai_draft_day}
                         </span>
                       )}
@@ -821,12 +821,12 @@ function AttentionTab() {
                   <div className="flex items-center gap-1 shrink-0">
                     {c.ai_draft_message ? (
                       <button onClick={() => openDraft(c)}
-                        className="flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-100 px-2.5 py-1.5 rounded-lg hover:bg-purple-200 transition-colors">
+                        className="flex items-center gap-1 text-xs font-medium text-brand-dark bg-brand/15 px-2.5 py-1.5 rounded-lg hover:bg-brand/30 transition-colors">
                         <Zap size={11} /> Review & Send
                       </button>
                     ) : (
                       <button onClick={() => openDraft(c)}
-                        className="flex items-center gap-1 text-xs font-medium text-indigo-700 bg-indigo-100 px-2.5 py-1.5 rounded-lg hover:bg-indigo-200 transition-colors">
+                        className="flex items-center gap-1 text-xs font-medium text-brand-dark bg-brand/15 px-2.5 py-1.5 rounded-lg hover:bg-brand/30 transition-colors">
                         <Zap size={11} /> AI Draft
                       </button>
                     )}
@@ -865,7 +865,7 @@ function AttentionTab() {
                   value={draftMsg}
                   onChange={e => setDraftMsg(e.target.value)}
                   rows={4}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
                 />
               </div>
               <div>
@@ -875,12 +875,12 @@ function AttentionTab() {
                     value={direction}
                     onChange={e => setDirection(e.target.value)}
                     placeholder='e.g. "Make it more casual" or "mention discount"'
-                    className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   />
                   <button
                     onClick={() => fetchDraft(draftFor, direction, Math.floor(Math.random()*100))}
                     disabled={draftLoading}
-                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50 disabled:opacity-50 transition-colors">
+                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-brand-dark border border-brand/30 rounded-lg hover:bg-brand/10 disabled:opacity-50 transition-colors">
                     {draftLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Regenerate
                   </button>
                 </div>
@@ -969,7 +969,7 @@ function ResultsTab() {
         {[7, 30, 90].map(d => (
           <button key={d} onClick={() => setDays(d)}
             className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
-              days === d ? "bg-indigo-600 text-white" : "bg-white border border-slate-200 text-slate-600"
+              days === d ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-600"
             }`}>
             {d} days
           </button>
@@ -982,7 +982,7 @@ function ResultsTab() {
           { label: "Total Follow-ups", value: total, color: "text-slate-900" },
           { label: "Completed", value: done, color: "text-green-700" },
           { label: "Response Rate", value: s.response_rate != null ? `${Math.round(s.response_rate)}%` : "—", color: "text-blue-700" },
-          { label: "Conversion Rate", value: s.conversion_rate != null ? `${Math.round(s.conversion_rate)}%` : "—", color: "text-indigo-700" },
+          { label: "Conversion Rate", value: s.conversion_rate != null ? `${Math.round(s.conversion_rate)}%` : "—", color: "text-brand-dark" },
         ].map(c => (
           <div key={c.label} className="bg-white rounded-xl border border-slate-200 p-5">
             <p className="text-xs text-slate-500 font-medium">{c.label}</p>
@@ -1017,7 +1017,7 @@ function ResultsTab() {
                   <span className="font-semibold">{count}</span>
                 </div>
                 <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                  <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(count/maxOutcome)*100}%` }} />
+                  <div className="h-full bg-brand rounded-full" style={{ width: `${(count/maxOutcome)*100}%` }} />
                 </div>
               </div>
             ))}
@@ -1210,19 +1210,19 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
           <div>
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">① Who</p>
             {selectedCustomer ? (
-              <div className="flex items-center justify-between px-4 py-3 bg-indigo-50 border-2 border-indigo-200 rounded-xl">
+              <div className="flex items-center justify-between px-4 py-3 bg-brand/10 border-2 border-brand/30 rounded-xl">
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+                  <div className="w-9 h-9 rounded-full bg-brand-dark flex items-center justify-center text-white font-bold text-sm shrink-0">
                     {selectedCustomer.name.charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <p className="font-semibold text-indigo-900 text-sm">{selectedCustomer.name}</p>
-                    <p className="text-xs text-indigo-400">{selectedCustomer.phone_number}</p>
+                    <p className="font-semibold text-brand-ink text-sm">{selectedCustomer.name}</p>
+                    <p className="text-xs text-brand">{selectedCustomer.phone_number}</p>
                   </div>
                 </div>
                 <button type="button"
                   onClick={() => { setForm(f => ({...f, customer_id: ""})); setSearch(""); setDropdownOpen(false); }}
-                  className="text-xs text-indigo-400 hover:text-indigo-700 font-medium transition-colors">
+                  className="text-xs text-brand hover:text-brand-dark font-medium transition-colors">
                   Change
                 </button>
               </div>
@@ -1234,7 +1234,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                   onFocus={() => setDropdownOpen(true)}
                   onBlur={() => setTimeout(() => setDropdownOpen(false), 150)}
                   placeholder="Search or scroll all customers…"
-                  className="w-full px-4 py-2.5 text-sm border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-400 transition-colors"
+                  className="w-full px-4 py-2.5 text-sm border-2 border-slate-200 rounded-xl outline-none focus:border-brand transition-colors"
                 />
                 {dropdownOpen && filtered.length > 0 && (
                   <div className="absolute left-0 right-0 top-full mt-1 border border-slate-200 rounded-xl shadow-xl bg-white max-h-52 overflow-y-auto z-10">
@@ -1242,7 +1242,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                       <button key={c.id} type="button"
                         onMouseDown={e => e.preventDefault()}
                         onClick={() => { setForm(f => ({...f, customer_id: String(c.id)})); setSearch(""); setDropdownOpen(false); }}
-                        className="w-full text-left px-4 py-2.5 text-sm flex items-center justify-between hover:bg-indigo-50 transition-colors border-b border-slate-50 last:border-0">
+                        className="w-full text-left px-4 py-2.5 text-sm flex items-center justify-between hover:bg-brand/10 transition-colors border-b border-slate-50 last:border-0">
                         <div className="flex items-center gap-2.5">
                           <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 text-xs font-bold shrink-0">
                             {c.name.charAt(0).toUpperCase()}
@@ -1287,7 +1287,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
             <select
               value={form.assigned_to}
               onChange={(e) => setForm((f) => ({ ...f, assigned_to: e.target.value }))}
-              className="w-full rounded-xl border-2 border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+              className="w-full rounded-xl border-2 border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-brand"
             >
               <option value="">Unassigned</option>
               {ownerId && (
@@ -1312,10 +1312,10 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">③ When</p>
 
             {scheduleConfirmed ? (
-              <div className="flex items-center justify-between gap-3 px-4 py-3.5 bg-gradient-to-br from-slate-50 to-indigo-50/40 border-2 border-indigo-100 rounded-xl">
+              <div className="flex items-center justify-between gap-3 px-4 py-3.5 bg-gradient-to-br from-slate-50 to-brand/10 border-2 border-brand/15 rounded-xl">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-white border border-indigo-100 shadow-sm flex items-center justify-center shrink-0">
-                    <Calendar size={18} className="text-indigo-600" />
+                  <div className="w-10 h-10 rounded-xl bg-white border border-brand/15 shadow-sm flex items-center justify-center shrink-0">
+                    <Calendar size={18} className="text-brand-dark" />
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-900 truncate">
@@ -1326,7 +1326,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                         year: "numeric",
                       })}
                     </p>
-                    <p className="text-xs text-indigo-600 font-medium mt-0.5">
+                    <p className="text-xs text-brand-dark font-medium mt-0.5">
                       {new Date(form.reminder_date).toLocaleTimeString(undefined, {
                         hour: "numeric",
                         minute: "2-digit",
@@ -1337,7 +1337,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                 <button
                   type="button"
                   onClick={() => setScheduleConfirmed(false)}
-                  className="shrink-0 text-xs font-semibold text-indigo-600 hover:text-indigo-800 px-3 py-1.5 rounded-lg hover:bg-white/80 transition-colors"
+                  className="shrink-0 text-xs font-semibold text-brand-dark hover:text-brand-ink px-3 py-1.5 rounded-lg hover:bg-white/80 transition-colors"
                 >
                   Change
                 </button>
@@ -1354,7 +1354,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                       type="date"
                       value={datePart}
                       onChange={(e) => setDatePart(e.target.value)}
-                      className="w-full px-3 py-2.5 text-sm bg-white border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-400 focus:ring-0 transition-colors"
+                      className="w-full px-3 py-2.5 text-sm bg-white border-2 border-slate-200 rounded-xl outline-none focus:border-brand focus:ring-0 transition-colors"
                     />
                   </div>
                   <div>
@@ -1366,7 +1366,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                       type="time"
                       value={timePart}
                       onChange={(e) => setTimePart(e.target.value)}
-                      className="w-full px-3 py-2.5 text-sm bg-white border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-400 focus:ring-0 transition-colors"
+                      className="w-full px-3 py-2.5 text-sm bg-white border-2 border-slate-200 rounded-xl outline-none focus:border-brand focus:ring-0 transition-colors"
                     />
                   </div>
                 </div>
@@ -1385,7 +1385,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                         onClick={() =>
                           setForm((f) => ({ ...f, reminder_date: quickDate(q.offset) }))
                         }
-                        className="text-xs font-medium px-3 py-1.5 rounded-full bg-white border border-slate-200 text-slate-700 shadow-sm hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-800 transition-colors"
+                        className="text-xs font-medium px-3 py-1.5 rounded-full bg-white border border-slate-200 text-slate-700 shadow-sm hover:border-brand/50 hover:bg-brand/10 hover:text-brand-ink transition-colors"
                       >
                         {q.label}
                       </button>
@@ -1397,7 +1397,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
                   type="button"
                   onClick={() => setScheduleConfirmed(true)}
                   disabled={!datePart || !timePart}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold bg-brand-dark text-white hover:bg-brand disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
                 >
                   <CheckCircle2 size={16} />
                   Done — use this time
@@ -1429,7 +1429,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
             <div className="flex items-center justify-between mb-1.5">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Note</p>
               <button type="button" onClick={generateDraft} disabled={!form.customer_id || draftLoading}
-                className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 disabled:opacity-40 font-medium transition-colors">
+                className="flex items-center gap-1 text-xs text-brand-dark hover:text-brand-ink disabled:opacity-40 font-medium transition-colors">
                 {draftLoading ? <Loader2 size={11} className="animate-spin" /> : <Zap size={11} />}
                 AI Draft
               </button>
@@ -1438,7 +1438,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
               onChange={e => setForm(f => ({...f, message: e.target.value}))}
               rows={2}
               placeholder="What to discuss or send…"
-              className="w-full px-4 py-2.5 text-sm border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-400 resize-none transition-colors"
+              className="w-full px-4 py-2.5 text-sm border-2 border-slate-200 rounded-xl outline-none focus:border-brand resize-none transition-colors"
             />
           </div>
         </div>
@@ -1453,7 +1453,7 @@ function AddEditModal({ editing, customers, teamMembers, onClose, onSave }: {
             type="button"
             onClick={() => handleSubmit()}
             disabled={saving || !canSubmit}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand-dark py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand disabled:opacity-40"
           >
             {saving ? <Loader2 size={15} className="animate-spin" /> : null}
             {editing ? "Update" : "Schedule"}
@@ -1532,7 +1532,7 @@ function QuickWhatsAppModal({
                   type="button"
                   onClick={handleAiDraft}
                   disabled={aiLoading}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-40"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-brand-dark hover:text-brand-ink disabled:opacity-40"
                 >
                   {aiLoading ? <Loader2 size={11} className="animate-spin" /> : <Zap size={11} />}
                   AI draft
@@ -1549,7 +1549,7 @@ function QuickWhatsAppModal({
             <div className="flex flex-wrap gap-2">
               <Link
                 href="/dashboard/messages"
-                className="text-xs font-medium text-slate-500 hover:text-indigo-600 hover:underline"
+                className="text-xs font-medium text-slate-500 hover:text-brand-dark hover:underline"
               >
                 Open full Messages inbox →
               </Link>
@@ -1614,7 +1614,7 @@ function OutcomeModal({ followup, onClose, onSave }: {
           <p className="text-xs text-slate-500">Follow-up with {followup.customer_name}</p>
           <Link
             href={`/dashboard/customers/${followup.customer_id}`}
-            className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:underline"
+            className="inline-flex items-center gap-1 text-xs font-medium text-brand-dark hover:underline"
           >
             Open customer profile <ExternalLink size={10} />
           </Link>
@@ -1622,7 +1622,7 @@ function OutcomeModal({ followup, onClose, onSave }: {
             {OUTCOMES.map(o => (
               <button key={o.value} type="button" onClick={() => setSelected(o.value)}
                 className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-medium transition-colors ${
-                  selected === o.value ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-700 hover:bg-slate-50"
+                  selected === o.value ? "border-brand bg-brand/10 text-brand-dark" : "border-slate-200 text-slate-700 hover:bg-slate-50"
                 }`}>
                 {o.label}
               </button>
@@ -1631,10 +1631,10 @@ function OutcomeModal({ followup, onClose, onSave }: {
           <textarea value={note} onChange={e => setNote(e.target.value)}
             placeholder="Add a note (optional)…"
             rows={2}
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
           />
           <button type="button" onClick={handleSave} disabled={!selected || saving}
-            className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 text-sm transition-colors">
+            className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-dark text-white font-semibold rounded-xl hover:bg-brand disabled:opacity-50 text-sm transition-colors">
             {saving && <Loader2 size={15} className="animate-spin" />}
             Save Outcome
           </button>
@@ -1673,7 +1673,7 @@ function ColdOutcomeModal({ customer, onClose, onSave }: {
           <p className="text-xs text-slate-500">Contact with {customer.name}</p>
           <Link
             href={`/dashboard/customers/${customer.id}`}
-            className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:underline"
+            className="inline-flex items-center gap-1 text-xs font-medium text-brand-dark hover:underline"
           >
             Open customer profile <ExternalLink size={10} />
           </Link>
@@ -1681,7 +1681,7 @@ function ColdOutcomeModal({ customer, onClose, onSave }: {
             {OUTCOMES.map(o => (
               <button key={o.value} type="button" onClick={() => setSelected(o.value)}
                 className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-medium transition-colors ${
-                  selected === o.value ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-700 hover:bg-slate-50"
+                  selected === o.value ? "border-brand bg-brand/10 text-brand-dark" : "border-slate-200 text-slate-700 hover:bg-slate-50"
                 }`}>
                 {o.label}
               </button>
@@ -1690,10 +1690,10 @@ function ColdOutcomeModal({ customer, onClose, onSave }: {
           <textarea value={note} onChange={e => setNote(e.target.value)}
             placeholder="Add a note (optional)…"
             rows={2}
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
           />
           <button type="button" onClick={handleSave} disabled={!selected || saving}
-            className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 text-sm transition-colors">
+            className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-dark text-white font-semibold rounded-xl hover:bg-brand disabled:opacity-50 text-sm transition-colors">
             {saving && <Loader2 size={15} className="animate-spin" />}
             Save Outcome
           </button>

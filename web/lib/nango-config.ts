@@ -6,6 +6,12 @@ export const NANGO_INTEGRATION_IDS = {
   slack: process.env.NEXT_PUBLIC_NANGO_ID_SLACK || "slack",
   email: process.env.NEXT_PUBLIC_NANGO_ID_EMAIL || "google-mail",
   calendar: process.env.NEXT_PUBLIC_NANGO_ID_CALENDAR || "google-calendar",
+  shopify: process.env.NEXT_PUBLIC_NANGO_ID_SHOPIFY || "shopify",
+  microsoft: process.env.NEXT_PUBLIC_NANGO_ID_MICROSOFT || "microsoft",
+  stripe: process.env.NEXT_PUBLIC_NANGO_ID_STRIPE || "stripe",
+  klaviyo: process.env.NEXT_PUBLIC_NANGO_ID_KLAVIYO || "klaviyo",
+  mailchimp: process.env.NEXT_PUBLIC_NANGO_ID_MAILCHIMP || "mailchimp",
+  brevo: process.env.NEXT_PUBLIC_NANGO_ID_BREVO || "brevo",
 } as const;
 
 export type NangoIntegrationKey = keyof typeof NANGO_INTEGRATION_IDS;

@@ -482,7 +482,7 @@ export default function BroadcastPage() {
             <button
               type="button"
               onClick={openBroadcastModal}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
+              className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand"
             >
               <Plus size={16} /> New broadcast
             </button>
@@ -491,7 +491,7 @@ export default function BroadcastPage() {
             <button
               type="button"
               onClick={() => setShowTemplateModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
+              className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand"
             >
               <Plus size={16} /> New template
             </button>
@@ -500,7 +500,7 @@ export default function BroadcastPage() {
             <button
               type="button"
               onClick={() => setShowAutomationModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
+              className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand"
             >
               <Zap size={16} /> New automation
             </button>
@@ -522,7 +522,7 @@ export default function BroadcastPage() {
             onClick={() => setActiveTab(id)}
             className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
               activeTab === id
-                ? "bg-white border-b-2 border-indigo-600 text-indigo-600"
+                ? "bg-white border-b-2 border-brand-dark text-brand-dark"
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
@@ -534,7 +534,7 @@ export default function BroadcastPage() {
       {activeTab === "broadcasts" && (
         <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-            <Package size={18} className="text-indigo-600" />
+            <Package size={18} className="text-brand-dark" />
             Catalog blast
           </div>
           <p className="text-xs text-slate-500">
@@ -700,7 +700,7 @@ export default function BroadcastPage() {
               <button
                 type="button"
                 onClick={() => setShowGroupModal(true)}
-                className="text-xs text-indigo-600 hover:underline"
+                className="text-xs text-brand-dark hover:underline"
               >
                 + New customer list
               </button>
@@ -726,7 +726,7 @@ export default function BroadcastPage() {
                       }}
                       className={`px-2.5 py-1 rounded-lg text-xs border ${
                         bAudience === o.id
-                          ? "border-indigo-500 bg-indigo-50 text-indigo-800"
+                          ? "border-brand bg-brand/10 text-brand-ink"
                           : "border-slate-200 text-slate-700 hover:bg-slate-50"
                       }`}
                     >
@@ -792,7 +792,7 @@ export default function BroadcastPage() {
                     type="button"
                     disabled={bAiLoading}
                     onClick={() => void handleGenerateBroadcastAi()}
-                    className="text-xs flex items-center gap-1 text-purple-600 hover:text-purple-800"
+                    className="text-xs flex items-center gap-1 text-brand-dark hover:text-brand-ink"
                   >
                     {bAiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
                     Generate
@@ -872,7 +872,7 @@ export default function BroadcastPage() {
                 type="button"
                 disabled={bSaving}
                 onClick={() => void submitBroadcast()}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white disabled:opacity-50"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-brand-dark text-white disabled:opacity-50"
               >
                 {bSaving && <Loader2 size={14} className="animate-spin" />}
                 {bSchedule ? "Schedule" : "Send"}
@@ -921,7 +921,7 @@ export default function BroadcastPage() {
                 type="button"
                 disabled={tplSaving}
                 onClick={() => void submitTemplate()}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-brand-dark text-white"
               >
                 {tplSaving && <Loader2 size={14} className="animate-spin" />}
                 Save
@@ -949,7 +949,7 @@ export default function BroadcastPage() {
                   type="button"
                   onClick={() => setAutoType("auto_followup")}
                   className={`flex-1 py-2 rounded-lg text-xs font-medium border ${
-                    autoType === "auto_followup" ? "border-indigo-500 bg-indigo-50" : "border-slate-200"
+                    autoType === "auto_followup" ? "border-brand bg-brand/10" : "border-slate-200"
                   }`}
                 >
                   Auto follow-up
@@ -958,7 +958,7 @@ export default function BroadcastPage() {
                   type="button"
                   onClick={() => setAutoType("recurring")}
                   className={`flex-1 py-2 rounded-lg text-xs font-medium border ${
-                    autoType === "recurring" ? "border-indigo-500 bg-indigo-50" : "border-slate-200"
+                    autoType === "recurring" ? "border-brand bg-brand/10" : "border-slate-200"
                   }`}
                 >
                   Recurring
@@ -1060,7 +1060,7 @@ export default function BroadcastPage() {
                 type="button"
                 disabled={autoSaving}
                 onClick={() => void submitAutomation()}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-brand-dark text-white"
               >
                 {autoSaving && <Loader2 size={14} className="animate-spin" />}
                 Create
@@ -1122,7 +1122,7 @@ export default function BroadcastPage() {
                 type="button"
                 disabled={gSaving}
                 onClick={() => void submitGroup()}
-                className="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white"
+                className="px-4 py-2 text-sm rounded-lg bg-brand-dark text-white"
               >
                 {gSaving ? <Loader2 size={14} className="animate-spin" /> : "Save list"}
               </button>
@@ -1210,7 +1210,7 @@ function BroadcastsTable({
                 <button
                   type="button"
                   onClick={() => onPerf(b.id)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:bg-indigo-100 hover:text-indigo-600"
+                  className="p-1.5 rounded-lg text-slate-400 hover:bg-brand/15 hover:text-brand-dark"
                   title="Stats"
                 >
                   <BarChart3 size={14} />
@@ -1228,7 +1228,7 @@ function BroadcastsTable({
                 <button
                   type="button"
                   onClick={() => onResend(b.id)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:bg-indigo-100 hover:text-indigo-600"
+                  className="p-1.5 rounded-lg text-slate-400 hover:bg-brand/15 hover:text-brand-dark"
                   title="Resend"
                 >
                   <RotateCcw size={14} />
@@ -1283,7 +1283,7 @@ function TemplatesTable({
                 <button
                   type="button"
                   onClick={() => onUse(t)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:bg-indigo-100 hover:text-indigo-600"
+                  className="p-1.5 rounded-lg text-slate-400 hover:bg-brand/15 hover:text-brand-dark"
                   title="Use in broadcast"
                 >
                   <Copy size={13} />

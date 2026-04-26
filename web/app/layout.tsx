@@ -2,8 +2,12 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Zilo CRM",
-  description: "Business management dashboard",
+  title: {
+    default: "Zilo — Agent workspace",
+    template: "%s · Zilo",
+  },
+  description:
+    "Web-first agent workspace to help teams sell: chat, social, email, ads, and WhatsApp in one place — AI drafts, follow-ups, orders, and the modules you choose.",
 };
 
 export default function RootLayout({

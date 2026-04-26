@@ -5,13 +5,29 @@ import { ordersApi, customersApi, Order, Customer, api } from "@/lib/api";
 import { formatCurrency, timeAgo } from "@/lib/utils";
 import { useBusiness } from "@/contexts/BusinessContext";
 import {
-  ShoppingCart, Users, TrendingUp, CreditCard,
-  ArrowUpRight, Clock, Zap, Loader2, Send,
+  ShoppingCart,
+  Users,
+  TrendingUp,
+  CreditCard,
+  ArrowUpRight,
+  Clock,
+  Zap,
+  Loader2,
+  Send,
+  MessageSquare,
+  Bell,
+  Megaphone,
+  CalendarClock,
+  Target,
+  LineChart,
+  Hash,
+  Sparkles,
+  Plug,
 } from "lucide-react";
 import Link from "next/link";
 
 export default function DashboardPage() {
-  const { currency, ui } = useBusiness();
+  const { currency, ui, accountMode } = useBusiness();
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,8 +77,8 @@ export default function DashboardPage() {
       label: "Total Revenue",
       value: formatCurrency(totalRevenue, currency),
       icon: TrendingUp,
-      color: "text-indigo-600",
-      bg: "bg-indigo-50",
+      color: "text-brand-dark",
+      bg: "bg-brand/10",
     },
     {
       label: ui.activeOrdersLabel,
@@ -90,8 +106,13 @@ export default function DashboardPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900">Overview</h1>
+        <h1 className="text-2xl font-bold text-slate-900">{ui.overviewTitle}</h1>
         <p className="text-slate-500 text-sm mt-1">{ui.overviewSubtitle}</p>
+        {accountMode === "individual" && (
+          <p className="text-xs text-brand-dark/90 mt-2">
+            Workspace mode: individual — same tools as businesses, with wording fit for solo use.
+          </p>
+        )}
       </div>
 
       {/* Stats */}
@@ -111,12 +132,68 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {/* Sales & growth — links pipeline to campaigns (Zilo = sell + reach) */}
+      <section className="rounded-2xl border border-[#009B3A]/20 bg-gradient-to-br from-emerald-50/70 via-white to-sky-50/50 p-5 shadow-sm">
+        <h2 className="text-sm font-semibold text-slate-900">Sales &amp; growth</h2>
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-600">
+          Turn attention into revenue: work your pipeline here, then launch or refine campaigns and creative with Zilo
+          Chat — without switching products.
+        </p>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div className="rounded-xl border border-slate-200/90 bg-white/95 p-4">
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pipeline &amp; sell</p>
+            <ul className="space-y-2 text-sm">
+              {[
+                { href: "/dashboard/customers", label: ui.customersNavLabel, Icon: Users },
+                { href: "/dashboard/followups", label: "Follow-ups", Icon: Bell },
+                { href: "/dashboard/messages", label: "Messages", Icon: MessageSquare },
+                { href: "/dashboard/orders", label: "Orders", Icon: ShoppingCart },
+              ].map(({ href, label, Icon }) => (
+                <li key={href}>
+                  <Link
+                    href={href}
+                    className="flex items-center gap-2 font-medium text-slate-700 hover:text-[#009B3A] hover:underline"
+                  >
+                    <Icon size={15} className="shrink-0 text-slate-400" />
+                    {label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="rounded-xl border border-slate-200/90 bg-white/95 p-4">
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Reach &amp; campaigns</p>
+            <ul className="space-y-2 text-sm">
+              {[
+                { href: "/dashboard/broadcast", label: "Broadcast", Icon: Megaphone },
+                { href: "/dashboard/social-scheduler", label: "Social scheduler", Icon: CalendarClock },
+                { href: "/dashboard/meta-ads", label: "Meta Ads", Icon: Target },
+                { href: "/dashboard/google-ads", label: "Google Ads", Icon: LineChart },
+                { href: "/dashboard/x-ads", label: "X Ads", Icon: Hash },
+                { href: "/dashboard/assistant", label: "Zilo Chat (AI)", Icon: Sparkles },
+                { href: "/dashboard/integrations", label: "Integrations", Icon: Plug },
+              ].map(({ href, label, Icon }) => (
+                <li key={href}>
+                  <Link
+                    href={href}
+                    className="flex items-center gap-2 font-medium text-slate-700 hover:text-[#009B3A] hover:underline"
+                  >
+                    <Icon size={15} className="shrink-0 text-slate-400" />
+                    {label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </section>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent orders */}
         <div className="bg-white rounded-xl border border-slate-200">
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
             <h2 className="font-semibold text-slate-900">{ui.recentOrdersTitle}</h2>
-            <Link href="/dashboard/orders" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+            <Link href="/dashboard/orders" className="text-xs text-brand-dark hover:underline flex items-center gap-1">
               View all <ArrowUpRight size={12} />
             </Link>
           </div>
@@ -157,13 +234,15 @@ export default function DashboardPage() {
           <div className="px-5 py-4 border-b border-slate-100">
             <h2 className="font-semibold text-slate-900">Quick Actions</h2>
           </div>
-          <div className="p-5 grid grid-cols-2 gap-3">
+          <div className="p-5 grid grid-cols-2 sm:grid-cols-3 gap-3">
             {[
               ...(ui.showKdsNav
                 ? [{ href: "/kds", label: "Open KDS", icon: "🖥️", desc: "Kitchen display" as const }]
                 : []),
               { href: "/dashboard/orders", label: "Orders", icon: "📦", desc: "Manage orders" },
               { href: "/dashboard/channels", label: "Channels", icon: "📡", desc: "WhatsApp & more" },
+              { href: "/dashboard/broadcast", label: "Broadcast", icon: "📣", desc: "Reach your list" },
+              { href: "/dashboard/assistant", label: "Zilo Chat", icon: "✨", desc: "Sales & growth AI" },
               { href: "/dashboard/imports", label: "Import", icon: "⬆️", desc: "Bulk upload" },
               { href: "/dashboard/payments", label: "Payments", icon: "💰", desc: "Reconcile" },
               { href: "/dashboard/shop", label: ui.shopNavLabel, icon: "🛍️", desc: "Storefront" },
@@ -171,7 +250,7 @@ export default function DashboardPage() {
               <Link
                 key={href}
                 href={href}
-                className="flex flex-col gap-1 p-4 rounded-xl border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 transition-colors"
+                className="flex flex-col gap-1 p-4 rounded-xl border border-slate-200 hover:border-brand/50 hover:bg-brand/10 transition-colors"
               >
                 <span className="text-2xl">{icon}</span>
                 <span className="text-sm font-semibold text-slate-800">{label}</span>
@@ -186,10 +265,13 @@ export default function DashboardPage() {
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center">
-              <Zap size={16} className="text-purple-600" />
+            <div className="w-8 h-8 rounded-lg bg-brand/10 flex items-center justify-center">
+              <Zap size={16} className="text-brand-dark" />
             </div>
-            <h2 className="font-semibold text-slate-900">Daily Pulse</h2>
+            <div>
+              <h2 className="font-semibold text-slate-900">Daily Pulse</h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">AI snapshot — useful before a broadcast or follow-up push</p>
+            </div>
           </div>
           <div className="flex gap-2">
             <button onClick={loadPulse} disabled={pulseLoading}
@@ -197,7 +279,7 @@ export default function DashboardPage() {
               {pulseLoading ? "Loading…" : "Refresh"}
             </button>
             <button onClick={sendPulse} disabled={sendingPulse || !pulse}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50">
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-dark text-white rounded-lg hover:bg-brand disabled:opacity-50">
               {sendingPulse ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
               Send to Customers
             </button>
@@ -206,7 +288,7 @@ export default function DashboardPage() {
         {pulseLoading ? (
           <div className="h-16 bg-slate-50 rounded-xl animate-pulse" />
         ) : pulse ? (
-          <p className="text-sm text-slate-700 bg-purple-50 rounded-xl px-4 py-3 leading-relaxed">{pulse}</p>
+          <p className="text-sm text-slate-700 bg-brand/10 rounded-xl px-4 py-3 leading-relaxed">{pulse}</p>
         ) : (
           <p className="text-sm text-slate-400 text-center py-4">Click Refresh to generate today&apos;s business pulse</p>
         )}

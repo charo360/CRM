@@ -21,7 +21,7 @@ function Check({
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="mt-1 w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+        className="mt-1 w-4 h-4 rounded border-slate-300 text-brand-dark focus:ring-brand"
       />
       <div>
         <label className="text-sm font-medium text-slate-800">{label}</label>
@@ -55,7 +55,7 @@ function Row({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
       />
     </div>
   );

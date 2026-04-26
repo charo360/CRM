@@ -133,7 +133,7 @@ export default function PaymentsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by customer or order #..."
-            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
         <div className="flex gap-2">
@@ -143,7 +143,7 @@ export default function PaymentsPage() {
               onClick={() => setFilter(s)}
               className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors ${
                 filter === s
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-brand-dark text-white"
                   : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >

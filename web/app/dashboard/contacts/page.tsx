@@ -103,7 +103,7 @@ export default function ContactsPage() {
         </div>
         <div className="flex gap-2">
           <button onClick={handleScanSuggestions} disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white text-sm font-semibold rounded-lg hover:bg-purple-700 disabled:opacity-50">
+            className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand disabled:opacity-50">
             <Sparkles size={15} /> AI Scan
           </button>
           <button onClick={loadData} disabled={loading}
@@ -118,7 +118,7 @@ export default function ContactsPage() {
         {TABS.map(({ id, label, count, icon: Icon }) => (
           <button key={id} onClick={() => setActiveTab(id)}
             className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-              activeTab === id ? "bg-indigo-600 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+              activeTab === id ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
             }`}>
             <Icon size={14} /> {label}
             {count > 0 && (
@@ -134,7 +134,7 @@ export default function ContactsPage() {
       <div className="relative max-w-sm">
         <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search contacts..."
-          className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
+          className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
       </div>
 
       {/* Pending banner */}
@@ -179,19 +179,19 @@ export default function ContactsPage() {
           {filtered.map((contact) => (
             <div key={contact.id} className="bg-white rounded-xl border border-slate-200 p-4 hover:shadow-sm transition-shadow">
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 rounded-full bg-brand/15 flex items-center justify-center shrink-0">
                   {contact.profile_picture ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={contact.profile_picture} alt={contact.name} className="w-10 h-10 rounded-full object-cover" />
                   ) : (
-                    <span className="text-indigo-600 font-semibold text-sm">{contact.name.charAt(0).toUpperCase()}</span>
+                    <span className="text-brand-dark font-semibold text-sm">{contact.name.charAt(0).toUpperCase()}</span>
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="font-medium text-slate-800 truncate">{contact.name}</p>
                     {activeTab === "suggestions" && (
-                      <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium shrink-0">AI Pick</span>
+                      <span className="text-xs bg-brand/15 text-brand-dark px-2 py-0.5 rounded-full font-medium shrink-0">AI Pick</span>
                     )}
                     {activeTab === "pending" && (
                       <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium shrink-0">Pending</span>
@@ -224,14 +224,14 @@ export default function ContactsPage() {
               ) : (
                 <div className="flex gap-2">
                   <button onClick={() => handleAddAsCustomer(contact)} disabled={processing === contact.id}
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand disabled:opacity-50">
                     <UserPlus size={14} /> Add Customer
                   </button>
                   <button
                     type="button"
                     onClick={() => router.push(`/dashboard/messages?customer=${encodeURIComponent(contact.id)}`)}
                     className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                    title="Message in CRM (business WhatsApp)"
+                    title="Message in Zilo (business WhatsApp)"
                   >
                     <MessageSquare size={16} />
                   </button>

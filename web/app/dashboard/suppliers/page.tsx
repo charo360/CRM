@@ -485,8 +485,8 @@ export default function SuppliersPage() {
                   className={cn(
                     "px-3 py-1.5 rounded-full text-sm border transition-colors",
                     selectedCategory === cat && !showCustomInput
-                      ? "bg-indigo-600 text-white border-indigo-600"
-                      : "bg-slate-50 text-slate-700 border-slate-200 hover:border-indigo-300"
+                      ? "bg-brand-dark text-white border-brand-dark"
+                      : "bg-slate-50 text-slate-700 border-slate-200 hover:border-brand/50"
                   )}
                 >
                   {cat}
@@ -501,8 +501,8 @@ export default function SuppliersPage() {
                 className={cn(
                   "px-3 py-1.5 rounded-full text-sm border transition-colors",
                   showCustomInput
-                    ? "bg-indigo-600 text-white border-indigo-600"
-                    : "bg-slate-50 text-slate-700 border-slate-200 hover:border-indigo-300"
+                    ? "bg-brand-dark text-white border-brand-dark"
+                    : "bg-slate-50 text-slate-700 border-slate-200 hover:border-brand/50"
                 )}
               >
                 Custom
@@ -510,7 +510,7 @@ export default function SuppliersPage() {
             </div>
             {showCustomInput && (
               <input
-                className="mt-3 w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                className="mt-3 w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-brand"
                 placeholder="e.g. Spare parts, Fabrics…"
                 value={customCategory}
                 onChange={(e) => setCustomCategory(e.target.value)}
@@ -529,7 +529,7 @@ export default function SuppliersPage() {
               type="button"
               onClick={handleConfirmCategory}
               disabled={addingIds.includes(contactId(categoryTarget))}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-brand-dark text-white text-sm font-semibold hover:bg-brand disabled:opacity-50"
             >
               {addingIds.includes(contactId(categoryTarget)) ? (
                 <Loader2 className="animate-spin" size={16} />
@@ -559,7 +559,7 @@ export default function SuppliersPage() {
           <button
             type="button"
             onClick={() => setActiveTab("add")}
-            className="flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
+            className="flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg bg-brand-dark text-white hover:bg-brand"
           >
             <Plus size={16} /> Add supplier
           </button>
@@ -585,7 +585,7 @@ export default function SuppliersPage() {
             className={cn(
               "px-4 py-2 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap shrink-0",
               activeTab === tab.id
-                ? "bg-white border-b-2 border-indigo-600 text-indigo-600"
+                ? "bg-white border-b-2 border-brand-dark text-brand-dark"
                 : "text-slate-500 hover:text-slate-800"
             )}
           >
@@ -599,7 +599,7 @@ export default function SuppliersPage() {
 
       {loading && suppliers.length === 0 ? (
         <div className="flex justify-center py-20">
-          <Loader2 className="animate-spin text-indigo-600" size={28} />
+          <Loader2 className="animate-spin text-brand-dark" size={28} />
         </div>
       ) : (
         <>
@@ -607,7 +607,7 @@ export default function SuppliersPage() {
             <>
           {insightsLoading && restockSuggestions.length === 0 && (
             <div className="flex items-center gap-2 text-sm text-slate-500 py-2">
-              <Loader2 className="animate-spin text-indigo-500" size={16} />
+              <Loader2 className="animate-spin text-brand" size={16} />
               Loading restock suggestions…
             </div>
           )}
@@ -643,7 +643,7 @@ export default function SuppliersPage() {
                       Stock: {item.current_stock}
                       {item.monthly_sales != null ? ` · ${item.monthly_sales} sold (30d)` : null}
                     </p>
-                    <p className="text-sm text-indigo-600 font-medium mt-2">{item.suggested_action}</p>
+                    <p className="text-sm text-brand-dark font-medium mt-2">{item.suggested_action}</p>
                   </div>
                 ))}
               </div>
@@ -672,7 +672,7 @@ export default function SuppliersPage() {
                     value={listQuery}
                     onChange={(e) => setListQuery(e.target.value)}
                     placeholder="Search name, phone, email, category, products…"
-                    className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
                 <select
@@ -717,7 +717,7 @@ export default function SuppliersPage() {
                     setListQuery("");
                     setFilterCategory("all");
                   }}
-                  className="mt-3 text-sm font-semibold text-indigo-600 hover:text-indigo-700"
+                  className="mt-3 text-sm font-semibold text-brand-dark hover:text-brand-dark"
                 >
                   Clear search and category
                 </button>
@@ -742,8 +742,8 @@ export default function SuppliersPage() {
                           onClick={() => handleOpenExpand(s)}
                           className="flex-1 flex items-start gap-3 p-4 text-left min-w-0 hover:bg-slate-50/80"
                         >
-                          <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center shrink-0">
-                            <Truck size={20} className="text-indigo-600" />
+                          <div className="w-10 h-10 rounded-full bg-brand/15 flex items-center justify-center shrink-0">
+                            <Truck size={20} className="text-brand-dark" />
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="font-semibold text-slate-900">{s.name}</p>
@@ -753,11 +753,11 @@ export default function SuppliersPage() {
                             ) : null}
                             <div className="flex flex-wrap items-center gap-2 mt-2">
                               {displayCat ? (
-                                <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
+                                <span className="text-xs px-2 py-0.5 rounded-full bg-brand/10 text-brand-dark font-medium">
                                   {displayCat}
                                 </span>
                               ) : (
-                                <span className="text-xs text-indigo-600 italic">Tap to set category</span>
+                                <span className="text-xs text-brand-dark italic">Tap to set category</span>
                               )}
                               {!!s.rating && s.rating > 0 && renderStars(s.rating)}
                             </div>
@@ -803,7 +803,7 @@ export default function SuppliersPage() {
                         <div className="flex flex-col justify-center gap-1 pr-3 py-3 border-l border-slate-100">
                           <Link
                             href={`/dashboard/customers/${sid}`}
-                            className="p-2 rounded-lg text-slate-500 hover:bg-indigo-50 hover:text-indigo-600"
+                            className="p-2 rounded-lg text-slate-500 hover:bg-brand/10 hover:text-brand-dark"
                             title="View contact profile"
                           >
                             <User size={18} />
@@ -845,7 +845,7 @@ export default function SuppliersPage() {
                                   className={cn(
                                     "px-2.5 py-1 rounded-full text-xs border",
                                     editCategory === c && !showEditCustomInput
-                                      ? "bg-indigo-600 text-white border-indigo-600"
+                                      ? "bg-brand-dark text-white border-brand-dark"
                                       : "bg-slate-50 text-slate-700 border-slate-200"
                                   )}
                                 >
@@ -861,7 +861,7 @@ export default function SuppliersPage() {
                                 className={cn(
                                   "px-2.5 py-1 rounded-full text-xs border",
                                   showEditCustomInput
-                                    ? "bg-indigo-600 text-white border-indigo-600"
+                                    ? "bg-brand-dark text-white border-brand-dark"
                                     : "bg-slate-50 text-slate-700 border-slate-200"
                                 )}
                               >
@@ -1002,7 +1002,7 @@ export default function SuppliersPage() {
                               type="button"
                               onClick={() => handleSaveDetails(s)}
                               disabled={isSaving}
-                              className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+                              className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg bg-brand-dark text-white text-sm font-semibold hover:bg-brand disabled:opacity-50"
                             >
                               {isSaving ? <Loader2 className="animate-spin" size={16} /> : null}
                               Save
@@ -1041,7 +1041,7 @@ export default function SuppliersPage() {
               </p>
               {insightsLoading && potentialSuppliers.length === 0 ? (
                 <div className="flex items-center gap-2 text-sm text-slate-500 py-8 justify-center bg-white rounded-xl border border-slate-200">
-                  <Loader2 className="animate-spin text-indigo-500" size={18} />
+                  <Loader2 className="animate-spin text-brand" size={18} />
                   Scanning recent chats…
                 </div>
               ) : potentialSuppliers.length === 0 ? (
@@ -1090,7 +1090,7 @@ export default function SuppliersPage() {
             <div className="space-y-8">
               <section className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
                 <div className="flex items-center gap-2 text-slate-900 font-semibold">
-                  <UserPlus size={20} className="text-indigo-600" />
+                  <UserPlus size={20} className="text-brand-dark" />
                   Add manually
                 </div>
                 <p className="text-sm text-slate-500">
@@ -1108,7 +1108,7 @@ export default function SuppliersPage() {
                       id="sup-manual-name"
                       value={manualName}
                       onChange={(e) => setManualName(e.target.value)}
-                      className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                       required
                       autoComplete="organization"
                     />
@@ -1124,7 +1124,7 @@ export default function SuppliersPage() {
                       id="sup-manual-phone"
                       value={manualPhone}
                       onChange={(e) => setManualPhone(e.target.value)}
-                      className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                      className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand font-mono"
                       required
                       inputMode="tel"
                       autoComplete="tel"
@@ -1154,7 +1154,7 @@ export default function SuppliersPage() {
                   <button
                     type="submit"
                     disabled={manualSaving}
-                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-brand-dark text-white text-sm font-semibold hover:bg-brand disabled:opacity-50"
                   >
                     {manualSaving ? (
                       <Loader2 className="animate-spin" size={16} />
@@ -1177,13 +1177,13 @@ export default function SuppliersPage() {
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search contacts…"
-                    className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
                 <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 min-h-[200px]">
                   {loadingContacts ? (
                     <div className="flex justify-center py-16">
-                      <Loader2 className="animate-spin text-indigo-600" size={28} />
+                      <Loader2 className="animate-spin text-brand-dark" size={28} />
                     </div>
                   ) : filteredCustomers.length === 0 ? (
                     <p className="text-center text-slate-400 text-sm py-12">No contacts found</p>
@@ -1204,7 +1204,7 @@ export default function SuppliersPage() {
                             })
                           }
                           disabled={addingIds.includes(c.id)}
-                          className="shrink-0 px-3 py-1.5 text-sm font-semibold rounded-lg border border-indigo-600 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+                          className="shrink-0 px-3 py-1.5 text-sm font-semibold rounded-lg border border-brand-dark text-brand-dark hover:bg-brand/10 disabled:opacity-50"
                         >
                           {addingIds.includes(c.id) ? (
                             <Loader2 className="animate-spin" size={14} />

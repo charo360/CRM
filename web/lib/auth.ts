@@ -1,3 +1,5 @@
+import { mergeSidebarFeatures } from "./sidebarFeatures";
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("token");
@@ -26,6 +28,16 @@ export function setUser(user: Record<string, unknown>) {
   localStorage.setItem("user", JSON.stringify(user));
 }
 
+/** Merge into `user.settings` in localStorage (e.g. after saving features or loading /settings). */
+export function patchStoredUserSettings(partial: Record<string, unknown>) {
+  const prev = getUser() || {};
+  const prevSettings = ((prev.settings as Record<string, unknown>) || {}) as Record<string, unknown>;
+  setUser({
+    ...prev,
+    settings: { ...prevSettings, ...partial },
+  });
+}
+
 export function getBusinessId(): string | null {
   const user = getUser();
   return user?.business_id as string || user?._id as string || null;
@@ -46,16 +58,19 @@ export function getBusinessType(): string {
   return settings?.business_type as string || "retail";
 }
 
-export function isAuthenticated(): boolean {
-  return !!getToken();
+/** `individual` = solo use; `business` = company-style workspace (default for existing users). */
+export function getAccountMode(): "individual" | "business" {
+  const settings = getBusinessSettings();
+  const raw = settings?.account_mode as string | undefined;
+  if (raw === "individual") return "individual";
+  return "business";
 }
 
-export function patchStoredUserSettings(patch: Record<string, unknown>) {
-  const user = getUser();
-  if (!user) return;
-  const updated = {
-    ...user,
-    settings: { ...(user.settings as Record<string, unknown> || {}), ...patch },
-  };
-  setUser(updated);
+export function getSidebarFeatures(): Record<string, boolean> {
+  const settings = getBusinessSettings();
+  return mergeSidebarFeatures(settings?.features);
+}
+
+export function isAuthenticated(): boolean {
+  return !!getToken();
 }

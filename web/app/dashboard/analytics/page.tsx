@@ -71,13 +71,13 @@ export default function AnalyticsPage() {
   customers.forEach((c) => { const s = c.stage || "lead"; stageMap[s] = (stageMap[s] || 0) + 1; });
 
   const statsCards = [
-    { label: "Total Revenue", value: formatCurrency(combinedRevenue), icon: TrendingUp, color: "text-indigo-600", bg: "bg-indigo-50" },
+    { label: "Total Revenue", value: formatCurrency(combinedRevenue), icon: TrendingUp, color: "text-brand-dark", bg: "bg-brand/10" },
     { label: "Total Customers", value: customers.length, icon: Users, color: "text-blue-600", bg: "bg-blue-50" },
     { label: "Active Orders", value: orders.filter((o) => !["Done"].includes(o.fulfillment_status || "")).length, icon: ShoppingCart, color: "text-orange-600", bg: "bg-orange-50" },
     { label: "VIP Customers", value: vipCount, icon: BarChart2, color: "text-yellow-600", bg: "bg-yellow-50" },
     { label: "New This Month", value: newThisMonth, icon: Users, color: "text-green-600", bg: "bg-green-50" },
     { label: "Unread Messages", value: summary?.unread_messages ?? "—", icon: MessageSquare, color: "text-red-600", bg: "bg-red-50" },
-    { label: "Follow-ups Today", value: summary?.followups_today ?? "—", icon: Bell, color: "text-purple-600", bg: "bg-purple-50" },
+    { label: "Follow-ups Today", value: summary?.followups_today ?? "—", icon: Bell, color: "text-brand-dark", bg: "bg-brand/10" },
     {
       label: bookingsNavLabel === "Reservations" ? "Reservations Today" : "Bookings Today",
       value: summary?.bookings_today ?? "—",
@@ -120,7 +120,7 @@ export default function AnalyticsPage() {
               <div key={label} className="flex-1 flex flex-col items-center gap-1">
                 <span className="text-xs text-slate-500">{formatCurrency(total, "")}</span>
                 <div
-                  className="w-full rounded-t-md bg-indigo-500 transition-all"
+                  className="w-full rounded-t-md bg-brand transition-all"
                   style={{ height: `${Math.max((total / maxMonthly) * 120, total > 0 ? 4 : 0)}px` }}
                 />
                 <span className="text-[10px] text-slate-400">{label}</span>
@@ -150,7 +150,7 @@ export default function AnalyticsPage() {
                       <span className="text-slate-500">{formatCurrency(amount)} ({pct}%)</span>
                     </div>
                     <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${pct}%` }} />
+                      <div className="h-full bg-brand rounded-full" style={{ width: `${pct}%` }} />
                     </div>
                   </div>
                 );
@@ -196,7 +196,7 @@ export default function AnalyticsPage() {
             <div className="space-y-4">
               <div className="grid grid-cols-3 gap-3">
                 {[
-                  { label: "Total Products", value: stock.total_products, icon: Package, color: "text-indigo-600", bg: "bg-indigo-50" },
+                  { label: "Total Products", value: stock.total_products, icon: Package, color: "text-brand-dark", bg: "bg-brand/10" },
                   { label: "Inventory Value", value: formatCurrency(stock.total_value), icon: TrendingUp, color: "text-green-600", bg: "bg-green-50" },
                   { label: "In Stock", value: stock.in_stock_count, icon: Package, color: "text-blue-600", bg: "bg-blue-50" },
                 ].map(({ label, value, icon: Icon, color, bg }) => (

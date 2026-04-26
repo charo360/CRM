@@ -6,7 +6,7 @@ import { formatDate } from "@/lib/utils";
 import { Users, Plus, Trash2, Edit, Mail, Shield, User, Crown } from "lucide-react";
 
 const ROLES = [
-  { value: "owner", label: "Owner", icon: Crown, color: "text-purple-600" },
+  { value: "owner", label: "Owner", icon: Crown, color: "text-brand-dark" },
   { value: "admin", label: "Admin", icon: Shield, color: "text-blue-600" },
   { value: "manager", label: "Manager", icon: User, color: "text-green-600" },
   { value: "staff", label: "Staff", icon: User, color: "text-slate-600" },
@@ -113,7 +113,7 @@ export default function TeamPage() {
             setEditingId(null);
             setShowCreate(true);
           }}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand transition-colors"
         >
           <Plus size={15} /> Add Member
         </button>
@@ -168,8 +168,8 @@ export default function TeamPage() {
                       <tr key={member.id} className="hover:bg-slate-50">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center">
-                              <span className="text-indigo-600 font-semibold text-xs">
+                            <div className="w-8 h-8 rounded-full bg-brand/15 flex items-center justify-center">
+                              <span className="text-brand-dark font-semibold text-xs">
                                 {member.name.charAt(0).toUpperCase()}
                               </span>
                             </div>
@@ -256,7 +256,7 @@ export default function TeamPage() {
                     onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))}
                     placeholder="Full name"
                     required
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
                   />
                 </div>
                 <div>
@@ -267,7 +267,7 @@ export default function TeamPage() {
                     onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))}
                     placeholder="email@example.com"
                     required
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
                   />
                 </div>
               </div>
@@ -282,11 +282,11 @@ export default function TeamPage() {
                       onClick={() => setForm(f => ({ ...f, role: value }))}
                       className={`flex items-center gap-2 p-3 rounded-lg border transition-colors ${
                         form.role === value
-                          ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                          ? "border-brand bg-brand/10 text-brand-dark"
                           : "border-slate-200 hover:bg-slate-50"
                       }`}
                     >
-                      <Icon size={16} className={form.role === value ? "text-indigo-600" : color} />
+                      <Icon size={16} className={form.role === value ? "text-brand-dark" : color} />
                       <span className="text-sm font-medium">{label}</span>
                     </button>
                   ))}
@@ -302,7 +302,7 @@ export default function TeamPage() {
                         type="checkbox"
                         checked={form.permissions.includes(permission)}
                         onChange={() => togglePermission(permission)}
-                        className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                        className="w-4 h-4 text-brand-dark rounded focus:ring-brand"
                       />
                       <span className="text-sm text-slate-700">
                         {permission.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())}
@@ -315,7 +315,7 @@ export default function TeamPage() {
               <button
                 type="submit"
                 disabled={creating}
-                className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 text-sm"
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-dark text-white font-semibold rounded-xl hover:bg-brand disabled:opacity-50 text-sm"
               >
                 {creating && <Users size={15} className="animate-spin" />}
                 {editingId ? "Update Member" : "Add Member"}

@@ -115,7 +115,7 @@ export default function CustomersPage() {
         </div>
         <button
           onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand transition-colors"
         >
           <UserPlus size={15} /> Add Customer
         </button>
@@ -129,7 +129,7 @@ export default function CustomersPage() {
             onClick={() => setStageFilter(s)}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors ${
               stageFilter === s
-                ? "bg-indigo-600 text-white"
+                ? "bg-brand-dark text-white"
                 : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
             }`}
           >
@@ -145,7 +145,7 @@ export default function CustomersPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search name, phone, email..."
-          className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+          className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
         />
       </div>
 
@@ -177,12 +177,12 @@ export default function CustomersPage() {
                     <tr key={c.id} className="hover:bg-slate-50 group cursor-pointer" onClick={() => router.push(`/dashboard/customers/${c.id}`)}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center shrink-0">
+                          <div className="w-8 h-8 rounded-full bg-brand/15 flex items-center justify-center shrink-0">
                             {c.profile_picture ? (
                               // eslint-disable-next-line @next/next/no-img-element
                               <img src={c.profile_picture} alt={c.name} className="w-8 h-8 rounded-full object-cover" />
                             ) : (
-                              <span className="text-indigo-600 font-semibold text-xs">
+                              <span className="text-brand-dark font-semibold text-xs">
                                 {c.name.charAt(0).toUpperCase()}
                               </span>
                             )}
@@ -200,7 +200,7 @@ export default function CustomersPage() {
                             value={c.stage || "lead"}
                             disabled={updatingId === c.id}
                             onChange={(e) => void handleStageChange(c.id, e.target.value)}
-                            className="text-xs pl-2 pr-7 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-800 font-medium capitalize focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 max-w-[150px]"
+                            className="text-xs pl-2 pr-7 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-800 font-medium capitalize focus:ring-2 focus:ring-brand focus:border-brand max-w-[150px]"
                           >
                             {STAGE_OPTIONS.map((s) => (
                               <option key={s} value={s}>
@@ -209,7 +209,7 @@ export default function CustomersPage() {
                             ))}
                           </select>
                           {updatingId === c.id ? (
-                            <Loader2 size={14} className="animate-spin text-indigo-500 shrink-0" />
+                            <Loader2 size={14} className="animate-spin text-brand shrink-0" />
                           ) : null}
                         </div>
                       </td>
@@ -227,7 +227,7 @@ export default function CustomersPage() {
                                   className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border transition-colors ${
                                     on
                                       ? `${TAG_COLORS[tag] || "bg-slate-200"} border-transparent`
-                                      : "bg-white text-slate-500 border-slate-200 hover:border-indigo-300 hover:text-indigo-700"
+                                      : "bg-white text-slate-500 border-slate-200 hover:border-brand/50 hover:text-brand-dark"
                                   } disabled:opacity-50`}
                                 >
                                   {tag}
@@ -264,7 +264,7 @@ export default function CustomersPage() {
                             type="button"
                             onClick={() => router.push(`/dashboard/messages?customer=${encodeURIComponent(c.id)}`)}
                             className="p-1.5 rounded-lg text-slate-400 hover:bg-green-100 hover:text-green-700 transition-colors"
-                            title="Message in CRM (business WhatsApp)"
+                            title="Message in Zilo (business WhatsApp)"
                           >
                             <MessageSquare size={14} />
                           </button>
@@ -307,13 +307,13 @@ export default function CustomersPage() {
                   value={form.notes}
                   onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
                   rows={2}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
                 />
               </div>
               <button
                 type="submit"
                 disabled={saving}
-                className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 text-sm"
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-dark text-white font-semibold rounded-xl hover:bg-brand disabled:opacity-50 text-sm"
               >
                 {saving && <Loader2 size={15} className="animate-spin" />}
                 Add Customer
@@ -333,7 +333,7 @@ function Field({ label, value, onChange, placeholder, required, type = "text" }:
     <div>
       <label className="block text-xs font-medium text-slate-700 mb-1">{label}</label>
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} required={required}
-        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
     </div>
   );
 }

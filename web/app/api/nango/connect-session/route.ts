@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { buildServerCrmApiUrl } from "@/lib/server-crm-api";
 
 const NANGO_API = process.env.NANGO_API_URL || "https://api.nango.dev";
 
@@ -16,13 +17,20 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-  const meRes = await fetch(`${apiBase}/auth/me`, { headers: { Authorization: auth } });
-  if (!meRes.ok) {
+  let me: { id?: string; business_id?: string };
+  try {
+    const meUrl = buildServerCrmApiUrl(req, "/auth/me");
+    const meRes = await fetch(meUrl, { headers: { Authorization: auth } });
+    if (!meRes.ok) {
+      return NextResponse.json({ error: "Invalid session" }, { status: 401 });
+    }
+    me = (await meRes.json()) as { id?: string; business_id?: string };
+  } catch {
     return NextResponse.json({ error: "Invalid session" }, { status: 401 });
   }
-
-  const me = (await meRes.json()) as { id: string; business_id?: string };
+  if (!me?.id) {
+    return NextResponse.json({ error: "Invalid session" }, { status: 401 });
+  }
 
   let body: { allowed_integrations?: string[] };
   try {
@@ -44,7 +52,7 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({
       allowed_integrations: allowed,
       tags: {
-        end_user_id: String(me.id),
+        end_user_id: String(me.id!),
         organization_id: String(me.business_id ?? ""),
       },
     }),

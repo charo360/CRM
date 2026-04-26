@@ -152,7 +152,7 @@ export default function OrdersPage() {
           <button
             type="button"
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
+            className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand"
           >
             <Plus size={15} /> New Order
           </button>
@@ -167,7 +167,7 @@ export default function OrdersPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search customer, order #, product..."
-            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
         <Select value={statusFilter} onChange={setStatusFilter} options={FULFILLMENT_STATUSES} label="Status" />
@@ -249,7 +249,7 @@ export default function OrdersPage() {
                                 type="button"
                                 onClick={() => advanceStatus(order)}
                                 disabled={updatingId === order.id}
-                                className="px-3 py-1 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                                className="px-3 py-1 text-xs font-medium bg-brand-dark text-white rounded-lg hover:bg-brand disabled:opacity-50 transition-colors"
                               >
                                 {updatingId === order.id ? "..." : `→ ${nextStatus}`}
                               </button>
@@ -297,7 +297,7 @@ export default function OrdersPage() {
                   value={form.customer_id}
                   onChange={(e) => setForm(f => ({ ...f, customer_id: e.target.value }))}
                   required
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                 >
                   <option value="">Select customer…</option>
                   {customers.map((c) => (
@@ -313,7 +313,7 @@ export default function OrdersPage() {
                   onChange={(e) => setForm(f => ({ ...f, product: e.target.value }))}
                   placeholder="e.g. Chicken Burger"
                   required
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                 />
               </div>
 
@@ -325,7 +325,7 @@ export default function OrdersPage() {
                     min={1}
                     value={form.quantity}
                     onChange={(e) => setForm(f => ({ ...f, quantity: Number(e.target.value) }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
                 <div>
@@ -336,7 +336,7 @@ export default function OrdersPage() {
                     step="0.01"
                     value={form.price}
                     onChange={(e) => setForm(f => ({ ...f, price: Number(e.target.value) }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
               </div>
@@ -353,7 +353,7 @@ export default function OrdersPage() {
                   <select
                     value={form.delivery_type}
                     onChange={(e) => setForm(f => ({ ...f, delivery_type: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   >
                     <option value="pickup">Pickup</option>
                     <option value="delivery">Delivery</option>
@@ -365,7 +365,7 @@ export default function OrdersPage() {
                   <select
                     value={form.payment_status}
                     onChange={(e) => setForm(f => ({ ...f, payment_status: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   >
                     <option value="Pending">Pending</option>
                     <option value="Partial">Partial</option>
@@ -381,7 +381,7 @@ export default function OrdersPage() {
                     value={form.delivery_address}
                     onChange={(e) => setForm(f => ({ ...f, delivery_address: e.target.value }))}
                     placeholder="Enter delivery address"
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
               )}
@@ -393,7 +393,7 @@ export default function OrdersPage() {
                     value={form.table_number}
                     onChange={(e) => setForm(f => ({ ...f, table_number: e.target.value }))}
                     placeholder="e.g. 5"
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
               )}
@@ -405,14 +405,14 @@ export default function OrdersPage() {
                   onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))}
                   placeholder="Special instructions…"
                   rows={2}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={creating}
-                className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-dark text-white text-sm font-semibold rounded-xl hover:bg-brand disabled:opacity-50"
               >
                 {creating && <Loader2 size={14} className="animate-spin" />}
                 Create Order
@@ -442,7 +442,7 @@ function Select({ value, onChange, options, label }: {
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-slate-700"
+        className="appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white text-slate-700"
       >
         {options.map((o) => (
           <option key={o} value={o}>{o === "All" ? `${label}: All` : o}</option>

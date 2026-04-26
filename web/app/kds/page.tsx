@@ -48,7 +48,7 @@ export default function KDSGatePage() {
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center gap-8 px-4">
       <div className="flex flex-col items-center gap-3">
-        <div className="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center">
+        <div className="w-14 h-14 rounded-2xl bg-brand-dark flex items-center justify-center">
           <Monitor size={28} className="text-white" />
         </div>
         <h1 className="text-2xl font-bold text-white">Kitchen Display</h1>
@@ -61,7 +61,7 @@ export default function KDSGatePage() {
           <div
             key={i}
             className={`w-4 h-4 rounded-full transition-colors ${
-              i < pin.length ? "bg-indigo-400" : "bg-slate-700"
+              i < pin.length ? "bg-brand" : "bg-slate-700"
             }`}
           />
         ))}
@@ -84,7 +84,7 @@ export default function KDSGatePage() {
               className={`h-14 rounded-xl text-lg font-semibold transition-colors ${
                 isDelete
                   ? "bg-slate-800 text-slate-400 hover:bg-slate-700"
-                  : "bg-slate-800 text-white hover:bg-slate-700 active:bg-indigo-700"
+                  : "bg-slate-800 text-white hover:bg-slate-700 active:bg-brand-dark"
               }`}
             >
               {loading && !isDelete ? <Loader2 size={18} className="animate-spin mx-auto" /> : d}

@@ -7,6 +7,7 @@ import { isAuthenticated } from "@/lib/auth";
 import { BusinessProvider } from "@/contexts/BusinessContext";
 import Sidebar from "@/components/Sidebar";
 import AssistantLauncher from "@/components/AssistantLauncher";
+import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 
 /**
  * Auth uses localStorage, which is absent on the server. Without a client-only gate,
@@ -34,15 +35,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="flex h-screen bg-slate-50" suppressHydrationWarning>
         {!mounted ? (
           <aside
-            className="flex flex-col w-56 min-h-screen bg-slate-900 text-slate-100 shrink-0 overflow-y-auto"
+            className="flex w-56 shrink-0 flex-col overflow-y-auto border-r border-brand-dark/20 bg-[#071a10] text-slate-100 min-h-screen"
             aria-hidden
           />
         ) : (
           <Sidebar />
         )}
-        <main className="flex-1 overflow-auto">{children}</main>
+        <main className="flex-1 overflow-auto bg-slate-50 text-slate-900">{children}</main>
       </div>
       {mounted && <AssistantLauncher />}
+      {mounted && <OnboardingWizard />}
       <Toaster richColors position="top-center" />
     </BusinessProvider>
   );

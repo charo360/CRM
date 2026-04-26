@@ -317,7 +317,7 @@ export default function SalesPage() {
           </button>
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700"
+            className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand"
           >
             <Plus size={15} /> {tab === "sales" ? "Add Sale" : "Add Expense"}
           </button>
@@ -367,7 +367,7 @@ export default function SalesPage() {
               onClick={() => setTab(t)}
               className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${
                 tab === t
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-brand-dark text-white"
                   : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
@@ -385,7 +385,7 @@ export default function SalesPage() {
           <select
             value={range}
             onChange={(e) => setRange(e.target.value as DateRange)}
-            className="appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-slate-700"
+            className="appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white text-slate-700"
           >
             {(["Today", "This Week", "This Month", "All Time"] as DateRange[]).map((r) => (
               <option key={r}>{r}</option>
@@ -411,7 +411,7 @@ export default function SalesPage() {
                 value={saleListSearch}
                 onChange={(e) => setSaleListSearch(e.target.value)}
                 placeholder="Search by customer, item, amount, method, credit, date…"
-                className="w-full pl-8 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full pl-8 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                 aria-label="Search sales"
               />
               {saleListSearch.trim() ? (
@@ -444,7 +444,7 @@ export default function SalesPage() {
                 value={expenseListSearch}
                 onChange={(e) => setExpenseListSearch(e.target.value)}
                 placeholder="Search by category, amount, description, date…"
-                className="w-full pl-8 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full pl-8 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                 aria-label="Search expenses"
               />
               {expenseListSearch.trim() ? (
@@ -528,7 +528,7 @@ export default function SalesPage() {
                                       .then(() => alert("Receipt sent!"))
                                       .catch(() => alert("Failed to send receipt"))
                                   }
-                                  className="p-1.5 rounded-lg text-slate-400 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
+                                  className="p-1.5 rounded-lg text-slate-400 hover:bg-brand/15 hover:text-brand-dark transition-colors"
                                   title="Resend receipt"
                                 >
                                   <Send size={13} />
@@ -613,7 +613,7 @@ export default function SalesPage() {
               <button
                 type="button"
                 onClick={() => setSaleListSearch("")}
-                className="font-semibold text-indigo-600 hover:text-indigo-700"
+                className="font-semibold text-brand-dark hover:text-brand-dark"
               >
                 Clear search
               </button>
@@ -625,7 +625,7 @@ export default function SalesPage() {
               <button
                 type="button"
                 onClick={() => setExpenseListSearch("")}
-                className="font-semibold text-indigo-600 hover:text-indigo-700"
+                className="font-semibold text-brand-dark hover:text-brand-dark"
               >
                 Clear search
               </button>
@@ -661,7 +661,7 @@ export default function SalesPage() {
                       className={cn(
                         "flex items-center gap-2 px-3 py-2 rounded-xl border text-left text-sm transition-colors",
                         customerMode === "walkin"
-                          ? "border-indigo-600 bg-indigo-50 text-indigo-900"
+                          ? "border-brand-dark bg-brand/10 text-brand-ink"
                           : "border-slate-200 hover:bg-slate-50"
                       )}
                     >
@@ -674,12 +674,12 @@ export default function SalesPage() {
                       className={cn(
                         "flex items-center gap-2 px-3 py-2 rounded-xl border text-left text-sm transition-colors",
                         customerMode === "crm"
-                          ? "border-indigo-600 bg-indigo-50 text-indigo-900"
+                          ? "border-brand-dark bg-brand/10 text-brand-ink"
                           : "border-slate-200 hover:bg-slate-50"
                       )}
                     >
-                      <User size={16} className="text-indigo-600 shrink-0" />
-                      <span className="font-medium">CRM contact</span>
+                      <User size={16} className="text-brand-dark shrink-0" />
+                      <span className="font-medium">Existing customer</span>
                     </button>
                     <button
                       type="button"
@@ -690,16 +690,16 @@ export default function SalesPage() {
                       className={cn(
                         "flex items-center gap-2 px-3 py-2 rounded-xl border text-left text-sm transition-colors",
                         customerMode === "new"
-                          ? "border-indigo-600 bg-indigo-50 text-indigo-900"
+                          ? "border-brand-dark bg-brand/10 text-brand-ink"
                           : "border-slate-200 hover:bg-slate-50"
                       )}
                     >
-                      <UserPlus size={16} className="text-violet-600 shrink-0" />
+                      <UserPlus size={16} className="text-brand-dark shrink-0" />
                       <span className="font-medium">New contact</span>
                     </button>
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
-                    Walk-in: quick sale with no WhatsApp receipt. CRM: pick an existing customer. New: create a contact
+                    Walk-in: quick sale with no WhatsApp receipt. Existing: pick a saved customer. New: create a contact
                     then record the sale.
                   </p>
                 </div>
@@ -729,7 +729,7 @@ export default function SalesPage() {
                             onClick={() => setSelectedCustomer(c)}
                             className={cn(
                               "w-full text-left px-3 py-2 text-sm hover:bg-slate-50",
-                              selectedCustomer?.id === c.id && "bg-indigo-50"
+                              selectedCustomer?.id === c.id && "bg-brand/10"
                             )}
                           >
                             <span className="font-medium text-slate-800">{c.name}</span>
@@ -739,7 +739,7 @@ export default function SalesPage() {
                       )}
                     </div>
                     {selectedCustomer && (
-                      <p className="text-xs text-indigo-700">
+                      <p className="text-xs text-brand-dark">
                         Selected: <strong>{selectedCustomer.name}</strong>
                       </p>
                     )}
@@ -824,7 +824,7 @@ export default function SalesPage() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 text-sm"
+                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-dark text-white font-semibold rounded-xl hover:bg-brand disabled:opacity-50 text-sm"
                 >
                   {saving && <Loader2 size={15} className="animate-spin" />} Record sale
                 </button>
@@ -854,7 +854,7 @@ export default function SalesPage() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 text-sm"
+                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-dark text-white font-semibold rounded-xl hover:bg-brand disabled:opacity-50 text-sm"
                 >
                   {saving && <Loader2 size={15} className="animate-spin" />} Add Expense
                 </button>
@@ -894,7 +894,7 @@ function FField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         required={required}
-        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
       />
     </div>
   );
@@ -918,7 +918,7 @@ function SelectField({
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+          className="w-full appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white"
         >
           {options.map((o) => (
             <option key={o}>

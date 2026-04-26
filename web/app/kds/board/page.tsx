@@ -87,7 +87,7 @@ export default function KDSBoardPage() {
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
         <div className="flex items-center gap-3">
-          <ChefHat size={24} className="text-indigo-400" />
+          <ChefHat size={24} className="text-brand" />
           <h1 className="text-xl font-bold">Kitchen Display</h1>
         </div>
         <div className="flex items-center gap-6">

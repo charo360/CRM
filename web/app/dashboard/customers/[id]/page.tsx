@@ -113,7 +113,7 @@ export default function CustomerProfilePage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-indigo-600" size={28} />
+        <Loader2 className="animate-spin text-brand-dark" size={28} />
       </div>
     );
   }
@@ -122,7 +122,7 @@ export default function CustomerProfilePage() {
     return (
       <div className="p-6 text-center text-slate-400">
         Customer not found.{" "}
-        <button onClick={() => router.back()} className="text-indigo-600 hover:underline">Go back</button>
+        <button onClick={() => router.back()} className="text-brand-dark hover:underline">Go back</button>
       </div>
     );
   }
@@ -155,12 +155,12 @@ export default function CustomerProfilePage() {
       <div className="bg-white rounded-2xl border border-slate-200 p-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-indigo-100 flex items-center justify-center shrink-0">
+            <div className="w-16 h-16 rounded-2xl bg-brand/15 flex items-center justify-center shrink-0">
               {customer.profile_picture ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={customer.profile_picture} alt={customer.name} className="w-16 h-16 rounded-2xl object-cover" />
               ) : (
-                <span className="text-2xl font-bold text-indigo-600">{customer.name.charAt(0).toUpperCase()}</span>
+                <span className="text-2xl font-bold text-brand-dark">{customer.name.charAt(0).toUpperCase()}</span>
               )}
             </div>
             <div>
@@ -168,7 +168,7 @@ export default function CustomerProfilePage() {
                 <input
                   value={editForm.name}
                   onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-                  className="text-xl font-bold text-slate-900 border-b border-indigo-400 outline-none"
+                  className="text-xl font-bold text-slate-900 border-b border-brand outline-none"
                 />
               ) : (
                 <h1 className="text-xl font-bold text-slate-900">{customer.name}</h1>
@@ -198,7 +198,7 @@ export default function CustomerProfilePage() {
                   </span>
                 )}
                 {(customer.tags || []).map(t => (
-                  <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">{t}</span>
+                  <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-brand/10 text-brand-dark font-medium">{t}</span>
                 ))}
               </div>
             </div>
@@ -209,7 +209,7 @@ export default function CustomerProfilePage() {
                 <button onClick={() => setEditing(false)} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
                   <X size={16} />
                 </button>
-                <button onClick={handleSave} disabled={saving} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                <button onClick={handleSave} disabled={saving} className="flex items-center gap-1.5 px-4 py-2 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand disabled:opacity-50">
                   {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
                 </button>
               </>
@@ -236,18 +236,18 @@ export default function CustomerProfilePage() {
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
               <input value={editForm.email} onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Tags (comma-separated)</label>
               <input value={editForm.tags} onChange={e => setEditForm(f => ({ ...f, tags: e.target.value }))}
                 placeholder="VIP, Returning"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Notes</label>
               <textarea value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
-                rows={2} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+                rows={2} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none" />
             </div>
           </div>
         )}
@@ -258,7 +258,7 @@ export default function CustomerProfilePage() {
             { label: "Total Spent", value: formatCurrency(customer.total_spent || 0), icon: TrendingUp, color: "text-green-600", bg: "bg-green-50" },
             { label: "Orders", value: customer.purchase_count || 0, icon: Package, color: "text-blue-600", bg: "bg-blue-50" },
             { label: "Last Contact", value: customer.last_contacted ? timeAgo(customer.last_contacted) : "Never", icon: Clock, color: "text-amber-600", bg: "bg-amber-50" },
-            { label: "Member Since", value: formatDate(customer.created_at), icon: Calendar, color: "text-indigo-600", bg: "bg-indigo-50" },
+            { label: "Member Since", value: formatDate(customer.created_at), icon: Calendar, color: "text-brand-dark", bg: "bg-brand/10" },
           ].map(({ label, value, icon: Icon, color, bg }) => (
             <div key={label} className="flex items-center gap-3">
               <div className={`w-9 h-9 rounded-xl ${bg} flex items-center justify-center shrink-0`}>
@@ -285,13 +285,13 @@ export default function CustomerProfilePage() {
           <button
             onClick={generateAINotes}
             disabled={generatingNotes}
-            className="flex items-center gap-1.5 text-xs text-purple-600 hover:text-purple-800 disabled:opacity-50"
+            className="flex items-center gap-1.5 text-xs text-brand-dark hover:text-brand-ink disabled:opacity-50"
           >
             <Sparkles size={12} className={generatingNotes ? "animate-spin" : ""} />
             {generatingNotes ? "Generating AI notes…" : "Generate AI customer notes"}
           </button>
           {aiNotes && (
-            <div className="mt-2 p-3 bg-purple-50 rounded-xl text-sm text-purple-800 border border-purple-100">
+            <div className="mt-2 p-3 bg-brand/10 rounded-xl text-sm text-brand-ink border border-brand/15">
               {aiNotes}
             </div>
           )}
@@ -306,7 +306,7 @@ export default function CustomerProfilePage() {
             onClick={() => setActiveTab(tid)}
             className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
               activeTab === tid
-                ? "bg-white border-b-2 border-indigo-600 text-indigo-600"
+                ? "bg-white border-b-2 border-brand-dark text-brand-dark"
                 : "text-slate-500 hover:text-slate-800"
             }`}
           >
@@ -330,7 +330,7 @@ export default function CustomerProfilePage() {
               const colors: Record<string, string> = {
                 message: "bg-blue-50 text-blue-600",
                 sale: "bg-green-50 text-green-600",
-                order: "bg-indigo-50 text-indigo-600",
+                order: "bg-brand/10 text-brand-dark",
                 followup: "bg-amber-50 text-amber-600",
               };
               return (
@@ -357,9 +357,9 @@ export default function CustomerProfilePage() {
             {messages.length === 0 && <p className="text-center text-slate-400 text-sm py-10">No messages</p>}
             {messages.map((m) => (
               <div key={m.id} className={`flex p-4 ${m.direction === "outgoing" ? "justify-end" : ""}`}>
-                <div className={`max-w-sm rounded-xl px-4 py-2 text-sm ${m.direction === "outgoing" ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-800"}`}>
+                <div className={`max-w-sm rounded-xl px-4 py-2 text-sm ${m.direction === "outgoing" ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-800"}`}>
                   <p>{m.content}</p>
-                  <p className={`text-xs mt-1 ${m.direction === "outgoing" ? "text-indigo-200" : "text-slate-400"}`}>{timeAgo(m.created_at)}</p>
+                  <p className={`text-xs mt-1 ${m.direction === "outgoing" ? "text-brand/30" : "text-slate-400"}`}>{timeAgo(m.created_at)}</p>
                 </div>
               </div>
             ))}
@@ -410,7 +410,7 @@ export default function CustomerProfilePage() {
                   <td className="px-4 py-3 text-slate-600">{o.product}</td>
                   <td className="px-4 py-3 font-semibold text-slate-800">{formatCurrency(o.total_amount)}</td>
                   <td className="px-4 py-3">
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-brand/10 text-brand-dark font-medium">
                       {o.fulfillment_status || "New"}
                     </span>
                   </td>

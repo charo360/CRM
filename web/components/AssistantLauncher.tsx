@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { Sparkles, X } from "lucide-react";
+import { X } from "lucide-react";
+import { ZiloLogo } from "@/components/ZiloLogo";
 import AssistantChat from "./AssistantChat";
 
 const LS_KEY = "assistant.last_conv";
@@ -28,16 +29,19 @@ export default function AssistantLauncher() {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 text-white shadow-lg hover:shadow-xl"
+          className="fixed bottom-5 right-5 z-40 flex items-center justify-center rounded-xl border border-slate-200 bg-white p-2 shadow-lg transition hover:border-slate-300 hover:shadow-xl"
           aria-label="Open assistant"
         >
-          <Sparkles size={20} />
+          <ZiloLogo size={40} />
         </button>
       )}
       {open && (
         <div className="fixed bottom-5 right-5 z-40 flex h-[560px] w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-          <div className="flex items-center justify-between bg-gradient-to-r from-indigo-500 to-purple-500 px-3 py-2 text-white">
-            <div className="text-sm font-semibold">Zilo Chat</div>
+          <div className="flex items-center justify-between bg-gradient-to-r from-brand-dark to-brand px-3 py-2 text-white">
+            <div className="flex items-center gap-1">
+              <ZiloLogo size={28} className="shrink-0 rounded-md bg-white/15 p-0.5" />
+              <div className="text-sm font-semibold">Zilo Chat</div>
+            </div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close">
               <X size={16} />
             </button>
@@ -49,7 +53,8 @@ export default function AssistantLauncher() {
               onConversationChange={(id) => {
                 setConvId(id);
                 try {
-                  localStorage.setItem(LS_KEY, id);
+                  if (id) localStorage.setItem(LS_KEY, id);
+                  else localStorage.removeItem(LS_KEY);
                 } catch {}
               }}
             />

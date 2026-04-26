@@ -277,7 +277,7 @@ export default function SettingsPage() {
           type="button"
           onClick={handleSave}
           disabled={saving}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white font-semibold rounded-lg hover:bg-brand disabled:opacity-50 transition-colors"
         >
           {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
           Save changes
@@ -292,7 +292,7 @@ export default function SettingsPage() {
             onClick={() => setActiveTab(id)}
             className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap ${
               activeTab === id
-                ? "bg-white border-b-2 border-indigo-600 text-indigo-600"
+                ? "bg-white border-b-2 border-brand-dark text-brand-dark"
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
@@ -334,7 +334,7 @@ export default function SettingsPage() {
                   id="resv"
                   checked={userSettings.restaurant_has_reservations || false}
                   onChange={(e) => updateUser("restaurant_has_reservations", e.target.checked)}
-                  className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                  className="w-4 h-4 text-brand-dark rounded focus:ring-brand"
                 />
                 <label htmlFor="resv" className="text-sm font-medium text-slate-700">
                   Accept table / reservations (AI will collect date & time)
@@ -349,7 +349,7 @@ export default function SettingsPage() {
                     type="button"
                     onClick={() => void handleAiGenerateAbout()}
                     disabled={aiAboutBusy}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-brand-dark bg-brand/10 border border-brand/30 rounded-lg hover:bg-brand/15 disabled:opacity-50 disabled:pointer-events-none transition-colors"
                   >
                     {aiAboutBusy ? (
                       <Loader2 size={14} className="animate-spin shrink-0" />
@@ -379,7 +379,7 @@ export default function SettingsPage() {
                 onChange={(e) => patchBk({ business_description: e.target.value })}
                 placeholder="Tell customers about your business..."
                 rows={4}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 resize-none"
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand resize-none"
               />
             </div>
             <TextArea
@@ -477,7 +477,7 @@ export default function SettingsPage() {
                 id="auto_reply"
                 checked={userSettings.auto_reply_enabled || false}
                 onChange={(e) => updateUser("auto_reply_enabled", e.target.checked)}
-                className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                className="w-4 h-4 text-brand-dark rounded focus:ring-brand"
               />
               <label htmlFor="auto_reply" className="text-sm font-medium text-slate-700">
                 Enable AI auto-reply
@@ -514,7 +514,7 @@ export default function SettingsPage() {
                 id="notif"
                 checked={userSettings.notification_enabled !== false}
                 onChange={(e) => updateUser("notification_enabled", e.target.checked)}
-                className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                className="w-4 h-4 text-brand-dark rounded focus:ring-brand"
               />
               <label htmlFor="notif" className="text-sm font-medium text-slate-700">
                 Daily summary notifications
@@ -538,7 +538,7 @@ export default function SettingsPage() {
                 id="pulse"
                 checked={userSettings.daily_pulse_enabled || false}
                 onChange={(e) => updateUser("daily_pulse_enabled", e.target.checked)}
-                className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                className="w-4 h-4 text-brand-dark rounded focus:ring-brand"
               />
               <label htmlFor="pulse" className="text-sm font-medium text-slate-700">
                 Daily pulse (business insight message)
@@ -583,7 +583,7 @@ export default function SettingsPage() {
                         updateUser("payment_methods", updated);
                       }}
                       placeholder="Method name"
-                      className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
                     />
                     <input
                       value={method.details}
@@ -593,7 +593,7 @@ export default function SettingsPage() {
                         updateUser("payment_methods", updated);
                       }}
                       placeholder="Details"
-                      className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
                     />
                     <button
                       type="button"
@@ -613,7 +613,7 @@ export default function SettingsPage() {
                     const updated = [...(userSettings.payment_methods || []), { name: "", details: "" }];
                     updateUser("payment_methods", updated);
                   }}
-                  className="text-sm text-indigo-600 hover:underline"
+                  className="text-sm text-brand-dark hover:underline"
                 >
                   + Add payment method
                 </button>
@@ -659,7 +659,7 @@ function Field({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
       />
     </div>
   );
@@ -686,7 +686,7 @@ function TextArea({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={rows}
-        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 resize-none"
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand resize-none"
       />
     </div>
   );
@@ -709,7 +709,7 @@ function Select({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
       >
         {options.map(({ value: v, label: l }) => (
           <option key={v + l} value={v}>

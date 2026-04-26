@@ -303,7 +303,7 @@ export default function BookingsPage() {
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm"
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-brand-dark text-white hover:bg-brand shadow-sm"
           >
             <Plus size={16} />
             New {singular}
@@ -329,7 +329,7 @@ export default function BookingsPage() {
               key={key}
               onClick={() => setStatusFilter(statusFilter === key ? "All" : key)}
               className={`rounded-xl border p-3 text-left transition-colors hover:shadow-sm ${
-                statusFilter === key ? "border-indigo-400 bg-indigo-50" : "border-slate-200 bg-white"
+                statusFilter === key ? "border-brand bg-brand/10" : "border-slate-200 bg-white"
               }`}
             >
               <p className="text-xl font-bold text-slate-900">{count}</p>
@@ -354,14 +354,14 @@ export default function BookingsPage() {
                   : "Search name, phone, reservation #, table or service…"
                 : "Search name, phone, booking #, service…"
             }
-            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
         <div className="relative w-full sm:w-48">
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="w-full appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-slate-700"
+            className="w-full appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white text-slate-700"
           >
             {STATUS_FILTERS.map((s) => (
               <option key={s} value={s}>
@@ -459,7 +459,7 @@ export default function BookingsPage() {
                             onChange={(e) =>
                               void updatePaymentStatus(b.id, e.target.value as Booking["payment_status"])
                             }
-                            className={`w-full max-w-[130px] text-xs font-medium capitalize rounded-lg border border-slate-200 px-2 py-1.5 pr-6 bg-white cursor-pointer focus:ring-2 focus:ring-indigo-500 focus:border-indigo-400 outline-none disabled:opacity-50 disabled:cursor-wait ${pc}`}
+                            className={`w-full max-w-[130px] text-xs font-medium capitalize rounded-lg border border-slate-200 px-2 py-1.5 pr-6 bg-white cursor-pointer focus:ring-2 focus:ring-brand focus:border-brand outline-none disabled:opacity-50 disabled:cursor-wait ${pc}`}
                           >
                             <option value="unpaid">Unpaid</option>
                             <option value="partial">Partial</option>
@@ -571,7 +571,7 @@ export default function BookingsPage() {
                       setWalkIn(e.target.checked);
                       if (e.target.checked) setSelectedCustomerId(null);
                     }}
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    className="rounded border-slate-300 text-brand-dark focus:ring-brand"
                   />
                   <span className="text-slate-700">Walk-in (no saved contact)</span>
                 </label>
@@ -593,9 +593,9 @@ export default function BookingsPage() {
 
                     if (selectedCustomerId) {
                       return (
-                        <div className="rounded-xl border border-indigo-200 bg-indigo-50/90 px-3 py-3 flex items-start justify-between gap-3">
+                        <div className="rounded-xl border border-brand/30 bg-brand/10 px-3 py-3 flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 mb-0.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-brand-dark mb-0.5">
                               Selected {guestOrCustomer}
                             </p>
                             {selectedCustomer ? (
@@ -612,7 +612,7 @@ export default function BookingsPage() {
                           <button
                             type="button"
                             onClick={() => setSelectedCustomerId(null)}
-                            className="shrink-0 text-sm font-medium text-indigo-700 hover:text-indigo-900 px-2 py-1 rounded-lg hover:bg-indigo-100/80 touch-manipulation"
+                            className="shrink-0 text-sm font-medium text-brand-dark hover:text-brand-ink px-2 py-1 rounded-lg hover:bg-brand/15 touch-manipulation"
                           >
                             Change
                           </button>
@@ -627,7 +627,7 @@ export default function BookingsPage() {
                           placeholder={`Search ${guestOrCustomer.toLowerCase()}s…`}
                           value={custSearch}
                           onChange={(e) => setCustSearch(e.target.value)}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand mb-2"
                         />
                         <div
                           className="max-h-44 overflow-y-auto overscroll-y-contain rounded-lg border border-slate-200 bg-slate-50/50 divide-y divide-slate-200/80 touch-pan-y"
@@ -646,7 +646,7 @@ export default function BookingsPage() {
                                     e.preventDefault();
                                     setSelectedCustomerId(cid);
                                   }}
-                                  className="w-full text-left px-3 py-2.5 min-h-[44px] touch-manipulation select-none hover:bg-white active:bg-indigo-50/80"
+                                  className="w-full text-left px-3 py-2.5 min-h-[44px] touch-manipulation select-none hover:bg-white active:bg-brand/10"
                                 >
                                   <span className="font-medium text-slate-800">{c.name}</span>
                                   {c.phone_number && (
@@ -675,7 +675,7 @@ export default function BookingsPage() {
                       }}
                       className={`px-2.5 py-1 rounded-lg text-xs border transition-colors ${
                         serviceId === p.id
-                          ? "border-indigo-500 bg-indigo-50 text-indigo-800"
+                          ? "border-brand bg-brand/10 text-brand-ink"
                           : "border-slate-200 text-slate-700 hover:bg-slate-50"
                       }`}
                     >
@@ -687,7 +687,7 @@ export default function BookingsPage() {
                     onClick={() => setServiceId("manual")}
                     className={`px-2.5 py-1 rounded-lg text-xs border transition-colors ${
                       serviceId === "manual"
-                        ? "border-indigo-500 bg-indigo-50 text-indigo-800"
+                        ? "border-brand bg-brand/10 text-brand-ink"
                         : "border-dashed border-slate-300 text-slate-600 hover:bg-slate-50"
                     }`}
                   >
@@ -700,7 +700,7 @@ export default function BookingsPage() {
                     placeholder="Service name"
                     value={manualServiceName}
                     onChange={(e) => setManualServiceName(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   />
                 )}
               </div>
@@ -755,7 +755,7 @@ export default function BookingsPage() {
                   type="text"
                   value={staffName}
                   onChange={(e) => setStaffName(e.target.value)}
-                  className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   placeholder="Name"
                 />
               </label>
@@ -767,7 +767,7 @@ export default function BookingsPage() {
                   inputMode="decimal"
                   value={priceInput}
                   onChange={(e) => setPriceInput(e.target.value)}
-                  className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                   placeholder="0"
                 />
               </label>
@@ -778,7 +778,7 @@ export default function BookingsPage() {
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   rows={2}
-                  className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
                 />
               </label>
             </div>
@@ -795,7 +795,7 @@ export default function BookingsPage() {
                 type="button"
                 disabled={createLoading}
                 onClick={() => void handleCreateBooking()}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-brand-dark text-white hover:bg-brand disabled:opacity-60"
               >
                 {createLoading ? <Loader2 size={14} className="animate-spin" /> : null}
                 Create

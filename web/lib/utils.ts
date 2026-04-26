@@ -89,13 +89,39 @@ export function elapsedMinutes(dateStr: string) {
   return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
 }
 
-export function downloadAsset(url: string, filename: string) {
+/**
+ * Trigger a browser save dialog for a remote file (typically an S3 presigned URL).
+ * Routes the request through the backend `/api/download-proxy` so the response
+ * carries `Content-Disposition: attachment` — this avoids S3 CORS issues and
+ * prevents the browser from opening the file inline.
+ */
+export async function downloadAsset(url: string, name: string): Promise<void> {
+  const resolved = resolveMediaUrl(url) || url;
+  const safeBase = (name || "download").replace(/[^a-z0-9_\-. ]/gi, "_").trim() || "download";
+  const proxied = `${API_ORIGIN}/api/download-proxy?url=${encodeURIComponent(resolved)}&filename=${encodeURIComponent(safeBase)}`;
+  const res = await fetch(proxied);
+  if (!res.ok) throw new Error(`Download failed (HTTP ${res.status})`);
+  const blob = await res.blob();
+  const cd = res.headers.get("content-disposition") || "";
+  const cdMatch = cd.match(/filename="?([^";]+)"?/i);
+  let filename = cdMatch?.[1];
+  if (!filename) {
+    const pathExt = resolved.split("?")[0].split(".").pop()?.toLowerCase() ?? "";
+    const mimeMap: Record<string, string> = {
+      "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
+      "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm",
+      "application/pdf": "pdf",
+      "application/vnd.ms-powerpoint": "ppt",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    };
+    const ext = pathExt || mimeMap[blob.type] || "bin";
+    filename = `${safeBase}.${ext}`;
+  }
   const a = document.createElement("a");
-  a.href = url;
+  a.href = URL.createObjectURL(blob);
   a.download = filename;
-  a.target = "_blank";
-  a.rel = "noopener";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }

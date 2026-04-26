@@ -121,7 +121,7 @@ export default function ImportsPage() {
             onClick={() => { setImportType(t); setRows([]); setDone(false); }}
             className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
               importType === t
-                ? "bg-indigo-600 text-white"
+                ? "bg-brand-dark text-white"
                 : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
             }`}
           >
@@ -133,7 +133,7 @@ export default function ImportsPage() {
       {/* Drop zone */}
       {rows.length === 0 && (
         <div
-          className="border-2 border-dashed border-slate-300 rounded-2xl p-10 flex flex-col items-center gap-4 cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors"
+          className="border-2 border-dashed border-slate-300 rounded-2xl p-10 flex flex-col items-center gap-4 cursor-pointer hover:border-brand hover:bg-brand/5 transition-colors"
           onClick={() => fileRef.current?.click()}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
@@ -154,7 +154,7 @@ export default function ImportsPage() {
           </div>
           <button
             onClick={(e) => { e.stopPropagation(); downloadTemplate(); }}
-            className="flex items-center gap-1.5 text-sm text-indigo-600 hover:underline"
+            className="flex items-center gap-1.5 text-sm text-brand-dark hover:underline"
           >
             <Download size={14} /> Download template
           </button>
@@ -190,7 +190,7 @@ export default function ImportsPage() {
                 <button
                   onClick={runImport}
                   disabled={importing}
-                  className="flex items-center gap-2 px-4 py-1.5 text-sm bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60"
+                  className="flex items-center gap-2 px-4 py-1.5 text-sm bg-brand-dark text-white rounded-lg font-medium hover:bg-brand disabled:opacity-60"
                 >
                   {importing && <Loader2 size={14} className="animate-spin" />}
                   {importing ? "Importing…" : `Import ${pendingCount} rows`}

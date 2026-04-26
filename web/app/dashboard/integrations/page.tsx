@@ -6,8 +6,13 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { metaApi, telegramApi, type MetaConnection, type TelegramConnection } from "@/lib/api";
-import { Plug, Mail, Calendar, CheckCircle, Loader2, AlertCircle } from "lucide-react";
+import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection } from "@/lib/api";
+import { getToken } from "@/lib/auth";
+import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
+import { ZernioSocialPanel } from "@/components/ZernioSocialPanel";
+import { Plug, Mail, Calendar, CheckCircle, Loader2, AlertCircle, X } from "lucide-react";
+
+// ── Glyphs ────────────────────────────────────────────────────────────────────
 
 function SlackGlyph({ className }: { className?: string }) {
   return (
@@ -17,145 +22,165 @@ function SlackGlyph({ className }: { className?: string }) {
   );
 }
 
-function MessengerGlyph({ className }: { className?: string }) {
+function TelegramGlyph({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
-      <path d="M12 0C5.373 0 0 4.975 0 11.111c0 3.497 1.745 6.616 4.472 8.652V24l4.086-2.242c1.09.301 2.246.464 3.442.464 6.627 0 12-4.975 12-11.111S18.627 0 12 0zm1.191 14.963l-3.055-3.26-5.963 3.26L10.732 8l3.131 3.26L19.752 8l-6.561 6.963z" />
+      <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
     </svg>
   );
 }
 
-function InstagramGlyph({ className }: { className?: string }) {
+function ShopifyGlyph({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
-      <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm6.406-11.845a1.44 1.44 0 1 0 0 2.881 1.44 1.44 0 0 0 0-2.881z" />
+      <path d="M15.337.009c-.07-.005-.14.012-.198.048a.27.27 0 0 0-.11.15c-.37 1.14-1.142 1.74-1.86 2.003C12.26.6 11.244 0 9.863 0 6.41 0 4.75 4.39 4.176 6.607c-1.263.392-2.17.672-2.248.698C1.305 7.59 1.28 7.618 1.25 8.22L0 20.583 17.335 24 24 22.405 21.088.545c-.02-.147-.14-.26-.29-.267-.147-.006-2.625-.198-5.46-.269zm-1.71.906c.562-.208 1.12-.584 1.498-1.244 1.248.18 2.49.543 2.49.543l.547 4.267c-1.19.37-2.508.78-3.84 1.196L12.87 1.74c.244-.253.497-.576.757-.825zm-3.764.085c1.047 0 1.82.523 2.355 1.544l.944 4.63c-1.04.323-2.09.648-3.092.959L9.5 3.856C9.77 2.045 10.46 1 11.863 1zm7.773 21.11L3.36 19.22l-1.104-10.5 1.55-.482c.07 2.518.854 4.073 2.307 4.073.793 0 1.49-.585 1.94-1.42.397.667.957 1.065 1.658 1.065 1.07 0 1.872-.965 2.265-2.377.413.76 1.027 1.208 1.782 1.208.963 0 1.787-.788 2.244-2.02.4.738.993 1.184 1.738 1.184 1.475 0 2.29-1.736 2.406-4.593l1.24-.385 1.456 14.938z" />
     </svg>
   );
 }
 
-/** Set NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=false to hide the Connect buttons (Bird-only mode). */
-const SHOW_DIRECT_META_OAUTH = process.env.NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH !== "false";
-
-function MetaMessengerInstagramBirdIcons() {
+function StripeGlyph({ className }: { className?: string }) {
   return (
-    <div className="flex items-center justify-center gap-0.5">
-      <MessengerGlyph className="h-5 w-5 text-[#0084ff]" />
-      <InstagramGlyph className="h-5 w-5 text-pink-600" />
-    </div>
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.594-7.305h.003z" />
+    </svg>
   );
 }
+
+function PaystackGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M4.8 9.6h14.4a1.2 1.2 0 0 0 0-2.4H4.8a1.2 1.2 0 0 0 0 2.4zm0 3.6h14.4a1.2 1.2 0 0 0 0-2.4H4.8a1.2 1.2 0 0 0 0 2.4zm0 3.6h8.4a1.2 1.2 0 0 0 0-2.4H4.8a1.2 1.2 0 0 0 0 2.4z" />
+    </svg>
+  );
+}
+
+function PayHeroGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm1 14.5V16h-2v.5a.5.5 0 0 1-1 0V16H9a.5.5 0 0 1 0-1h1v-2H9a.5.5 0 0 1 0-1h1V9.5a.5.5 0 0 1 1 0V12h1.5c1.378 0 2.5 1.122 2.5 2.5S13.878 17 12.5 17H13v-.5a.5.5 0 0 1 0 0zm-.5-1H11v-2h1.5a1.5 1.5 0 0 1 0 3z" />
+    </svg>
+  );
+}
+
+function MicrosoftGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
+    </svg>
+  );
+}
+
+function KlaviyoGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M20.442 0H3.558A3.558 3.558 0 0 0 0 3.558v16.884A3.558 3.558 0 0 0 3.558 24h16.884A3.558 3.558 0 0 0 24 20.442V3.558A3.558 3.558 0 0 0 20.442 0zM12 18.5c-3.59 0-6.5-2.91-6.5-6.5S8.41 5.5 12 5.5s6.5 2.91 6.5 6.5-2.91 6.5-6.5 6.5z"/>
+    </svg>
+  );
+}
+
+function MailchimpGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M21.478 15.43c.203-.192.31-.484.266-.794-.06-.41-.41-.772-.895-.875a1.233 1.233 0 0 0-.246-.025c-.23 0-.453.064-.633.178a7.86 7.86 0 0 1-.244-1.988c0-4.363-3.566-7.926-7.932-7.926-4.367 0-7.933 3.563-7.933 7.926 0 4.364 3.566 7.927 7.933 7.927 1.98 0 3.792-.73 5.172-1.93.056.012.112.018.169.018.276 0 .54-.11.737-.307l2.606-2.21zM11.794 5.5c3.716 0 6.733 3.015 6.733 6.726 0 .678-.1 1.331-.284 1.948a1.247 1.247 0 0 0-.624-.165c-.154 0-.303.027-.44.077a6.543 6.543 0 0 1-5.385 2.835 6.543 6.543 0 0 1-6.545-6.541A6.543 6.543 0 0 1 11.794 5.5z"/>
+    </svg>
+  );
+}
+
+function BrevoGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-6.5 9.004a.75.75 0 0 1-1.228-.036L6.41 12.74a.75.75 0 0 1 1.228-.864l2.896 4.118 5.896-8.164a.75.75 0 1 1 1.132.418z"/>
+    </svg>
+  );
+}
+
+// ── Tile primitives ───────────────────────────────────────────────────────────
+
+type BadgeDef = { label: string; className: string };
 
 type SmallTileProps = {
   icon: ReactNode;
   title: string;
   subtitle?: string;
   borderClass: string;
+  badge?: BadgeDef;
   children: ReactNode;
 };
 
-function SmallTile({ icon, title, subtitle, borderClass, children }: SmallTileProps) {
+function SmallTile({ icon, title, subtitle, borderClass, badge, children }: SmallTileProps) {
   return (
-    <div className={`flex flex-col rounded-xl border p-3 shadow-sm ${borderClass}`}>
-      <div className="flex items-start gap-2.5">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/90 shadow-sm">{icon}</div>
+    <div className={`flex h-full flex-col rounded-lg border p-3 shadow-sm ${borderClass}`}>
+      <div className="flex items-start gap-2">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/90 shadow-sm">
+          {icon}
+        </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold leading-tight text-slate-900">{title}</h3>
-          {subtitle ? <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{subtitle}</p> : null}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <h3 className="text-[13px] font-semibold leading-tight text-slate-900">{title}</h3>
+            {badge && (
+              <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${badge.className}`}>
+                {badge.label}
+              </span>
+            )}
+          </div>
+          {subtitle && (
+            <p className="mt-0.5 text-[10px] leading-snug text-slate-500">{subtitle}</p>
+          )}
         </div>
       </div>
-      <div className="mt-2.5">{children}</div>
+      <div className="mt-auto pt-2.5">{children}</div>
     </div>
   );
 }
 
-type MetaConnectFormProps = {
-  channel: "messenger" | "instagram";
-  connection?: MetaConnection;
-  onDisconnected: () => void;
+// ── Nango tile controls ───────────────────────────────────────────────────────
+
+type NangoTileControlsProps = {
+  connected: boolean | null;
+  connectLabel: string;
+  connectClass: string;
+  onConnect: () => Promise<void>;
+  onDisconnect: () => Promise<void>;
 };
 
-function MetaConnectForm({ channel, connection, onDisconnected }: MetaConnectFormProps) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const isInstagram = channel === "instagram";
-
-  async function handleOAuth() {
-    setLoading(true);
-    setError("");
-    try {
-      const { url } = await metaApi.oauthStart(channel);
-      window.location.href = url;
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to start login");
-      setLoading(false);
-    }
-  }
-
-  async function handleDisconnect() {
-    if (!confirm(`Disconnect ${channel}? Auto-replies on this channel will stop.`)) return;
-    try {
-      await metaApi.disconnect(channel);
-      onDisconnected();
-    } catch {
-      alert("Failed to disconnect");
-    }
-  }
-
-  if (connection?.connected) {
+function NangoTileControls({ connected, connectLabel, connectClass, onConnect, onDisconnect }: NangoTileControlsProps) {
+  if (connected === null) {
     return (
-      <div className="space-y-2">
-        <div className="flex items-center gap-1.5 text-green-700 text-xs font-medium">
-          <CheckCircle size={13} />
-          Connected
+      <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
+        <Loader2 size={11} className="animate-spin" /> Checking…
+      </div>
+    );
+  }
+  if (connected) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+          <CheckCircle size={12} /> Connected
         </div>
         <button
-          onClick={handleDisconnect}
-          className="w-full rounded-lg bg-red-600 px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-red-700"
+          type="button"
+          onClick={onDisconnect}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
         >
-          Disconnect
+          <X size={11} /> Disconnect
         </button>
       </div>
     );
   }
-
   return (
-    <div className="space-y-2">
-      {error && <p className="text-[10px] text-red-600">{error}</p>}
-      <button
-        onClick={handleOAuth}
-        disabled={loading}
-        className={`flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-60 ${
-          isInstagram
-            ? "bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
-            : "bg-[#1877f2] hover:bg-[#166fe5]"
-        }`}
-      >
-        {loading ? <Loader2 size={11} className="animate-spin" /> : (
-          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor" aria-hidden>
-            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-          </svg>
-        )}
-        {loading ? "Redirecting…" : isInstagram ? "Connect Instagram" : "Connect Messenger"}
-      </button>
-    </div>
+    <button
+      type="button"
+      onClick={onConnect}
+      className={`w-full rounded-lg px-2.5 py-1.5 text-center text-xs font-semibold text-white ${connectClass}`}
+    >
+      {connectLabel}
+    </button>
   );
 }
 
-function TelegramGlyph({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
-      <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
-    </svg>
-  );
-}
+// ── Telegram (free bot) ───────────────────────────────────────────────────────
 
-function TelegramStatus({
-  connection,
-  onChanged,
-}: {
-  connection?: TelegramConnection;
-  onChanged: () => void;
-}) {
+function TelegramStatus({ connection, onChanged }: { connection?: TelegramConnection; onChanged: () => void }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -163,98 +188,182 @@ function TelegramStatus({
   async function handleConnect() {
     const t = token.trim();
     if (!t) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await telegramApi.connect(t);
-      setToken("");
-      onChanged();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not connect");
-    } finally {
-      setBusy(false);
-    }
+    setBusy(true); setErr(null);
+    try { await telegramApi.connect(t); setToken(""); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not connect"); }
+    finally { setBusy(false); }
   }
 
   async function handleDisconnect() {
-    if (!confirm("Disconnect this Telegram bot? Incoming messages will stop.")) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await telegramApi.disconnect();
-      onChanged();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not disconnect");
-    } finally {
-      setBusy(false);
-    }
+    if (!confirm("Disconnect this Telegram bot?")) return;
+    setBusy(true); setErr(null);
+    try { await telegramApi.disconnect(); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not disconnect"); }
+    finally { setBusy(false); }
   }
 
   if (connection?.connected && connection.bot_username) {
     return (
-      <div className="space-y-2">
-        <div className="flex items-center gap-1.5 text-green-700 text-xs font-medium">
-          <CheckCircle size={13} />
-          @{connection.bot_username}
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+          <CheckCircle size={12} /> @{connection.bot_username}
         </div>
-        <p className="text-[10px] leading-snug text-slate-500">Telegram is active for your account.</p>
-        <button
-          type="button"
-          onClick={handleDisconnect}
-          disabled={busy}
-          className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
-        >
-          {busy ? <Loader2 size={11} className="animate-spin" /> : null}
-          Disconnect
+        <button type="button" onClick={handleDisconnect} disabled={busy}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
         </button>
-        {err && (
-          <p className="flex items-center gap-1 text-[10px] text-red-600">
-            <AlertCircle size={10} /> {err}
-          </p>
-        )}
+        {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
       </div>
     );
   }
 
   return (
     <div className="space-y-1.5">
-      <p className="text-[11px] leading-relaxed text-slate-600">
-        Paste a Telegram bot token from{" "}
-        <a
-          href="https://t.me/BotFather"
-          target="_blank"
-          rel="noreferrer"
-          className="font-medium text-[#229ED9] hover:underline"
-        >
+      <p className="text-[10px] leading-snug text-slate-500">
+        Token from{" "}
+        <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="font-medium text-[#229ED9] hover:underline">
           @BotFather
-        </a>{" "}
-        to connect.
+        </a>
       </p>
-      <input
-        type="password"
-        value={token}
-        onChange={(e) => setToken(e.target.value)}
-        placeholder="123456:ABC-DEF…"
-        autoComplete="off"
-        className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-[11px] font-mono outline-none focus:border-[#229ED9]"
-      />
-      <button
-        type="button"
-        onClick={handleConnect}
-        disabled={busy || !token.trim()}
-        className="inline-flex items-center gap-1 rounded-md bg-[#229ED9] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#1b8bc0] disabled:opacity-50"
-      >
-        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />}
-        Connect
+      <input type="password" value={token} onChange={(e) => setToken(e.target.value)}
+        placeholder="123456:ABC…" autoComplete="off"
+        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#229ED9]" />
+      <button type="button" onClick={handleConnect} disabled={busy || !token.trim()}
+        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#229ED9] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#1b8bc0] disabled:opacity-50">
+        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
       </button>
-      {err && (
-        <p className="flex items-center gap-1 text-[10px] text-red-600">
-          <AlertCircle size={10} /> {err}
-        </p>
-      )}
+      {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
     </div>
   );
 }
+
+// ── Paystack (API key) ────────────────────────────────────────────────────────
+
+function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnection; onChanged: () => void }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleConnect() {
+    const k = key.trim();
+    if (!k) return;
+    setBusy(true); setErr(null);
+    try { await paystackApi.connect(k); setKey(""); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not connect"); }
+    finally { setBusy(false); }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm("Disconnect Paystack?")) return;
+    setBusy(true); setErr(null);
+    try { await paystackApi.disconnect(); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not disconnect"); }
+    finally { setBusy(false); }
+  }
+
+  if (connection?.connected) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+          <CheckCircle size={12} />
+          {connection.business_name ? connection.business_name : "Connected"}
+        </div>
+        <button type="button" onClick={handleDisconnect} disabled={busy}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+        </button>
+        {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[10px] leading-snug text-slate-500">
+        Secret Key from your{" "}
+        <a href="https://dashboard.paystack.com/#/settings/developer" target="_blank" rel="noreferrer"
+          className="font-medium text-[#00C3F7] hover:underline">
+          Paystack Dashboard
+        </a>
+      </p>
+      <input type="password" value={key} onChange={(e) => setKey(e.target.value)}
+        placeholder="sk_live_…" autoComplete="off"
+        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#00C3F7]" />
+      <button type="button" onClick={handleConnect} disabled={busy || !key.trim()}
+        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#00C3F7] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#00a8d6] disabled:opacity-50">
+        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
+      </button>
+      {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
+    </div>
+  );
+}
+
+// ── PayHero (Basic Auth) ──────────────────────────────────────────────────────
+
+function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnection; onChanged: () => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleConnect() {
+    if (!username.trim() || !password.trim()) return;
+    setBusy(true); setErr(null);
+    try { await payheroApi.connect(username.trim(), password.trim()); setUsername(""); setPassword(""); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not connect"); }
+    finally { setBusy(false); }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm("Disconnect PayHero?")) return;
+    setBusy(true); setErr(null);
+    try { await payheroApi.disconnect(); onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not disconnect"); }
+    finally { setBusy(false); }
+  }
+
+  if (connection?.connected) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+          <CheckCircle size={12} />
+          {connection.username || "Connected"}
+        </div>
+        <button type="button" onClick={handleDisconnect} disabled={busy}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+        </button>
+        {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[10px] leading-snug text-slate-500">
+        API credentials from your{" "}
+        <a href="https://app.payhero.co.ke/" target="_blank" rel="noreferrer"
+          className="font-medium text-[#1DB954] hover:underline">
+          PayHero Dashboard
+        </a>
+        {" "}→ API Keys
+      </p>
+      <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
+        placeholder="API Username" autoComplete="off"
+        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]" />
+      <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+        placeholder="API Password" autoComplete="off"
+        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]" />
+      <button type="button" onClick={handleConnect} disabled={busy || !username.trim() || !password.trim()}
+        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#1DB954] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50">
+        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
+      </button>
+      {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function IntegrationsPage() {
   return (
@@ -264,216 +373,352 @@ export default function IntegrationsPage() {
   );
 }
 
+const NANGO_IDS = {
+  slack: NANGO_INTEGRATION_IDS.slack,
+  email: NANGO_INTEGRATION_IDS.email,
+  calendar: NANGO_INTEGRATION_IDS.calendar,
+  shopify: NANGO_INTEGRATION_IDS.shopify,
+  microsoft: NANGO_INTEGRATION_IDS.microsoft,
+  stripe: NANGO_INTEGRATION_IDS.stripe,
+  klaviyo: NANGO_INTEGRATION_IDS.klaviyo,
+  mailchimp: NANGO_INTEGRATION_IDS.mailchimp,
+  brevo: NANGO_INTEGRATION_IDS.brevo,
+} as const;
+
+type NangoKey = keyof typeof NANGO_IDS;
+
 function IntegrationsPageInner() {
-  const [metaConns, setMetaConns] = useState<MetaConnection[]>([]);
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
+  const [psConn, setPsConn] = useState<PaystackConnection>({ connected: false });
+  const [phConn, setPhConn] = useState<PayheroConnection>({ connected: false });
+  const [nangoStatus, setNangoStatus] = useState<Record<NangoKey, boolean | null>>({
+    slack: null, email: null, calendar: null, shopify: null,
+    microsoft: null, stripe: null, klaviyo: null, mailchimp: null, brevo: null,
+  });
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const searchParams = useSearchParams();
 
-  const refresh = useCallback(() => {
-    if (SHOW_DIRECT_META_OAUTH) {
-      metaApi.connections().then(setMetaConns).catch(() => {});
-    }
+  const refreshTg = useCallback(() => {
     telegramApi.connection().then(setTgConn).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  const refreshPs = useCallback(() => {
+    paystackApi.connection().then(setPsConn).catch(() => {});
+  }, []);
 
-  // Handle OAuth redirect result (?connected=messenger or ?error=...)
+  const refreshPh = useCallback(() => {
+    payheroApi.connection().then(setPhConn).catch(() => {});
+  }, []);
+
+  const refreshNango = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+    const ids = Object.values(NANGO_IDS).join(",");
+    try {
+      const res = await fetch(`/api/nango/connections?integrations=${ids}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { connected: Record<string, boolean> };
+      setNangoStatus({
+        slack: data.connected[NANGO_IDS.slack] ?? false,
+        email: data.connected[NANGO_IDS.email] ?? false,
+        calendar: data.connected[NANGO_IDS.calendar] ?? false,
+        shopify: data.connected[NANGO_IDS.shopify] ?? false,
+        microsoft: data.connected[NANGO_IDS.microsoft] ?? false,
+        stripe: data.connected[NANGO_IDS.stripe] ?? false,
+        klaviyo: data.connected[NANGO_IDS.klaviyo] ?? false,
+        mailchimp: data.connected[NANGO_IDS.mailchimp] ?? false,
+        brevo: data.connected[NANGO_IDS.brevo] ?? false,
+      });
+    } catch {
+      setNangoStatus({ slack: false, email: false, calendar: false, shopify: false, microsoft: false, stripe: false, klaviyo: false, mailchimp: false, brevo: false });
+    }
+  }, []);
+
+  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); }, [refreshTg, refreshPs, refreshPh, refreshNango]);
+
   useEffect(() => {
     const connected = searchParams.get("connected");
     const error = searchParams.get("error");
     if (connected) {
-      setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected successfully!` });
-      refresh();
-      // Clean URL without reload
+      setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!` });
+      refreshTg(); void refreshNango();
       window.history.replaceState({}, "", window.location.pathname);
     } else if (error) {
       const msgs: Record<string, string> = {
         oauth_denied: "You cancelled the login. Please try again.",
-        no_pages: "No Facebook Pages found. Make sure you have a Page linked to your account.",
         token_exchange: "Authentication failed. Please try again.",
         invalid_state: "Session expired. Please try again.",
-        server_error: "Server error during connection. Please try again.",
+        server_error: "Server error. Please try again.",
       };
       setBanner({ type: "error", msg: msgs[error] || "Connection failed. Please try again." });
       window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [searchParams, refresh]);
+  }, [searchParams, refreshTg, refreshNango]);
 
-  function getConn(channel: "messenger" | "instagram") {
-    return metaConns.find(c => c.channel === channel);
+  async function nangoConnect(key: NangoKey) {
+    await openNangoConnect([NANGO_IDS[key]]);
+    setTimeout(() => void refreshNango(), 1500);
   }
 
+  async function nangoDisconnect(key: NangoKey) {
+    const label = key.charAt(0).toUpperCase() + key.slice(1);
+    if (!confirm(`Disconnect ${label}?`)) return;
+    const token = getToken();
+    if (!token) return;
+    const res = await fetch("/api/nango/connections", {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ integration_id: NANGO_IDS[key] }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({} as { error?: string }))) as { error?: string };
+      alert(err.error || "Failed to disconnect");
+      return;
+    }
+    void refreshNango();
+  }
+
+  const FREE_BADGE: BadgeDef = { label: "Free", className: "bg-emerald-100 text-emerald-700" };
+
   return (
-    <div className="mx-auto max-w-3xl min-w-0 space-y-6 p-4 sm:p-6">
+    <div className="mx-auto max-w-4xl min-w-0 space-y-6 p-4 sm:p-6">
+
+      {/* Header */}
       <div>
-        <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+        <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-brand/15 text-brand-dark">
           <Plug size={18} />
         </div>
         <h1 className="text-xl font-bold text-slate-900">Integrations</h1>
         <p className="mt-1 text-xs leading-relaxed text-slate-500 sm:text-sm">
-          Messenger and Instagram run through Bird; email and calendar use one-tap sign-in. Your team handles anything technical.
+          Connect your messaging channels, social media, e-commerce, payments, and marketing tools.
         </p>
       </div>
 
-      {/* OAuth result banner */}
+      {/* Banner */}
       {banner && (
-        <div className={`flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs font-medium ${
-          banner.type === "success"
-            ? "bg-green-50 text-green-800 border border-green-200"
-            : "bg-red-50 text-red-800 border border-red-200"
+        <div className={`flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs font-medium ${
+          banner.type === "success" ? "border-green-200 bg-green-50 text-green-800" : "border-red-200 bg-red-50 text-red-800"
         }`}>
-          {banner.type === "success"
-            ? <CheckCircle size={14} className="mt-0.5 shrink-0" />
-            : <AlertCircle size={14} className="mt-0.5 shrink-0" />}
+          {banner.type === "success" ? <CheckCircle size={14} className="mt-0.5 shrink-0" /> : <AlertCircle size={14} className="mt-0.5 shrink-0" />}
           <span>{banner.msg}</span>
-          <button onClick={() => setBanner(null)} className="ml-auto text-current opacity-50 hover:opacity-100">✕</button>
+          <button onClick={() => setBanner(null)} className="ml-auto opacity-50 hover:opacity-100">✕</button>
         </div>
       )}
 
-      {/* Messenger + Instagram: Bird (default) or direct Meta OAuth (opt-in) */}
-      <section>
-        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Messenger · Instagram</h2>
-        {SHOW_DIRECT_META_OAUTH ? (
-          <>
-            <div className="grid gap-2.5 sm:grid-cols-2">
-              <SmallTile
-                title="Messenger"
-                subtitle="Facebook Page — tap Connect and sign in"
-                borderClass="border-[#0084ff]/20 bg-blue-50/50"
-                icon={<MessengerGlyph className="h-5 w-5 text-[#0084ff]" />}
-              >
-                <MetaConnectForm
-                  channel="messenger"
-                  connection={getConn("messenger")}
-                  onDisconnected={refresh}
-                />
-              </SmallTile>
-
-              <SmallTile
-                title="Instagram"
-                subtitle="Business inbox — tap Connect and sign in"
-                borderClass="border-pink-200 bg-pink-50/50"
-                icon={<InstagramGlyph className="h-5 w-5 text-pink-600" />}
-              >
-                <MetaConnectForm
-                  channel="instagram"
-                  connection={getConn("instagram")}
-                  onDisconnected={refresh}
-                />
-              </SmallTile>
-            </div>
-            <p className="mt-2 text-[11px] text-slate-500">
-              Direct Meta login (legacy). Prefer Bird? Set NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=false.
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="grid gap-2.5 sm:grid-cols-1">
-              <SmallTile
-                title="Messenger & Instagram"
-                subtitle="Facebook Page + Instagram DMs via Bird"
-                borderClass="border-emerald-200 bg-emerald-50/50"
-                icon={<MetaMessengerInstagramBirdIcons />}
-              >
-                <p className="text-[11px] leading-relaxed text-slate-600">
-                  Your Facebook Page and Instagram inbox are connected inside <span className="font-medium text-slate-800">Bird</span>. Your
-                  account team adds those channels in Bird and maps each Bird channel ID to your CRM — no Meta login on this screen.
-                  Inbound DMs hit our webhook and auto-replies go back through Bird.
-                </p>
-              </SmallTile>
-            </div>
-            <p className="mt-2 text-[11px] text-slate-500">
-              WhatsApp stays on{" "}
-              <Link href="/dashboard/whatsapp" className="font-medium text-indigo-600 hover:underline">
-                Business → WhatsApp
-              </Link>{" "}
-              (Evolution). To use the old “Connect with Facebook” flow here instead, set{" "}
-              <code className="rounded bg-slate-100 px-1 py-0.5 text-[10px]">NEXT_PUBLIC_SHOW_DIRECT_META_OAUTH=true</code>.
-            </p>
-          </>
-        )}
-      </section>
-
-      {/* Telegram */}
-      <section>
-        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Telegram</h2>
-        <div className="grid gap-2.5 sm:grid-cols-2">
+      {/* ── Section 1: Messaging (Free) ──────────────────────────────────── */}
+      <section id="integrations-messaging" className="scroll-mt-24">
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Messaging</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <SmallTile
-            title="Telegram"
-            subtitle="Bot messaging via @BotFather token"
-            borderClass="border-[#229ED9]/20 bg-sky-50/50"
+            title="WhatsApp" subtitle="QR-link · messages &amp; automations"
+            borderClass="border-[#25D366]/30 bg-[#25D366]/10" badge={FREE_BADGE}
+            icon={<WaGlyph className="h-5 w-5 text-[#25D366]" />}
+          >
+            <WhatsAppIntegrationControls />
+          </SmallTile>
+
+          <SmallTile
+            title="Telegram" subtitle="Bot token from @BotFather"
+            borderClass="border-[#229ED9]/20 bg-sky-50/50" badge={FREE_BADGE}
             icon={<TelegramGlyph className="h-5 w-5 text-[#229ED9]" />}
           >
-            <TelegramStatus connection={tgConn} onChanged={refresh} />
+            <TelegramStatus connection={tgConn} onChanged={refreshTg} />
           </SmallTile>
         </div>
       </section>
 
-      {/* Slack · Email · Calendar */}
+      {/* ── Section 2: Social Channels (Zernio) ─────────────────────────── */}
+      <section id="integrations-social" className="scroll-mt-24 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-100 bg-gradient-to-r from-brand/10 via-white to-brand-light/15 px-4 py-3 sm:px-5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-700">Social Channels</h2>
+            <span className="w-fit rounded-full bg-white/90 px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-brand-dark ring-1 ring-brand/25 shadow-sm">
+              via Zernio · Paid
+            </span>
+          </div>
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-600">
+            Includes Facebook Page &amp; Messenger, Instagram, WhatsApp Business API, Telegram, X (Twitter), LinkedIn,
+            TikTok, YouTube, Pinterest, Reddit, Bluesky, Threads, Google Business, Snapchat, Discord, and more.
+          </p>
+        </div>
+        <div className="p-3 sm:p-4">
+          <ZernioSocialPanel hideBranding />
+        </div>
+      </section>
+
+      {/* ── Section 3: Payments ──────────────────────────────────────────── */}
       <section>
-        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Slack · Email · Calendar</h2>
-        <div className="grid gap-2.5 sm:grid-cols-3">
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Payments</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <SmallTile
-            title="Slack"
-            subtitle="Sign in to your workspace"
-            borderClass="border-slate-200 bg-slate-50/80"
-            icon={<SlackGlyph className="h-5 w-5 text-[#4A154B]" />}
+            title="Stripe" subtitle="International payments &amp; subscriptions"
+            borderClass="border-[#635BFF]/20 bg-[#635BFF]/5"
+            icon={<StripeGlyph className="h-5 w-5 text-[#635BFF]" />}
           >
-            <button
-              type="button"
-              onClick={() => openNangoConnect([NANGO_INTEGRATION_IDS.slack])}
-              className="w-full rounded-lg bg-[#4A154B] px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-[#3e1240]"
-            >
-              Connect
-            </button>
+            <NangoTileControls
+              connected={nangoStatus.stripe} connectLabel="Connect Stripe"
+              connectClass="bg-[#635BFF] hover:bg-[#4f46e5]"
+              onConnect={() => nangoConnect("stripe")}
+              onDisconnect={() => nangoDisconnect("stripe")}
+            />
           </SmallTile>
 
           <SmallTile
-            title="Email"
-            subtitle="Gmail or Outlook — one sign-in"
-            borderClass="border-slate-200 bg-slate-50/80"
-            icon={<Mail size={18} className="text-slate-600" />}
+            title="Paystack" subtitle="Payments across Africa — NGN, KES, GHS &amp; more"
+            borderClass="border-[#00C3F7]/20 bg-[#00C3F7]/5"
+            icon={<PaystackGlyph className="h-5 w-5 text-[#00C3F7]" />}
           >
-            <button
-              type="button"
-              onClick={() => openNangoConnect([NANGO_INTEGRATION_IDS.email])}
-              className="w-full rounded-lg bg-slate-800 px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-slate-900"
-            >
-              Connect
-            </button>
+            <PaystackStatus connection={psConn} onChanged={refreshPs} />
           </SmallTile>
 
           <SmallTile
-            title="Calendar"
-            subtitle="Google or Microsoft — one sign-in"
-            borderClass="border-slate-200 bg-slate-50/80"
-            icon={<Calendar size={18} className="text-emerald-600" />}
+            title="PayHero" subtitle="M-Pesa STK push &amp; mobile money — Kenya"
+            borderClass="border-[#1DB954]/20 bg-[#1DB954]/5"
+            icon={<PayHeroGlyph className="h-5 w-5 text-[#1DB954]" />}
           >
-            <button
-              type="button"
-              onClick={() => openNangoConnect([NANGO_INTEGRATION_IDS.calendar])}
-              className="w-full rounded-lg bg-emerald-600 px-2.5 py-1.5 text-center text-xs font-semibold text-white hover:bg-emerald-700"
-            >
-              Connect
-            </button>
+            <PayHeroStatus connection={phConn} onChanged={refreshPh} />
           </SmallTile>
         </div>
       </section>
 
+      {/* ── Section 4: Email Marketing ───────────────────────────────────── */}
+      <section>
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Email Marketing</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <SmallTile
+            title="Klaviyo" subtitle="Best for e-commerce &amp; Shopify stores"
+            borderClass="border-[#00A500]/20 bg-[#00A500]/5"
+            icon={<KlaviyoGlyph className="h-5 w-5 text-[#00A500]" />}
+          >
+            <NangoTileControls
+              connected={nangoStatus.klaviyo} connectLabel="Connect Klaviyo"
+              connectClass="bg-[#00A500] hover:bg-[#008000]"
+              onConnect={() => nangoConnect("klaviyo")}
+              onDisconnect={() => nangoDisconnect("klaviyo")}
+            />
+          </SmallTile>
+
+          <SmallTile
+            title="Mailchimp" subtitle="Email campaigns &amp; automations"
+            borderClass="border-[#FFE01B]/40 bg-[#FFE01B]/10"
+            icon={<MailchimpGlyph className="h-5 w-5 text-[#241C15]" />}
+          >
+            <NangoTileControls
+              connected={nangoStatus.mailchimp} connectLabel="Connect Mailchimp"
+              connectClass="bg-[#241C15] hover:bg-black"
+              onConnect={() => nangoConnect("mailchimp")}
+              onDisconnect={() => nangoDisconnect("mailchimp")}
+            />
+          </SmallTile>
+
+          <SmallTile
+            title="Brevo" subtitle="Email, SMS &amp; marketing automation"
+            borderClass="border-[#0B996E]/20 bg-[#0B996E]/5"
+            icon={<BrevoGlyph className="h-5 w-5 text-[#0B996E]" />}
+          >
+            <NangoTileControls
+              connected={nangoStatus.brevo} connectLabel="Connect Brevo"
+              connectClass="bg-[#0B996E] hover:bg-[#097a58]"
+              onConnect={() => nangoConnect("brevo")}
+              onDisconnect={() => nangoDisconnect("brevo")}
+            />
+          </SmallTile>
+        </div>
+      </section>
+
+      {/* ── Section 5: Productivity ──────────────────────────────────────── */}
+      <section id="integrations-productivity" className="scroll-mt-24">
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Productivity</h2>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div id="integrations-slack" className="min-w-0">
+            <SmallTile
+              title="Slack" subtitle="Workspace notifications"
+              borderClass="border-[#4A154B]/20 bg-[#4A154B]/5"
+              icon={<SlackGlyph className="h-5 w-5 text-[#4A154B]" />}
+            >
+              <NangoTileControls
+                connected={nangoStatus.slack} connectLabel="Connect Slack"
+                connectClass="bg-[#4A154B] hover:bg-[#3e1240]"
+                onConnect={() => nangoConnect("slack")}
+                onDisconnect={() => nangoDisconnect("slack")}
+              />
+            </SmallTile>
+          </div>
+
+          <div id="integrations-gmail" className="min-w-0">
+            <SmallTile
+              title="Gmail" subtitle="Google Mail &amp; inbox"
+              borderClass="border-red-200 bg-red-50/50"
+              icon={<Mail size={18} className="text-red-500" />}
+            >
+              <NangoTileControls
+                connected={nangoStatus.email} connectLabel="Connect Gmail"
+                connectClass="bg-red-500 hover:bg-red-600"
+                onConnect={() => nangoConnect("email")}
+                onDisconnect={() => nangoDisconnect("email")}
+              />
+            </SmallTile>
+          </div>
+
+          <div id="integrations-microsoft" className="min-w-0">
+            <SmallTile
+              title="Microsoft" subtitle="Outlook, Calendar &amp; Contacts"
+              borderClass="border-[#0078D4]/20 bg-[#0078D4]/5"
+              icon={<MicrosoftGlyph className="h-5 w-5 text-[#0078D4]" />}
+            >
+              <NangoTileControls
+                connected={nangoStatus.microsoft} connectLabel="Connect Microsoft"
+                connectClass="bg-[#0078D4] hover:bg-[#006abc]"
+                onConnect={() => nangoConnect("microsoft")}
+                onDisconnect={() => nangoDisconnect("microsoft")}
+              />
+            </SmallTile>
+          </div>
+
+          <div id="integrations-google-calendar" className="min-w-0">
+            <SmallTile
+              title="Google Calendar" subtitle="Meetings &amp; scheduling"
+              borderClass="border-emerald-200 bg-emerald-50/50"
+              icon={<Calendar size={18} className="text-emerald-600" />}
+            >
+              <NangoTileControls
+                connected={nangoStatus.calendar} connectLabel="Connect Calendar"
+                connectClass="bg-emerald-600 hover:bg-emerald-700"
+                onConnect={() => nangoConnect("calendar")}
+                onDisconnect={() => nangoDisconnect("calendar")}
+              />
+            </SmallTile>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Section 6: E-commerce ────────────────────────────────────────── */}
+      <section>
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">E-commerce</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <SmallTile
+            title="Shopify" subtitle="Sync orders, customers &amp; products"
+            borderClass="border-[#96BF48]/30 bg-[#96BF48]/10"
+            icon={<ShopifyGlyph className="h-5 w-5 text-[#5A8E00]" />}
+          >
+            <NangoTileControls
+              connected={nangoStatus.shopify} connectLabel="Connect Shopify"
+              connectClass="bg-[#5A8E00] hover:bg-[#4a7500]"
+              onConnect={() => nangoConnect("shopify")}
+              onDisconnect={() => nangoDisconnect("shopify")}
+            />
+          </SmallTile>
+        </div>
+      </section>
+
+      {/* Footer */}
       <section className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[11px] leading-relaxed text-slate-600">
-        <strong className="text-slate-800">WhatsApp</strong>: open{" "}
-        <Link href="/dashboard/whatsapp" className="font-medium text-indigo-600 hover:underline">
-          Business → WhatsApp
-        </Link>{" "}
-        to pair your number — same idea, guided steps only. Team and shop options are in{" "}
-        <Link href="/dashboard/settings" className="font-medium text-indigo-600 hover:underline">
-          Settings
-        </Link>
-        .
+        Need usage stats and contact tools? Open{" "}
+        <Link href="/dashboard/whatsapp" className="font-medium text-brand-dark hover:underline">WhatsApp</Link>{" "}
+        in the sidebar. Team and shop options are in{" "}
+        <Link href="/dashboard/settings" className="font-medium text-brand-dark hover:underline">Settings</Link>.
       </section>
     </div>
   );

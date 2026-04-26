@@ -67,7 +67,7 @@ export default function AssistantAuditPage() {
               <ArrowLeft size={12} /> Back to chat
             </Link>
             <h1 className="flex items-center gap-2 text-xl font-semibold text-slate-900">
-              <ShieldCheck size={18} className="text-indigo-600" /> Zilo audit log
+              <ShieldCheck size={18} className="text-brand-dark" /> Zilo audit log
             </h1>
           </div>
           <button
@@ -103,6 +103,7 @@ export default function AssistantAuditPage() {
               <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-3 py-2 text-left font-semibold">When</th>
+                  <th className="px-3 py-2 text-left font-semibold">Agent</th>
                   <th className="px-3 py-2 text-left font-semibold">Tool</th>
                   <th className="px-3 py-2 text-left font-semibold">Arguments</th>
                   <th className="px-3 py-2 text-left font-semibold">Status</th>
@@ -115,7 +116,16 @@ export default function AssistantAuditPage() {
                       {formatWhen(r.created_at)}
                     </td>
                     <td className="whitespace-nowrap px-3 py-2">
-                      <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
+                      {r.agent ? (
+                        <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                          {r.agent.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-brand/10 px-2 py-0.5 text-[11px] font-medium text-brand-dark">
                         <Wrench size={10} />
                         {r.tool}
                       </span>
@@ -126,14 +136,14 @@ export default function AssistantAuditPage() {
                     <td className="whitespace-nowrap px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-[10.5px] font-medium ${
-                          r.status === "ok" || r.status === "success"
+                          r.success === true || r.status === "ok" || r.status === "success"
                             ? "bg-green-50 text-green-700"
-                            : r.status === "pending"
-                            ? "bg-amber-50 text-amber-700"
-                            : "bg-red-50 text-red-700"
+                            : r.success === false
+                            ? "bg-red-50 text-red-700"
+                            : "bg-amber-50 text-amber-700"
                         }`}
                       >
-                        {r.status}
+                        {r.success === true ? "ok" : r.success === false ? "failed" : r.status ?? "—"}
                       </span>
                     </td>
                   </tr>

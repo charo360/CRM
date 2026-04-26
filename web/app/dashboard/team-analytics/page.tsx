@@ -51,8 +51,8 @@ export default function TeamAnalyticsPage() {
         <div className="bg-white rounded-xl border border-slate-200 p-5">
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm text-slate-500 font-medium">Team Members</p>
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
-              <Users size={16} className="text-indigo-600" />
+            <div className="w-8 h-8 rounded-lg bg-brand/10 flex items-center justify-center">
+              <Users size={16} className="text-brand-dark" />
             </div>
           </div>
           <p className="text-2xl font-bold text-slate-900">{data.length}</p>
@@ -98,7 +98,7 @@ export default function TeamAnalyticsPage() {
         </div>
         {loading ? (
           <div className="flex items-center justify-center py-16">
-            <Loader2 className="animate-spin text-indigo-600" size={24} />
+            <Loader2 className="animate-spin text-brand-dark" size={24} />
           </div>
         ) : data.length === 0 ? (
           <p className="text-center text-slate-400 text-sm py-12">No sales data yet</p>
@@ -126,7 +126,7 @@ export default function TeamAnalyticsPage() {
                     </div>
                     <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-indigo-500 transition-all"
+                        className="h-full rounded-full bg-brand transition-all"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
