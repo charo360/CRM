@@ -129,7 +129,7 @@ export default function FeaturesPage() {
         </div>
         <h1 className="text-2xl font-bold text-slate-900">Features</h1>
         <p className="text-slate-600 text-sm mt-2 leading-relaxed">
-          <strong className="text-slate-800">Workspace</strong> always includes {ui.overviewTitle}, Zilo Chat,
+          <strong className="text-slate-800">Workspace</strong> always includes {ui.overviewSubtitle}, Zilo Chat,
           Automations, <strong className="text-slate-800">Integrations</strong>, this page, and Settings. Turn on
           toggles below to add pipeline, sales, and growth modules to the sidebar.
         </p>

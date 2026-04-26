@@ -664,7 +664,7 @@ function CampaignsTable({
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.map((r) => {
-              const obj = objectiveMeta(r.objective);
+              const obj = objectiveMeta(r.objective ?? "");
               const parts = metaNotesToParts(r.notes ?? "{}");
               const canToggle = r.status === "active" || r.status === "paused";
               return (
@@ -800,8 +800,8 @@ function ReportingTab({ rows }: { rows: MetaAdsCampaignDraft[] }) {
                 <tr key={r.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-medium text-slate-800">{r.name}</td>
                   <td className="px-4 py-2.5">
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${objectiveMeta(r.objective).color}`}>
-                      {objectiveMeta(r.objective).label}
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${objectiveMeta(r.objective ?? "").color}`}>
+                      {objectiveMeta(r.objective ?? "").label}
                     </span>
                   </td>
                   <td className="px-4 py-2.5 text-right text-slate-600">{r.currency} {r.daily_budget.toFixed(2)}</td>

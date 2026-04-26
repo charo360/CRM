@@ -12,6 +12,7 @@ const HIDE_BOOKINGS_NAV_TYPES = new Set(["retail", "creator", "wholesale", "supp
 
 interface BusinessContextType {
   businessType: string;
+  accountMode: string;
   currency: string;
   settings: Record<string, unknown>;
   isRestaurant: boolean;
@@ -53,6 +54,7 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
 
   const value: BusinessContextType = {
     businessType,
+    accountMode: businessType,
     currency,
     settings,
     isRestaurant: businessType === "restaurant",

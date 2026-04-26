@@ -635,8 +635,8 @@ export default function XAdsPage() {
                         {line ? <p className="mt-0.5 truncate text-[10px] text-slate-500">{line}</p> : null}
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${objMeta(r.objective).color}`}>
-                          {objMeta(r.objective).label}
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${objMeta(r.objective ?? "").color}`}>
+                          {objMeta(r.objective ?? "").label}
                         </span>
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-700">

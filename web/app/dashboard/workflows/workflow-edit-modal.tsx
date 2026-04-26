@@ -285,7 +285,7 @@ export function WorkflowEditModal({
           delay_minutes: s.delay_minutes ?? 0,
         })),
       };
-      const updated = await api.put<WorkflowEditable>(`/workflows/${workflow.id}`, body);
+      const updated = await api.put<WorkflowEditable>(`/workflows/${workflow!.id}`, body);
       toast.success("Automation updated");
       onSaved(updated);
       onClose();

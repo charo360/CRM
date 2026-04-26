@@ -47,7 +47,7 @@ type Tab = "all" | "unread" | "starred";
 
 function authHeaders() {
   const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return token ? { Authorization: `Bearer ${token}` } : {} as Record<string, string>;
 }
 
 async function apiGet(path: string) {

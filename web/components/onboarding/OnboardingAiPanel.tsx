@@ -179,10 +179,10 @@ export function OnboardingAiPanel({
         business_type: industryId,
       });
       setAnalysis({
-        summary: res.summary,
-        business_about_draft: res.business_about_draft,
-        products_services_hint: res.products_services_hint,
-        where_to_fill: res.where_to_fill || [],
+        summary: res.summary ?? "",
+        business_about_draft: res.business_about_draft ?? "",
+        products_services_hint: res.products_services_hint ?? "",
+        where_to_fill: (res.where_to_fill ?? []) as unknown as { label: string; path: string; tip: string }[],
       });
       toast.success("Website analyzed — scroll up for summary, or tap a suggested reply below.");
     } catch (e) {

@@ -64,10 +64,10 @@ function OverviewTab({ summary }: { summary: SeoSummary | null }) {
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatCard label="Total Blog Posts" value={summary.total_posts} />
-        <StatCard label="Published" value={summary.published_posts} />
-        <StatCard label="Drafts" value={summary.draft_posts} />
-        <StatCard label="Site Audits Run" value={summary.total_audits} />
+        <StatCard label="Total Blog Posts" value={summary.total_posts ?? 0} />
+        <StatCard label="Published" value={summary.published_posts ?? 0} />
+        <StatCard label="Drafts" value={summary.draft_posts ?? 0} />
+        <StatCard label="Site Audits Run" value={summary.total_audits ?? 0} />
       </div>
       {summary.avg_seo_score !== null && (
         <div className="bg-white rounded-xl border border-slate-200 p-5">
@@ -89,14 +89,14 @@ function OverviewTab({ summary }: { summary: SeoSummary | null }) {
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
               <p className="text-sm font-medium text-slate-800 break-all">{summary.last_audit.url}</p>
-              <p className="text-xs text-slate-400 mt-0.5">{new Date(summary.last_audit.created_at).toLocaleString()}</p>
+              <p className="text-xs text-slate-400 mt-0.5">{summary.last_audit.created_at ? new Date(summary.last_audit.created_at).toLocaleString() : ""}</p>
             </div>
-            <ScoreBadge score={summary.last_audit.score} grade={summary.last_audit.grade} />
+            <ScoreBadge score={summary.last_audit.score ?? 0} grade={summary.last_audit.grade ?? ""} />
           </div>
           <div className="mt-3 flex gap-4 text-xs text-slate-500">
-            <span>{summary.last_audit.issues.filter(i => i.type === "critical").length} critical</span>
-            <span>{summary.last_audit.issues.filter(i => i.type === "warning").length} warnings</span>
-            <span>{summary.last_audit.issues.filter(i => i.type === "info").length} info</span>
+            <span>{(summary.last_audit.issues ?? []).filter(i => i.type === "critical").length} critical</span>
+            <span>{(summary.last_audit.issues ?? []).filter(i => i.type === "warning").length} warnings</span>
+            <span>{(summary.last_audit.issues ?? []).filter(i => i.type === "info").length} info</span>
           </div>
         </div>
       )}
@@ -137,8 +137,8 @@ function AuditTab() {
     if (!audit) return;
     setFixLoading(true);
     try {
-      const res = await seoApi.aiFixSuggestions(audit.url);
-      setFixes(res.suggestions);
+      const res = await seoApi.aiFixSuggestions(audit.url ?? "");
+      setFixes(res.suggestions as { field: string; issue: string; fix: string; example: string; }[]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "AI fix failed");
     } finally {
@@ -176,7 +176,7 @@ function AuditTab() {
               <p className="text-sm font-semibold text-slate-800 break-all">{audit.url}</p>
               <p className="text-xs text-slate-400 mt-0.5">{audit.word_count} words · {audit.total_images} images · {audit.images_missing_alt} missing alt</p>
             </div>
-            <ScoreBadge score={audit.score} grade={audit.grade} />
+            <ScoreBadge score={audit.score ?? 0} grade={audit.grade ?? ""} />
           </div>
 
           <div className="grid grid-cols-3 gap-3 text-center">
@@ -243,9 +243,9 @@ function AuditTab() {
               <div key={a.id} className="flex items-center justify-between gap-3 py-2 border-b border-slate-50 last:border-0">
                 <div className="min-w-0">
                   <p className="text-xs font-medium text-slate-700 truncate">{a.url}</p>
-                  <p className="text-xs text-slate-400">{new Date(a.created_at).toLocaleDateString()}</p>
+                  <p className="text-xs text-slate-400">{a.created_at ? new Date(a.created_at).toLocaleDateString() : ""}</p>
                 </div>
-                <ScoreBadge score={a.score} grade={a.grade} />
+                <ScoreBadge score={a.score ?? 0} grade={a.grade ?? ""} />
               </div>
             ))}
           </div>
@@ -269,7 +269,7 @@ function KeywordsTab() {
     setLoading(true); setErr("");
     try {
       const res = await seoApi.generateKeywords(businessType, location);
-      setKeywords(res.keywords);
+      setKeywords(res.keywords as SeoKeyword[]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -334,13 +334,13 @@ function KeywordsTab() {
                     <p className="text-xs text-slate-400 mt-0.5">{kw.content_idea}</p>
                   </div>
                   <div className="flex gap-2 shrink-0 items-center">
-                    <span className={`text-xs font-bold capitalize ${difficultyColor(kw.difficulty)}`}>{kw.difficulty}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${intentColor(kw.intent)}`}>{kw.intent}</span>
+                    <span className={`text-xs font-bold capitalize ${difficultyColor(String(kw.difficulty ?? ""))}`}>{kw.difficulty}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${intentColor(String(kw.intent ?? ""))}`}>{kw.intent as string}</span>
                   </div>
                 </div>
                 <div className="mt-1 flex gap-1">
                   {Array.from({ length: 5 }, (_, p) => (
-                    <div key={p} className={`h-1.5 w-4 rounded-full ${p < kw.priority ? "bg-green-500" : "bg-slate-100"}`} />
+                    <div key={p} className={`h-1.5 w-4 rounded-full ${p < (kw.priority ?? 0) ? "bg-green-500" : "bg-slate-100"}`} />
                   ))}
                 </div>
               </div>
@@ -568,7 +568,7 @@ function BlogTab() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-base font-bold text-slate-800">{generated.title}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">{generated.word_count} words · {generated.tags.slice(0, 3).join(", ")}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{generated.word_count} words · {(generated.tags ?? []).slice(0, 3).join(", ")}</p>
                 </div>
                 <button
                   onClick={saveAsDraft}
@@ -612,17 +612,17 @@ function BlogTab() {
                 <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-800 truncate">{post.title}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{new Date(post.created_at).toLocaleDateString()}</p>
-                    {post.tags.length > 0 && (
+                    <p className="text-xs text-slate-400 mt-0.5">{post.created_at ? new Date(post.created_at).toLocaleDateString() : ""}</p>
+                    {(post.tags ?? []).length > 0 && (
                       <div className="flex gap-1 mt-1 flex-wrap">
-                        {post.tags.slice(0, 3).map(t => (
+                        {(post.tags ?? []).slice(0, 3).map(t => (
                           <span key={t} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{t}</span>
                         ))}
                       </div>
                     )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusColor(post.status)}`}>{post.status}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusColor(post.status ?? "")}`}>{post.status}</span>
                     {post.status !== "published" && (
                       <button
                         onClick={() => { setPublishPost(post); setPublishResult(""); }}
@@ -800,19 +800,19 @@ function CalendarTab() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 mb-0.5">
                           <span className="text-xs text-slate-400 font-medium">{item.day}</span>
-                          <span className={`text-xs font-medium capitalize ${trafficColor(item.estimated_traffic)}`}>
-                            {item.estimated_traffic} traffic
+                          <span className={`text-xs font-medium capitalize ${trafficColor(String(item.estimated_traffic ?? ""))}`}>
+                            {item.estimated_traffic as string} traffic
                           </span>
                         </div>
                         <p className="text-sm font-semibold text-slate-800">{item.title}</p>
-                        <p className="text-xs text-slate-400 mt-0.5">{item.topic}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">{item.topic as string}</p>
                         <div className="flex gap-1 mt-1 flex-wrap">
-                          {item.keywords.map(kw => (
+                          {(item.keywords ?? []).map(kw => (
                             <span key={kw} className="text-[10px] bg-green-50 text-green-700 px-1.5 py-0.5 rounded">{kw}</span>
                           ))}
                         </div>
                       </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium shrink-0">{item.intent}</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium shrink-0">{item.intent as string}</span>
                     </div>
                   </div>
                 ))}

@@ -51,7 +51,7 @@ function authHeaders() {
 async function apiFetch(path: string, opts: RequestInit = {}) {
   const res = await fetch(path, {
     ...opts,
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts.headers ?? {}) },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts.headers as Record<string, string> ?? {}) } as HeadersInit,
   });
   if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
   if (res.status === 204) return {};

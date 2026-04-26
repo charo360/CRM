@@ -38,7 +38,7 @@ type OverviewData = {
 
 function authHeaders() {
   const t = getToken();
-  return t ? { Authorization: `Bearer ${t}` } : {};
+  return t ? { Authorization: `Bearer ${t}` } : {} as Record<string, string>;
 }
 async function shopGet(params: Record<string, string>) {
   const qs = new URLSearchParams(params).toString();
