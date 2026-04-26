@@ -72,3 +72,20 @@ backend/uploads/
 **/*.tar.gz
 **/*.tar
 **/*.tgz
+
+# ── Local dev / AI tool artifacts ─────────────────────────────────────────────
+.emergent/
+.gitconfig
+*.patch
+*.stackdump
+ngrok_config.yml
+ngrok_output.txt
+ngrok*.log
+debug_output.txt
+test_result.md
+feature-graphic.html
+run_*.ps1
+run_*.sh
+fix.py
+gen_token.py
+list_models.py
