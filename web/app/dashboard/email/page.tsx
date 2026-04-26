@@ -163,6 +163,111 @@ function NoConnection({ inline = false }: { inline?: boolean }) {
   );
 }
 
+// ── Auto-reply panel ──────────────────────────────────────────────────────────
+
+function AutoreplyPanel({
+  autoreply,
+  onSave,
+}: {
+  autoreply: AutoreplyRule;
+  onSave: (r: AutoreplyRule) => void;
+}) {
+  const [input, setInput] = useState("");
+  // Parse existing extraContext into chips (split by newline)
+  const items: string[] = autoreply.extraContext
+    ? autoreply.extraContext.split("\n").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  function addItem() {
+    const val = input.trim();
+    if (!val) return;
+    const next = [...items, val].join("\n");
+    onSave({ ...autoreply, extraContext: next });
+    setInput("");
+  }
+
+  function removeItem(i: number) {
+    const next = items.filter((_, idx) => idx !== i).join("\n");
+    onSave({ ...autoreply, extraContext: next });
+  }
+
+  return (
+    <div className="border-t border-slate-800 bg-slate-900 p-3 space-y-3">
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <Bot size={12} className="text-brand" />
+        <span className="text-xs font-semibold text-slate-200">Auto-reply</span>
+        <span className="ml-auto text-[10px] text-emerald-400 font-medium bg-emerald-900/30 px-2 py-0.5 rounded-full">Live</span>
+        <button
+          onClick={() => onSave({ ...autoreply, enabled: false })}
+          className="text-[10px] text-rose-500 hover:text-rose-400 transition-colors ml-1"
+          title="Turn off"
+        >
+          <X size={11} />
+        </button>
+      </div>
+
+      {/* Tone */}
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] text-slate-500 shrink-0">Tone</span>
+        <div className="flex gap-1.5 flex-wrap">
+          {(["professional", "friendly", "concise"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => onSave({ ...autoreply, tone: t })}
+              className={cn(
+                "text-[10px] px-2.5 py-1 rounded-lg capitalize transition-colors",
+                autoreply.tone === t ? "bg-brand-dark text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              )}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Business context chips */}
+      <div className="space-y-2">
+        <span className="text-[10px] text-slate-500">Business context</span>
+        {items.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {items.map((item, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1"
+              >
+                <span className="text-[10px] text-slate-300 max-w-[160px] truncate">{item}</span>
+                <button
+                  onClick={() => removeItem(i)}
+                  className="text-slate-500 hover:text-rose-400 transition-colors ml-0.5"
+                >
+                  <X size={9} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-1.5">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(); } }}
+            placeholder="e.g. Open 9am–6pm, free returns…"
+            className="flex-1 bg-slate-800 text-[11px] text-slate-200 placeholder-slate-500 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-700 min-w-0"
+          />
+          <button
+            onClick={addItem}
+            disabled={!input.trim()}
+            className="px-2.5 py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-[10px] font-medium disabled:opacity-40 transition-colors shrink-0"
+          >
+            <Plus size={11} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Category Manager modal ────────────────────────────────────────────────────
 
 function CategoryManager({
@@ -998,6 +1103,11 @@ export default function EmailPage() {
             </span>
           ))}
         </div>
+
+        {/* ── Auto-reply panel (bottom of left pane) ──────────────────────── */}
+        {autoreply.enabled && (
+          <AutoreplyPanel autoreply={autoreply} onSave={saveAutoreply} />
+        )}
       </div>
 
       {/* ── Right pane ────────────────────────────────────────────────────── */}
@@ -1185,42 +1295,6 @@ export default function EmailPage() {
         </div>
       ) : null}
 
-      {/* ── Auto-reply settings drawer ─────────────────────────────────────── */}
-      {autoreply.enabled && (
-        <div className="w-60 border-l border-slate-800 bg-slate-900 flex-col p-4 space-y-4 hidden xl:flex shrink-0">
-          <div className="flex items-center gap-2">
-            <Bot size={13} className="text-brand" />
-            <span className="text-xs font-semibold">Auto-reply</span>
-            <span className="ml-auto text-[10px] text-emerald-400 font-medium bg-emerald-900/30 px-2 py-0.5 rounded-full">Live</span>
-          </div>
-          <p className="text-[11px] text-slate-500 leading-relaxed">
-            Zilo will automatically reply to new emails with your selected tone and context.
-          </p>
-          <div className="space-y-1.5">
-            <p className="text-[10px] text-slate-500">Tone</p>
-            <div className="flex flex-wrap gap-1.5">
-              {(["professional", "friendly", "concise"] as const).map((t) => (
-                <button key={t} onClick={() => saveAutoreply({ ...autoreply, tone: t })} className={cn("text-[10px] px-2.5 py-1 rounded-lg capitalize transition-colors", autoreply.tone === t ? "bg-brand-dark text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700")}>
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <p className="text-[10px] text-slate-500">Business context</p>
-            <textarea
-              value={autoreply.extraContext}
-              onChange={(e) => saveAutoreply({ ...autoreply, extraContext: e.target.value })}
-              placeholder="Hours, policies, FAQs…"
-              rows={5}
-              className="w-full bg-slate-800 text-[11px] text-slate-300 placeholder-slate-600 rounded-xl border border-slate-700 p-2.5 outline-none focus:ring-1 focus:ring-brand resize-none"
-            />
-          </div>
-          <button onClick={() => saveAutoreply({ ...autoreply, enabled: false })} className="flex items-center gap-1.5 text-[11px] text-rose-500 hover:text-rose-400 transition-colors">
-            <AlertCircle size={11} /> Turn off
-          </button>
-        </div>
-      )}
 
       {/* Compose modal */}
       {showCompose && (
