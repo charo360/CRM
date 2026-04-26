@@ -519,17 +519,28 @@ class Router:
                         }
                     else:
                         # Order Now or Add to Cart — collect delivery details
+                        _price_raw = _price
+                        try:
+                            _price_val = float(_price_raw)
+                        except (ValueError, TypeError):
+                            _price_val = 0.0
                         _order_reply = (
-                            f"*{_name}* — {_currency} {_price:,.0f} 🛒\n\n"
+                            f"*{_name}* — {_currency} {_price_val:,.0f} 🛒\n\n"
                             f"How many would you like, and what's your *delivery address*? "
                             f"(Or let me know if you prefer *pickup*.) 📦"
                         )
                         if customer_id:
                             await save_state(self.db, user_id, str(customer_id), {
                                 "pending_order_creation": True,
+                                "pending_order_step": "quantity",
                                 "pending_order_product_id": _product_id,
                                 "pending_order_product_name": _name,
                                 "pending_order_price": _price,
+                                # Clear menu — order flow has taken over
+                                "active_menu": False,
+                                "waiting_for_selection": False,
+                                "menu_items": {},
+                                "menu_type": None,
                             })
                             try:
                                 await self.db.customers.update_one(
@@ -551,11 +562,16 @@ class Router:
                     _prod_doc = None
                     if _product_id:
                         try:
-                            _prod_doc = await self.db.products.find_one({"_id": _product_id})
+                            from bson import ObjectId as _ObjIdProd
+                            _prod_doc = await self.db.products.find_one({"_id": _ObjIdProd(_product_id)})
                         except Exception:
                             pass
                     _p_name = _prod_doc.get("name", _name) if _prod_doc else _name
-                    _p_price = _prod_doc.get("price", _price) if _prod_doc else _price
+                    _p_price_raw = _prod_doc.get("price", _price) if _prod_doc else _price
+                    try:
+                        _p_price = float(_p_price_raw)
+                    except (ValueError, TypeError):
+                        _p_price = 0.0
                     _p_desc = _prod_doc.get("description", "") if _prod_doc else ""
                     _p_stock = "In Stock ✅" if (_prod_doc or {}).get("in_stock", True) else "Out of Stock ❌"
                     _showcase = f"*{_p_name}*\n💰 {_currency} {_p_price:,.0f}\n{_p_stock}"
