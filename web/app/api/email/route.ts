@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   resolveUserId,
   detectEmailProvider,
+  detectAllEmailProviders,
   nangoProxy,
 } from "@/lib/nango-proxy";
 
@@ -133,14 +134,23 @@ async function msGetMessage(connectionId: string, messageId: string) {
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
-/** GET /api/email?q=...&limit=... */
+/** GET /api/email?q=...&limit=...&provider=gmail|microsoft */
 export async function GET(req: NextRequest) {
   const auth = req.headers.get("authorization");
   const userId = await resolveUserId(auth);
   if (!userId) return err("Unauthorized", 401);
 
-  const provider = await detectEmailProvider(userId);
-  if (!provider) return NextResponse.json({ threads: [], provider: null, connected: false });
+  const preferredProvider = req.nextUrl.searchParams.get("provider") as "gmail" | "microsoft" | null ?? undefined;
+
+  // Detect all connected providers in parallel, then pick the requested one
+  const [allProviders, provider] = await Promise.all([
+    detectAllEmailProviders(userId),
+    detectEmailProvider(userId, preferredProvider ?? undefined),
+  ]);
+
+  const connectedProviders = allProviders.map((p) => p.provider);
+
+  if (!provider) return NextResponse.json({ threads: [], provider: null, connected: false, connectedProviders: [] });
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") ?? "25"), 50);
@@ -176,7 +186,7 @@ export async function GET(req: NextRequest) {
           }
         }),
       );
-      return NextResponse.json({ threads, provider: "gmail", connected: true });
+      return NextResponse.json({ threads, provider: "gmail", connected: true, connectedProviders });
     }
 
     // Microsoft
@@ -184,14 +194,14 @@ export async function GET(req: NextRequest) {
     const threads = msgs.map((m) => ({
       id:           m.id as string,
       subject:      (m.subject as string) || "(no subject)",
-      from:         (m.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.name ?? "",
+      from:         ((m.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.name || (m.from as { emailAddress?: { address?: string } })?.emailAddress?.address) ?? "",
       date:         m.receivedDateTime as string,
       snippet:      (m.bodyPreview as string) ?? "",
       unread:       m.isRead === false,
       messageCount: 1,
       provider:     "microsoft",
     }));
-    return NextResponse.json({ threads, provider: "microsoft", connected: true });
+    return NextResponse.json({ threads, provider: "microsoft", connected: true, connectedProviders });
   } catch (e) {
     return err(e instanceof Error ? e.message : "Failed to load email", 500);
   }
@@ -205,6 +215,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json() as {
     action: "get_thread" | "send" | "mark_read";
+    provider?: "gmail" | "microsoft";
     threadId?: string;
     messageId?: string;
     raw?: string;          // base64url RFC-2822 for Gmail send
@@ -214,7 +225,7 @@ export async function POST(req: NextRequest) {
     inReplyTo?: string;
   };
 
-  const provider = await detectEmailProvider(userId);
+  const provider = await detectEmailProvider(userId, body.provider);
   if (!provider) return err("No email account connected", 400);
 
   try {
@@ -243,8 +254,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         messages: [{
           id:      msg.id as string,
-          from:    (msg.from as { emailAddress?: { address?: string } })?.emailAddress?.address ?? "",
-          to:      "",
+          from:    (msg.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.address ?? "",
+          to:      ((msg.toRecipients as { emailAddress?: { address?: string } }[])?.[0])?.emailAddress?.address ?? "",
           subject: msg.subject as string,
           date:    msg.receivedDateTime as string,
           body:    (msg.body as { content?: string })?.content ?? msg.bodyPreview as string ?? "",
