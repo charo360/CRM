@@ -35,16 +35,17 @@ type Message = {
   unread: boolean;
 };
 
-type AutoreplyRule = {
-  enabled: boolean;
+type AutoreplyTarget = {
+  id: string;   // category id OR email address
+  type: "category" | "sender";
+  label: string;
   tone: "professional" | "friendly" | "concise";
-  extraContext: string;
+  context: string; // newline-separated chips
 };
 
-type CategoryAutoreply = {
+type AutoreplyRule = {
   enabled: boolean;
-  tone: "professional" | "friendly" | "concise";
-  context: string;
+  targets: AutoreplyTarget[];
 };
 
 type Category = {
@@ -55,7 +56,6 @@ type Category = {
   mode: "ai" | "vip";
   description?: string;
   addresses?: string[];
-  autoreply?: CategoryAutoreply;
 };
 
 type ThreadSummary = {
@@ -180,31 +180,55 @@ function NoConnection({ inline = false }: { inline?: boolean }) {
 
 function AutoreplyPanel({
   autoreply,
+  categories,
   onSave,
 }: {
   autoreply: AutoreplyRule;
+  categories: Category[];
   onSave: (r: AutoreplyRule) => void;
 }) {
-  const [input, setInput] = useState("");
-  const items: string[] = autoreply.extraContext
-    ? autoreply.extraContext.split("\n").map((s) => s.trim()).filter(Boolean)
-    : [];
+  const [showAdd, setShowAdd] = useState(false);
+  const [showSenderInput, setShowSenderInput] = useState(false);
+  const [senderInput, setSenderInput] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editTone, setEditTone] = useState<"professional" | "friendly" | "concise">("professional");
+  const [editContext, setEditContext] = useState("");
+  const [editInput, setEditInput] = useState("");
 
-  function addItem() {
-    const val = input.trim();
-    if (!val) return;
-    const next = [...items, val].join("\n");
-    onSave({ ...autoreply, extraContext: next });
-    setInput("");
+  const usedCatIds = autoreply.targets.filter((t) => t.type === "category").map((t) => t.id);
+  const availableCats = categories.filter((c) => !usedCatIds.includes(c.id));
+
+  function addCategoryTarget(cat: Category) {
+    onSave({ ...autoreply, targets: [...autoreply.targets, { id: cat.id, type: "category", label: cat.name, tone: "professional", context: "" }] });
+    setShowAdd(false);
   }
 
-  function removeItem(i: number) {
-    const next = items.filter((_, idx) => idx !== i).join("\n");
-    onSave({ ...autoreply, extraContext: next });
+  function addSenderTarget() {
+    const email = senderInput.trim();
+    if (!email || !email.includes("@")) { toast.error("Enter a valid email"); return; }
+    if (autoreply.targets.find((t) => t.id.toLowerCase() === email.toLowerCase())) { toast.error("Already added"); return; }
+    onSave({ ...autoreply, targets: [...autoreply.targets, { id: email, type: "sender", label: email, tone: "professional", context: "" }] });
+    setSenderInput(""); setShowSenderInput(false); setShowAdd(false);
   }
+
+  function removeTarget(id: string) {
+    onSave({ ...autoreply, targets: autoreply.targets.filter((t) => t.id !== id) });
+    if (expandedId === id) setExpandedId(null);
+  }
+
+  function startEdit(target: AutoreplyTarget) {
+    setExpandedId(target.id); setEditTone(target.tone); setEditContext(target.context); setEditInput("");
+  }
+
+  function saveEdit(id: string) {
+    onSave({ ...autoreply, targets: autoreply.targets.map((t) => t.id === id ? { ...t, tone: editTone, context: editContext } : t) });
+    setExpandedId(null);
+  }
+
+  const editItems = editContext ? editContext.split("\n").map((s) => s.trim()).filter(Boolean) : [];
 
   return (
-    <div className="flex flex-col h-full p-4 space-y-4">
+    <div className="flex flex-col h-full p-4 space-y-3 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center gap-2">
         <Bot size={13} className="text-brand-dark" />
@@ -213,68 +237,110 @@ function AutoreplyPanel({
       </div>
 
       <p className="text-[11px] text-slate-500 leading-relaxed">
-        Zilo will automatically reply to new emails with your selected tone and context.
+        Replies only to selected categories or specific senders — not everyone.
       </p>
 
-      {/* Tone */}
-      <div className="space-y-1.5">
-        <p className="text-[10px] text-slate-500 font-medium">Tone</p>
-        <div className="flex flex-wrap gap-1.5">
-          {(["professional", "friendly", "concise"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => onSave({ ...autoreply, tone: t })}
-              className={cn(
-                "text-[10px] px-2.5 py-1 rounded-lg capitalize transition-colors font-medium",
-                autoreply.tone === t
-                  ? "bg-brand-dark text-white"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-              )}
-            >
-              {t}
-            </button>
-          ))}
+      {/* Target list */}
+      {autoreply.targets.length === 0 && (
+        <div className="rounded-xl border border-dashed border-slate-200 py-5 text-center">
+          <p className="text-[11px] text-slate-400">No targets yet.<br />Add a category or sender below.</p>
         </div>
-      </div>
+      )}
 
-      {/* Business context chips */}
-      <div className="space-y-2 flex-1">
-        <p className="text-[10px] text-slate-500 font-medium">Business context</p>
-        {items.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {items.map((item, i) => (
-              <div key={i} className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
-                <span className="text-[10px] text-slate-700 max-w-[160px] truncate">{item}</span>
-                <button onClick={() => removeItem(i)} className="text-slate-400 hover:text-rose-500 transition-colors ml-0.5">
+      <div className="space-y-2">
+        {autoreply.targets.map((target) => {
+          const cat = categories.find((c) => c.id === target.id);
+          const isExpanded = expandedId === target.id;
+          const chips = target.context ? target.context.split("\n").filter(Boolean) : [];
+          return (
+            <div key={target.id} className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
+              <div className="flex items-center gap-2 px-3 py-2">
+                {cat ? <div className={cn("w-2 h-2 rounded-full shrink-0", cat.colorBg)} /> : <UserCheck size={10} className="text-slate-400 shrink-0" />}
+                <span className="text-[11px] font-medium text-slate-700 flex-1 truncate">{target.label}</span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-brand/10 text-brand-dark font-medium capitalize shrink-0">{target.tone}</span>
+                <button onClick={() => isExpanded ? setExpandedId(null) : startEdit(target)} className="p-0.5 text-slate-400 hover:text-brand-dark transition-colors ml-1">
+                  <Pencil size={9} />
+                </button>
+                <button onClick={() => removeTarget(target.id)} className="p-0.5 text-slate-400 hover:text-rose-500 transition-colors">
                   <X size={9} />
                 </button>
               </div>
-            ))}
-          </div>
-        )}
-        <div className="flex gap-1.5">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(); } }}
-            placeholder="Hours, policies, FAQs…"
-            className="flex-1 bg-white text-[11px] text-slate-700 placeholder-slate-400 rounded-xl px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0"
-          />
-          <button
-            onClick={addItem}
-            disabled={!input.trim()}
-            className="px-2.5 rounded-xl bg-brand-dark hover:bg-brand text-white disabled:opacity-40 transition-colors shrink-0"
-          >
-            <Plus size={11} />
-          </button>
-        </div>
+              {!isExpanded && chips.length > 0 && (
+                <div className="px-3 pb-2 flex flex-wrap gap-1">
+                  {chips.map((c, i) => <span key={i} className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-full">{c}</span>)}
+                </div>
+              )}
+              {isExpanded && (
+                <div className="px-3 pb-3 space-y-2 border-t border-slate-200 pt-2">
+                  <div className="flex gap-1 flex-wrap">
+                    {(["professional", "friendly", "concise"] as const).map((t) => (
+                      <button key={t} onClick={() => setEditTone(t)} className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize font-medium transition-colors", editTone === t ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-100")}>
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                  {editItems.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {editItems.map((item, i) => (
+                        <div key={i} className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-1.5 py-0.5">
+                          <span className="text-[10px] text-slate-700 max-w-[110px] truncate">{item}</span>
+                          <button onClick={() => setEditContext(editItems.filter((_, j) => j !== i).join("\n"))} className="text-slate-400 hover:text-rose-500"><X size={7} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-1">
+                    <input value={editInput} onChange={(e) => setEditInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (editInput.trim()) { setEditContext([...editItems, editInput.trim()].join("\n")); setEditInput(""); } } }} placeholder="Add context…" className="flex-1 bg-white text-[10px] text-slate-700 placeholder-slate-400 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0" />
+                    <button onClick={() => { if (editInput.trim()) { setEditContext([...editItems, editInput.trim()].join("\n")); setEditInput(""); } }} disabled={!editInput.trim()} className="px-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 disabled:opacity-40 transition-colors"><Plus size={9} /></button>
+                  </div>
+                  <button onClick={() => saveEdit(target.id)} className="w-full py-1 rounded-lg bg-brand-dark hover:bg-brand text-white text-[10px] font-semibold transition-colors">Save</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
+      {/* Add target */}
+      {!showAdd ? (
+        <button onClick={() => setShowAdd(true)} className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border border-dashed border-slate-300 text-[11px] text-slate-400 hover:text-slate-600 hover:border-slate-400 transition-colors">
+          <Plus size={11} /> Add category or sender
+        </button>
+      ) : (
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+          {availableCats.length > 0 && (
+            <>
+              <p className="text-[9px] text-slate-400 px-3 pt-2 pb-1 font-semibold uppercase tracking-wide">Categories</p>
+              {availableCats.map((cat) => (
+                <button key={cat.id} onClick={() => addCategoryTarget(cat)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 transition-colors">
+                  <div className={cn("w-2 h-2 rounded-full shrink-0", cat.colorBg)} />
+                  <span className="text-[11px] text-slate-700 flex-1 text-left">{cat.name}</span>
+                  <span className="text-[9px] text-slate-400">{cat.mode === "vip" ? "VIP" : "AI"}</span>
+                </button>
+              ))}
+            </>
+          )}
+          <div className={cn(availableCats.length > 0 && "border-t border-slate-100")}>
+            {!showSenderInput ? (
+              <button onClick={() => setShowSenderInput(true)} className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-slate-50 transition-colors">
+                <UserCheck size={11} className="text-slate-400 shrink-0" />
+                <span className="text-[11px] text-slate-600">Specific sender…</span>
+              </button>
+            ) : (
+              <div className="p-2 flex gap-1.5">
+                <input value={senderInput} onChange={(e) => setSenderInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addSenderTarget(); }} placeholder="email@example.com" autoFocus className="flex-1 bg-slate-50 text-[11px] text-slate-700 placeholder-slate-400 rounded-lg px-2 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0" />
+                <button onClick={addSenderTarget} disabled={!senderInput.trim()} className="px-2.5 rounded-lg bg-brand-dark hover:bg-brand text-white disabled:opacity-40 transition-colors text-[10px] font-semibold">Add</button>
+              </div>
+            )}
+          </div>
+          <div className="border-t border-slate-100 px-3 py-2">
+            <button onClick={() => { setShowAdd(false); setShowSenderInput(false); setSenderInput(""); }} className="text-[10px] text-slate-400 hover:text-slate-600 transition-colors">Cancel</button>
+          </div>
+        </div>
+      )}
+
       {/* Turn off */}
-      <button
-        onClick={() => onSave({ ...autoreply, enabled: false })}
-        className="flex items-center gap-1.5 text-[11px] text-rose-600 hover:text-rose-500 transition-colors"
-      >
+      <button onClick={() => onSave({ ...autoreply, enabled: false })} className="flex items-center gap-1.5 text-[11px] text-rose-600 hover:text-rose-500 transition-colors pt-1">
         <AlertCircle size={11} /> Turn off
       </button>
     </div>
@@ -300,41 +366,17 @@ function CategoryManager({
   const [description, setDescription] = useState("");
   const [addresses, setAddresses] = useState("");
   const [colorIdx, setColorIdx] = useState(0);
-  const [arEnabled, setArEnabled] = useState(false);
-  const [arTone, setArTone] = useState<"professional" | "friendly" | "concise">("professional");
-  const [arContext, setArContext] = useState("");
-  const [arInput, setArInput] = useState("");
-
-  const arItems = arContext ? arContext.split("\n").map((s) => s.trim()).filter(Boolean) : [];
-
-  function addArItem() {
-    const val = arInput.trim();
-    if (!val) return;
-    setArContext([...arItems, val].join("\n"));
-    setArInput("");
-  }
-  function removeArItem(i: number) {
-    setArContext(arItems.filter((_, idx) => idx !== i).join("\n"));
-  }
 
   function resetForm() {
     setName(""); setMode("ai"); setDescription(""); setAddresses(""); setColorIdx(0);
-    setArEnabled(false); setArTone("professional"); setArContext(""); setArInput("");
     setCreating(false); setEditId(null);
   }
 
   function startEdit(cat: Category) {
     const ci = CAT_COLORS.findIndex((c) => c.bg === cat.colorBg);
-    setEditId(cat.id);
-    setName(cat.name);
-    setMode(cat.mode);
-    setDescription(cat.description ?? "");
-    setAddresses((cat.addresses ?? []).join(", "));
-    setColorIdx(ci >= 0 ? ci : 0);
-    setArEnabled(cat.autoreply?.enabled ?? false);
-    setArTone(cat.autoreply?.tone ?? "professional");
-    setArContext(cat.autoreply?.context ?? "");
-    setCreating(true);
+    setEditId(cat.id); setName(cat.name); setMode(cat.mode);
+    setDescription(cat.description ?? ""); setAddresses((cat.addresses ?? []).join(", "));
+    setColorIdx(ci >= 0 ? ci : 0); setCreating(true);
   }
 
   function saveCategory() {
@@ -342,25 +384,18 @@ function CategoryManager({
     const color = CAT_COLORS[colorIdx];
     const cat: Category = {
       id: editId ?? Date.now().toString(),
-      name: name.trim(),
-      colorBg: color.bg,
-      colorText: color.text,
-      mode,
+      name: name.trim(), colorBg: color.bg, colorText: color.text, mode,
       description: mode === "ai" ? description.trim() || undefined : undefined,
       addresses: mode === "vip" ? addresses.split(",").map((a) => a.trim()).filter(Boolean) : undefined,
-      autoreply: { enabled: arEnabled, tone: arTone, context: arContext },
     };
     const next = editId ? cats.map((c) => (c.id === editId ? cat : c)) : [...cats, cat];
-    setCats(next);
-    onSave(next);
-    resetForm();
+    setCats(next); onSave(next); resetForm();
     toast.success(editId ? "Category updated" : "Category created");
   }
 
   function deleteCategory(id: string) {
     const next = cats.filter((c) => c.id !== id);
-    setCats(next);
-    onSave(next);
+    setCats(next); onSave(next);
   }
 
   return (
@@ -376,196 +411,65 @@ function CategoryManager({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
-          {/* Empty state */}
           {cats.length === 0 && !creating && (
             <div className="text-center py-8 text-slate-400">
               <Tag size={28} className="mx-auto mb-3 opacity-30" />
-              <p className="text-xs leading-relaxed">
-                No categories yet.<br />Create one to auto-sort your inbox.
-              </p>
+              <p className="text-xs leading-relaxed">No categories yet.<br />Create one to auto-sort your inbox.</p>
             </div>
           )}
 
-          {/* Category list */}
           {cats.map((cat) => (
             <div key={cat.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200">
               <div className={cn("w-2 h-2 rounded-full shrink-0", cat.colorBg)} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-medium text-slate-800">{cat.name}</span>
-                  <span className={cn(
-                    "text-[9px] px-1.5 py-0.5 rounded-full font-medium",
-                    cat.mode === "vip" ? "bg-amber-100 text-amber-700" : "bg-brand/10 text-brand-dark"
-                  )}>
+                  <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium", cat.mode === "vip" ? "bg-amber-100 text-amber-700" : "bg-brand/10 text-brand-dark")}>
                     {cat.mode === "vip" ? "VIP" : "AI"}
                   </span>
                 </div>
-                {cat.mode === "ai" && cat.description && (
-                  <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.description}</p>
-                )}
-                {cat.mode === "vip" && cat.addresses?.length ? (
-                  <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.addresses.join(", ")}</p>
-                ) : null}
-                {cat.autoreply?.enabled && (
-                  <span className="text-[9px] text-emerald-600 flex items-center gap-0.5 mt-0.5"><Bot size={8} /> auto-reply · {cat.autoreply.tone}</span>
-                )}
+                {cat.mode === "ai" && cat.description && <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.description}</p>}
+                {cat.mode === "vip" && cat.addresses?.length ? <p className="text-[10px] text-slate-500 truncate mt-0.5">{cat.addresses.join(", ")}</p> : null}
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <button
-                  onClick={() => startEdit(cat)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-brand-dark hover:bg-slate-100 transition-colors"
-                >
-                  <Pencil size={10} />
-                </button>
-                <button
-                  onClick={() => deleteCategory(cat.id)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 transition-colors"
-                >
-                  <Trash2 size={10} />
-                </button>
+                <button onClick={() => startEdit(cat)} className="p-1.5 rounded-lg text-slate-400 hover:text-brand-dark hover:bg-slate-100 transition-colors"><Pencil size={10} /></button>
+                <button onClick={() => deleteCategory(cat.id)} className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 transition-colors"><Trash2 size={10} /></button>
               </div>
             </div>
           ))}
 
-          {/* Create / edit form */}
           {creating ? (
             <div className="rounded-xl border border-brand/20 bg-brand/5 p-4 space-y-3">
               <p className="text-xs font-semibold text-slate-800">{editId ? "Edit Category" : "New Category"}</p>
-
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Name (e.g. Boss, Partners, Clients)"
-                autoFocus
-                className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
-              />
-
-              {/* Mode toggle */}
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (e.g. Boss, Partners, Clients)" autoFocus className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
               <div className="flex gap-2">
-                <button
-                  onClick={() => setMode("ai")}
-                  className={cn(
-                    "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors",
-                    mode === "ai"
-                      ? "bg-brand/10 border-brand/30 text-brand-dark"
-                      : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
-                  )}
-                >
+                <button onClick={() => setMode("ai")} className={cn("flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors", mode === "ai" ? "bg-brand/10 border-brand/30 text-brand-dark" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50")}>
                   <Cpu size={11} /> AI sorts
                 </button>
-                <button
-                  onClick={() => setMode("vip")}
-                  className={cn(
-                    "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors",
-                    mode === "vip"
-                      ? "bg-amber-50 border-amber-300 text-amber-700"
-                      : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
-                  )}
-                >
+                <button onClick={() => setMode("vip")} className={cn("flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border transition-colors", mode === "vip" ? "bg-amber-50 border-amber-300 text-amber-700" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50")}>
                   <UserCheck size={11} /> VIP senders
                 </button>
               </div>
-
               {mode === "ai" ? (
-                <input
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Hint: e.g. 'supplier invoices and business proposals'"
-                  className="w-full bg-white text-xs text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
-                />
+                <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Hint: e.g. 'supplier invoices and business proposals'" className="w-full bg-white text-xs text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
               ) : (
-                <input
-                  value={addresses}
-                  onChange={(e) => setAddresses(e.target.value)}
-                  placeholder="Emails comma-separated: boss@co.com, cfo@co.com"
-                  className="w-full bg-white text-xs text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
-                />
+                <input value={addresses} onChange={(e) => setAddresses(e.target.value)} placeholder="Emails comma-separated: boss@co.com, cfo@co.com" className="w-full bg-white text-xs text-slate-800 placeholder-slate-400 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
               )}
-
-              {/* Color picker */}
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-slate-500 shrink-0">Color</span>
                 <div className="flex gap-1.5 flex-wrap">
                   {CAT_COLORS.map((c, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setColorIdx(i)}
-                      className={cn(
-                        "w-4 h-4 rounded-full transition-all",
-                        c.bg,
-                        colorIdx === i ? "ring-2 ring-brand-dark ring-offset-1 ring-offset-white scale-110" : "hover:scale-105"
-                      )}
-                    />
+                    <button key={i} onClick={() => setColorIdx(i)} className={cn("w-4 h-4 rounded-full transition-all", c.bg, colorIdx === i ? "ring-2 ring-brand-dark ring-offset-1 ring-offset-white scale-110" : "hover:scale-105")} />
                   ))}
                 </div>
               </div>
-
-              {/* Per-category auto-reply */}
-              <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                    <Bot size={11} /> Auto-reply for this category
-                  </div>
-                  <button
-                    onClick={() => setArEnabled((v) => !v)}
-                    className={cn("flex items-center gap-1 text-[11px] font-medium transition-colors", arEnabled ? "text-emerald-600" : "text-slate-400")}
-                  >
-                    {arEnabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
-                  </button>
-                </div>
-                {arEnabled && (
-                  <>
-                    <div className="flex gap-1.5 flex-wrap">
-                      {(["professional", "friendly", "concise"] as const).map((t) => (
-                        <button
-                          key={t}
-                          onClick={() => setArTone(t)}
-                          className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize transition-colors font-medium", arTone === t ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}
-                        >
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                    {arItems.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {arItems.map((item, i) => (
-                          <div key={i} className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-0.5">
-                            <span className="text-[10px] text-slate-700 max-w-[140px] truncate">{item}</span>
-                            <button onClick={() => removeArItem(i)} className="text-slate-400 hover:text-rose-500 ml-0.5"><X size={8} /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div className="flex gap-1.5">
-                      <input
-                        value={arInput}
-                        onChange={(e) => setArInput(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addArItem(); } }}
-                        placeholder="Context: hours, policies…"
-                        className="flex-1 bg-white text-[11px] text-slate-700 placeholder-slate-400 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0"
-                      />
-                      <button onClick={addArItem} disabled={!arInput.trim()} className="px-2 rounded-lg bg-brand-dark hover:bg-brand text-white disabled:opacity-40 transition-colors">
-                        <Plus size={10} />
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-
               <div className="flex gap-2 pt-1">
-                <button onClick={resetForm} className="flex-1 py-2 rounded-xl text-xs text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors font-medium">
-                  Cancel
-                </button>
-                <button onClick={saveCategory} className="flex-1 py-2 rounded-xl text-xs font-semibold bg-brand-dark hover:bg-brand text-white transition-colors">
-                  {editId ? "Save changes" : "Create"}
-                </button>
+                <button onClick={resetForm} className="flex-1 py-2 rounded-xl text-xs text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors font-medium">Cancel</button>
+                <button onClick={saveCategory} className="flex-1 py-2 rounded-xl text-xs font-semibold bg-brand-dark hover:bg-brand text-white transition-colors">{editId ? "Save changes" : "Create"}</button>
               </div>
             </div>
           ) : (
-            <button
-              onClick={() => setCreating(true)}
-              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-slate-300 text-xs text-slate-400 hover:text-slate-600 hover:border-slate-400 transition-colors"
-            >
+            <button onClick={() => setCreating(true)} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-slate-300 text-xs text-slate-400 hover:text-slate-600 hover:border-slate-400 transition-colors">
               <Plus size={12} /> Add category
             </button>
           )}
@@ -744,7 +648,7 @@ export default function EmailPage() {
   const [quickReplies, setQuickReplies] = useState<string[]>([]);
   const [loadingQuick, setLoadingQuick] = useState(false);
 
-  const [autoreply, setAutoreply] = useState<AutoreplyRule>({ enabled: false, tone: "professional", extraContext: "" });
+  const [autoreply, setAutoreply] = useState<AutoreplyRule>({ enabled: false, targets: [] });
 
   const [showCompose, setShowCompose] = useState(false);
 
@@ -944,12 +848,21 @@ export default function EmailPage() {
       const latest = messages[messages.length - 1];
       const cat = getCatForThread(selected.id);
       const summary = threadSummaries[selected.id];
+      // Find matching auto-reply target (category first, then sender)
+      let arTarget: AutoreplyTarget | undefined;
+      if (autoreply.enabled && autoreply.targets.length) {
+        if (cat) arTarget = autoreply.targets.find((t) => t.type === "category" && t.id === cat.id);
+        if (!arTarget) {
+          const senderEmail = extractEmail(latest.from);
+          arTarget = autoreply.targets.find((t) => t.type === "sender" && t.id.toLowerCase() === senderEmail.toLowerCase());
+        }
+      }
       const contextParts: string[] = [];
       if (extraContext.trim()) contextParts.push(extraContext.trim());
-      if (cat?.autoreply?.context) contextParts.push(`Category context (${cat.name}): ${cat.autoreply.context.replace(/\n/g, "; ")}`);
+      if (arTarget?.context) contextParts.push(`Context: ${arTarget.context.replace(/\n/g, "; ")}`);
       if (summary) contextParts.push(`Conversation summary: ${summary.summary}`);
       const richContext = contextParts.join("\n");
-      const effectiveTone = cat?.autoreply?.enabled ? cat.autoreply.tone : draftTone;
+      const effectiveTone = arTarget ? arTarget.tone : draftTone;
       const data = await apiPost("/api/email/draft", {
         threadSubject: selected.subject,
         latestMessage: stripHtml(latest.body).slice(0, 1500),
@@ -1443,7 +1356,7 @@ export default function EmailPage() {
       {/* ── Auto-reply right panel ─────────────────────────────────────────── */}
       {autoreply.enabled && (
         <div className="w-64 border-l border-slate-200 bg-white flex flex-col shrink-0">
-          <AutoreplyPanel autoreply={autoreply} onSave={saveAutoreply} />
+          <AutoreplyPanel autoreply={autoreply} categories={categories} onSave={saveAutoreply} />
         </div>
       )}
 
