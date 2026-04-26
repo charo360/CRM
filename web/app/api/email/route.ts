@@ -184,7 +184,7 @@ export async function GET(req: NextRequest) {
     const threads = msgs.map((m) => ({
       id:           m.id as string,
       subject:      (m.subject as string) || "(no subject)",
-      from:         (m.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.name ?? "",
+      from:         ((m.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.name || (m.from as { emailAddress?: { address?: string } })?.emailAddress?.address) ?? "",
       date:         m.receivedDateTime as string,
       snippet:      (m.bodyPreview as string) ?? "",
       unread:       m.isRead === false,
@@ -243,8 +243,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         messages: [{
           id:      msg.id as string,
-          from:    (msg.from as { emailAddress?: { address?: string } })?.emailAddress?.address ?? "",
-          to:      "",
+          from:    (msg.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.address ?? "",
+          to:      ((msg.toRecipients as { emailAddress?: { address?: string } }[])?.[0])?.emailAddress?.address ?? "",
           subject: msg.subject as string,
           date:    msg.receivedDateTime as string,
           body:    (msg.body as { content?: string })?.content ?? msg.bodyPreview as string ?? "",

@@ -520,6 +520,28 @@ def _mk_router(db, get_current_user):
             "created_at": r.get("created_at"),
         } for r in rows]
 
+    @router.post("/ai-draft")
+    async def ai_draft(req: Request, user=Depends(get_current_user)):
+        """Lightweight single-turn LLM call for email drafts, classification, and summaries.
+
+        Body: { "prompt": "<full prompt text>", "model": "<optional model id>" }
+        Returns: { "reply": "<generated text>" }
+        """
+        body = await req.json()
+        prompt = (body.get("prompt") or "").strip()
+        if not prompt:
+            raise HTTPException(400, "prompt is required")
+
+        result = await chat_with_tools(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            model_id=body.get("model") or DEFAULT_MODEL,
+            temperature=0.3,
+            timeout=30.0,
+        )
+        reply = (result.get("content") or "").strip()
+        return {"reply": reply}
+
     return router
 
 
