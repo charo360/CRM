@@ -1,0 +1,222 @@
+"""Zernio — unified social inbox: per-user profiles, OAuth connect, posts, DMs."""
+from __future__ import annotations
+import logging, os
+import httpx
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+ZERNIO_BASE = "https://zernio.com/api/v1"
+
+def _headers():
+    key = os.getenv("ZERNIO_API_KEY", "")
+    if not key:
+        raise HTTPException(503, "ZERNIO_API_KEY not configured")
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+async def _get(path: str, params: dict = None):
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{ZERNIO_BASE}{path}", headers=_headers(), params=params or {})
+        r.raise_for_status()
+        return r.json()
+
+async def _post(path: str, body: dict):
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(f"{ZERNIO_BASE}{path}", headers=_headers(), json=body)
+        r.raise_for_status()
+        return r.json()
+
+async def _delete(path: str):
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.delete(f"{ZERNIO_BASE}{path}", headers=_headers())
+        r.raise_for_status()
+        return r.json()
+
+
+class SendMessageBody(BaseModel):
+    conversation_id: str
+    message: str
+    platform: Optional[str] = None
+
+class CreateConversationBody(BaseModel):
+    platform: str
+    recipient: str
+    message: str
+
+
+def make_zernio_router(db, user_dep):
+    router = APIRouter(prefix="/zernio", tags=["zernio"])
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    async def _get_or_create_profile(user_id: str) -> str:
+        """Return the Zernio profileId for this user, creating one if needed."""
+        user_doc = await db.users.find_one({"_id": user_id}, {"zernio_profile_id": 1, "business_name": 1})
+        profile_id = user_doc.get("zernio_profile_id") if user_doc else None
+
+        if not profile_id:
+            name = (user_doc or {}).get("business_name") or f"User {user_id[:8]}"
+            try:
+                data = await _post("/profiles", {"name": name, "description": "CRM Social Profile"})
+                profile = data.get("profile") or data
+                profile_id = profile.get("_id") or profile.get("id")
+            except Exception as e:
+                logger.error(f"[zernio] Failed to create profile for {user_id}: {e}")
+                raise HTTPException(503, "Could not create Zernio profile")
+
+            await db.users.update_one(
+                {"_id": user_id},
+                {"$set": {"zernio_profile_id": profile_id}}
+            )
+            logger.info(f"[zernio] Created profile {profile_id} for user {user_id}")
+
+        return profile_id
+
+    # ── status & profile ───────────────────────────────────────────────────────
+
+    @router.get("/status")
+    async def zernio_status(user=user_dep):
+        """Check API connectivity and return the user's profile + connected accounts."""
+        try:
+            user_id = user["_id"]
+            profile_id = await _get_or_create_profile(user_id)
+            accounts_data = await _get("/accounts", {"profileId": profile_id})
+            accounts = accounts_data.get("accounts", [])
+            return {
+                "connected": True,
+                "profile_id": profile_id,
+                "accounts": accounts,
+            }
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            return {"connected": False, "error": e.response.text}
+        except Exception as e:
+            return {"connected": False, "error": str(e)}
+
+    # ── connect (OAuth flow) ───────────────────────────────────────────────────
+
+    @router.get("/connect/{platform}")
+    async def get_connect_url(platform: str, user=user_dep):
+        """Return an OAuth URL so the user can connect a social platform."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            data = await _get(f"/connect/{platform}", {"profileId": profile_id})
+            return {"authUrl": data.get("authUrl") or data.get("url"), "platform": platform}
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    @router.delete("/accounts/{account_id}")
+    async def disconnect_account(account_id: str, user=user_dep):
+        """Disconnect a social account."""
+        try:
+            data = await _delete(f"/accounts/{account_id}")
+            return data
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    # ── accounts ───────────────────────────────────────────────────────────────
+
+    @router.get("/accounts")
+    async def list_accounts(user=user_dep):
+        """List connected social accounts for this user's profile."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            data = await _get("/accounts", {"profileId": profile_id})
+            return data
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    # ── inbox ──────────────────────────────────────────────────────────────────
+
+    @router.get("/inbox")
+    async def list_inbox(platform: Optional[str] = None, limit: int = 50, user=user_dep):
+        """Get DM conversations for this user's profile."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            params: Dict[str, Any] = {"profileId": profile_id, "limit": limit}
+            if platform:
+                params["platform"] = platform
+            data = await _get("/conversations", params)
+            return data
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return {"conversations": [], "data": []}
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    @router.get("/inbox/{conversation_id}")
+    async def get_conversation(conversation_id: str, user=user_dep):
+        """Get messages for a specific conversation."""
+        try:
+            data = await _get(f"/conversations/{conversation_id}")
+            return data
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    @router.post("/inbox/send")
+    async def send_message(payload: SendMessageBody, user=user_dep):
+        """Reply to a conversation."""
+        try:
+            body: Dict[str, Any] = {
+                "conversation_id": payload.conversation_id,
+                "message": payload.message,
+            }
+            if payload.platform:
+                body["platform"] = payload.platform
+            return await _post("/messages/send-inbox-message", body)
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    @router.post("/inbox/new")
+    async def new_conversation(payload: CreateConversationBody, user=user_dep):
+        """Start a new DM conversation."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            return await _post("/messages/create-inbox-conversation", {
+                "platform": payload.platform,
+                "recipient": payload.recipient,
+                "message": payload.message,
+                "profileId": profile_id,
+            })
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    # ── posts ──────────────────────────────────────────────────────────────────
+
+    @router.get("/posts")
+    async def list_posts(platform: Optional[str] = None, limit: int = 20, user=user_dep):
+        """List scheduled/published posts for this user's profile."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            params: Dict[str, Any] = {"profileId": profile_id, "limit": limit}
+            if platform:
+                params["platform"] = platform
+            return await _get("/posts", params)
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    @router.post("/posts")
+    async def create_post(body: Dict[str, Any], user=user_dep):
+        """Schedule or publish a post."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            body["profileId"] = profile_id
+            return await _post("/posts", body)
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, e.response.text)
+
+    return router
