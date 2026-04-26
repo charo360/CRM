@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Inbox, RefreshCw, Search, Send, Sparkles, X, ChevronLeft,
   Loader2, Mail, MailOpen, Clock, Bot, ToggleLeft, ToggleRight,
-  Star, Reply, Pencil, Zap, AlertCircle,
+  Star, Reply, Pencil, AlertCircle,
   Tag, Plus, UserCheck, Cpu, Trash2, Brain, ChevronUp,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
@@ -100,7 +100,8 @@ function buildRaw(opts: { to: string; subject: string; body: string; inReplyTo?:
     "",
     opts.body,
   ];
-  return btoa(unescape(encodeURIComponent(lines.join("\r\n"))))
+  const bytes = new TextEncoder().encode(lines.join("\r\n"));
+  return btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -195,24 +196,25 @@ function AutoreplyPanel({
   const [editContext, setEditContext] = useState("");
   const [editInput, setEditInput] = useState("");
 
-  const usedCatIds = autoreply.targets.filter((t) => t.type === "category").map((t) => t.id);
+  const targets = autoreply.targets ?? [];
+  const usedCatIds = targets.filter((t) => t.type === "category").map((t) => t.id);
   const availableCats = categories.filter((c) => !usedCatIds.includes(c.id));
 
   function addCategoryTarget(cat: Category) {
-    onSave({ ...autoreply, targets: [...autoreply.targets, { id: cat.id, type: "category", label: cat.name, tone: "professional", context: "" }] });
+    onSave({ ...autoreply, targets: [...targets, { id: cat.id, type: "category", label: cat.name, tone: "professional", context: "" }] });
     setShowAdd(false);
   }
 
   function addSenderTarget() {
     const email = senderInput.trim();
     if (!email || !email.includes("@")) { toast.error("Enter a valid email"); return; }
-    if (autoreply.targets.find((t) => t.id.toLowerCase() === email.toLowerCase())) { toast.error("Already added"); return; }
-    onSave({ ...autoreply, targets: [...autoreply.targets, { id: email, type: "sender", label: email, tone: "professional", context: "" }] });
+    if (targets.find((t) => t.id.toLowerCase() === email.toLowerCase())) { toast.error("Already added"); return; }
+    onSave({ ...autoreply, targets: [...targets, { id: email, type: "sender", label: email, tone: "professional", context: "" }] });
     setSenderInput(""); setShowSenderInput(false); setShowAdd(false);
   }
 
   function removeTarget(id: string) {
-    onSave({ ...autoreply, targets: autoreply.targets.filter((t) => t.id !== id) });
+    onSave({ ...autoreply, targets: targets.filter((t) => t.id !== id) });
     if (expandedId === id) setExpandedId(null);
   }
 
@@ -221,7 +223,7 @@ function AutoreplyPanel({
   }
 
   function saveEdit(id: string) {
-    onSave({ ...autoreply, targets: autoreply.targets.map((t) => t.id === id ? { ...t, tone: editTone, context: editContext } : t) });
+    onSave({ ...autoreply, targets: targets.map((t) => t.id === id ? { ...t, tone: editTone, context: editContext } : t) });
     setExpandedId(null);
   }
 
@@ -241,44 +243,55 @@ function AutoreplyPanel({
       </p>
 
       {/* Target list */}
-      {autoreply.targets.length === 0 && (
+      {targets.length === 0 && (
         <div className="rounded-xl border border-dashed border-slate-200 py-5 text-center">
           <p className="text-[11px] text-slate-400">No targets yet.<br />Add a category or sender below.</p>
         </div>
       )}
 
       <div className="space-y-2">
-        {autoreply.targets.map((target) => {
+        {targets.map((target) => {
           const cat = categories.find((c) => c.id === target.id);
           const isExpanded = expandedId === target.id;
           const chips = target.context ? target.context.split("\n").filter(Boolean) : [];
           return (
             <div key={target.id} className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
+              {/* Target header row */}
               <div className="flex items-center gap-2 px-3 py-2">
                 {cat ? <div className={cn("w-2 h-2 rounded-full shrink-0", cat.colorBg)} /> : <UserCheck size={10} className="text-slate-400 shrink-0" />}
-                <span className="text-[11px] font-medium text-slate-700 flex-1 truncate">{target.label}</span>
-                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-brand/10 text-brand-dark font-medium capitalize shrink-0">{target.tone}</span>
-                <button onClick={() => isExpanded ? setExpandedId(null) : startEdit(target)} className="p-0.5 text-slate-400 hover:text-brand-dark transition-colors ml-1">
+                <span className="text-[11px] font-semibold text-slate-700 flex-1 truncate">{target.label}</span>
+                <button onClick={() => isExpanded ? setExpandedId(null) : startEdit(target)} className="p-0.5 text-slate-400 hover:text-brand-dark transition-colors">
                   <Pencil size={9} />
                 </button>
                 <button onClick={() => removeTarget(target.id)} className="p-0.5 text-slate-400 hover:text-rose-500 transition-colors">
                   <X size={9} />
                 </button>
               </div>
+              {/* Inline tone selector — always visible */}
+              <div className="px-3 pb-2 flex gap-1">
+                {(["professional", "friendly", "concise"] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => onSave({ ...autoreply, targets: targets.map((tg) => tg.id === target.id ? { ...tg, tone: t } : tg) })}
+                    className={cn(
+                      "text-[9px] px-2 py-0.5 rounded-full capitalize font-medium transition-colors",
+                      target.tone === t ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-500 hover:bg-slate-100"
+                    )}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              {/* Context chips preview */}
               {!isExpanded && chips.length > 0 && (
                 <div className="px-3 pb-2 flex flex-wrap gap-1">
                   {chips.map((c, i) => <span key={i} className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-full">{c}</span>)}
                 </div>
               )}
+              {/* Expanded context editor */}
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-2 border-t border-slate-200 pt-2">
-                  <div className="flex gap-1 flex-wrap">
-                    {(["professional", "friendly", "concise"] as const).map((t) => (
-                      <button key={t} onClick={() => setEditTone(t)} className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize font-medium transition-colors", editTone === t ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-100")}>
-                        {t}
-                      </button>
-                    ))}
-                  </div>
+                  <p className="text-[9px] text-slate-400 font-semibold uppercase tracking-wide">Context</p>
                   {editItems.length > 0 && (
                     <div className="flex flex-wrap gap-1">
                       {editItems.map((item, i) => (
@@ -290,10 +303,10 @@ function AutoreplyPanel({
                     </div>
                   )}
                   <div className="flex gap-1">
-                    <input value={editInput} onChange={(e) => setEditInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (editInput.trim()) { setEditContext([...editItems, editInput.trim()].join("\n")); setEditInput(""); } } }} placeholder="Add context…" className="flex-1 bg-white text-[10px] text-slate-700 placeholder-slate-400 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0" />
+                    <input value={editInput} onChange={(e) => setEditInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (editInput.trim()) { setEditContext([...editItems, editInput.trim()].join("\n")); setEditInput(""); } } }} placeholder="Hours, policies, FAQs…" className="flex-1 bg-white text-[10px] text-slate-700 placeholder-slate-400 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-brand border border-slate-200 min-w-0" />
                     <button onClick={() => { if (editInput.trim()) { setEditContext([...editItems, editInput.trim()].join("\n")); setEditInput(""); } }} disabled={!editInput.trim()} className="px-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 disabled:opacity-40 transition-colors"><Plus size={9} /></button>
                   </div>
-                  <button onClick={() => saveEdit(target.id)} className="w-full py-1 rounded-lg bg-brand-dark hover:bg-brand text-white text-[10px] font-semibold transition-colors">Save</button>
+                  <button onClick={() => saveEdit(target.id)} className="w-full py-1 rounded-lg bg-brand-dark hover:bg-brand text-white text-[10px] font-semibold transition-colors">Save context</button>
                 </div>
               )}
             </div>
@@ -491,6 +504,7 @@ function ComposeModal({
   provider,
   onClose,
   onSent,
+  contacts = [],
   prefillTo = "",
   prefillSubject = "",
   prefillBody = "",
@@ -498,6 +512,7 @@ function ComposeModal({
   provider: "gmail" | "microsoft" | null;
   onClose: () => void;
   onSent: () => void;
+  contacts?: string[];
   prefillTo?: string;
   prefillSubject?: string;
   prefillBody?: string;
@@ -508,6 +523,29 @@ function ComposeModal({
   const [sending, setSending] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [tone, setTone] = useState<"professional" | "friendly" | "concise">("professional");
+  const [directions, setDirections] = useState("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  function handleToChange(val: string) {
+    setTo(val);
+    const query = val.split(",").pop()?.trim().toLowerCase() ?? "";
+    if (query.length >= 1) {
+      const matches = contacts.filter((c) => c.toLowerCase().includes(query)).slice(0, 6);
+      setSuggestions(matches);
+      setShowSuggestions(matches.length > 0);
+    } else {
+      setShowSuggestions(false);
+    }
+  }
+
+  function selectContact(contact: string) {
+    const parts = to.split(",");
+    parts[parts.length - 1] = " " + extractEmail(contact);
+    setTo(parts.join(",").trimStart());
+    setShowSuggestions(false);
+  }
 
   async function send() {
     if (!to.trim() || !subject.trim()) { toast.error("To and Subject are required"); return; }
@@ -527,22 +565,42 @@ function ComposeModal({
   }
 
   async function aiWrite() {
-    if (!subject.trim()) { toast.error("Enter a subject first"); return; }
+    if (!subject.trim() && !directions.trim()) { toast.error("Add a subject or directions first"); return; }
     setDrafting(true);
     try {
       const data = await apiPost("/api/email/draft", {
-        threadSubject: subject,
-        latestMessage: body || "(no prior content)",
+        threadSubject: subject || "New email",
+        latestMessage: "(composing new email)",
+        senderName: to || "the recipient",
         tone,
+        extraContext: directions.trim() || undefined,
       }) as { draft: string };
       setBody(data.draft);
+      setTimeout(() => bodyRef.current?.focus(), 50);
     } catch { toast.error("AI draft failed"); }
+    finally { setDrafting(false); }
+  }
+
+  async function aiRewrite() {
+    if (!body.trim()) { toast.error("Nothing to rewrite yet"); return; }
+    setDrafting(true);
+    try {
+      const data = await apiPost("/api/email/draft", {
+        threadSubject: subject || "New email",
+        latestMessage: body,
+        senderName: to || "the recipient",
+        tone,
+        extraContext: `Rewrite and improve this draft.${directions.trim() ? " " + directions.trim() : ""}`,
+      }) as { draft: string };
+      setBody(data.draft);
+      setTimeout(() => bodyRef.current?.focus(), 50);
+    } catch { toast.error("AI rewrite failed"); }
     finally { setDrafting(false); }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:justify-end bg-black/30 backdrop-blur-sm p-4 md:pb-6 md:pr-6">
-      <div className="bg-white border border-slate-200 rounded-2xl w-full md:w-[480px] shadow-xl flex flex-col max-h-[90vh]">
+      <div className="bg-white border border-slate-200 rounded-2xl w-full md:w-[520px] shadow-xl flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
           <div className="flex items-center gap-2">
@@ -552,45 +610,99 @@ function ComposeModal({
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition-colors"><X size={15} /></button>
         </div>
 
-        {/* Fields */}
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          <input
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            placeholder="To"
-            className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-brand border border-slate-200"
-          />
-          <input
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            placeholder="Subject"
-            className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-brand border border-slate-200"
-          />
-
-          {/* Tone selector */}
-          <div className="flex items-center gap-1.5 pt-1">
-            <span className="text-[10px] text-slate-500 font-medium">Tone:</span>
-            {(["professional", "friendly", "concise"] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTone(t)}
-                className={cn(
-                  "text-[10px] px-2 py-0.5 rounded-full capitalize transition-colors font-medium",
-                  tone === t ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-                )}
-              >
-                {t}
-              </button>
-            ))}
+          {/* To field with contact autocomplete */}
+          <div className="relative">
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 focus-within:ring-2 focus-within:ring-brand bg-white">
+              <span className="text-xs text-slate-400 shrink-0 font-medium w-12">To</span>
+              <input
+                value={to}
+                onChange={(e) => handleToChange(e.target.value)}
+                onFocus={() => to && setShowSuggestions(suggestions.length > 0)}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                placeholder="recipient@email.com"
+                autoFocus
+                className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none min-w-0"
+              />
+            </div>
+            {showSuggestions && (
+              <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-10 overflow-hidden">
+                {suggestions.map((c, i) => (
+                  <button
+                    key={i}
+                    onMouseDown={() => selectContact(c)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-slate-50 transition-colors text-left"
+                  >
+                    <div className={cn("w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0", avatarColor(c))}>
+                      {initials(c)}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs text-slate-800 truncate">{c.split("<")[0].trim() || c}</p>
+                      <p className="text-[10px] text-slate-400 truncate">{extractEmail(c)}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="Write your message…"
-            rows={10}
-            className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl border border-slate-200 p-3 outline-none focus:ring-2 focus:ring-brand resize-none leading-relaxed"
-          />
+          {/* Subject */}
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 focus-within:ring-2 focus-within:ring-brand bg-white">
+            <span className="text-xs text-slate-400 shrink-0 font-medium w-12">Subject</span>
+            <input
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="What's this about?"
+              className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none min-w-0"
+            />
+          </div>
+
+          {/* AI directions bar */}
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+            <Sparkles size={11} className="text-brand-dark shrink-0" />
+            <input
+              value={directions}
+              onChange={(e) => setDirections(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); aiWrite(); } }}
+              placeholder="Tell AI what to write… schedule a meeting, follow up on invoice, pitch the product"
+              className="flex-1 bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none min-w-0"
+            />
+            <div className="flex gap-1 shrink-0">
+              {(["professional", "friendly", "concise"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTone(t)}
+                  className={cn(
+                    "text-[9px] px-1.5 py-0.5 rounded-full capitalize font-medium transition-colors",
+                    tone === t ? "bg-brand-dark text-white" : "text-slate-400 hover:text-slate-700"
+                  )}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Body */}
+          <div className="relative">
+            <textarea
+              ref={bodyRef}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="Write your message, or use AI to draft it…"
+              rows={10}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
+              className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl border border-slate-200 p-3 pr-10 outline-none focus:ring-2 focus:ring-brand resize-none leading-relaxed"
+            />
+            {drafting && (
+              <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-white/80">
+                <div className="flex items-center gap-2 text-brand-dark text-xs font-medium">
+                  <Loader2 size={14} className="animate-spin" /> Writing…
+                </div>
+              </div>
+            )}
+            <span className="absolute right-3 bottom-2 text-[9px] text-slate-400">⌘↵ send</span>
+          </div>
         </div>
 
         {/* Footer */}
@@ -598,22 +710,31 @@ function ComposeModal({
           <button
             onClick={aiWrite}
             disabled={drafting}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs text-slate-600 font-medium disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-brand/10 text-brand-dark hover:bg-brand/20 border border-brand/20 text-xs font-semibold disabled:opacity-50 transition-colors"
           >
-            {drafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} className="text-brand-dark" />}
+            {drafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
             AI Write
           </button>
+          {body.trim() && (
+            <button
+              onClick={aiRewrite}
+              disabled={drafting}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-medium disabled:opacity-50 transition-colors"
+            >
+              <Sparkles size={12} className="text-brand-dark" /> Rewrite
+            </button>
+          )}
           <div className="flex-1" />
           <button onClick={onClose} className="px-3 py-2 text-xs text-slate-400 hover:text-slate-700 transition-colors">
             Discard
           </button>
           <button
             onClick={send}
-            disabled={sending}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+            disabled={sending || !to.trim() || !subject.trim()}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-40 transition-colors"
           >
             {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-            Send
+            {sending ? "Sending…" : "Send"}
           </button>
         </div>
       </div>
@@ -628,6 +749,8 @@ export default function EmailPage() {
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState<boolean | null>(null);
   const [provider, setProvider] = useState<"gmail" | "microsoft" | null>(null);
+  const [connectedProviders, setConnectedProviders] = useState<("gmail" | "microsoft")[]>([]);
+  const [activeProvider, setActiveProvider] = useState<"gmail" | "microsoft" | null>(null);
   const [searchInput, setSearchInput] = useState("");
   const [activeSearch, setActiveSearch] = useState("");
   const [tab, setTab] = useState<Tab>("all");
@@ -643,7 +766,6 @@ export default function EmailPage() {
   const [draftTone, setDraftTone] = useState<"professional" | "friendly" | "concise">("professional");
   const [extraContext, setExtraContext] = useState("");
   const [drafting, setDrafting] = useState(false);
-  const [showDraftSettings, setShowDraftSettings] = useState(false);
 
   const [quickReplies, setQuickReplies] = useState<string[]>([]);
   const [loadingQuick, setLoadingQuick] = useState(false);
@@ -666,19 +788,24 @@ export default function EmailPage() {
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const loadThreads = useCallback(async (q = "") => {
+  const loadThreads = useCallback(async (q = "", providerOverride?: "gmail" | "microsoft") => {
     setLoading(true);
     try {
-      const data = await apiGet(`/api/email?q=${encodeURIComponent(q)}&limit=50`);
+      const pParam = providerOverride ?? activeProvider;
+      const url = `/api/email?q=${encodeURIComponent(q)}&limit=50${pParam ? `&provider=${pParam}` : ""}`;
+      const data = await apiGet(url);
       setConnected(data.connected);
       setProvider(data.provider ?? null);
+      setConnectedProviders(data.connectedProviders ?? []);
+      if (!activeProvider && data.provider) setActiveProvider(data.provider);
       setThreads(data.threads ?? []);
     } catch {
       toast.error("Failed to load inbox");
     } finally {
       setLoading(false);
     }
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProvider]);
 
   useEffect(() => { loadThreads(); }, [loadThreads]);
 
@@ -696,6 +823,13 @@ export default function EmailPage() {
       if (savedSummaries) setThreadSummaries(JSON.parse(savedSummaries) as Record<string, ThreadSummary>);
     } catch { /* ignore */ }
   }, []);
+
+  function switchProvider(p: "gmail" | "microsoft") {
+    setActiveProvider(p);
+    setSelected(null);
+    setMessages([]);
+    loadThreads(activeSearch, p);
+  }
 
   function saveAutoreply(rule: AutoreplyRule) {
     setAutoreply(rule);
@@ -796,27 +930,52 @@ export default function EmailPage() {
   const unreadCount = threads.filter((t) => t.unread).length;
   const starredCount = threads.filter((t) => starred.has(t.id)).length;
 
+  const contacts = useMemo(() => {
+    const seen = new Set<string>();
+    return threads
+      .map((t) => t.from.trim())
+      .filter((f) => { const e = extractEmail(f); if (seen.has(e)) return false; seen.add(e); return true; });
+  }, [threads]);
+
   async function openThread(thread: Thread) {
     setSelected(thread);
     setMessages([]);
     setReplyText("");
     setShowReply(false);
+    setExtraContext("");
     setQuickReplies([]);
-    setShowDraftSettings(false);
     setThreadLoading(true);
     try {
-      const data = await apiPost("/api/email", { action: "get_thread", threadId: thread.id }) as { messages: Message[] };
+      const data = await apiPost("/api/email", { action: "get_thread", threadId: thread.id, provider: activeProvider }) as { messages: Message[] };
       const msgs = data.messages ?? [];
       setMessages(msgs);
       if (thread.unread && msgs.length) {
         const last = msgs[msgs.length - 1];
-        await apiPost("/api/email", { action: "mark_read", messageId: last.id });
+        await apiPost("/api/email", { action: "mark_read", messageId: last.id, provider: activeProvider });
         setThreads((prev) => prev.map((t) => t.id === thread.id ? { ...t, unread: false } : t));
       }
       if (msgs.length) generateQuickReplies(thread.subject, msgs[msgs.length - 1]);
       if (msgs.length >= 3) generateThreadSummary(thread, msgs);
       setSummaryExpanded(false);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+
+      // Auto-open reply + generate draft if thread matches an auto-reply target
+      if (msgs.length) {
+        const arTargets = autoreply.targets ?? [];
+        if (autoreply.enabled && arTargets.length) {
+          const cat = getCatForThread(thread.id);
+          let matched: AutoreplyTarget | undefined;
+          if (cat) matched = arTargets.find((t) => t.type === "category" && t.id === cat.id);
+          if (!matched) {
+            const senderEmail = extractEmail(msgs[msgs.length - 1].from);
+            matched = arTargets.find((t) => t.type === "sender" && t.id.toLowerCase() === senderEmail.toLowerCase());
+          }
+          if (matched) {
+            setShowReply(true);
+            generateDraft({ thread, msgs, directions: "" });
+          }
+        }
+      }
     } catch {
       toast.error("Failed to load thread");
     } finally {
@@ -841,37 +1000,39 @@ export default function EmailPage() {
     finally { setLoadingQuick(false); }
   }
 
-  async function handleAiDraft() {
-    if (!selected || !messages.length) return;
+  async function generateDraft(opts?: { thread?: Thread; msgs?: Message[]; directions?: string }) {
+    const t = opts?.thread ?? selected;
+    const m = opts?.msgs ?? messages;
+    if (!t || !m.length) return;
     setDrafting(true);
+    setShowReply(true);
     try {
-      const latest = messages[messages.length - 1];
-      const cat = getCatForThread(selected.id);
-      const summary = threadSummaries[selected.id];
+      const latest = m[m.length - 1];
+      const cat = getCatForThread(t.id);
+      const summary = threadSummaries[t.id];
       // Find matching auto-reply target (category first, then sender)
       let arTarget: AutoreplyTarget | undefined;
-      if (autoreply.enabled && autoreply.targets.length) {
-        if (cat) arTarget = autoreply.targets.find((t) => t.type === "category" && t.id === cat.id);
+      const arTargets = autoreply.targets ?? [];
+      if (autoreply.enabled && arTargets.length) {
+        if (cat) arTarget = arTargets.find((tg) => tg.type === "category" && tg.id === cat.id);
         if (!arTarget) {
           const senderEmail = extractEmail(latest.from);
-          arTarget = autoreply.targets.find((t) => t.type === "sender" && t.id.toLowerCase() === senderEmail.toLowerCase());
+          arTarget = arTargets.find((tg) => tg.type === "sender" && tg.id.toLowerCase() === senderEmail.toLowerCase());
         }
       }
+      const directions = opts?.directions !== undefined ? opts.directions : extraContext;
       const contextParts: string[] = [];
-      if (extraContext.trim()) contextParts.push(extraContext.trim());
+      if (directions.trim()) contextParts.push(directions.trim());
       if (arTarget?.context) contextParts.push(`Context: ${arTarget.context.replace(/\n/g, "; ")}`);
       if (summary) contextParts.push(`Conversation summary: ${summary.summary}`);
-      const richContext = contextParts.join("\n");
-      const effectiveTone = arTarget ? arTarget.tone : draftTone;
       const data = await apiPost("/api/email/draft", {
-        threadSubject: selected.subject,
+        threadSubject: t.subject,
         latestMessage: stripHtml(latest.body).slice(0, 1500),
         senderName: latest.from,
-        tone: effectiveTone,
-        extraContext: richContext || undefined,
+        tone: arTarget ? arTarget.tone : draftTone,
+        extraContext: contextParts.join("\n") || undefined,
       }) as { draft: string };
       setReplyText(data.draft);
-      setShowReply(true);
       setTimeout(() => replyRef.current?.focus(), 50);
     } catch { toast.error("AI draft failed"); }
     finally { setDrafting(false); }
@@ -883,10 +1044,10 @@ export default function EmailPage() {
     try {
       const latest = messages[messages.length - 1];
       const subject = selected.subject.startsWith("Re:") ? selected.subject : `Re: ${selected.subject}`;
-      if (provider === "gmail") {
-        await apiPost("/api/email", { action: "send", raw: buildRaw({ to: latest.from, subject, body: replyText, inReplyTo: latest.id }) });
+      if (activeProvider === "gmail") {
+        await apiPost("/api/email", { action: "send", provider: "gmail", raw: buildRaw({ to: latest.from, subject, body: replyText, inReplyTo: latest.id }) });
       } else {
-        await apiPost("/api/email", { action: "send", to: latest.from, subject, replyBody: replyText });
+        await apiPost("/api/email", { action: "send", provider: activeProvider, to: latest.from, subject, replyBody: replyText });
       }
       toast.success("Sent!");
       setReplyText("");
@@ -896,7 +1057,7 @@ export default function EmailPage() {
     finally { setSending(false); }
   }
 
-  function handleSearch(e: React.FormEvent) {
+  function handleSearch(e: React.SyntheticEvent) {
     e.preventDefault();
     setActiveSearch(searchInput);
     loadThreads(searchInput);
@@ -929,11 +1090,27 @@ export default function EmailPage() {
             <div className="flex items-center gap-2">
               <Inbox size={15} className="text-brand-dark" />
               <span className="font-bold text-sm text-slate-900">Inbox</span>
-              {provider && (
+              {/* Provider switcher — shown when multiple accounts connected */}
+              {connectedProviders.length > 1 ? (
+                <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
+                  {connectedProviders.map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => switchProvider(p)}
+                      className={cn(
+                        "text-[10px] px-2 py-0.5 rounded-md font-medium transition-colors",
+                        activeProvider === p ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                      )}
+                    >
+                      {p === "gmail" ? "Gmail" : "Outlook"}
+                    </button>
+                  ))}
+                </div>
+              ) : provider ? (
                 <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full font-medium">
                   {provider === "gmail" ? "Gmail" : "Outlook"}
                 </span>
-              )}
+              ) : null}
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -1258,67 +1435,67 @@ export default function EmailPage() {
 
           {/* Reply composer */}
           {showReply && (
-            <div className="border-t border-slate-100 bg-white p-4 space-y-3">
-              {/* AI draft settings */}
-              {showDraftSettings && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold text-brand-dark flex items-center gap-1.5"><Sparkles size={11} /> AI Draft</span>
-                    <button onClick={() => setShowDraftSettings(false)}><X size={12} className="text-slate-400" /></button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-slate-500 w-8 font-medium">Tone</span>
-                    {(["professional", "friendly", "concise"] as const).map((t) => (
-                      <button key={t} onClick={() => setDraftTone(t)} className={cn("text-[10px] px-2 py-0.5 rounded-lg capitalize transition-colors font-medium", draftTone === t ? "bg-brand-dark text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-slate-500 w-8 font-medium">Hint</span>
-                    <input
-                      value={extraContext}
-                      onChange={(e) => setExtraContext(e.target.value)}
-                      placeholder="e.g. mention 30-day return policy"
-                      className="flex-1 text-[11px] bg-white border border-slate-200 text-slate-700 placeholder-slate-400 rounded-lg px-3 py-1.5 outline-none focus:ring-1 focus:ring-brand"
-                    />
-                  </div>
-                  <button onClick={handleAiDraft} disabled={drafting} className="w-full py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors">
-                    {drafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                    {drafting ? "Writing…" : "Generate"}
-                  </button>
-                </div>
-              )}
+            <div className="border-t border-slate-100 bg-white p-4 space-y-2.5">
 
-              {autoreply.enabled && (
-                <div className="flex items-center gap-2 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 font-medium">
-                  <Zap size={11} /> Auto-reply active for new emails
+              {/* Directions bar — always visible */}
+              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <Sparkles size={11} className="text-brand-dark shrink-0" />
+                <input
+                  value={extraContext}
+                  onChange={(e) => setExtraContext(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); generateDraft(); } }}
+                  placeholder="Give AI direction… mention discount, ask for timeline, keep it brief"
+                  className="flex-1 bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none min-w-0"
+                />
+                {/* Tone pills */}
+                <div className="flex gap-1 shrink-0">
+                  {(["professional", "friendly", "concise"] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setDraftTone(t)}
+                      className={cn(
+                        "text-[9px] px-1.5 py-0.5 rounded-full capitalize font-medium transition-colors",
+                        draftTone === t ? "bg-brand-dark text-white" : "text-slate-400 hover:text-slate-700"
+                      )}
+                    >
+                      {t}
+                    </button>
+                  ))}
                 </div>
-              )}
+              </div>
 
+              {/* Draft textarea */}
               <div className="relative">
                 <textarea
                   ref={replyRef}
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
-                  placeholder="Write a reply…"
+                  placeholder={drafting ? "Writing…" : "Write a reply or hit AI Draft →"}
                   rows={4}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleSend(); }
                   }}
                   className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl border border-slate-200 p-3 pr-10 outline-none focus:ring-2 focus:ring-brand resize-none leading-relaxed"
                 />
+                {drafting && (
+                  <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-white/80">
+                    <div className="flex items-center gap-2 text-brand-dark text-xs font-medium">
+                      <Loader2 size={14} className="animate-spin" /> Writing draft…
+                    </div>
+                  </div>
+                )}
                 <span className="absolute right-3 bottom-2 text-[9px] text-slate-400">⌘↵ send</span>
               </div>
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setShowDraftSettings((v) => !v)}
-                  className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors", showDraftSettings ? "bg-brand/10 text-brand-dark border border-brand/20" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}
+                  onClick={() => generateDraft()}
+                  disabled={drafting}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-brand/10 text-brand-dark hover:bg-brand/20 border border-brand/20 disabled:opacity-50 transition-colors"
                 >
                   <Sparkles size={12} /> AI Draft
                 </button>
-                <button onClick={() => { setShowReply(false); setReplyText(""); }} className="px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-700 transition-colors">
+                <button onClick={() => { setShowReply(false); setReplyText(""); setExtraContext(""); }} className="px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-700 transition-colors">
                   Cancel
                 </button>
                 <div className="flex-1" />
@@ -1364,6 +1541,7 @@ export default function EmailPage() {
       {showCompose && (
         <ComposeModal
           provider={provider}
+          contacts={contacts}
           onClose={() => setShowCompose(false)}
           onSent={() => loadThreads(activeSearch)}
         />

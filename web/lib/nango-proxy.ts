@@ -73,21 +73,39 @@ export async function nangoProxy(opts: {
   return fetch(url, init);
 }
 
-/** Detect which email provider is connected for this user (gmail preferred) */
-export async function detectEmailProvider(userId: string): Promise<{
+/** Detect ALL email providers connected for this user */
+export async function detectAllEmailProviders(userId: string): Promise<Array<{
+  provider: "gmail" | "microsoft";
+  integrationKey: string;
+  connectionId: string;
+}>> {
+  const [gmailId, msId] = await Promise.all([
+    getNangoConnectionId(userId, "google-mail"),
+    getNangoConnectionId(userId, "microsoft"),
+  ]);
+  const results: Array<{ provider: "gmail" | "microsoft"; integrationKey: string; connectionId: string }> = [];
+  if (gmailId) results.push({ provider: "gmail", integrationKey: "google-mail", connectionId: gmailId });
+  if (msId)    results.push({ provider: "microsoft", integrationKey: "microsoft", connectionId: msId });
+  return results;
+}
+
+/** Detect which email provider is connected for this user (gmail preferred).
+ *  Pass preferredProvider to override the default Gmail-first order. */
+export async function detectEmailProvider(
+  userId: string,
+  preferredProvider?: "gmail" | "microsoft",
+): Promise<{
   provider: "gmail" | "microsoft" | null;
   integrationKey: string;
   connectionId: string;
 } | null> {
-  // Try Gmail first
-  const gmailId = await getNangoConnectionId(userId, "google-mail");
-  if (gmailId) return { provider: "gmail", integrationKey: "google-mail", connectionId: gmailId };
-
-  // Try Microsoft / Outlook
-  const msId = await getNangoConnectionId(userId, "microsoft");
-  if (msId) return { provider: "microsoft", integrationKey: "microsoft", connectionId: msId };
-
-  return null;
+  const all = await detectAllEmailProviders(userId);
+  if (!all.length) return null;
+  if (preferredProvider) {
+    const match = all.find((p) => p.provider === preferredProvider);
+    if (match) return match;
+  }
+  return all[0]; // Gmail first by default (inserted first above)
 }
 
 /** Detect which calendar provider is connected */
