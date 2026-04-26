@@ -192,25 +192,22 @@ function AutoreplyPanel({
   }
 
   return (
-    <div className="border-t border-slate-800 bg-slate-900 p-3 space-y-3">
+    <div className="flex flex-col h-full p-4 space-y-4">
       {/* Header */}
       <div className="flex items-center gap-2">
-        <Bot size={12} className="text-brand" />
-        <span className="text-xs font-semibold text-slate-200">Auto-reply</span>
+        <Bot size={13} className="text-brand" />
+        <span className="text-xs font-semibold">Auto-reply</span>
         <span className="ml-auto text-[10px] text-emerald-400 font-medium bg-emerald-900/30 px-2 py-0.5 rounded-full">Live</span>
-        <button
-          onClick={() => onSave({ ...autoreply, enabled: false })}
-          className="text-[10px] text-rose-500 hover:text-rose-400 transition-colors ml-1"
-          title="Turn off"
-        >
-          <X size={11} />
-        </button>
       </div>
 
+      <p className="text-[11px] text-slate-500 leading-relaxed">
+        Zilo will automatically reply to new emails with your selected tone and context.
+      </p>
+
       {/* Tone */}
-      <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-slate-500 shrink-0">Tone</span>
-        <div className="flex gap-1.5 flex-wrap">
+      <div className="space-y-1.5">
+        <p className="text-[10px] text-slate-500">Tone</p>
+        <div className="flex flex-wrap gap-1.5">
           {(["professional", "friendly", "concise"] as const).map((t) => (
             <button
               key={t}
@@ -227,20 +224,14 @@ function AutoreplyPanel({
       </div>
 
       {/* Business context chips */}
-      <div className="space-y-2">
-        <span className="text-[10px] text-slate-500">Business context</span>
+      <div className="space-y-2 flex-1">
+        <p className="text-[10px] text-slate-500">Business context</p>
         {items.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {items.map((item, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1"
-              >
+              <div key={i} className="flex items-center gap-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1">
                 <span className="text-[10px] text-slate-300 max-w-[160px] truncate">{item}</span>
-                <button
-                  onClick={() => removeItem(i)}
-                  className="text-slate-500 hover:text-rose-400 transition-colors ml-0.5"
-                >
+                <button onClick={() => removeItem(i)} className="text-slate-500 hover:text-rose-400 transition-colors ml-0.5">
                   <X size={9} />
                 </button>
               </div>
@@ -252,18 +243,26 @@ function AutoreplyPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(); } }}
-            placeholder="e.g. Open 9am–6pm, free returns…"
-            className="flex-1 bg-slate-800 text-[11px] text-slate-200 placeholder-slate-500 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-700 min-w-0"
+            placeholder="Hours, policies, FAQs…"
+            className="flex-1 bg-slate-800 text-[11px] text-slate-200 placeholder-slate-500 rounded-xl px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-brand border border-slate-700 min-w-0"
           />
           <button
             onClick={addItem}
             disabled={!input.trim()}
-            className="px-2.5 py-1.5 rounded-lg bg-brand-dark hover:bg-brand text-white text-[10px] font-medium disabled:opacity-40 transition-colors shrink-0"
+            className="px-2.5 rounded-xl bg-brand-dark hover:bg-brand text-white disabled:opacity-40 transition-colors shrink-0"
           >
             <Plus size={11} />
           </button>
         </div>
       </div>
+
+      {/* Turn off */}
+      <button
+        onClick={() => onSave({ ...autoreply, enabled: false })}
+        className="flex items-center gap-1.5 text-[11px] text-rose-500 hover:text-rose-400 transition-colors"
+      >
+        <AlertCircle size={11} /> Turn off
+      </button>
     </div>
   );
 }
@@ -1104,10 +1103,6 @@ export default function EmailPage() {
           ))}
         </div>
 
-        {/* ── Auto-reply panel (bottom of left pane) ──────────────────────── */}
-        {autoreply.enabled && (
-          <AutoreplyPanel autoreply={autoreply} onSave={saveAutoreply} />
-        )}
       </div>
 
       {/* ── Right pane ────────────────────────────────────────────────────── */}
@@ -1295,6 +1290,12 @@ export default function EmailPage() {
         </div>
       ) : null}
 
+      {/* ── Auto-reply right panel ─────────────────────────────────────────── */}
+      {autoreply.enabled && (
+        <div className="w-64 border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+          <AutoreplyPanel autoreply={autoreply} onSave={saveAutoreply} />
+        </div>
+      )}
 
       {/* Compose modal */}
       {showCompose && (
