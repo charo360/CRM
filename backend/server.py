@@ -18,7 +18,6 @@ else:
 # Validate environment on startup
 def validate_startup_env():
     """Quick validation to catch common issues"""
-    print("DEBUG: MODIFIED STARTUP CHECK RUNNING")
     ai_provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
     if ai_provider == 'deepseek':
         api_key = os.environ.get('DEEPSEEK_API_KEY', '')
@@ -7586,7 +7585,6 @@ async def evolution_webhook(request: Request):
             from_me = parsed.get("from_me", False)
             evo_msg_id_log = parsed.get("evo_message_id", "?")
             direction = "outgoing" if from_me else "incoming"
-            print(f"DEBUG: Webhook received. Direction={direction}, Body='{body}'")
             logging.info(f"messages.upsert: direction={direction}, from={from_number}, evo_id={evo_msg_id_log}, body={body[:60]}")
 
             # For incoming messages: fire blue-tick read receipt back to Evolution API immediately
@@ -7610,7 +7608,6 @@ async def evolution_webhook(request: Request):
             customer_name = push_name or f"Contact {from_number[-4:]}"
             
             if customer:
-                print(f"DEBUG: Customer found: {customer['name']}")
                 customer_id = customer["_id"]
                 customer_name = customer.get("name", customer_name)
                 remote_jid_val = parsed.get("remote_jid", "")
@@ -7641,7 +7638,6 @@ async def evolution_webhook(request: Request):
                     {"$set": contact_update}
                 )
             else:
-                print(f"DEBUG: New customer auto-created")
                 customer_id = str(uuid.uuid4())
                 await db.customers.insert_one({
                     "_id": customer_id,
@@ -7763,7 +7759,6 @@ async def evolution_webhook(request: Request):
                             "created_at": {"$gte": _dedup_cutoff},
                         })
                     if existing:
-                        print(f"DEBUG: Outgoing message already exists (send_context={existing.get('send_context','?')}), skipping AI")
                         # Back-fill evo_message_id if missing (fixes the race window)
                         if evo_msg_id and not existing.get("evo_message_id"):
                             await db.messages.update_one(
@@ -8290,7 +8285,6 @@ async def evolution_webhook(request: Request):
                     # Dedup check already done at top of handler
 
                     
-                    print(f"DEBUG: Proceeding to AI generation... model_pref={user_settings.get('ai_model', 'standard')}", flush=True)
                     try:
                         recent_messages = await db.messages.find({
                             "customer_id": customer_id,
@@ -8377,7 +8371,6 @@ async def evolution_webhook(request: Request):
                         
                         from ai_service import get_drafter
                         ai_service = get_drafter()
-                        print(f"DEBUG: AI drafter obtained, clients={list(ai_service.clients.keys())}", flush=True)
                         user_country_code = user_settings.get("country_code", "")
                         customer_phone = customer_data.get("phone", from_number) if customer_data else from_number
                         result = await ai_service.draft_followup_message(
@@ -8404,7 +8397,6 @@ async def evolution_webhook(request: Request):
                             print(f"WARNING: AI failed, no auto-reply sent to {from_number}", flush=True)
                             return {"status": "ok", "message": "AI service unavailable, auto-reply skipped"}
                         
-                        print(f"DEBUG: AI reply received ({len(reply_text)} chars): {reply_text[:100]}", flush=True)
                         logging.info(f"AI raw reply for {from_number}: {reply_text[:300]}")
                         
                         # Check if AI flagged this as needing human attention
