@@ -1,0 +1,346 @@
+"use client";
+import { useEffect, useState, useCallback } from "react";
+import { feedbackApi } from "@/lib/api";
+import { MessageCircle, Plus, Trash2, RefreshCw, ThumbsUp, Minus, ThumbsDown, Star } from "lucide-react";
+
+type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string };
+type NPSData = { nps_score: number; total_responses: number; promoters: number; passives: number; detractors: number; promoter_pct: number; detractor_pct: number; recent_comments: { name: string; score: number; comment: string }[] };
+type Response = { id: string; customer_name: string; nps_score?: number; nps_category?: string; comment: string; created_at: string };
+
+function NPSGauge({ score }: { score: number }) {
+  const color = score >= 50 ? "text-green-600" : score >= 0 ? "text-amber-600" : "text-red-600";
+  const label = score >= 50 ? "Excellent" : score >= 0 ? "Good" : "Needs improvement";
+  return (
+    <div className="flex flex-col items-center justify-center">
+      <div className={`text-6xl font-bold ${color}`}>{score}</div>
+      <div className="text-sm text-slate-500 mt-1">NPS Score</div>
+      <div className={`text-xs font-medium mt-0.5 ${color}`}>{label}</div>
+    </div>
+  );
+}
+
+export default function NPSPage() {
+  const [surveys, setSurveys] = useState<Survey[]>([]);
+  const [nps, setNps] = useState<NPSData | null>(null);
+  const [responses, setResponses] = useState<Response[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<"dashboard" | "surveys" | "responses">("dashboard");
+  const [selectedSurvey, setSelectedSurvey] = useState<string>("");
+  const [showSurveyModal, setShowSurveyModal] = useState(false);
+  const [surveyForm, setSurveyForm] = useState({ title: "", description: "", active: true });
+  const [showResponseModal, setShowResponseModal] = useState(false);
+  const [responseForm, setResponseForm] = useState({ survey_id: "", customer_name: "", customer_phone: "", nps_score: 8, comment: "" });
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [sv, np, rs] = await Promise.all([
+        feedbackApi.listSurveys(),
+        feedbackApi.nps(selectedSurvey || undefined),
+        feedbackApi.listResponses(selectedSurvey || undefined),
+      ]);
+      setSurveys(sv as Survey[]);
+      setNps(np as NPSData);
+      setResponses(rs as Response[]);
+    } finally { setLoading(false); }
+  }, [selectedSurvey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function createSurvey() {
+    setSaving(true);
+    try { await feedbackApi.createSurvey(surveyForm); setShowSurveyModal(false); await load(); }
+    finally { setSaving(false); }
+  }
+
+  async function deleteSurvey(id: string) {
+    if (!confirm("Delete this survey and all responses?")) return;
+    await feedbackApi.deleteSurvey(id);
+    await load();
+  }
+
+  async function submitResponse() {
+    setSaving(true);
+    try { await feedbackApi.submitResponse({ ...responseForm }); setShowResponseModal(false); await load(); }
+    finally { setSaving(false); }
+  }
+
+  const NPS_COLOR: Record<string, string> = { promoter: "text-green-600", passive: "text-amber-600", detractor: "text-red-600" };
+  const NPS_ICON: Record<string, typeof ThumbsUp> = { promoter: ThumbsUp, passive: Minus, detractor: ThumbsDown };
+
+  return (
+    <div className="p-6 max-w-5xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <MessageCircle className="text-brand-dark" size={24} /> Customer Feedback & NPS
+          </h1>
+          <p className="text-slate-500 text-sm mt-0.5">Measure customer satisfaction and collect feedback</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => { setShowResponseModal(true); setResponseForm({ survey_id: surveys[0]?.id || "", customer_name: "", customer_phone: "", nps_score: 8, comment: "" }); }}
+            className="flex items-center gap-2 border border-slate-200 text-slate-700 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
+            <Plus size={15} /> Log Response
+          </button>
+          <button onClick={() => { setShowSurveyModal(true); setSurveyForm({ title: "", description: "", active: true }); }}
+            className="flex items-center gap-2 bg-brand-dark text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-brand">
+            <Plus size={15} /> New Survey
+          </button>
+        </div>
+      </div>
+
+      {/* Survey filter */}
+      <div className="flex gap-2 flex-wrap items-center">
+        <span className="text-xs text-slate-500">Filter by survey:</span>
+        <button onClick={() => setSelectedSurvey("")}
+          className={`px-3 py-1 rounded-full text-xs border ${selectedSurvey === "" ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-slate-600 border-slate-200"}`}>
+          All
+        </button>
+        {surveys.map(s => (
+          <button key={s.id} onClick={() => setSelectedSurvey(s.id)}
+            className={`px-3 py-1 rounded-full text-xs border ${selectedSurvey === s.id ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-slate-600 border-slate-200"}`}>
+            {s.title}
+          </button>
+        ))}
+        <button onClick={load} className="ml-auto text-slate-400 hover:text-slate-700"><RefreshCw size={16} /></button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 bg-slate-100 rounded-lg p-1 w-fit">
+        {(["dashboard","surveys","responses"] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium capitalize ${tab === t ? "bg-white shadow text-slate-800" : "text-slate-500 hover:text-slate-700"}`}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Dashboard tab */}
+      {tab === "dashboard" && (
+        loading ? <div className="flex items-center justify-center h-40 text-slate-400">Loading...</div> :
+        !nps || nps.total_responses === 0 ? (
+          <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
+            <MessageCircle size={40} className="opacity-30" />
+            <p>No responses yet. Log your first NPS response!</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border p-6 flex items-center justify-center">
+                <NPSGauge score={nps.nps_score} />
+              </div>
+              <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+                <div className="flex items-center gap-2 text-green-700 text-xs font-medium mb-2"><ThumbsUp size={14} /> Promoters (9-10)</div>
+                <p className="text-3xl font-bold text-green-800">{nps.promoters}</p>
+                <p className="text-xs text-green-600">{nps.promoter_pct}% of responses</p>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <div className="flex items-center gap-2 text-amber-700 text-xs font-medium mb-2"><Minus size={14} /> Passives (7-8)</div>
+                <p className="text-3xl font-bold text-amber-800">{nps.passives}</p>
+                <p className="text-xs text-amber-600">{100 - nps.promoter_pct - nps.detractor_pct}% of responses</p>
+              </div>
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                <div className="flex items-center gap-2 text-red-700 text-xs font-medium mb-2"><ThumbsDown size={14} /> Detractors (0-6)</div>
+                <p className="text-3xl font-bold text-red-800">{nps.detractors}</p>
+                <p className="text-xs text-red-600">{nps.detractor_pct}% of responses</p>
+              </div>
+            </div>
+            {/* Score breakdown */}
+            <div className="bg-white rounded-xl border p-4">
+              <h3 className="font-semibold text-slate-700 mb-3 text-sm">NPS Scale</h3>
+              <div className="flex gap-1">
+                {[0,1,2,3,4,5,6,7,8,9,10].map(s => (
+                  <div key={s} className={`flex-1 text-center py-2 rounded text-xs font-medium ${s >= 9 ? "bg-green-100 text-green-700" : s >= 7 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
+                    {s}
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between mt-1 text-xs text-slate-400">
+                <span>Detractors</span><span>Passives</span><span>Promoters</span>
+              </div>
+            </div>
+            {/* Recent comments */}
+            {nps.recent_comments.length > 0 && (
+              <div className="bg-white rounded-xl border p-4">
+                <h3 className="font-semibold text-slate-700 mb-3 text-sm">Recent Comments</h3>
+                <div className="space-y-3">
+                  {nps.recent_comments.map((c, i) => {
+                    const cat = c.score >= 9 ? "promoter" : c.score >= 7 ? "passive" : "detractor";
+                    const Icon = NPS_ICON[cat];
+                    return (
+                      <div key={i} className="flex gap-3 items-start">
+                        <Icon size={16} className={`mt-0.5 shrink-0 ${NPS_COLOR[cat]}`} />
+                        <div>
+                          <p className="text-sm text-slate-800">&ldquo;{c.comment}&rdquo;</p>
+                          <p className="text-xs text-slate-400 mt-0.5">{c.name} — Score: {c.score}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      )}
+
+      {/* Surveys tab */}
+      {tab === "surveys" && (
+        surveys.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
+            <Star size={40} className="opacity-30" />
+            <p>No surveys yet. Create your first survey!</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {surveys.map(s => (
+              <div key={s.id} className="bg-white rounded-xl border p-4 flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-slate-800">{s.title}</p>
+                    <span className={`px-2 py-0.5 rounded-full text-xs ${s.active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                      {s.active ? "Active" : "Inactive"}
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-500 mt-0.5">{s.description || "No description"}</p>
+                  <p className="text-xs text-slate-400 mt-1">{s.response_count} responses</p>
+                </div>
+                <button onClick={() => deleteSurvey(s.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={16} /></button>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {/* Responses tab */}
+      {tab === "responses" && (
+        responses.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
+            <MessageCircle size={40} className="opacity-30" />
+            <p>No responses yet.</p>
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl border overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                <tr>
+                  <th className="text-left px-4 py-3">Customer</th>
+                  <th className="text-left px-4 py-3">NPS Score</th>
+                  <th className="text-left px-4 py-3">Comment</th>
+                  <th className="text-left px-4 py-3">Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {responses.map(r => {
+                  const cat = r.nps_category || "passive";
+                  return (
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 font-medium text-slate-800">{r.customer_name || "Anonymous"}</td>
+                      <td className="px-4 py-3">
+                        {r.nps_score !== undefined && (
+                          <span className={`font-bold ${NPS_COLOR[cat]}`}>{r.nps_score}/10</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 max-w-[250px] truncate">{r.comment || "—"}</td>
+                      <td className="px-4 py-3 text-slate-400 text-xs">{new Date(r.created_at).toLocaleDateString()}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+
+      {/* Survey modal */}
+      {showSurveyModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowSurveyModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b border-slate-100"><h2 className="text-lg font-semibold">New Survey</h2></div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Title *</label>
+                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={surveyForm.title}
+                  onChange={e => setSurveyForm(f => ({ ...f, title: e.target.value }))} placeholder="Customer Satisfaction Survey" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Description</label>
+                <textarea className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" rows={2} value={surveyForm.description}
+                  onChange={e => setSurveyForm(f => ({ ...f, description: e.target.value }))} />
+              </div>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" checked={surveyForm.active} onChange={e => setSurveyForm(f => ({ ...f, active: e.target.checked }))} className="rounded" />
+                Active
+              </label>
+            </div>
+            <div className="p-6 border-t flex justify-end gap-3">
+              <button onClick={() => setShowSurveyModal(false)} className="px-4 py-2 text-sm text-slate-600">Cancel</button>
+              <button onClick={createSurvey} disabled={saving || !surveyForm.title}
+                className="px-4 py-2 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50">
+                {saving ? "Creating..." : "Create Survey"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Response modal */}
+      {showResponseModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowResponseModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b border-slate-100"><h2 className="text-lg font-semibold">Log Customer Response</h2></div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Survey</label>
+                <select className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={responseForm.survey_id}
+                  onChange={e => setResponseForm(f => ({ ...f, survey_id: e.target.value }))}>
+                  <option value="">Select survey...</option>
+                  {surveys.filter(s => s.active).map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Customer name</label>
+                  <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={responseForm.customer_name}
+                    onChange={e => setResponseForm(f => ({ ...f, customer_name: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Phone</label>
+                  <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={responseForm.customer_phone}
+                    onChange={e => setResponseForm(f => ({ ...f, customer_phone: e.target.value }))} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-2">
+                  NPS Score: <strong>{responseForm.nps_score}</strong>/10
+                  <span className="ml-2 text-xs font-normal text-slate-400">
+                    {responseForm.nps_score >= 9 ? "😊 Promoter" : responseForm.nps_score >= 7 ? "😐 Passive" : "😞 Detractor"}
+                  </span>
+                </label>
+                <input type="range" min="0" max="10" step="1" className="w-full accent-brand-dark" value={responseForm.nps_score}
+                  onChange={e => setResponseForm(f => ({ ...f, nps_score: +e.target.value }))} />
+                <div className="flex justify-between text-xs text-slate-400 mt-1">
+                  <span>Not likely</span><span>Very likely</span>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Comment</label>
+                <textarea className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" rows={2} value={responseForm.comment}
+                  onChange={e => setResponseForm(f => ({ ...f, comment: e.target.value }))} placeholder="What can we improve?" />
+              </div>
+            </div>
+            <div className="p-6 border-t flex justify-end gap-3">
+              <button onClick={() => setShowResponseModal(false)} className="px-4 py-2 text-sm text-slate-600">Cancel</button>
+              <button onClick={submitResponse} disabled={saving || !responseForm.survey_id}
+                className="px-4 py-2 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50">
+                {saving ? "Saving..." : "Submit"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
