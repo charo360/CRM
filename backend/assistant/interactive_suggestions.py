@@ -87,6 +87,27 @@ _BLOCKED_CHIP_PATTERNS = (
     "send via", "whatsapp", "share", "email this", "print",
 )
 
+# Keywords that indicate the reply is informational/research — not an actionable step.
+# When these appear, skip suggestion chips entirely so the UI stays clean.
+_RESEARCH_REPLY_PATTERNS = (
+    "competitor", "competitors", "competitor analysis",
+    "market research", "market data", "market trends",
+    "industry benchmark", "industry overview",
+    "strengths", "weaknesses", "swot",
+    "pricing strategy", "key observations",
+    "regulations", "compliance", "tax rate",
+    "exchange rate", "market share",
+)
+
+
+def _is_research_reply(reply: str) -> bool:
+    """Return True when the assistant reply is an informational/research report."""
+    lower = reply.lower()
+    hits = sum(1 for p in _RESEARCH_REPLY_PATTERNS if p in lower)
+    # Also treat long Markdown tables as informational
+    table_rows = lower.count("| ---") + lower.count("|---")
+    return hits >= 2 or table_rows >= 3
+
 
 def _is_blocked_chip(text: str) -> bool:
     t = text.lower()
@@ -130,6 +151,9 @@ async def build_reply_suggestions(
     if agent_id not in AGENTS_WITH_SUGGESTION_CHIPS:
         return []
     reply = (assistant_reply or "").strip()
+    # Never show action chips on research / analysis / competitor reports
+    if _is_research_reply(reply):
+        return []
     if not reply:
         return _fallback_chips(agent_id, 6 if agent_id != "google_ads" else 4)
 
