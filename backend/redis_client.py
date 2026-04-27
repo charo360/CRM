@@ -8,6 +8,7 @@ Redis is optional — if REDIS_URL is not set, all cache calls are no-ops
 and queue jobs fall back to direct execution so the app still works without Redis.
 """
 
+import asyncio
 import os
 import json
 import logging
@@ -134,6 +135,7 @@ async def dequeue_job(queue: str, timeout: int = 5) -> Optional[dict]:
         return None
     except Exception as e:
         logging.warning(f"[Queue] dequeue_job error {queue}: {e}")
+        await asyncio.sleep(30)  # back off hard on Redis errors to avoid hammering the limit
         return None
 
 
