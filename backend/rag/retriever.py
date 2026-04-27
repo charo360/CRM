@@ -36,25 +36,14 @@ async def get_knowledge_chunks(
         q_vec = await embed(query)
         client = get_qdrant()
         filt = Filter(must=[FieldCondition(key="business_id", match=MatchValue(value=business_id))])
-        # qdrant-client 1.7+ uses query_points; fall back to search for older versions
-        try:
-            response = await client.query_points(
-                collection_name="business_knowledge",
-                query=q_vec,
-                query_filter=filt,
-                limit=top_k,
-                with_payload=True,
-            )
-            results = response.points
-        except Exception:
-            results = await client.search(
-                collection_name="business_knowledge",
-                query_vector=q_vec,
-                query_filter=filt,
-                limit=top_k,
-                with_payload=True,
-            )
-        chunks = [r.payload["chunk"] for r in results if r.score > threshold]
+        response = await client.query_points(
+            collection_name="business_knowledge",
+            query=q_vec,
+            query_filter=filt,
+            limit=top_k,
+            with_payload=True,
+        )
+        chunks = [r.payload["chunk"] for r in response.points if r.score > threshold]
         return chunks
     except Exception as exc:
         logger.warning("[rag.retriever] knowledge retrieval failed: %r", exc)

@@ -31,23 +31,14 @@ async def get_customer_memories(
         q_vec = await embed(query)
         client = get_qdrant()
         filt = Filter(must=[FieldCondition(key="customer_id", match=MatchValue(value=customer_id))])
-        try:
-            response = await client.query_points(
-                collection_name="customer_memories",
-                query=q_vec,
-                query_filter=filt,
-                limit=top_k,
-                with_payload=True,
-            )
-            results = response.points
-        except Exception:
-            results = await client.search(
-                collection_name="customer_memories",
-                query_vector=q_vec,
-                query_filter=filt,
-                limit=top_k,
-            )
-        return [r.payload["summary"] for r in results if r.payload.get("summary")]
+        response = await client.query_points(
+            collection_name="customer_memories",
+            query=q_vec,
+            query_filter=filt,
+            limit=top_k,
+            with_payload=True,
+        )
+        return [r.payload["summary"] for r in response.points if r.payload.get("summary")]
     except Exception as exc:
         logger.warning("[memory.retrieve] failed for customer %s: %r", customer_id, exc)
         return []
