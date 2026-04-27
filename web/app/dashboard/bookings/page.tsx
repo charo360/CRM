@@ -97,6 +97,9 @@ export default function BookingsPage() {
   const [staffName, setStaffName] = useState("");
   const [notes, setNotes] = useState("");
   const [priceInput, setPriceInput] = useState<string>("");
+  const [addons, setAddons] = useState<{ name: string; price: number }[]>([]);
+  const [addonName, setAddonName] = useState("");
+  const [addonPrice, setAddonPrice] = useState("");
 
   useEffect(() => {
     if (!createOpen) return;
@@ -134,6 +137,9 @@ export default function BookingsPage() {
     setStaffName("");
     setNotes("");
     setPriceInput("");
+    setAddons([]);
+    setAddonName("");
+    setAddonPrice("");
   }, [createOpen]);
 
   useEffect(() => {
@@ -242,6 +248,7 @@ export default function BookingsPage() {
       price: priceNum,
       ...(notes.trim() ? { notes: notes.trim() } : {}),
       ...(staffName.trim() ? { staff_name: staffName.trim() } : {}),
+      ...(addons.length > 0 ? { addons } : {}),
     };
     if (hasCatalog) {
       payload.service_id = serviceId;
@@ -781,6 +788,68 @@ export default function BookingsPage() {
                   className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
                 />
               </label>
+
+              {/* Add-ons */}
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-2">Add-ons (optional)</p>
+                {addons.length > 0 && (
+                  <div className="space-y-1.5 mb-2">
+                    {addons.map((a, i) => (
+                      <div key={i} className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
+                        <span className="flex-1 text-sm text-slate-700 truncate">{a.name}</span>
+                        <span className="text-sm text-slate-500 font-medium shrink-0">{a.price > 0 ? `+${a.price}` : "free"}</span>
+                        <button
+                          type="button"
+                          onClick={() => setAddons((prev) => prev.filter((_, j) => j !== i))}
+                          className="text-slate-400 hover:text-rose-500 transition-colors"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={addonName}
+                    onChange={(e) => setAddonName(e.target.value)}
+                    placeholder="e.g. Extra pillow, Airport transfer"
+                    className="flex-1 px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand text-sm min-w-0"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (addonName.trim()) {
+                          setAddons((prev) => [...prev, { name: addonName.trim(), price: parseFloat(addonPrice) || 0 }]);
+                          setAddonName(""); setAddonPrice("");
+                        }
+                      }
+                    }}
+                  />
+                  <input
+                    type="number"
+                    value={addonPrice}
+                    onChange={(e) => setAddonPrice(e.target.value)}
+                    placeholder="Price"
+                    className="w-24 px-3 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand text-sm shrink-0"
+                    min="0"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (addonName.trim()) {
+                        setAddons((prev) => [...prev, { name: addonName.trim(), price: parseFloat(addonPrice) || 0 }]);
+                        setAddonName(""); setAddonPrice("");
+                      }
+                    }}
+                    disabled={!addonName.trim()}
+                    className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-40 transition-colors shrink-0"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">Press Enter or + to add · they'll show on the booking</p>
+              </div>
             </div>
 
             <div className="flex justify-end gap-2 px-5 py-4 border-t border-slate-100 bg-slate-50/80 rounded-b-xl shrink-0">

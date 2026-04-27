@@ -24,7 +24,9 @@ type CalEvent = {
   attendees: { email: string; name: string }[];
   link: string;
   status: string;
-  provider: "google" | "microsoft";
+  provider: "google" | "microsoft" | "booking";
+  bookingRef?: string;
+  bookingStatus?: string;
 };
 
 type View = "month" | "week" | "agenda";
@@ -710,6 +712,7 @@ export default function CalendarPage() {
   }, []);
 
   function getEventColor(ev: CalEvent) {
+    if (ev.provider === "booking") return "bg-amber-500";
     return eventColors[ev.id] ?? smartColor(ev.title);
   }
 
@@ -730,12 +733,52 @@ export default function CalendarPage() {
     setLoading(true);
     try {
       const { timeMin, timeMax } = timeRange();
-      const res = await apiFetch(`/api/calendar/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`) as {
-        events: CalEvent[]; provider: "google" | "microsoft" | null; connected: boolean;
-      };
-      setConnected(res.connected);
-      setProvider(res.provider ?? null);
-      setEvents(res.events ?? []);
+      const [calRes, bkRes] = await Promise.allSettled([
+        apiFetch(`/api/calendar/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`),
+        apiFetch("/api/bookings"),
+      ]);
+
+      const calData = calRes.status === "fulfilled" ? calRes.value as { events: CalEvent[]; provider: "google" | "microsoft" | null; connected: boolean } : null;
+      setConnected(calData?.connected ?? false);
+      setProvider(calData?.provider ?? null);
+
+      const calEvents: CalEvent[] = calData?.events ?? [];
+
+      // Convert bookings to CalEvent shape so they show on the calendar
+      let bookingEvents: CalEvent[] = [];
+      if (bkRes.status === "fulfilled") {
+        const rawBookings = bkRes.value as Array<{
+          id: string; booking_number: string; customer_name: string; service_name: string;
+          date?: string; time?: string; checkin_date?: string; checkout_date?: string;
+          status: string;
+        }>;
+        bookingEvents = rawBookings
+          .filter((b) => b.status !== "cancelled" && b.status !== "no_show")
+          .map((b) => {
+            const dateStr = b.date || b.checkin_date || "";
+            const timeStr = b.time && b.time !== "00:00" ? b.time : "09:00";
+            const start = dateStr ? `${dateStr}T${timeStr}:00` : "";
+            const end = b.checkout_date ? `${b.checkout_date}T12:00:00` : start;
+            return {
+              id: `bk_${b.id}`,
+              title: `📌 ${b.service_name} — ${b.customer_name}`,
+              description: `Ref: ${b.booking_number}`,
+              location: "",
+              start,
+              end,
+              allDay: Boolean(b.checkin_date),
+              attendees: [],
+              link: "/dashboard/bookings",
+              status: b.status,
+              provider: "booking" as const,
+              bookingRef: b.booking_number,
+              bookingStatus: b.status,
+            };
+          })
+          .filter((b) => b.start);
+      }
+
+      setEvents([...calEvents, ...bookingEvents]);
     } catch {
       toast.error("Failed to load calendar");
     } finally {
@@ -810,6 +853,7 @@ export default function CalendarPage() {
     setPrefillDate(date); setEditEvent(null); setShowModal(true);
   }
   function openEdit(event: CalEvent) {
+    if (event.provider === "booking") { window.location.href = "/dashboard/bookings"; return; }
     setEditEvent(event); setPrefillDate(undefined); setShowModal(true); setSelectedEvent(null);
   }
 
@@ -910,15 +954,21 @@ export default function CalendarPage() {
           )}
         </div>
 
-        {/* Provider badge */}
-        {provider && (
-          <div className="mt-auto">
+        {/* Legend */}
+        <div className="mt-auto space-y-1.5">
+          {provider && (
             <div className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-2">
-              <div className={cn("w-2 h-2 rounded-full", provider === "google" ? "bg-emerald-500" : "bg-blue-500")} />
+              <div className={cn("w-2 h-2 rounded-full shrink-0", provider === "google" ? "bg-emerald-500" : "bg-blue-500")} />
               <span className="text-[11px] text-slate-400">{provider === "google" ? "Google Calendar" : "Outlook"}</span>
             </div>
-          </div>
-        )}
+          )}
+          <a href="/dashboard/bookings" className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-2 hover:bg-slate-700 transition-colors group">
+            <div className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+            <span className="text-[11px] text-slate-400 group-hover:text-slate-200 transition-colors">
+              Bookings ({events.filter((e) => e.provider === "booking").length})
+            </span>
+          </a>
+        </div>
       </div>
 
       {/* ── Main area ────────────────────────────────────────────────────── */}
@@ -1045,19 +1095,34 @@ export default function CalendarPage() {
                   </div>
                 )}
 
-                {selectedEvent.link && (
+                {selectedEvent.bookingRef && (
+                  <div className="text-xs text-amber-400 font-medium bg-amber-900/20 border border-amber-700/30 rounded-xl px-3 py-2 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                    <span>Booking · {selectedEvent.bookingRef} · <span className="capitalize">{selectedEvent.bookingStatus}</span></span>
+                  </div>
+                )}
+                {selectedEvent.link && selectedEvent.provider !== "booking" && (
                   <a href={selectedEvent.link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs text-brand hover:text-brand/50 transition-colors">
                     <Zap size={11} /> Open in {selectedEvent.provider === "google" ? "Google Calendar" : "Outlook"}
                   </a>
                 )}
               </div>
               <div className="px-4 pb-4 pt-2 border-t border-slate-800">
-                <button
-                  onClick={() => openEdit(selectedEvent)}
-                  className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors"
-                >
-                  <Edit3 size={12} /> Edit event
-                </button>
+                {selectedEvent.provider === "booking" ? (
+                  <a
+                    href="/dashboard/bookings"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-amber-900/30 hover:bg-amber-900/50 text-xs font-medium text-amber-400 transition-colors"
+                  >
+                    View in Bookings →
+                  </a>
+                ) : (
+                  <button
+                    onClick={() => openEdit(selectedEvent)}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors"
+                  >
+                    <Edit3 size={12} /> Edit event
+                  </button>
+                )}
               </div>
             </div>
           )}
