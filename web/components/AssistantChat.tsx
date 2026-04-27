@@ -951,8 +951,11 @@ function WhatsAppPickerModal({
  * and rendered after the chip row. The click payload is the meaningful text only
  * (bold label or item text without the letter/number prefix).
  */
+const MULTI_SELECT_RE =
+  /\b(select all that apply|choose one or more|pick any|you can select multiple|select as many|tick all|check all that apply|pick all|you may select more than one)\b/i;
+
 function extractInlineOptionList(content: string):
-  | { before: string; after: string; options: { label: string; display: string }[] }
+  | { before: string; after: string; options: { label: string; display: string }[]; multiSelect: boolean }
   | null {
   if (!content) return null;
   const lines = content.split("\n");
@@ -1086,7 +1089,8 @@ function extractInlineOptionList(content: string):
   while (afterStart < lines.length && !lines[afterStart].trim()) afterStart++;
   const after = lines.slice(afterStart).join("\n").replace(/^\s+|\s+$/g, "");
 
-  return { before, after, options: parsed };
+  const multiSelect = MULTI_SELECT_RE.test(content);
+  return { before, after, options: parsed, multiSelect };
 }
 
 /** Last successful `render_orshot_template` in this message — drives manual “Edit design”. */
@@ -1129,6 +1133,7 @@ function MessageBubble({
   const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
   const [showWaPicker, setShowWaPicker] = useState(false);
   const [orshotEditOpen, setOrshotEditOpen] = useState(false);
+  const [checkedOptions, setCheckedOptions] = useState<Set<string>>(new Set());
   const stepsKey = JSON.stringify(msg.steps ?? []);
   const orshotCtx = useMemo(() => extractOrshotRenderContext(msg.steps), [stepsKey]);
   // Promote bullet/lettered/numbered option lists to tap-to-send chips with A/B/C
@@ -1189,7 +1194,44 @@ function MessageBubble({
                     {inlineOptions.before && <MarkdownBody content={inlineOptions.before} />}
                     <div className="mt-2 flex flex-col items-stretch gap-1.5">
                       {inlineOptions.options.map((opt, i) => {
-                        const letter = String.fromCharCode(65 + i); // A, B, C, ...
+                        const letter = String.fromCharCode(65 + i);
+                        if (inlineOptions.multiSelect) {
+                          const checked = checkedOptions.has(opt.label);
+                          return (
+                            <button
+                              key={`${i}-${opt.label}`}
+                              type="button"
+                              onClick={() =>
+                                setCheckedOptions((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(opt.label)) next.delete(opt.label);
+                                  else next.add(opt.label);
+                                  return next;
+                                })
+                              }
+                              className={`group flex items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left text-[13px] leading-snug shadow-sm transition ${
+                                checked
+                                  ? "border-brand bg-brand/10 text-brand-dark"
+                                  : "border-brand/30 bg-white text-brand-ink hover:border-brand hover:bg-brand/5"
+                              }`}
+                            >
+                              <span
+                                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition ${
+                                  checked
+                                    ? "border-brand bg-brand text-white"
+                                    : "border-slate-300 bg-white group-hover:border-brand"
+                                }`}
+                              >
+                                {checked && (
+                                  <svg viewBox="0 0 10 8" className="h-3 w-3 fill-current">
+                                    <path d="M1 4l3 3 5-6" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                                  </svg>
+                                )}
+                              </span>
+                              <span className="min-w-0 flex-1 break-words font-medium">{opt.display}</span>
+                            </button>
+                          );
+                        }
                         return (
                           <button
                             key={`${i}-${opt.label}`}
@@ -1204,6 +1246,22 @@ function MessageBubble({
                           </button>
                         );
                       })}
+                      {inlineOptions.multiSelect && checkedOptions.size > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const selected = inlineOptions.options
+                              .filter((o) => checkedOptions.has(o.label))
+                              .map((o) => o.label)
+                              .join(", ");
+                            onSuggestionSend(selected);
+                            setCheckedOptions(new Set());
+                          }}
+                          className="mt-1 self-end rounded-xl bg-brand px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark"
+                        >
+                          Confirm ({checkedOptions.size} selected)
+                        </button>
+                      )}
                     </div>
                     {inlineOptions.after && (
                       <div className="mt-2">
