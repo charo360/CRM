@@ -49,5 +49,5 @@ async def get_customer_memories(
             )
         return [r.payload["summary"] for r in results if r.payload.get("summary")]
     except Exception as exc:
-        logger.warning("[memory.retrieve] failed for customer %s: %s", customer_id, exc)
+        logger.warning("[memory.retrieve] failed for customer %s: %r", customer_id, exc)
         return []

@@ -57,5 +57,5 @@ async def get_knowledge_chunks(
         chunks = [r.payload["chunk"] for r in results if r.score > threshold]
         return chunks
     except Exception as exc:
-        logger.warning("[rag.retriever] knowledge retrieval failed: %s", exc)
+        logger.warning("[rag.retriever] knowledge retrieval failed: %r", exc)
         return []
