@@ -81,7 +81,18 @@ export interface Order {
   notes: string | null;
   created_at: string;
   status: string | null;
+  amount_paid?: number | null;
+  amount_remaining?: number | null;
 }
+
+export type OrderPayment = {
+  id: string;
+  order_id: string;
+  amount: number;
+  method: string;
+  note: string;
+  created_at: string;
+};
 
 export interface Customer {
   id: string;
@@ -300,6 +311,7 @@ export interface BookingCreatePayload {
   capacity?: number;
   notes?: string;
   price?: number;
+  addons?: { name: string; price: number }[];
 }
 
 export interface AnalyticsSummary {
@@ -430,7 +442,7 @@ export const ordersApi = {
    * Backend `PUT /orders/{id}` reads `payment_status`, `delivery_status`, and `notes` from **query
    * parameters** (same as the mobile app), not from a JSON body.
    */
-  updateStatus: (id: string, body: { payment_status?: string; delivery_status?: string; notes?: string }) => {
+  updateStatus: (id: string, body: { payment_status?: string; delivery_status?: string; notes?: string; payment_method?: string }) => {
     const q = new URLSearchParams();
     if (body.payment_status != null && body.payment_status !== "") {
       q.set("payment_status", body.payment_status);
@@ -441,12 +453,18 @@ export const ordersApi = {
     if (body.notes !== undefined) {
       q.set("notes", body.notes);
     }
+    if (body.payment_method != null && body.payment_method !== "") {
+      q.set("payment_method", body.payment_method);
+    }
     const qs = q.toString();
     return api.put<Order>(`/orders/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`, {});
   },
   convertToSale: (id: string, paymentMethod: string) =>
     api.post<{ id: string }>(`/orders/${id}/convert-to-sale?payment_method=${encodeURIComponent(paymentMethod)}`, {}),
   delete: (id: string) => api.delete<void>(`/orders/${id}`),
+  recordPayment: (id: string, body: { amount: number; method: string; note?: string }) =>
+    api.post<{ amount_paid: number; amount_remaining: number; payment_status: string; payment: OrderPayment }>(`/orders/${id}/payments`, body),
+  getPayments: (id: string) => api.get<OrderPayment[]>(`/orders/${id}/payments`),
 };
 
 export const customersApi = {
@@ -1175,14 +1193,31 @@ export const kdsApi = {
 };
 
 // ── Invoices ──────────────────────────────────────────────────────────────────
+export const INVOICE_API_BASE = API_BASE;
 export const invoicesApi = {
-  list: (status?: string) => api.get<Record<string, unknown>[]>(`/invoices${status ? `?status=${status}` : ""}`),
+  list: (params?: { status?: string; q?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.q) qs.set("q", params.q);
+    const s = qs.toString();
+    return api.get<Record<string, unknown>[]>(`/invoices${s ? `?${s}` : ""}`);
+  },
   create: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/invoices", body),
   get: (id: string) => api.get<Record<string, unknown>>(`/invoices/${id}`),
   update: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/invoices/${id}`, body),
   setStatus: (id: string, status: string) => api.patch<{ status: string }>(`/invoices/${id}/status`, { status }),
   delete: (id: string) => api.delete<{ deleted: boolean }>(`/invoices/${id}`),
+  duplicate: (id: string) => api.post<Record<string, unknown>>(`/invoices/${id}/duplicate`, {}),
+  recordPayment: (id: string, body: { amount: number; method?: string; note?: string }) =>
+    api.post<Record<string, unknown>>(`/invoices/${id}/payment`, body),
+  rotateShare: (id: string) => api.post<{ share_token: string }>(`/invoices/${id}/share`, {}),
+  getPublic: (token: string) => api.get<Record<string, unknown>>(`/invoices/public/${token}`),
   summary: () => api.get<Record<string, unknown>>("/invoices/meta/summary"),
+  getBranding: () => api.get<Record<string, unknown>>("/invoices/meta/branding"),
+  saveBranding: (body: Record<string, unknown>) =>
+    api.put<Record<string, unknown>>("/invoices/meta/branding", body),
+  aiDraft: (body: { prompt: string; currency?: string; customer_name?: string }) =>
+    api.post<{ customer_name: string; items: Array<{ name: string; description?: string; qty: number; unit_price: number; amount: number }>; notes: string; terms: string }>("/invoices/ai/draft", body),
 };
 
 // ── Inventory ─────────────────────────────────────────────────────────────────
@@ -1220,18 +1255,52 @@ export const financeApi = {
     return api.get<Record<string, unknown>>(`/finance/summary${q.toString() ? `?${q}` : ""}`);
   },
   categories: () => api.get<{ income: string[]; expense: string[] }>("/finance/categories"),
+  monthly: (months?: number) => {
+    const q = months ? `?months=${months}` : "";
+    return api.get<Record<string, unknown>[]>(`/finance/monthly${q}`);
+  },
+  exportCsv: async (params?: { type?: string; from_date?: string; to_date?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.type) q.set("type", params.type);
+    if (params?.from_date) q.set("from_date", params.from_date);
+    if (params?.to_date) q.set("to_date", params.to_date);
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/finance/export${q.toString() ? `?${q}` : ""}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "finance_export.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };
 
 // ── Quotes ────────────────────────────────────────────────────────────────────
 export const quotesApi = {
-  list: (status?: string) => api.get<Record<string, unknown>[]>(`/quotes${status ? `?status=${status}` : ""}`),
+  list: (params?: { status?: string; q?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.q) qs.set("q", params.q);
+    const s = qs.toString();
+    return api.get<Record<string, unknown>[]>(`/quotes${s ? `?${s}` : ""}`);
+  },
   create: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/quotes", body),
   get: (id: string) => api.get<Record<string, unknown>>(`/quotes/${id}`),
   update: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/quotes/${id}`, body),
   setStatus: (id: string, status: string) => api.patch<{ status: string }>(`/quotes/${id}/status`, { status }),
-  convertToInvoice: (id: string) => api.post<Record<string, unknown>>(`/quotes/${id}/convert-to-invoice`, {}),
+  duplicate: (id: string) => api.post<Record<string, unknown>>(`/quotes/${id}/duplicate`, {}),
+  rotateShare: (id: string) => api.post<{ share_token: string }>(`/quotes/${id}/share`, {}),
+  convertToInvoice: (id: string) => api.post<{ invoice_id: string; invoice: Record<string, unknown> }>(`/quotes/${id}/convert-to-invoice`, {}),
   delete: (id: string) => api.delete<{ deleted: boolean }>(`/quotes/${id}`),
+  getPublic: (token: string) => api.get<Record<string, unknown>>(`/quotes/public/${token}`),
   summary: () => api.get<Record<string, unknown>>("/quotes/meta/summary"),
+  getBranding: () => api.get<Record<string, unknown>>("/quotes/meta/branding"),
+  aiDraft: (body: { prompt: string; currency?: string; customer_name?: string }) =>
+    api.post<{ customer_name: string; items: Array<{ name: string; description?: string; qty: number; unit_price: number; amount: number }>; notes: string; terms: string }>("/quotes/ai/draft", body),
 };
 
 // ── Loyalty ───────────────────────────────────────────────────────────────────
