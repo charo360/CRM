@@ -102,7 +102,7 @@ async def reindex_all_businesses(db) -> None:
     Safe to run multiple times — each run overwrites previous vectors for the
     same business since we always delete-before-insert by business_id filter.
     """
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
     from vector_store import get_qdrant
 
     count = 0
@@ -116,7 +116,9 @@ async def reindex_all_businesses(db) -> None:
         try:
             await get_qdrant().delete(
                 collection_name="business_knowledge",
-                points_selector=Filter(must=[FieldCondition(key="business_id", match=MatchValue(value=business_id))]),
+                points_selector=FilterSelector(
+                    filter=Filter(must=[FieldCondition(key="business_id", match=MatchValue(value=business_id))])
+                ),
             )
         except Exception:
             pass
