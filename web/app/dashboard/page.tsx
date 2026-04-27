@@ -306,11 +306,13 @@ function StatusBadge({ status }: { status: string | null }) {
     Done: "bg-slate-100 text-slate-500",
     Paid: "bg-emerald-100 text-emerald-700",
     Pending: "bg-amber-100 text-amber-700",
+    Partial: "bg-blue-100 text-blue-700",
   };
+  const label = status === "Partial" ? "BNPL / Partial" : status;
   const cls = map[status || ""] || "bg-slate-100 text-slate-500";
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>
-      {status || "—"}
+      {label || "—"}
     </span>
   );
 }

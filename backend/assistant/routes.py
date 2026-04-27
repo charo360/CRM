@@ -16,8 +16,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from .documents import delete_document, list_for_conversation, store_upload
 from .agents import AGENT_REGISTRY, list_agents_public, resolve_agent_id
 from .intent_router import route_to_agent
-from .models import DEFAULT_MODEL, list_available_models
-from .orchestrator import run_turn
+from .models import DEFAULT_MODEL, list_available_models, stream_reply
+from .orchestrator import run_turn, run_turn_stream
 from .titler import generate_title
 
 logger = logging.getLogger(__name__)
@@ -290,33 +290,46 @@ def _mk_router(db, get_current_user):
 
             yield "data: " + json.dumps({"type": "thinking", "agent": agent_resolved, "agent_label": agent_label}) + "\n\n"
 
+            result: Optional[Dict[str, Any]] = None
+            reply_text = ""
+
             try:
-                result = await run_turn(
+                async for event in run_turn_stream(
                     db=db, user=user, history=history, user_message=msg,
                     model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
                     auto_approve_destructive=bool(body.get("auto_approve")),
                     conversation_id=conv_id, agent_id=agent_resolved,
-                )
+                ):
+                    etype = event.get("type")
+                    if etype == "tool_start":
+                        yield "data: " + json.dumps({"type": "tool_start", "tool": event.get("tool", "")}) + "\n\n"
+                    elif etype == "token":
+                        token = event.get("text", "")
+                        reply_text += token
+                        yield "data: " + json.dumps({"type": "token", "text": token}) + "\n\n"
+                    elif etype == "done":
+                        result = event
+                    elif etype == "error":
+                        yield "data: " + json.dumps({"type": "error", "message": event.get("message", "Unknown error")}) + "\n\n"
+                        return
             except Exception as e:
-                logger.exception("[assistant.chat/stream] failure")
+                logger.exception("[assistant.chat/stream] run_turn_stream failure")
                 yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
                 return
 
-            active_agent = result.get("active_agent") or agent_resolved
-            reply_text = result.get("reply") or ""
+            if not result:
+                yield "data: " + json.dumps({"type": "error", "message": "No result from assistant"}) + "\n\n"
+                return
 
-            # Stream reply token by token (word-level chunks)
-            words = reply_text.split(" ")
-            chunk = ""
-            for i, w in enumerate(words):
-                chunk += ("" if i == 0 else " ") + w
-                if len(chunk) >= 30 or i == len(words) - 1:
-                    yield "data: " + json.dumps({"type": "token", "text": chunk}) + "\n\n"
-                    chunk = ""
+            active_agent = result.get("active_agent") or agent_resolved
+            if not reply_text:
+                reply_text = result.get("reply") or ""
 
             # Persist
-            new_msgs = result["messages_to_append"]
+            new_msgs = result.get("messages_to_append") or []
             if new_msgs and new_msgs[-1].get("role") == "assistant":
+                if reply_text:
+                    new_msgs[-1]["content"] = reply_text
                 if result.get("steps"):
                     new_msgs[-1]["steps"] = result["steps"]
                 new_msgs[-1]["agent"] = active_agent

@@ -101,6 +101,60 @@ const AGENT_COLORS: Record<string, string> = {
   shop: "bg-amber-100 text-amber-700",
 };
 
+/** Maps raw tool names → friendly activity labels shown during streaming and in steps trail */
+const TOOL_LABELS: Record<string, string> = {
+  // Customers
+  list_customers:        "Checking customers…",
+  get_customer:          "Looking up customer…",
+  create_customer:       "Creating customer…",
+  update_customer:       "Updating customer…",
+  delete_customer:       "Removing customer…",
+  // Orders
+  list_orders:           "Checking orders…",
+  update_order_status:   "Updating order status…",
+  // Products
+  list_products:         "Checking products…",
+  get_product_images:    "Loading product images…",
+  create_product:        "Creating product…",
+  update_product:        "Updating product…",
+  delete_product:        "Removing product…",
+  // Follow-ups
+  list_followups:        "Checking follow-ups…",
+  create_followup:       "Scheduling follow-up…",
+  // Sales & Finance
+  record_sale:           "Recording sale…",
+  get_analytics_summary: "Pulling analytics…",
+  // Broadcasts
+  list_broadcasts:       "Checking broadcasts…",
+  create_broadcast:      "Sending broadcast…",
+  // Messaging
+  send_whatsapp_message: "Sending WhatsApp message…",
+  // Team
+  list_team:             "Checking team…",
+  // Integrations
+  integrations_status:   "Checking integrations…",
+  get_owner_info:        "Getting business info…",
+  list_design_library_assets: "Loading design assets…",
+  // Shopify
+  list_shopify_orders:   "Fetching Shopify orders…",
+  list_shopify_products: "Fetching Shopify products…",
+  get_shopify_analytics: "Pulling Shopify analytics…",
+  shopify_add_product:   "Adding Shopify product…",
+  shopify_update_product:"Updating Shopify product…",
+  // Stripe
+  list_stripe_payments:  "Fetching Stripe payments…",
+  // Email marketing
+  list_klaviyo_flows:    "Checking Klaviyo flows…",
+  // Automations
+  list_automations:      "Checking automations…",
+  create_automation:     "Creating automation…",
+  toggle_automation:     "Toggling automation…",
+};
+
+function friendlyToolLabel(tool: string): string {
+  return TOOL_LABELS[tool] ?? tool.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()) + "…";
+}
+
 // Per-integration quick prompts shown when that app is connected
 const INTEGRATION_PROMPTS: Record<string, string[]> = {
   shopify: ["Show my Shopify orders from today", "What are my top Shopify products?", "Shopify revenue this week"],
@@ -595,10 +649,10 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                         {streamingTools.map((tool, i) => (
                           <span
                             key={i}
-                            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600"
+                            className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600 animate-pulse"
                           >
-                            <Wrench size={9} className="text-brand" />
-                            {tool.replace(/_/g, " ")}
+                            <Loader2 size={10} className="animate-spin text-brand" />
+                            {friendlyToolLabel(tool)}
                           </span>
                         ))}
                       </div>
@@ -1318,29 +1372,18 @@ function MarkdownBody({ content }: { content: string }) {
 }
 
 function StepsTrail({ steps }: { steps: AssistantStep[] }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-200"
-      >
-        <Wrench size={9} /> {steps.length} tool{steps.length !== 1 ? "s" : ""} called
-      </button>
-      {open && (
-        <ul className="mt-1 space-y-1 text-[10px] text-slate-500">
-          {steps.map((s, i) => (
-            <li key={i} className="rounded-md bg-slate-50 px-2 py-1 font-mono">
-              <span className="text-brand-dark">{s.tool}</span>(
-              {Object.entries(s.arguments || {})
-                .map(([k, v]) => `${k}: ${truncate(JSON.stringify(v), 40)}`)
-                .join(", ")}
-              )
-            </li>
-          ))}
-        </ul>
-      )}
+    <div className="flex flex-wrap gap-1.5">
+      {steps.map((s, i) => (
+        <span
+          key={i}
+          className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-medium text-slate-500"
+          title={s.tool}
+        >
+          <Wrench size={8} className="text-brand shrink-0" />
+          {friendlyToolLabel(s.tool).replace(/…$/, "")}
+        </span>
+      ))}
     </div>
   );
 }

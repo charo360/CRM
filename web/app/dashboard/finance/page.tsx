@@ -1,45 +1,169 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { financeApi } from "@/lib/api";
-import { PieChart, Plus, Trash2, TrendingUp, TrendingDown, DollarSign, RefreshCw, Edit2 } from "lucide-react";
+import {
+  BarChart2, Plus, Trash2, TrendingUp, TrendingDown, DollarSign,
+  RefreshCw, Edit2, Download, ChevronDown, X, Check,
+} from "lucide-react";
 
+// ── types ────────────────────────────────────────────────────────────────────
 type FinanceEntry = {
   id: string; type: "income" | "expense"; category: string; amount: number;
   description: string; date: string; reference: string; currency: string;
 };
-type Summary = { income: number; expenses: number; profit: number; income_by_category: Record<string, number>; expense_by_category: Record<string, number> };
+type Summary = {
+  income: number; expenses: number; profit: number;
+  income_by_category: Record<string, number>;
+  expense_by_category: Record<string, number>;
+};
+type MonthBar = { month: string; income: number; expense: number; profit: number };
 
+// ── helpers ───────────────────────────────────────────────────────────────────
 function today() { return new Date().toISOString().split("T")[0]; }
 function monthStart() { const d = new Date(); d.setDate(1); return d.toISOString().split("T")[0]; }
+function yearStart() { return `${new Date().getFullYear()}-01-01`; }
+function lastNDays(n: number) {
+  const d = new Date(); d.setDate(d.getDate() - n);
+  return d.toISOString().split("T")[0];
+}
+function quarterStart() {
+  const d = new Date();
+  const q = Math.floor(d.getMonth() / 3);
+  return new Date(d.getFullYear(), q * 3, 1).toISOString().split("T")[0];
+}
+function fmt(n: number, cur = "KES") {
+  return `${cur} ${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
+const PERIODS = [
+  { label: "This month",    from: monthStart,  to: today },
+  { label: "Last 30 days",  from: () => lastNDays(30), to: today },
+  { label: "This quarter",  from: quarterStart, to: today },
+  { label: "This year",     from: yearStart,    to: today },
+  { label: "Custom",        from: monthStart,   to: today },
+];
 
 function emptyForm() {
-  return { type: "income" as "income" | "expense", category: "", amount: 0, description: "", date: today(), reference: "", currency: "KES" };
+  return { type: "income" as "income" | "expense", category: "", customCategory: "", amount: 0, description: "", date: today(), reference: "", currency: "KES" };
+}
+
+// ── SVG bar chart ─────────────────────────────────────────────────────────────
+function TrendChart({ data }: { data: MonthBar[] }) {
+  const W = 720, H = 180, PAD = { top: 16, right: 8, bottom: 36, left: 56 };
+  const innerW = W - PAD.left - PAD.right;
+  const innerH = H - PAD.top - PAD.bottom;
+  if (!data.length) return null;
+
+  const maxVal = Math.max(...data.map(d => Math.max(d.income, d.expense)), 1);
+  const barW = innerW / data.length;
+  const bw = Math.max(4, barW * 0.3);
+  const yTicks = 4;
+
+  function xOf(i: number) { return PAD.left + i * barW + barW / 2; }
+  function yOf(v: number) { return PAD.top + innerH - (v / maxVal) * innerH; }
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" style={{ maxHeight: 200 }}>
+      {/* Y gridlines + labels */}
+      {Array.from({ length: yTicks + 1 }, (_, i) => {
+        const v = (maxVal / yTicks) * i;
+        const y = yOf(v);
+        return (
+          <g key={i}>
+            <line x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} stroke="#e2e8f0" strokeWidth={1} />
+            <text x={PAD.left - 6} y={y + 4} textAnchor="end" fontSize={10} fill="#94a3b8">
+              {v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toFixed(0)}
+            </text>
+          </g>
+        );
+      })}
+      {/* Bars */}
+      {data.map((d, i) => (
+        <g key={i}>
+          <rect x={xOf(i) - bw - 1} y={yOf(d.income)} width={bw} height={Math.max(1, innerH - (yOf(d.income) - PAD.top))} fill="#22c55e" rx={2} opacity={0.85} />
+          <rect x={xOf(i) + 1} y={yOf(d.expense)} width={bw} height={Math.max(1, innerH - (yOf(d.expense) - PAD.top))} fill="#f87171" rx={2} opacity={0.85} />
+          <text x={xOf(i)} y={H - 6} textAnchor="middle" fontSize={9} fill="#64748b">
+            {d.month.split(" ")[0]}
+          </text>
+        </g>
+      ))}
+      {/* Profit line */}
+      {data.length > 1 && (
+        <polyline
+          points={data.map((d, i) => `${xOf(i)},${yOf(Math.max(0, d.profit))}`).join(" ")}
+          fill="none" stroke="#6366f1" strokeWidth={2} strokeDasharray="4 2" strokeLinecap="round"
+        />
+      )}
+    </svg>
+  );
+}
+
+// ── category bar ─────────────────────────────────────────────────────────────
+function CatBar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between text-xs">
+        <span className="text-slate-600 truncate max-w-[60%]">{label}</span>
+        <span className={`font-medium ${color}`}>{pct}%</span>
+      </div>
+      <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color === "text-green-600" ? "#22c55e" : "#f87171" }} />
+      </div>
+    </div>
+  );
 }
 
 export default function FinancePage() {
-  const [entries, setEntries] = useState<FinanceEntry[]>([]);
-  const [summary, setSummary] = useState<Summary>({ income: 0, expenses: 0, profit: 0, income_by_category: {}, expense_by_category: {} });
+  const [entries, setEntries]   = useState<FinanceEntry[]>([]);
+  const [summary, setSummary]   = useState<Summary>({ income: 0, expenses: 0, profit: 0, income_by_category: {}, expense_by_category: {} });
+  const [monthly, setMonthly]   = useState<MonthBar[]>([]);
   const [categories, setCategories] = useState<{ income: string[]; expense: string[] }>({ income: [], expense: [] });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]   = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [editing, setEditing] = useState<FinanceEntry | null>(null);
-  const [form, setForm] = useState(emptyForm());
-  const [saving, setSaving] = useState(false);
+  const [editing, setEditing]   = useState<FinanceEntry | null>(null);
+  const [form, setForm]         = useState(emptyForm());
+  const [saving, setSaving]     = useState(false);
+  const [periodIdx, setPeriodIdx] = useState(0);
   const [fromDate, setFromDate] = useState(monthStart());
-  const [toDate, setToDate] = useState(today());
+  const [toDate, setToDate]     = useState(today());
   const [typeFilter, setTypeFilter] = useState("");
+  const [search, setSearch]     = useState("");
+  const [exporting, setExporting] = useState(false);
+
+  async function doExport() {
+    setExporting(true);
+    try {
+      await financeApi.exportCsv({ type: typeFilter || undefined, from_date: fromDate, to_date: toDate });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // Apply period preset
+  function applyPeriod(idx: number) {
+    setPeriodIdx(idx);
+    if (idx !== 4) { // not Custom
+      setFromDate(PERIODS[idx].from());
+      setToDate(PERIODS[idx].to());
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [list, sum, cats] = await Promise.all([
+      const [list, sum, cats, mon] = await Promise.all([
         financeApi.listEntries({ type: typeFilter || undefined, from_date: fromDate, to_date: toDate }),
         financeApi.summary({ from_date: fromDate, to_date: toDate }),
         financeApi.categories(),
+        financeApi.monthly(12),
       ]);
       setEntries(list as FinanceEntry[]);
       setSummary(sum as Summary);
       setCategories(cats as { income: string[]; expense: string[] });
+      setMonthly(mon as MonthBar[]);
     } finally { setLoading(false); }
   }, [fromDate, toDate, typeFilter]);
 
@@ -48,15 +172,18 @@ export default function FinancePage() {
   function openNew() { setEditing(null); setForm(emptyForm()); setShowModal(true); }
   function openEdit(e: FinanceEntry) {
     setEditing(e);
-    setForm({ type: e.type, category: e.category, amount: e.amount, description: e.description, date: e.date, reference: e.reference, currency: e.currency });
+    setForm({ type: e.type, category: e.category, customCategory: "", amount: e.amount, description: e.description, date: e.date, reference: e.reference, currency: e.currency });
     setShowModal(true);
   }
 
   async function save() {
     setSaving(true);
+    const finalCat = form.category === "__custom__" ? form.customCategory.trim() : form.category;
+    if (!finalCat) { setSaving(false); return; }
     try {
-      if (editing) { await financeApi.updateEntry(editing.id, form); }
-      else { await financeApi.createEntry(form); }
+      const payload = { ...form, category: finalCat };
+      if (editing) { await financeApi.updateEntry(editing.id, payload as Record<string, unknown>); }
+      else { await financeApi.createEntry(payload as Record<string, unknown>); }
       setShowModal(false); await load();
     } finally { setSaving(false); }
   }
@@ -69,204 +196,300 @@ export default function FinancePage() {
 
   const currentCats = form.type === "income" ? categories.income : categories.expense;
   const profitColor = summary.profit >= 0 ? "text-green-600" : "text-red-600";
+  const margin = summary.income > 0 ? Math.round((summary.profit / summary.income) * 100) : 0;
+
+  const filtered = useMemo(() => entries.filter(e => {
+    if (search) {
+      const s = search.toLowerCase();
+      return e.category.toLowerCase().includes(s) || e.description.toLowerCase().includes(s) || e.reference.toLowerCase().includes(s);
+    }
+    return true;
+  }), [entries, search]);
+
+  const cur = entries[0]?.currency || "KES";
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-5">
+
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <PieChart className="text-brand-dark" size={24} /> Finance & P&L
+            <BarChart2 className="text-brand-dark" size={24} /> Finance &amp; P&amp;L
           </h1>
-          <p className="text-slate-500 text-sm mt-0.5">Track income, expenses and profitability</p>
+          <p className="text-slate-500 text-sm mt-0.5">Income, expenses and profitability</p>
         </div>
-        <button onClick={openNew} className="flex items-center gap-2 bg-brand-dark text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand">
-          <Plus size={16} /> Add Entry
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={doExport} disabled={exporting}
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+            {exporting ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />} Export CSV
+          </button>
+          <button onClick={openNew} className="flex items-center gap-2 bg-brand-dark text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand">
+            <Plus size={16} /> Add Entry
+          </button>
+        </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Period presets */}
+      <div className="flex flex-wrap gap-2 items-center">
+        {PERIODS.map((p, i) => (
+          <button key={p.label} onClick={() => applyPeriod(i)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+              periodIdx === i ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+            }`}>{p.label}</button>
+        ))}
+        {periodIdx === 4 && (
+          <div className="flex items-center gap-2 ml-1">
+            <input type="date" className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value={fromDate} onChange={e => setFromDate(e.target.value)} />
+            <span className="text-slate-400 text-xs">→</span>
+            <input type="date" className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value={toDate} onChange={e => setToDate(e.target.value)} />
+            <button onClick={load} className="text-slate-400 hover:text-slate-700"><RefreshCw size={14} /></button>
+          </div>
+        )}
+      </div>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-4">
-          <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+          <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center shrink-0">
             <TrendingUp className="text-green-600" size={20} />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-green-700 font-medium">Total Income</p>
-            <p className="text-2xl font-bold text-green-800">KES {summary.income.toLocaleString()}</p>
+            <p className="text-xl font-bold text-green-800 truncate">{fmt(summary.income, cur)}</p>
           </div>
         </div>
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-4">
-          <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+          <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center shrink-0">
             <TrendingDown className="text-red-600" size={20} />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-red-700 font-medium">Total Expenses</p>
-            <p className="text-2xl font-bold text-red-800">KES {summary.expenses.toLocaleString()}</p>
+            <p className="text-xl font-bold text-red-800 truncate">{fmt(summary.expenses, cur)}</p>
           </div>
         </div>
-        <div className={`${summary.profit >= 0 ? "bg-brand/10 border-brand/30" : "bg-orange-50 border-orange-200"} border rounded-xl p-4 flex items-center gap-4`}>
-          <div className={`w-10 h-10 ${summary.profit >= 0 ? "bg-brand/15" : "bg-orange-100"} rounded-full flex items-center justify-center`}>
-            <DollarSign className={summary.profit >= 0 ? "text-brand-dark" : "text-orange-600"} size={20} />
+        <div className={`${ summary.profit >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-orange-50 border-orange-200"} border rounded-xl p-4 flex items-center gap-4`}>
+          <div className={`w-10 h-10 ${ summary.profit >= 0 ? "bg-emerald-100" : "bg-orange-100"} rounded-full flex items-center justify-center shrink-0`}>
+            <DollarSign className={summary.profit >= 0 ? "text-emerald-600" : "text-orange-600"} size={20} />
           </div>
+          <div className="min-w-0">
+            <p className={`text-xs font-medium ${ summary.profit >= 0 ? "text-emerald-700" : "text-orange-700"}`}>
+              Net Profit {summary.income > 0 && <span className="ml-1 opacity-70">({margin}% margin)</span>}
+            </p>
+            <p className={`text-xl font-bold truncate ${profitColor}`}>
+              {summary.profit < 0 ? "-" : ""}{fmt(summary.profit, cur)}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Chart + breakdown */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* 12-month trend */}
+        <div className="lg:col-span-2 bg-white rounded-xl border p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-slate-700 text-sm">12-Month Trend</h3>
+            <div className="flex items-center gap-3 text-xs text-slate-500">
+              <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-green-400 inline-block" /> Income</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-red-400 inline-block" /> Expenses</span>
+              <span className="flex items-center gap-1"><span className="w-5 border-t-2 border-dashed border-indigo-500 inline-block" /> Profit</span>
+            </div>
+          </div>
+          {monthly.length > 0 ? <TrendChart data={monthly} /> : (
+            <div className="h-40 flex items-center justify-center text-slate-400 text-sm">No data yet</div>
+          )}
+        </div>
+
+        {/* Category breakdown */}
+        <div className="bg-white rounded-xl border p-4 space-y-4">
           <div>
-            <p className={`text-xs font-medium ${summary.profit >= 0 ? "text-brand-dark" : "text-orange-700"}`}>Net Profit</p>
-            <p className={`text-2xl font-bold ${profitColor}`}>KES {summary.profit.toLocaleString()}</p>
+            <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Income by category</h4>
+            <div className="space-y-2">
+              {Object.entries(summary.income_by_category).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([cat, amt]) => (
+                <div key={cat}>
+                  <CatBar label={cat} value={amt} total={summary.income} color="text-green-600" />
+                  <p className="text-right text-[11px] text-green-600 font-medium mt-0.5">{fmt(amt, cur)}</p>
+                </div>
+              ))}
+              {Object.keys(summary.income_by_category).length === 0 && <p className="text-slate-400 text-xs">None</p>}
+            </div>
+          </div>
+          <div className="border-t pt-3">
+            <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Expenses by category</h4>
+            <div className="space-y-2">
+              {Object.entries(summary.expense_by_category).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([cat, amt]) => (
+                <div key={cat}>
+                  <CatBar label={cat} value={amt} total={summary.expenses} color="text-red-500" />
+                  <p className="text-right text-[11px] text-red-500 font-medium mt-0.5">{fmt(amt, cur)}</p>
+                </div>
+              ))}
+              {Object.keys(summary.expense_by_category).length === 0 && <p className="text-slate-400 text-xs">None</p>}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Category breakdown */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-xl border p-4">
-          <h3 className="font-semibold text-slate-700 mb-3 text-sm">Income by Category</h3>
-          <div className="space-y-2">
-            {Object.entries(summary.income_by_category).sort((a,b) => b[1]-a[1]).map(([cat, amt]) => (
-              <div key={cat} className="flex justify-between text-sm">
-                <span className="text-slate-600">{cat}</span>
-                <span className="font-medium text-green-700">KES {amt.toLocaleString()}</span>
-              </div>
-            ))}
-            {Object.keys(summary.income_by_category).length === 0 && <p className="text-slate-400 text-sm">No income entries</p>}
-          </div>
-        </div>
-        <div className="bg-white rounded-xl border p-4">
-          <h3 className="font-semibold text-slate-700 mb-3 text-sm">Expenses by Category</h3>
-          <div className="space-y-2">
-            {Object.entries(summary.expense_by_category).sort((a,b) => b[1]-a[1]).map(([cat, amt]) => (
-              <div key={cat} className="flex justify-between text-sm">
-                <span className="text-slate-600">{cat}</span>
-                <span className="font-medium text-red-700">KES {amt.toLocaleString()}</span>
-              </div>
-            ))}
-            {Object.keys(summary.expense_by_category).length === 0 && <p className="text-slate-400 text-sm">No expense entries</p>}
-          </div>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3 items-center">
+      {/* Filters + search */}
+      <div className="flex flex-wrap gap-2 items-center">
         <div className="flex gap-1">
           {["","income","expense"].map(t => (
             <button key={t} onClick={() => setTypeFilter(t)}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors capitalize ${typeFilter === t ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-slate-600 border-slate-200"}`}>
-              {t || "All"}
-            </button>
+              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors capitalize ${
+                typeFilter === t ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-slate-600 border-slate-200"
+              }`}>{t || "All"}</button>
           ))}
         </div>
-        <div className="flex items-center gap-2 ml-auto">
-          <input type="date" className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value={fromDate} onChange={e => setFromDate(e.target.value)} />
-          <span className="text-slate-400 text-xs">to</span>
-          <input type="date" className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value={toDate} onChange={e => setToDate(e.target.value)} />
-          <button onClick={load} className="text-slate-400 hover:text-slate-700"><RefreshCw size={16} /></button>
-        </div>
+        <input
+          placeholder="Search description, category…"
+          value={search} onChange={e => setSearch(e.target.value)}
+          className="ml-auto border border-slate-200 rounded-lg px-3 py-1.5 text-sm w-52 focus:outline-none focus:ring-2 focus:ring-brand-dark/20"
+        />
       </div>
 
       {/* Table */}
       {loading ? (
-        <div className="flex items-center justify-center h-40 text-slate-400">Loading...</div>
-      ) : entries.length === 0 ? (
+        <div className="flex items-center justify-center h-40 text-slate-400">Loading…</div>
+      ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
-          <PieChart size={40} className="opacity-30" />
-          <p>No entries in this period. Add your income or expenses.</p>
+          <BarChart2 size={40} className="opacity-30" />
+          <p className="text-sm">{entries.length === 0 ? "No entries in this period. Add income or expenses to get started." : "No results match your search."}</p>
         </div>
       ) : (
-        <div className="bg-white rounded-xl border overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="bg-white rounded-xl border overflow-x-auto">
+          <table className="w-full text-sm min-w-[600px]">
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
               <tr>
                 <th className="text-left px-4 py-3">Date</th>
                 <th className="text-left px-4 py-3">Type</th>
                 <th className="text-left px-4 py-3">Category</th>
                 <th className="text-left px-4 py-3">Description</th>
+                <th className="text-left px-4 py-3">Ref</th>
                 <th className="text-right px-4 py-3">Amount</th>
-                <th className="text-right px-4 py-3">Actions</th>
+                <th className="text-right px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {entries.map(e => (
+              {filtered.map(e => (
                 <tr key={e.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-3 text-slate-500">{new Date(e.date).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-slate-500 tabular-nums whitespace-nowrap">{new Date(e.date).toLocaleDateString()}</td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${e.type === "income" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                      {e.type}
-                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      e.type === "income" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                    }`}>{e.type}</span>
                   </td>
                   <td className="px-4 py-3 text-slate-600">{e.category}</td>
-                  <td className="px-4 py-3 text-slate-700">{e.description || "—"}</td>
-                  <td className={`px-4 py-3 text-right font-semibold ${e.type === "income" ? "text-green-700" : "text-red-700"}`}>
+                  <td className="px-4 py-3 text-slate-700 max-w-[180px] truncate">{e.description || "—"}</td>
+                  <td className="px-4 py-3 text-slate-400 text-xs">{e.reference || "—"}</td>
+                  <td className={`px-4 py-3 text-right font-semibold tabular-nums ${
+                    e.type === "income" ? "text-green-700" : "text-red-600"
+                  }`}>
                     {e.type === "income" ? "+" : "-"}{e.currency} {e.amount.toLocaleString()}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-2">
-                      <button onClick={() => openEdit(e)} className="text-slate-400 hover:text-brand-dark"><Edit2 size={14} /></button>
-                      <button onClick={() => del(e)} className="text-slate-400 hover:text-red-500"><Trash2 size={14} /></button>
+                      <button onClick={() => openEdit(e)} className="text-slate-400 hover:text-brand-dark" title="Edit"><Edit2 size={14} /></button>
+                      <button onClick={() => del(e)} className="text-slate-400 hover:text-red-500" title="Delete"><Trash2 size={14} /></button>
                     </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <div className="px-4 py-2 text-xs text-slate-400 border-t">{filtered.length} entries</div>
         </div>
       )}
 
-      {/* Modal */}
+      {/* Add / Edit modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowModal(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <div className="p-6 border-b border-slate-100">
-              <h2 className="text-lg font-semibold">{editing ? "Edit Entry" : "New Entry"}</h2>
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-base font-semibold">{editing ? "Edit Entry" : "New Entry"}</h2>
+              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
             </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Type</label>
-                <div className="flex gap-2">
-                  <button onClick={() => setForm(f => ({ ...f, type: "income", category: "" }))}
-                    className={`flex-1 py-2 rounded-lg text-sm font-medium border ${form.type === "income" ? "bg-green-600 text-white border-green-600" : "bg-white text-slate-600 border-slate-200"}`}>
-                    Income
-                  </button>
-                  <button onClick={() => setForm(f => ({ ...f, type: "expense", category: "" }))}
-                    className={`flex-1 py-2 rounded-lg text-sm font-medium border ${form.type === "expense" ? "bg-red-600 text-white border-red-600" : "bg-white text-slate-600 border-slate-200"}`}>
-                    Expense
-                  </button>
-                </div>
+            <div className="p-5 space-y-4">
+              {/* Income / Expense toggle */}
+              <div className="flex rounded-lg overflow-hidden border border-slate-200">
+                <button onClick={() => setForm(f => ({ ...f, type: "income", category: "", customCategory: "" }))}
+                  className={`flex-1 py-2 text-sm font-medium transition-colors ${
+                    form.type === "income" ? "bg-green-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
+                  }`}>Income</button>
+                <button onClick={() => setForm(f => ({ ...f, type: "expense", category: "", customCategory: "" }))}
+                  className={`flex-1 py-2 text-sm font-medium border-l border-slate-200 transition-colors ${
+                    form.type === "expense" ? "bg-red-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
+                  }`}>Expense</button>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
+
+              <div className="grid grid-cols-2 gap-3">
+                {/* Category */}
+                <div className="col-span-2">
                   <label className="block text-xs font-medium text-slate-600 mb-1">Category</label>
                   <select className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={form.category}
-                    onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
-                    <option value="">Select...</option>
+                    onChange={e => setForm(f => ({ ...f, category: e.target.value, customCategory: "" }))}>
+                    <option value="">Select category…</option>
                     {currentCats.map(c => <option key={c} value={c}>{c}</option>)}
+                    <option value="__custom__">+ Add custom category</option>
                   </select>
+                  {form.category === "__custom__" && (
+                    <input
+                      className="mt-2 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                      placeholder="Type custom category name"
+                      value={form.customCategory}
+                      onChange={e => setForm(f => ({ ...f, customCategory: e.target.value }))}
+                    />
+                  )}
                 </div>
+
+                {/* Amount */}
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Amount (KES)</label>
-                  <input type="number" min="0" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={form.amount}
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Amount</label>
+                  <input type="number" min="0" step="0.01"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                    value={form.amount || ""}
+                    onFocus={e => e.target.select()}
                     onChange={e => setForm(f => ({ ...f, amount: +e.target.value }))} />
                 </div>
-                <div className="col-span-2">
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Description</label>
-                  <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={form.description}
-                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Optional note" />
+
+                {/* Currency */}
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Currency</label>
+                  <select className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={form.currency}
+                    onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
+                    {["KES","USD","EUR","GBP","NGN","GHS","ZAR","TZS","UGX"].map(c => <option key={c}>{c}</option>)}
+                  </select>
                 </div>
+
+                {/* Description */}
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Description <span className="text-slate-400">(optional)</span></label>
+                  <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={form.description}
+                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Brief note" />
+                </div>
+
+                {/* Date */}
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">Date</label>
                   <input type="date" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={form.date}
                     onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
                 </div>
+
+                {/* Reference */}
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Reference</label>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Reference <span className="text-slate-400">(optional)</span></label>
                   <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={form.reference}
-                    onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="Receipt #, invoice #" />
+                    onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="Receipt #, INV-001" />
                 </div>
               </div>
             </div>
-            <div className="p-6 border-t border-slate-100 flex justify-end gap-3">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-slate-600">Cancel</button>
-              <button onClick={save} disabled={saving || !form.category || form.amount <= 0}
-                className="px-4 py-2 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50">
-                {saving ? "Saving..." : editing ? "Update" : "Add Entry"}
+            <div className="p-5 border-t border-slate-100 flex justify-end gap-3">
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-900">Cancel</button>
+              <button
+                onClick={save}
+                disabled={saving || (form.category === "" || (form.category === "__custom__" && !form.customCategory.trim())) || form.amount <= 0}
+                className="px-4 py-2 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50 flex items-center gap-1.5">
+                {saving ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
+                {saving ? "Saving…" : editing ? "Update" : "Add Entry"}
               </button>
             </div>
           </div>

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
@@ -304,3 +304,144 @@ async def _call_anthropic(
             "_anthropic_blocks": raw_blocks,
         },
     }
+
+
+# ── Streaming entrypoint ───────────────────────────────────────────────────────
+async def stream_reply(
+    *,
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    model_id: Optional[str] = None,
+    temperature: float = 0.2,
+    timeout: float = 120.0,
+) -> AsyncGenerator[str, None]:
+    """Stream the final reply tokens from the LLM after all tool calls are done.
+
+    Yields raw text chunks as they arrive from the provider.
+    This should be called only for the *final* assistant reply (no tool calls expected).
+    """
+    cfg = resolve_model(model_id)
+    provider = cfg["provider"]
+
+    if provider in ("openai", "deepseek", "grok"):
+        async for chunk in _stream_openai_compatible(cfg, messages, tools, temperature, timeout):
+            yield chunk
+    elif provider == "anthropic":
+        async for chunk in _stream_anthropic(cfg, messages, tools, temperature, timeout):
+            yield chunk
+    else:
+        raise RuntimeError(f"Unsupported provider for streaming: {provider}")
+
+
+async def _stream_openai_compatible(
+    cfg: Dict[str, str],
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    temperature: float,
+    timeout: float,
+) -> AsyncGenerator[str, None]:
+    provider = cfg["provider"]
+    base = _OAI_COMPATIBLE_BASE[provider]
+    key = os.environ[_OAI_KEY_ENV[provider]]
+
+    payload: Dict[str, Any] = {
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "none"  # final reply only — no more tool calls
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream(
+            "POST",
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=payload,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    data = json.loads(data_str)
+                    delta = data["choices"][0].get("delta", {})
+                    text = delta.get("content") or ""
+                    if text:
+                        yield text
+                except Exception:
+                    continue
+
+
+async def _stream_anthropic(
+    cfg: Dict[str, str],
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    temperature: float,
+    timeout: float,
+) -> AsyncGenerator[str, None]:
+    key = os.environ["ANTHROPIC_API_KEY"]
+
+    system_text = ""
+    a_messages: List[Dict[str, Any]] = []
+    for m in messages:
+        role = m["role"]
+        if role == "system":
+            system_text = (system_text + "\n\n" + (m.get("content") or "")).strip()
+            continue
+        if role == "tool":
+            a_messages.append({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": m.get("content") or ""}],
+            })
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            blocks: List[Dict[str, Any]] = []
+            if m.get("content"):
+                blocks.append({"type": "text", "text": m["content"]})
+            for tc in m["tool_calls"]:
+                if "function" in tc:
+                    fn = tc["function"] or {}
+                    raw_args = fn.get("arguments")
+                    tc_input = json.loads(raw_args) if isinstance(raw_args, str) and raw_args else (raw_args or {})
+                    blocks.append({"type": "tool_use", "id": tc.get("id") or "call_0", "name": fn.get("name", ""), "input": tc_input})
+                else:
+                    blocks.append({"type": "tool_use", "id": tc.get("id") or "call_0", "name": tc.get("name", ""), "input": tc.get("arguments") or {}})
+            a_messages.append({"role": "assistant", "content": blocks})
+            continue
+        a_messages.append({"role": role, "content": m.get("content") or ""})
+
+    payload: Dict[str, Any] = {
+        "model": cfg["model"],
+        "messages": a_messages,
+        "max_tokens": 4096,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if system_text:
+        payload["system"] = system_text
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream(
+            "POST",
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json=payload,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    data = json.loads(line[6:])
+                    if data.get("type") == "content_block_delta":
+                        text = (data.get("delta") or {}).get("text") or ""
+                        if text:
+                            yield text
+                except Exception:
+                    continue

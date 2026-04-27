@@ -23,14 +23,14 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from .agents import get_agent_config
 from .context_builder import build_context, format_context_block
 from .critic import critique
 from .documents import build_context_preamble, load_full
 from .interactive_suggestions import build_reply_suggestions
-from .models import chat_with_tools, resolve_model
+from .models import chat_with_tools, resolve_model, stream_reply
 from .planner import format_plan_hint, plan
 from .tools import REGISTRY, ToolContext, openai_tool_specs, openai_tool_specs_filtered, run_tool
 
@@ -565,6 +565,227 @@ async def run_turn(
         },
         user_message,
     )
+
+
+async def run_turn_stream(
+    *,
+    db,
+    user: Dict[str, Any],
+    history: List[Dict[str, Any]],
+    user_message: str,
+    model_id: Optional[str] = None,
+    auto_approve_destructive: bool = False,
+    conversation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Like run_turn but yields SSE-style dicts during execution.
+
+    Yields:
+        {"type": "tool_start", "tool": name}       — each tool call as it fires
+        {"type": "token", "text": chunk}            — streamed reply tokens
+        {"type": "done", ...full result payload...} — final summary (same shape as run_turn)
+        {"type": "error", "message": str}           — on failure
+    """
+    user = {**user, "_active_conversation_id": conversation_id}
+    ctx = ToolContext(db, user)
+
+    ag_cfg = get_agent_config(agent_id)
+    active_agent_id = ag_cfg["id"]
+    allowed = ag_cfg.get("allowed_tools")
+    tool_specs = openai_tool_specs_filtered(allowed) if allowed is not None else openai_tool_specs()
+    if ag_cfg.get("use_default_system_prompt"):
+        system_text = SYSTEM_PROMPT
+    else:
+        system_text = (ag_cfg.get("system_prompt") or SYSTEM_PROMPT).strip()
+    if ag_cfg.get("model"):
+        model_id = ag_cfg["model"]
+
+    _execution_plan = await plan(user_message, list(allowed or []))
+
+    attached_docs: List[Dict[str, Any]] = []
+    native_attachments: List[Dict[str, Any]] = []
+    if conversation_id:
+        attached_docs = await load_full(db, ctx.business_id, conversation_id)
+        provider = resolve_model(model_id)["provider"]
+        if provider == "anthropic":
+            for d in attached_docs:
+                if d.get("b64") and d.get("kind") in ("image", "pdf"):
+                    native_attachments.append({
+                        "kind": d["kind"], "mime_type": d.get("mime_type"),
+                        "filename": d.get("filename"), "b64": d["b64"],
+                    })
+
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_text}]
+
+    if active_agent_id in ("design", "creative", "social_media") and conversation_id:
+        try:
+            from .design_state import load_design_state, format_design_state_for_prompt, update_design_state
+            ds = await load_design_state(db, conversation_id, ctx.business_id)
+            if not ds.get("flow_step"):
+                await update_design_state(db, conversation_id, ctx.business_id, flow_step="awaiting_product")
+                ds["flow_step"] = "awaiting_product"
+            ds_block = format_design_state_for_prompt(ds)
+            if ds_block:
+                messages.append({"role": "system", "content": ds_block})
+        except Exception:
+            pass
+
+    try:
+        from saved_designs import build_design_library_context_message
+        lib_ctx = await build_design_library_context_message(db, ctx.business_id)
+        if lib_ctx:
+            messages.append({"role": "system", "content": lib_ctx})
+    except Exception:
+        pass
+
+    if attached_docs:
+        preamble = build_context_preamble(attached_docs)
+        if preamble:
+            has_long_doc = any((d.get("text_len") or len(d.get("text") or "")) >= 6000 for d in attached_docs)
+            if has_long_doc:
+                preamble += "\n\nNote: at least one document is long. Call `search_documents` for additional excerpts."
+            messages.append({"role": "system", "content": preamble})
+
+    _rag_ctx = await build_context(
+        user_id=str(user.get("_id", "")),
+        business_id=str(user.get("business_id") or user.get("_id", "")),
+        user_message=user_message,
+    )
+    _ctx_block = format_context_block(_rag_ctx)
+    if _ctx_block:
+        messages.append({"role": "system", "content": _ctx_block})
+
+    _plan_hint = format_plan_hint(_execution_plan)
+    if _plan_hint:
+        messages.append({"role": "system", "content": _plan_hint})
+
+    messages.extend(history[-50:])
+    messages.append({"role": "user", "content": user_message})
+
+    steps: List[Dict[str, Any]] = []
+    messages_to_append: List[Dict[str, Any]] = [{"role": "user", "content": user_message}]
+    is_confirmation_reply = user_message.strip().lower() in AFFIRMATIVE
+    approved_destructive = auto_approve_destructive or is_confirmation_reply
+    pending_confirmation: Optional[Dict[str, Any]] = None
+    model_used = model_id or ""
+
+    for step_idx in range(MAX_STEPS):
+        resp = await chat_with_tools(
+            messages=messages,
+            tools=tool_specs,
+            model_id=model_id,
+            attachments=native_attachments if step_idx == 0 else None,
+        )
+        model_used = resp.get("model", model_used)
+        tool_calls = resp.get("tool_calls") or []
+        asst_msg = resp.get("raw_assistant_message") or {"role": "assistant", "content": resp.get("content", "")}
+        messages.append(asst_msg)
+
+        if not tool_calls:
+            # ── Final reply: stream tokens in real-time ──────────────────────
+            # Build the messages list for streaming (everything up to and including tool results)
+            stream_msgs = [m for m in messages if m.get("role") != "assistant" or not (m.get("tool_calls") or m.get("_anthropic_blocks"))]
+            # Simpler: just use the current messages list minus the last assistant placeholder
+            stream_context = messages[:-1]  # drop the empty final assistant msg
+            reply_text = ""
+            try:
+                async for token in stream_reply(messages=stream_context, tools=[], model_id=model_id):
+                    reply_text += token
+                    yield {"type": "token", "text": token}
+            except Exception as stream_err:
+                logger.warning("[run_turn_stream] stream_reply failed, using pre-computed reply: %s", stream_err)
+                reply_text = resp.get("content", "")
+                yield {"type": "token", "text": reply_text}
+
+            if not reply_text:
+                reply_text = resp.get("content", "")
+
+            final = await critique(
+                draft=reply_text,
+                user_message=user_message,
+                knowledge_chunks=_rag_ctx.get("knowledge_chunks", []),
+                tool_steps=steps,
+                system_prompt=system_text,
+            )
+            messages_to_append.append({"role": "assistant", "content": final})
+
+            result = await _finalize_turn(
+                {
+                    "reply": final,
+                    "steps": steps,
+                    "messages_to_append": messages_to_append,
+                    "model": model_used,
+                    "needs_confirmation": pending_confirmation,
+                    "active_agent": active_agent_id,
+                },
+                user_message,
+            )
+            yield {"type": "done", **result}
+            return
+
+        # Execute tool calls
+        for tc in tool_calls:
+            tc_id = tc.get("id") or str(uuid.uuid4())
+            name = tc.get("name")
+            if not name:
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": json.dumps({"error": "Malformed tool call."}, default=str)})
+                continue
+            args = tc.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args) if args.strip() else {}
+                except Exception:
+                    args = {}
+
+            spec = REGISTRY.get(name)
+            if spec and spec.get("destructive") and not approved_destructive:
+                pending_confirmation = {"tool": name, "arguments": args, "reason": f"Destructive action `{name}` requires confirmation."}
+                preview_text = _describe_destructive(name, args)
+                messages_to_append.append({"role": "assistant", "content": preview_text})
+                result = await _finalize_turn(
+                    {"reply": preview_text, "steps": steps, "messages_to_append": messages_to_append,
+                     "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id},
+                    user_message,
+                )
+                yield {"type": "token", "text": preview_text}
+                yield {"type": "done", **result}
+                return
+
+            yield {"type": "tool_start", "tool": name}
+            result_data = await run_tool(name, ctx, args)
+            capped = _limit_tool_result_size(result_data)
+            steps.append({"tool": name, "arguments": args, "result": capped})
+
+            if isinstance(result_data, dict) and result_data.get("error"):
+                logger.error("[run_turn_stream.tool_error] tool=%s error=%r", name, result_data.get("error"))
+
+            if spec and spec.get("destructive"):
+                try:
+                    await ctx.db.assistant_audit_log.insert_one({
+                        "_id": str(uuid.uuid4()), "user_id": ctx.business_id, "actor_id": ctx.user_id,
+                        "tool": name, "arguments": args, "result": capped,
+                        "success": not (isinstance(result_data, dict) and "error" in result_data),
+                        "agent": active_agent_id, "created_at": datetime.utcnow(),
+                    })
+                except Exception:
+                    pass
+
+            try:
+                tool_payload = json.dumps(capped, default=str)
+            except Exception:
+                tool_payload = json.dumps({"error": "Tool output could not be serialized."}, default=str)
+            messages.append({"role": "tool", "tool_call_id": tc.get("id") or tc_id, "content": tool_payload})
+
+    # Step limit fallback
+    fallback = "I've gathered a lot of info but couldn't finish the task in one go. Ask me to narrow it down or try again."
+    messages_to_append.append({"role": "assistant", "content": fallback})
+    result = await _finalize_turn(
+        {"reply": fallback, "steps": steps, "messages_to_append": messages_to_append,
+         "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id},
+        user_message,
+    )
+    yield {"type": "token", "text": fallback}
+    yield {"type": "done", **result}
 
 
 def _describe_destructive(name: str, args: Dict[str, Any]) -> str:

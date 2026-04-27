@@ -148,6 +148,86 @@ def make_finance_router(db, user_dep):
 
     @router.get("/categories")
     async def get_categories(user=user_dep):
-        return {"income": CATEGORIES_INCOME, "expense": CATEGORIES_EXPENSE}
+        # Also include any custom categories the user has used
+        tid = _tid(user)
+        custom_income = await db.finance_entries.distinct("category", {"user_id": tid, "type": "income"})
+        custom_expense = await db.finance_entries.distinct("category", {"user_id": tid, "type": "expense"})
+        merged_income = sorted(set(CATEGORIES_INCOME) | set(custom_income))
+        merged_expense = sorted(set(CATEGORIES_EXPENSE) | set(custom_expense))
+        return {"income": merged_income, "expense": merged_expense}
+
+    @router.get("/monthly")
+    async def monthly_trend(
+        months: int = 12,
+        user=user_dep
+    ):
+        """Return last N months of income vs expenses for charting."""
+        from datetime import date, timedelta
+        import calendar
+        tid = _tid(user)
+        today = date.today()
+        result = []
+        for i in range(months - 1, -1, -1):
+            # Go back i months from current month
+            year = today.year
+            month = today.month - i
+            while month <= 0:
+                month += 12
+                year -= 1
+            month_start = f"{year:04d}-{month:02d}-01"
+            last_day = calendar.monthrange(year, month)[1]
+            month_end = f"{year:04d}-{month:02d}-{last_day:02d}"
+            label = date(year, month, 1).strftime("%b %Y")
+
+            pipeline = [
+                {"$match": {"user_id": tid, "date": {"$gte": month_start, "$lte": month_end}}},
+                {"$group": {"_id": "$type", "total": {"$sum": "$amount"}}},
+            ]
+            rows = await db.finance_entries.aggregate(pipeline).to_list(10)
+            income = next((r["total"] for r in rows if r["_id"] == "income"), 0.0)
+            expense = next((r["total"] for r in rows if r["_id"] == "expense"), 0.0)
+            result.append({
+                "month": label,
+                "income": round(income, 2),
+                "expense": round(expense, 2),
+                "profit": round(income - expense, 2),
+            })
+        return result
+
+    @router.get("/export")
+    async def export_csv(
+        type: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        user=user_dep
+    ):
+        """Download entries as CSV."""
+        from fastapi.responses import StreamingResponse
+        import io, csv
+        tid = _tid(user)
+        q: Dict[str, Any] = {"user_id": tid}
+        if type and type in ENTRY_TYPES: q["type"] = type
+        if from_date or to_date:
+            q["date"] = {}
+            if from_date: q["date"]["$gte"] = from_date
+            if to_date: q["date"]["$lte"] = to_date
+            if not q["date"]: del q["date"]
+        docs = await db.finance_entries.find(q, sort=[("date", -1)]).to_list(5000)
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Date", "Type", "Category", "Description", "Amount", "Currency", "Reference"])
+        for d in docs:
+            writer.writerow([
+                d.get("date", ""), d.get("type", ""), d.get("category", ""),
+                d.get("description", ""), d.get("amount", 0), d.get("currency", ""),
+                d.get("reference", ""),
+            ])
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=finance_export.csv"},
+        )
 
     return router
