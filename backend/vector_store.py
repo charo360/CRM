@@ -26,7 +26,7 @@ def get_qdrant():
     global _client
     if _client is None:
         from qdrant_client import AsyncQdrantClient
-        _client = AsyncQdrantClient(url=QDRANT_URL, timeout=30)
+        _client = AsyncQdrantClient(url=QDRANT_URL, timeout=30, prefer_grpc=False)
     return _client
 
 
