@@ -15,6 +15,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIM = 1536  # text-embedding-3-small output dimensions
 
@@ -26,7 +27,12 @@ def get_qdrant():
     global _client
     if _client is None:
         from qdrant_client import AsyncQdrantClient
-        _client = AsyncQdrantClient(url=QDRANT_URL, timeout=30, prefer_grpc=False)
+        _client = AsyncQdrantClient(
+            url=QDRANT_URL,
+            api_key=QDRANT_API_KEY or None,
+            timeout=30,
+            prefer_grpc=False,
+        )
     return _client
 
 
