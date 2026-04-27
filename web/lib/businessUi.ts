@@ -145,6 +145,7 @@ const BY_TYPE: Record<string, Partial<WebBusinessUi>> = {
     customerTerm: "customers",
   },
   other: {
+    shopNavLabel: "Catalog",
     overviewSubtitle: "Sales, pipeline, and growth activity across your business in one view.",
     customerTerm: "customers",
   },

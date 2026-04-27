@@ -357,7 +357,7 @@ def _mk_router(db, get_current_user):
                 "active_agent": active_agent,
                 "active_agent_label": AGENT_REGISTRY.get(active_agent, {}).get("label", "Zilo"),
                 "reply_suggestions": result.get("reply_suggestions") or [],
-            }) + "\n\n"
+            }, default=str) + "\n\n"
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
 

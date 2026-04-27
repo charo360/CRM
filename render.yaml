@@ -26,6 +26,25 @@ services:
       # EVOLUTION_API_URL, EVOLUTION_API_KEY, PUBLIC_BASE_URL
 
   - type: web
+    name: zilo-qdrant
+    env: docker
+    dockerfilePath: ./qdrant/Dockerfile
+    healthCheckPath: /healthz
+    disk:
+      name: qdrant-storage
+      mountPath: /qdrant/storage
+      sizeGB: 10
+    envVars:
+      - key: QDRANT__SERVICE__HTTP_PORT
+        value: 6333
+      # Add to backend env manually: QDRANT_URL=http://zilo-qdrant:6333
+      # EMBEDDING_MODEL=text-embedding-3-small
+      # MEMORY_FLUSH_EVERY=10
+      # RAG_SCORE_THRESHOLD=0.72
+      # CRITIC_ENABLED=false
+    plan: starter
+
+  - type: web
     name: crm-frontend
     runtime: static
     rootDir: frontend

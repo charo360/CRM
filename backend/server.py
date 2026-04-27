@@ -9306,6 +9306,28 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
             update_data[f'business_knowledge.{field}'] = val
     if update_data:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_data})
+
+    # Re-index business knowledge into Qdrant RAG whenever it is updated.
+    if update_data and os.getenv("QDRANT_URL"):
+        try:
+            updated_user = await db.users.find_one({"_id": user["_id"]}, {"business_knowledge": 1})
+            bk = (updated_user or {}).get("business_knowledge") or {}
+            parts = []
+            for _f in ("business_description", "products_services", "pricing_info",
+                       "business_hours", "delivery_info", "special_offers", "faqs"):
+                _v = bk.get(_f, "")
+                if _v:
+                    parts.append(f"{_f.replace('_', ' ').title()}: {_v}")
+            if parts:
+                business_id = str(user.get("business_id") or user["_id"])
+                from rag.indexer import index_business_document
+                from qdrant_client.models import Filter, FieldCondition, MatchValue
+                from vector_store import get_qdrant
+                # Delete old vectors for this business before re-indexing
+                asyncio.create_task(_reindex_business_knowledge(business_id, "\n\n".join(parts)))
+        except Exception as _e:
+            logging.warning(f"[qdrant] knowledge re-index failed: {_e}")
+
     return {"status": "success", "message": "Business knowledge updated"}
 
 @api_router.post("/ai/draft-message")
@@ -11358,6 +11380,44 @@ async def startup_tasks():
         logging.info("[shopify-autopilot] Autopilot runner started")
     except Exception as e:
         logging.error(f"[shopify-autopilot] Failed to start runner: {e}")
+
+    # Bootstrap Qdrant vector collections (customer_memories + business_knowledge).
+    # Runs silently if QDRANT_URL is not configured (local dev without Qdrant).
+    if os.getenv("QDRANT_URL"):
+        try:
+            from vector_store import bootstrap_collections
+            await bootstrap_collections()
+            logging.info("[qdrant] collections bootstrapped")
+            # One-time batch index of all existing business knowledge docs
+            asyncio.create_task(_reindex_all_knowledge(db))
+        except Exception as e:
+            logging.warning(f"[qdrant] bootstrap failed (Qdrant may not be ready yet): {e}")
+
+
+async def _reindex_all_knowledge(db) -> None:
+    """Background task: index all users' business_knowledge into Qdrant RAG."""
+    try:
+        from rag.indexer import reindex_all_businesses
+        await reindex_all_businesses(db)
+    except Exception as e:
+        logging.warning(f"[qdrant] reindex_all_knowledge failed: {e}")
+
+
+async def _reindex_business_knowledge(business_id: str, doc_text: str) -> None:
+    """Background task: delete + re-index a single business's knowledge doc."""
+    try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+        from rag.indexer import index_business_document
+        from vector_store import get_qdrant
+        await get_qdrant().delete(
+            collection_name="business_knowledge",
+            points_selector=Filter(
+                must=[FieldCondition(key="business_id", match=MatchValue(value=business_id))]
+            ),
+        )
+        await index_business_document(business_id, doc_text)
+    except Exception as e:
+        logging.warning(f"[qdrant] _reindex_business_knowledge failed for {business_id}: {e}")
 
 logger = logging.getLogger(__name__)
 

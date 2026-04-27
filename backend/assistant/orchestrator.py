@@ -20,14 +20,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .agents import get_agent_config
+from .context_builder import build_context, format_context_block
+from .critic import critique
 from .documents import build_context_preamble, load_full
 from .interactive_suggestions import build_reply_suggestions
 from .models import chat_with_tools, resolve_model
+from .planner import format_plan_hint, plan
 from .tools import REGISTRY, ToolContext, openai_tool_specs, openai_tool_specs_filtered, run_tool
 
 logger = logging.getLogger(__name__)
@@ -200,6 +204,10 @@ async def run_turn(
     if ag_cfg.get("model"):
         model_id = ag_cfg["model"]
 
+    # Planner: decompose complex multi-step requests before the ReAct loop.
+    # Runs a fast LLM call only when the message looks multi-intent; skips instantly otherwise.
+    _execution_plan = await plan(user_message, list(allowed or []))
+
     # Load attached documents for this conversation
     attached_docs: List[Dict[str, Any]] = []
     native_attachments: List[Dict[str, Any]] = []
@@ -268,6 +276,22 @@ async def run_turn(
                     "you need passages that aren't in the excerpt above."
                 )
             messages.append({"role": "system", "content": preamble})
+    # Context builder: inject long-term memory + RAG knowledge chunks (parallel fetch).
+    # Gracefully no-ops if QDRANT_URL or OPENAI_API_KEY is not configured.
+    _rag_ctx = await build_context(
+        user_id=str(user.get("_id", "")),
+        business_id=str(user.get("business_id") or user.get("_id", "")),
+        user_message=user_message,
+    )
+    _ctx_block = format_context_block(_rag_ctx)
+    if _ctx_block:
+        messages.append({"role": "system", "content": _ctx_block})
+
+    # Inject Planner hint for complex multi-step requests
+    _plan_hint = format_plan_hint(_execution_plan)
+    if _plan_hint:
+        messages.append({"role": "system", "content": _plan_hint})
+
     # Trim history to last 50 messages
     messages.extend(history[-50:])
     messages.append({"role": "user", "content": user_message})
@@ -305,7 +329,23 @@ async def run_turn(
 
         if not tool_calls:
             final = resp.get("content", "")
+            # Critic: review the draft before returning. No-ops unless CRITIC_ENABLED=true.
+            final = await critique(
+                draft=final,
+                user_message=user_message,
+                knowledge_chunks=_rag_ctx.get("knowledge_chunks", []),
+            )
             messages_to_append.append({"role": "assistant", "content": final})
+            # Memory flush: every MEMORY_FLUSH_EVERY turns, summarize + embed async.
+            _flush_every = int(os.getenv("MEMORY_FLUSH_EVERY", "10"))
+            if len(history) > 0 and (len(history) + 1) % _flush_every == 0:
+                import asyncio as _asyncio
+                from memory.flush import flush_to_long_term
+                _asyncio.create_task(flush_to_long_term(
+                    customer_id=str(user.get("_id", "")),
+                    business_id=str(user.get("business_id") or user.get("_id", "")),
+                    turns=history[-_flush_every:],
+                ))
             return await _finalize_turn(
                 {
                     "reply": final,

@@ -311,35 +311,31 @@ export function TypeFields({
       )}
 
       {t === "general" && (
-        <p className="text-sm text-slate-500 border-t border-slate-100 pt-6">
-          Use shared location, hours, and AI fields. Add specifics in Products & services and FAQs.
-        </p>
+        <section className="space-y-3 border-t border-slate-100 pt-6">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">General</p>
+          <Check label="Offer appointments / bookings" checked={bool(bk, "general_has_bookings", true)} onChange={(v) => set({ general_has_bookings: v })} />
+          <Check label="Offer delivery" checked={bool(bk, "general_has_delivery")} onChange={(v) => set({ general_has_delivery: v })} />
+          <Check label="Require deposit" checked={bool(bk, "general_deposit_required")} onChange={(v) => set({ general_deposit_required: v })} />
+          {bool(bk, "general_deposit_required") && (
+            <Row label="Deposit %" type="number" value={num(bk, "general_deposit_pct", "50")} onChange={(v) => set({ general_deposit_pct: parseInt(v, 10) || 50 })} />
+          )}
+          <Row label="Cancellation policy" value={String(bk.general_cancellation_policy ?? "")} onChange={(v) => set({ general_cancellation_policy: v })} />
+        </section>
       )}
 
-      {![
-        "retail",
-        "grocery",
-        "restaurant",
-        "food",
-        "bakery",
-        "wholesale",
-        "salon",
-        "spa",
-        "repair",
-        "services",
-        "support",
-        "hotel",
-        "rental",
-        "cleaning",
-        "fitness",
-        "events",
-        "healthcare",
-        "creator",
-        "general",
-      ].includes(t) && (
-        <p className="text-sm text-slate-500 border-t border-slate-100 pt-6">
-          No extra type-specific fields for this category yet. Use Business info and AI sections.
-        </p>
+      {t === "other" && (
+        <section className="space-y-3 border-t border-slate-100 pt-6">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Other</p>
+          <Check label="Offer appointments / bookings" checked={bool(bk, "other_has_bookings", true)} onChange={(v) => set({ other_has_bookings: v })} />
+          <Check label="Offer delivery" checked={bool(bk, "other_has_delivery")} onChange={(v) => set({ other_has_delivery: v })} />
+          <Check label="On-site / field visits" checked={bool(bk, "other_has_onsite")} onChange={(v) => set({ other_has_onsite: v })} />
+          <Check label="Require deposit" checked={bool(bk, "other_deposit_required")} onChange={(v) => set({ other_deposit_required: v })} />
+          {bool(bk, "other_deposit_required") && (
+            <Row label="Deposit %" type="number" value={num(bk, "other_deposit_pct", "50")} onChange={(v) => set({ other_deposit_pct: parseInt(v, 10) || 50 })} />
+          )}
+          <Row label="Typical turnaround" value={String(bk.other_turnaround ?? "")} onChange={(v) => set({ other_turnaround: v })} placeholder="e.g. 1–3 business days" />
+          <Row label="Cancellation policy" value={String(bk.other_cancellation_policy ?? "")} onChange={(v) => set({ other_cancellation_policy: v })} />
+        </section>
       )}
     </div>
   );
