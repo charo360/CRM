@@ -423,6 +423,8 @@ async def run_turn(
                 draft=final,
                 user_message=user_message,
                 knowledge_chunks=_rag_ctx.get("knowledge_chunks", []),
+                tool_steps=steps,
+                system_prompt=system_text,
             )
             messages_to_append.append({"role": "assistant", "content": final})
             # Memory flush: every MEMORY_FLUSH_EVERY turns, summarize + embed async.

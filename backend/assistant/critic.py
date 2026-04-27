@@ -1,12 +1,11 @@
 """Critic agent — reviews the Executor's draft before it is returned to the user.
 
-Checks for: accuracy vs. retrieved knowledge, appropriate tone, completeness,
-and safety (no hallucinated prices, policies, or commitments).
+Has full awareness of: the system prompt, every tool result from the turn,
+the user's message, and any RAG knowledge chunks. This means it can properly
+verify accuracy (draft matches tool data), not guess.
 
-Scoped to Zilo Chat only. Gated by the CRITIC_ENABLED env flag (default: false)
-so it can be rolled out gradually after latency profiling.
-
-On any failure, the original draft is returned unchanged — the Critic never
+Gated by the CRITIC_ENABLED env flag (default: false).
+On any failure the original draft is returned unchanged — the Critic never
 blocks the response path.
 """
 from __future__ import annotations
@@ -17,33 +16,72 @@ import os
 
 logger = logging.getLogger(__name__)
 
-CRITIC_SYSTEM = (
-    "You are a safety reviewer for a business CRM AI assistant. "
-    "Review the draft response and output ONLY valid JSON — no markdown, no preamble.\n\n"
-    "IMPORTANT RULES:\n"
-    "1. CRM data (revenue figures, order counts, customer names, follow-up dates, analytics) "
-    "comes from live database queries and is ALWAYS accurate. Never challenge it, never add "
-    "uncertainty language, never say it is 'being processed' or 'check back later'.\n"
-    "2. If no knowledge chunks are provided, ONLY check for SAFETY issues — do not assess accuracy.\n"
-    "3. SAFETY — the ONLY valid reason to fail: the draft contains a fabricated external URL, "
-    "phone number, email address, or specific policy/price/commitment that was NOT in the "
-    "knowledge chunks and was NOT in the user's message. Do NOT flag zero values, empty results, "
-    "or standard business language.\n"
-    "4. TONE — calm, professional, appropriate for a Kenyan SME context. No emoji, no exclamation marks.\n"
-    "5. When in doubt, pass=true. The Critic must not make responses worse.\n\n"
-    "Output format:\n"
-    '{"pass": true | false, "issues": ["..."], "revised_response": "..." | null}\n\n'
-    "If pass=true set revised_response to null. "
-    "If pass=false, rewrite ONLY to fix the specific safety issue — keep everything else identical."
-)
+CRITIC_SYSTEM = """You are the quality guardian for Zilo Chat, a business CRM AI assistant.
+
+Each review provides you with:
+1. The system instructions Zilo follows
+2. All tool results retrieved this turn (ground truth — live CRM data)
+3. The user's original message
+4. The draft response to review
+5. Any retrieved knowledge chunks (RAG business knowledge)
+
+Your job is to verify the draft is accurate, safe, and well-toned.
+
+## Rules
+
+ACCURACY:
+- Tool results are ground truth. If the draft contradicts what tools returned, fail it and correct it.
+- If no tools were called, treat the draft as unverified — apply stricter safety review.
+- If tools returned zero/empty results, the draft must say so clearly. It must NOT say "being processed", "check back later", or add false uncertainty. Zero is a valid, accurate result.
+
+SAFETY:
+- Fail if the draft contains a specific price, phone number, URL, email, or policy commitment that does NOT appear in the tool results, user message, or knowledge chunks.
+- Do not fail for standard business language, zero values, or empty result statements.
+
+TONE:
+- Calm, precise, professional. Appropriate for a Kenyan SME business context.
+- No emoji. No exclamation marks. No "Sure!" or "Great question!" openers.
+
+CONSERVATISM:
+- When in doubt, pass=true. The Critic must not make responses worse.
+- Only rewrite to fix a specific, clearly identified issue. Keep everything else identical.
+- Never add content that wasn't in the tool results or user message.
+
+Output ONLY valid JSON — no markdown, no preamble:
+{"pass": true | false, "issues": ["..."], "revised_response": "..." | null}
+
+If pass=true → set revised_response to null.
+If pass=false → rewrite only to fix the identified issue; revised_response must be the full corrected reply."""
+
+
+def _summarise_steps(steps: list, max_chars: int = 6000) -> str:
+    """Render tool steps as compact JSON, truncated to stay within token budget."""
+    if not steps:
+        return "(no tools called this turn)"
+    try:
+        text = json.dumps(steps, default=str, ensure_ascii=False)
+    except Exception:
+        return "(could not serialise tool results)"
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n... (truncated)"
 
 
 async def critique(
     draft: str,
     user_message: str,
     knowledge_chunks: list,
+    tool_steps: list | None = None,
+    system_prompt: str = "",
 ) -> str:
-    """Review `draft` and return either the original or a rewritten version.
+    """Review `draft` using full turn context and return the original or a rewritten version.
+
+    Args:
+        draft:            The assistant's draft response.
+        user_message:     The user's message that triggered this turn.
+        knowledge_chunks: RAG business knowledge chunks (may be empty).
+        tool_steps:       All tool calls + results from this turn (ground truth).
+        system_prompt:    The active system prompt so the Critic knows the rules.
 
     Always returns a non-empty string. Never raises.
     """
@@ -55,13 +93,23 @@ async def critique(
     try:
         from .models import chat_with_tools
 
-        knowledge_text = "\n".join(f"- {c}" for c in (knowledge_chunks or []))
-        user_content = (
-            f"Draft response:\n{draft}\n\n"
-            f"User's original message:\n{user_message}\n\n"
-        )
-        if knowledge_text:
-            user_content += f"Retrieved knowledge chunks:\n{knowledge_text}"
+        # Build the review payload
+        sections: list[str] = []
+
+        if system_prompt:
+            # Cap system prompt to first 2000 chars — enough for rules without bloating
+            sp_excerpt = system_prompt[:2000] + ("..." if len(system_prompt) > 2000 else "")
+            sections.append(f"## System instructions (excerpt)\n{sp_excerpt}")
+
+        sections.append(f"## Tool results this turn (ground truth)\n{_summarise_steps(tool_steps or [])}")
+        sections.append(f"## User message\n{user_message}")
+        sections.append(f"## Draft response\n{draft}")
+
+        if knowledge_chunks:
+            kc_text = "\n".join(f"- {c}" for c in knowledge_chunks)
+            sections.append(f"## Retrieved knowledge chunks\n{kc_text}")
+
+        user_content = "\n\n".join(sections)
 
         resp = await chat_with_tools(
             messages=[
@@ -80,9 +128,7 @@ async def critique(
 
         revised = parsed.get("revised_response")
         if revised and revised.strip():
-            logger.info(
-                "[critic] rewrote response (issues: %s)", parsed.get("issues", [])
-            )
+            logger.info("[critic] rewrote response (issues: %s)", parsed.get("issues", []))
             return revised.strip()
 
         return draft
