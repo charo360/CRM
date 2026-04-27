@@ -34,15 +34,26 @@ async def get_knowledge_chunks(
 
         threshold = float(os.getenv("RAG_SCORE_THRESHOLD", str(_DEFAULT_THRESHOLD)))
         q_vec = await embed(query)
-        results = await get_qdrant().search(
-            collection_name="business_knowledge",
-            query_vector=q_vec,
-            query_filter=Filter(
-                must=[FieldCondition(key="business_id", match=MatchValue(value=business_id))]
-            ),
-            limit=top_k,
-            with_payload=True,
-        )
+        client = get_qdrant()
+        filt = Filter(must=[FieldCondition(key="business_id", match=MatchValue(value=business_id))])
+        # qdrant-client 1.7+ uses query_points; fall back to search for older versions
+        try:
+            response = await client.query_points(
+                collection_name="business_knowledge",
+                query=q_vec,
+                query_filter=filt,
+                limit=top_k,
+                with_payload=True,
+            )
+            results = response.points
+        except AttributeError:
+            results = await client.search(
+                collection_name="business_knowledge",
+                query_vector=q_vec,
+                query_filter=filt,
+                limit=top_k,
+                with_payload=True,
+            )
         chunks = [r.payload["chunk"] for r in results if r.score > threshold]
         return chunks
     except Exception as exc:

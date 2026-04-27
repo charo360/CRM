@@ -29,14 +29,24 @@ async def get_customer_memories(
         from vector_store import embed, get_qdrant
 
         q_vec = await embed(query)
-        results = await get_qdrant().search(
-            collection_name="customer_memories",
-            query_vector=q_vec,
-            query_filter=Filter(
-                must=[FieldCondition(key="customer_id", match=MatchValue(value=customer_id))]
-            ),
-            limit=top_k,
-        )
+        client = get_qdrant()
+        filt = Filter(must=[FieldCondition(key="customer_id", match=MatchValue(value=customer_id))])
+        try:
+            response = await client.query_points(
+                collection_name="customer_memories",
+                query=q_vec,
+                query_filter=filt,
+                limit=top_k,
+                with_payload=True,
+            )
+            results = response.points
+        except AttributeError:
+            results = await client.search(
+                collection_name="customer_memories",
+                query_vector=q_vec,
+                query_filter=filt,
+                limit=top_k,
+            )
         return [r.payload["summary"] for r in results if r.payload.get("summary")]
     except Exception as exc:
         logger.warning("[memory.retrieve] failed for customer %s: %s", customer_id, exc)
