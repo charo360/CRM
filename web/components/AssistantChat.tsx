@@ -1051,6 +1051,33 @@ function extractInlineOptionList(content: string):
 
   if (!parsed || parsed.length > 10) return null;
 
+  // ── Informational-list guard ────────────────────────────────────────────────
+  // Only promote to clickable chips when items look like genuine user choices.
+  // Informational lists (facts, summaries, confirmations) stay as plain markdown.
+  const isFactItem = (label: string) => {
+    const plain = label.replace(/\*\*/g, "").trim();
+    // "Key: value" or "Key — value" patterns (e.g. "Duration: 2 weeks", "Budget: KES 500")
+    if (/^[A-Za-z][^:]{0,35}:\s+\S/.test(plain)) return true;
+    if (/^[A-Za-z][^—]{0,35}—\s+\S/.test(plain)) return true;
+    // Starts with a quote (e.g. Message Preview: "Hello...")
+    if (/^["'"']/.test(plain)) return true;
+    // Very long labels (>55 chars) are descriptions, not action chips
+    if (plain.length > 55) return true;
+    // Contains currency/numbers suggesting it's a data point
+    if (/\b(KES|USD|EUR|GBP|\$|€|£)\s*[\d,]+/.test(plain)) return true;
+    return false;
+  };
+  const factCount = parsed.filter((o) => isFactItem(o.label)).length;
+  // If more than half are facts, don't promote to chips
+  if (factCount > parsed.length / 2) return null;
+
+  // If the message reads as a confirmation/summary (saved, created, updated, etc.)
+  // never show chips — it's a report, not a choice prompt
+  const lowerContent = content.toLowerCase();
+  const isConfirmation =
+    /\b(successfully saved|has been saved|successfully created|has been created|successfully updated|campaign saved|draft saved|order saved|has been scheduled)\b/.test(lowerContent);
+  if (isConfirmation) return null;
+
   let beforeEnd = bestStart;
   while (beforeEnd > 0 && !lines[beforeEnd - 1].trim()) beforeEnd--;
   const before = lines.slice(0, beforeEnd).join("\n").replace(/\s+$/, "");
