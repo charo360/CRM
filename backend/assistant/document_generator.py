@@ -91,9 +91,35 @@ def _parse_table(raw: str) -> List[List[str]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Style helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_fonts(font_style: str) -> tuple[str, str]:
+    """Return (body_font, bold_font) ReportLab names for a style keyword."""
+    style = (font_style or "").lower()
+    if style in ("serif", "classic"):
+        return "Times-Roman", "Times-Bold"
+    # sans-serif / modern / minimal / default
+    return "Helvetica", "Helvetica-Bold"
+
+
+def _safe_hex(hex_str: str, fallback: str) -> str:
+    """Return hex_str if it looks like a valid hex colour, else fallback."""
+    h = (hex_str or "").strip()
+    if re.match(r"^#[0-9A-Fa-f]{3,8}$", h):
+        return h
+    return fallback
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PDF  (reportlab)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
+def generate_pdf(
+    markdown_content: str,
+    filename: str | None = None,
+    business_name: str = "",
+    style: dict | None = None,
+) -> str:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -106,6 +132,8 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         Table,
         TableStyle,
     )
+
+    style = style or {}
 
     filename = filename or f"zilo_{uuid.uuid4().hex[:8]}.pdf"
     if not filename.endswith(".pdf"):
@@ -120,18 +148,24 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         topMargin=2.4 * cm,
         bottomMargin=2.2 * cm,
         title=filename.replace(".pdf", ""),
-        author="Zilo Chat",
+        author=business_name or "Zilo Chat",
     )
 
-    # ── colour palette ──────────────────────────────────────────────────────
-    INDIGO = colors.HexColor("#4F46E5")
-    INK = colors.HexColor("#111827")
-    BODY = colors.HexColor("#374151")
-    MUTED = colors.HexColor("#6B7280")
-    RULE = colors.HexColor("#E5E7EB")
-    CODE_BG = colors.HexColor("#F3F4F6")
-    TABLE_HEAD = colors.HexColor("#EEF2FF")
-    TABLE_ALT = colors.HexColor("#F9FAFB")
+    # ── colour palette — use saved brand colors when available ───────────────
+    PRIMARY_HEX   = _safe_hex(style.get("primary_color", ""), "#4F46E5")
+    SECONDARY_HEX = _safe_hex(style.get("secondary_color", ""), "#EEF2FF")
+
+    ACCENT      = colors.HexColor(PRIMARY_HEX)
+    TABLE_HEAD  = colors.HexColor(SECONDARY_HEX)
+    INK         = colors.HexColor("#111827")
+    BODY        = colors.HexColor("#374151")
+    MUTED       = colors.HexColor("#6B7280")
+    RULE        = colors.HexColor("#E5E7EB")
+    CODE_BG     = colors.HexColor("#F3F4F6")
+    TABLE_ALT   = colors.HexColor("#F9FAFB")
+
+    # ── fonts — serif vs sans-serif based on style profile ──────────────────
+    BODY_FONT, BOLD_FONT = _resolve_fonts(style.get("font_style", ""))
 
     base = getSampleStyleSheet()
 
@@ -140,17 +174,27 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         name = kw.pop("name")
         return ParagraphStyle(name, parent=parent, **kw)
 
-    H1 = _s(name="ZH1", parent=base["Title"],   fontSize=22, leading=28, spaceAfter=4,  textColor=INK, fontName="Helvetica-Bold")
-    H2 = _s(name="ZH2", parent=base["Heading2"], fontSize=16, leading=20, spaceBefore=18, spaceAfter=4,  textColor=INK, fontName="Helvetica-Bold")
-    H3 = _s(name="ZH3", parent=base["Heading3"], fontSize=13, leading=17, spaceBefore=12, spaceAfter=3,  textColor=INK, fontName="Helvetica-Bold")
-    H4 = _s(name="ZH4", parent=base["Heading4"], fontSize=11, leading=15, spaceBefore=10, spaceAfter=2,  textColor=INDIGO, fontName="Helvetica-Bold")
-    BP = _s(name="ZBP", fontSize=11, leading=17, spaceAfter=7, textColor=BODY)
-    LI = _s(name="ZLI", fontSize=11, leading=17, spaceAfter=3, textColor=BODY, leftIndent=16, bulletIndent=4)
-    CODE = _s(name="ZCode", fontSize=9,  leading=13, spaceAfter=8, textColor=colors.HexColor("#1E293B"),
+    H1   = _s(name="ZH1",   parent=base["Title"],   fontSize=22, leading=28, spaceAfter=4,  textColor=INK,   fontName=BOLD_FONT)
+    H2   = _s(name="ZH2",   parent=base["Heading2"], fontSize=16, leading=20, spaceBefore=18, spaceAfter=4,  textColor=INK,   fontName=BOLD_FONT)
+    H3   = _s(name="ZH3",   parent=base["Heading3"], fontSize=13, leading=17, spaceBefore=12, spaceAfter=3,  textColor=INK,   fontName=BOLD_FONT)
+    H4   = _s(name="ZH4",   parent=base["Heading4"], fontSize=11, leading=15, spaceBefore=10, spaceAfter=2,  textColor=ACCENT, fontName=BOLD_FONT)
+    BP   = _s(name="ZBP",   fontSize=11, leading=17, spaceAfter=7,  textColor=BODY, fontName=BODY_FONT)
+    LI   = _s(name="ZLI",   fontSize=11, leading=17, spaceAfter=3,  textColor=BODY, fontName=BODY_FONT, leftIndent=16, bulletIndent=4)
+    SIG  = _s(name="ZSig",  fontSize=10, leading=14, spaceAfter=2,  textColor=INK,  fontName=BOLD_FONT)
+    SIG2 = _s(name="ZSig2", fontSize=9,  leading=13, spaceAfter=1,  textColor=MUTED, fontName=BODY_FONT)
+    HDR  = _s(name="ZHdr",  fontSize=8,  leading=11, spaceAfter=0,  textColor=MUTED, fontName=BODY_FONT, alignment=2)
+    CODE = _s(name="ZCode", fontSize=9,  leading=13, spaceAfter=8,  textColor=colors.HexColor("#1E293B"),
               fontName="Courier", leftIndent=12, backColor=CODE_BG, borderPadding=6)
-    FTR = _s(name="ZFtr", fontSize=8.5, leading=12, textColor=MUTED, alignment=1)
+    FTR  = _s(name="ZFtr",  fontSize=8.5, leading=12, textColor=MUTED, fontName=BODY_FONT, alignment=1)
 
     story = []
+
+    # ── Header text (top-right, from style profile) ──────────────────────────
+    header_text = (style.get("header_text") or "").strip()
+    if header_text:
+        story.append(Paragraph(header_text, HDR))
+        story.append(Spacer(1, 6))
+
     html = _md_to_html(markdown_content)
     blocks = _parse_blocks(html)
 
@@ -161,11 +205,10 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         text = re.sub(r"`(.*?)`", r"<font name='Courier' size='9'>\1</font>", text)
         return text
 
-    _OL_CTR = 0
     for kind, raw in blocks:
         if kind == "h1":
             story.append(Paragraph(_strip(raw), H1))
-            story.append(HRFlowable(width="100%", thickness=1.2, color=INDIGO, spaceAfter=10))
+            story.append(HRFlowable(width="100%", thickness=1.2, color=ACCENT, spaceAfter=10))
         elif kind == "h2":
             story.append(Paragraph(_strip(raw), H2))
             story.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceAfter=6))
@@ -187,40 +230,50 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
             rows = _parse_table(raw)
             if rows:
                 ncols = max(len(r) for r in rows)
-                # pad short rows
                 rows = [r + [""] * (ncols - len(r)) for r in rows]
                 col_w = (A4[0] - 4.4 * cm) / ncols
                 tbl = Table(rows, colWidths=[col_w] * ncols, repeatRows=1)
                 tbl.setStyle(TableStyle([
-                    # Header
-                    ("BACKGROUND",   (0, 0), (-1, 0),  TABLE_HEAD),
-                    ("TEXTCOLOR",    (0, 0), (-1, 0),  INK),
-                    ("FONTNAME",     (0, 0), (-1, 0),  "Helvetica-Bold"),
-                    ("FONTSIZE",     (0, 0), (-1, 0),  10),
-                    ("BOTTOMPADDING",(0, 0), (-1, 0),  8),
-                    ("TOPPADDING",   (0, 0), (-1, 0),  8),
-                    # Body
-                    ("FONTNAME",     (0, 1), (-1, -1), "Helvetica"),
-                    ("FONTSIZE",     (0, 1), (-1, -1), 10),
-                    ("ROWBACKGROUNDS",(0, 1),(-1, -1), [colors.white, TABLE_ALT]),
-                    ("PADDING",      (0, 1), (-1, -1), 6),
-                    # Border
-                    ("GRID",         (0, 0), (-1, -1), 0.4, RULE),
-                    ("LINEBELOW",    (0, 0), (-1, 0),  1,   colors.HexColor("#C7D2FE")),
-                    ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+                    ("BACKGROUND",    (0, 0), (-1, 0),  TABLE_HEAD),
+                    ("TEXTCOLOR",     (0, 0), (-1, 0),  INK),
+                    ("FONTNAME",      (0, 0), (-1, 0),  BOLD_FONT),
+                    ("FONTSIZE",      (0, 0), (-1, 0),  10),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0),  8),
+                    ("TOPPADDING",    (0, 0), (-1, 0),  8),
+                    ("FONTNAME",      (0, 1), (-1, -1), BODY_FONT),
+                    ("FONTSIZE",      (0, 1), (-1, -1), 10),
+                    ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, TABLE_ALT]),
+                    ("PADDING",       (0, 1), (-1, -1), 6),
+                    ("GRID",          (0, 0), (-1, -1), 0.4, RULE),
+                    ("LINEBELOW",     (0, 0), (-1, 0),  1,   ACCENT),
+                    ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
                 ]))
                 story.append(tbl)
                 story.append(Spacer(1, 10))
         elif kind == "p":
             story.append(Paragraph(_inline(raw), BP))
 
+    # ── Signature block (from style profile) ────────────────────────────────
+    sig_name    = (style.get("signature_name") or "").strip()
+    sig_title   = (style.get("signature_title") or "").strip()
+    sig_contact = (style.get("signature_contact") or "").strip()
+    if sig_name or sig_title or sig_contact:
+        story.append(Spacer(1, 20))
+        story.append(HRFlowable(width="40%", thickness=0.6, color=ACCENT, spaceAfter=8))
+        if sig_name:
+            story.append(Paragraph(sig_name, SIG))
+        if sig_title:
+            story.append(Paragraph(sig_title, SIG2))
+        if sig_contact:
+            story.append(Paragraph(sig_contact, SIG2))
+
     # ── Footer ───────────────────────────────────────────────────────────────
-    story.append(Spacer(1, 24))
+    story.append(Spacer(1, 20))
     story.append(HRFlowable(width="100%", thickness=0.4, color=RULE, spaceAfter=6))
-    story.append(Paragraph(
-        f"Generated by <b>Zilo Chat</b> · {datetime.utcnow().strftime('%d %b %Y, %H:%M')} UTC",
-        FTR,
-    ))
+    footer_text = (style.get("footer_text") or "").strip()
+    footer_line = footer_text or f"Generated by <b>Zilo Chat</b> · {business_name or ''}"
+    footer_line += f" · {datetime.utcnow().strftime('%d %b %Y')}"
+    story.append(Paragraph(footer_line, FTR))
 
     doc.build(story)
     return str(filepath)

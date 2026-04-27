@@ -4250,11 +4250,19 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business") if owner else "My Business"
 
+    # Fetch document style profile for branded output
+    doc_style: Dict[str, Any] = {}
+    try:
+        from saved_designs import get_document_style as _get_doc_style
+        doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
+    except Exception:
+        pass
+
     md = f"# {title}\n\n{content}"
     try:
         from .document_generator import generate_pdf as _gen_pdf
         filepath = await asyncio.get_event_loop().run_in_executor(
-            None, _gen_pdf, md, None, business_name
+            None, _gen_pdf, md, None, business_name, doc_style
         )
     except Exception as e:
         logger.exception("[create_business_document] PDF generation failed")
