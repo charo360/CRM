@@ -252,7 +252,7 @@ DOCUMENT_TOOLS: FrozenSet[str] = frozenset({
     "get_top_customers", "get_analytics_summary", "get_revenue_trends",
     "get_sales_pipeline", "list_orders", "list_followups", "list_team",
     "generate_document", "create_business_document", "create_presentation",
-    "web_search",
+    "web_search", "get_document_style", "save_document_style",
 })
 
 # ── App integration tool allowlists ───────────────────────────────────────────
@@ -1393,6 +1393,7 @@ You know the structure, style, tone, and required sections for every business do
 
 ### Step 1: Identify & Plan (silent)
 - Determine the document type from the user's request.
+- **Always call `get_document_style` first** — read the saved style profile before anything else. If a profile exists, apply it automatically: use the saved tone, signature block, header/footer, colors, and standing instructions throughout the document. Never ask for style preferences the user has already saved.
 - Call `get_owner_info` + relevant CRM tools in parallel to prefill everything you can: business name, owner name, products, customers, revenue, team.
 - Use `web_search` for market data, industry benchmarks, competitor info, or regulatory context needed in the document.
 - Map out every section the document needs and what information you already have vs what you still need from the user.

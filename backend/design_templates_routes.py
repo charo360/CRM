@@ -18,6 +18,8 @@ from saved_designs import (
     insert_brand_kit_asset,
     get_brand_settings,
     upsert_brand_settings,
+    get_document_style,
+    upsert_document_style,
 )
 
 logger = logging.getLogger(__name__)
@@ -404,5 +406,19 @@ def make_design_templates_router(db, user_dep):
         if res.deleted_count == 0:
             raise HTTPException(404, "Design not found")
         return {"status": "ok"}
+
+    # ── Document Style Profile ──────────────────────────────────────────────
+
+    @router.get("/document-style")
+    async def get_doc_style(user=user_dep):
+        """Return the saved Document Style Profile for this business."""
+        profile = await get_document_style(db, _tid(user))
+        return {"profile": profile}
+
+    @router.put("/document-style")
+    async def update_doc_style(payload: Dict[str, Any], user=user_dep):
+        """Create or update the Document Style Profile."""
+        updated = await upsert_document_style(db, _tid(user), payload)
+        return {"status": "saved", "profile": updated}
 
     return router

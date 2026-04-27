@@ -946,9 +946,11 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "mailchimp":       os.getenv("NEXT_PUBLIC_NANGO_ID_MAILCHIMP", "mailchimp"),
         "brevo":           os.getenv("NEXT_PUBLIC_NANGO_ID_BREVO",     "brevo"),
         "slack":           os.getenv("NEXT_PUBLIC_NANGO_ID_SLACK",     "slack"),
-        "gmail":           os.getenv("NEXT_PUBLIC_NANGO_ID_EMAIL",     "google-mail"),
-        "microsoft":       os.getenv("NEXT_PUBLIC_NANGO_ID_MICROSOFT", "microsoft"),
-        "google_calendar": os.getenv("NEXT_PUBLIC_NANGO_ID_CALENDAR",  "google-calendar"),
+        "gmail":           os.getenv("NEXT_PUBLIC_NANGO_ID_EMAIL",          "google-mail"),
+        "microsoft":       os.getenv("NEXT_PUBLIC_NANGO_ID_MICROSOFT",       "microsoft"),
+        "google_calendar": os.getenv("NEXT_PUBLIC_NANGO_ID_CALENDAR",        "google-calendar"),
+        "google_sheets":   os.getenv("NEXT_PUBLIC_NANGO_ID_GOOGLE_SHEETS",   "google-sheet"),
+        "notion":          os.getenv("NEXT_PUBLIC_NANGO_ID_NOTION",          "notion"),
     }
     nango_secret = os.getenv("NANGO_SECRET_KEY")
     nango_api    = os.getenv("NANGO_API_URL", "https://api.nango.dev")
@@ -5174,6 +5176,58 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
     except Exception as e:
         logger.error("[web_search] DuckDuckGo fallback failed: %s", e)
         return {"error": f"Web search unavailable: {e}"}
+
+
+@tool(
+    name="get_document_style",
+    description=(
+        "Retrieve the business's Document Style Profile from the brand library. "
+        "Call this at the start of every document creation task to apply the owner's preferred tone, "
+        "signature, header/footer, colors, and standing instructions automatically."
+    ),
+    parameters={"type": "object", "properties": {}},
+    destructive=False,
+)
+async def get_document_style(ctx: ToolContext, args: Dict[str, Any]):
+    from saved_designs import get_document_style as _get
+    profile = await _get(ctx.db, ctx.business_id)
+    has_any = any(v for v in profile.values())
+    return {"has_profile": has_any, "profile": profile}
+
+
+@tool(
+    name="save_document_style",
+    description=(
+        "Save or update the business's Document Style Profile in the brand library. "
+        "Use this when the user explicitly defines how they want documents to look or sound — "
+        "tone, signature, header/footer text, colors, logo placement, standing instructions, etc. "
+        "Only pass fields the user actually specified; omit others."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "tone":                 {"type": "string", "description": "e.g. formal, conversational, bold, friendly"},
+            "font_style":           {"type": "string", "description": "e.g. serif, sans-serif, modern, classic"},
+            "primary_color":        {"type": "string", "description": "Hex color e.g. #1E3A5F"},
+            "secondary_color":      {"type": "string", "description": "Hex color e.g. #F5A623"},
+            "logo_placement":       {"type": "string", "description": "top-left | top-center | top-right | none"},
+            "header_text":          {"type": "string", "description": "Standing header line or company tagline"},
+            "footer_text":          {"type": "string", "description": "Disclaimer, copyright, or standing footer"},
+            "signature_name":       {"type": "string", "description": "Sign-off name e.g. James Kariuki"},
+            "signature_title":      {"type": "string", "description": "e.g. Chief Executive Officer"},
+            "signature_contact":    {"type": "string", "description": "e.g. james@company.co.ke | +254 712 345 678"},
+            "date_format":          {"type": "string", "description": "e.g. DD Month YYYY"},
+            "currency":             {"type": "string", "description": "e.g. KES, USD, EUR"},
+            "standing_instructions":{"type": "string", "description": "Any standing writing rules e.g. always include payment terms"},
+        },
+    },
+    destructive=False,
+)
+async def save_document_style(ctx: ToolContext, args: Dict[str, Any]):
+    from saved_designs import upsert_document_style as _upsert
+    updated = await _upsert(ctx.db, ctx.business_id, args)
+    saved_fields = [k for k, v in updated.items() if v]
+    return {"status": "saved", "saved_fields": saved_fields, "profile": updated}
 
 
 @tool(

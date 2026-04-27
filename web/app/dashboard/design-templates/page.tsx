@@ -200,6 +200,16 @@ export default function DesignTemplatesPage() {
   const [brandSettingsSaving, setBrandSettingsSaving] = useState(false);
   const [fontOptions, setFontOptions] = useState<string[]>([]);
 
+  // document style state
+  const [docStyle, setDocStyle] = useState<Record<string, string>>({
+    tone: "", font_style: "", primary_color: "", secondary_color: "",
+    logo_placement: "", header_text: "", footer_text: "",
+    signature_name: "", signature_title: "", signature_contact: "",
+    date_format: "", currency: "", standing_instructions: "",
+  });
+  const [docStyleSaving, setDocStyleSaving] = useState(false);
+  const [docStyleOpen, setDocStyleOpen] = useState(false);
+
   // modal state
   const [preview, setPreview] = useState<DesignTemplate | null>(null);
   const [modal, setModal] = useState<"create" | "edit" | null>(null);
@@ -213,10 +223,11 @@ export default function DesignTemplatesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [tmpl, m, bs] = await Promise.all([
+      const [tmpl, m, bs, ds] = await Promise.all([
         api.get<DesignTemplate[]>(`/design-templates?platform=any&content_type=any&source=${filterSource}`),
         meta ? Promise.resolve(meta) : api.get<Meta>("/design-templates/meta"),
         api.get<{ brand_font: string; brand_primary_color: string; font_options: string[] }>("/design-templates/settings/brand").catch(() => null),
+        api.get<{ profile: Record<string, string> }>("/design-templates/document-style").catch(() => null),
       ]);
       setTemplates(tmpl);
       if (!meta) setMeta(m as Meta);
@@ -225,6 +236,7 @@ export default function DesignTemplatesPage() {
         setBrandPrimaryColor(bs.brand_primary_color || "");
         if (bs.font_options?.length) setFontOptions(bs.font_options);
       }
+      if (ds?.profile) setDocStyle((prev) => ({ ...prev, ...ds.profile }));
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to load");
     } finally { setLoading(false); }
@@ -241,6 +253,16 @@ export default function DesignTemplatesPage() {
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to save");
     } finally { setBrandSettingsSaving(false); }
+  }
+
+  async function saveDocStyle() {
+    setDocStyleSaving(true);
+    try {
+      await api.put("/design-templates/document-style", docStyle);
+      toast.success("Document style saved — Zilo will apply it to every document");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to save");
+    } finally { setDocStyleSaving(false); }
   }
 
   useEffect(() => { load(); }, [load]);
@@ -626,6 +648,160 @@ export default function DesignTemplatesPage() {
               <p className="text-xs text-gray-400 mt-1.5">Used for accent colors in AI-generated designs</p>
             </div>
           </div>
+        </div>
+
+        {/* ── Document Style Profile ── */}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setDocStyleOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center shrink-0">
+                <FileText className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div className="text-left">
+                <h2 className="text-sm font-semibold text-gray-900">Document Style Profile</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Zilo reads this before writing every document — tone, signature, headers, and more</p>
+              </div>
+            </div>
+            <ChevronDown className={cn("w-4 h-4 text-gray-400 transition-transform", docStyleOpen && "rotate-180")} />
+          </button>
+          {docStyleOpen && (
+            <div className="px-5 pb-5 border-t border-gray-50">
+              <div className="grid sm:grid-cols-2 gap-4 mt-4">
+                {/* Tone */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Tone &amp; Voice</label>
+                  <select value={docStyle.tone} onChange={(e) => setDocStyle((p) => ({ ...p, tone: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-brand-dark/20">
+                    <option value="">Select tone…</option>
+                    {["Formal","Conversational","Bold","Friendly","Professional","Concise"].map((t) => <option key={t} value={t.toLowerCase()}>{t}</option>)}
+                  </select>
+                </div>
+                {/* Font style */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Font Style</label>
+                  <select value={docStyle.font_style} onChange={(e) => setDocStyle((p) => ({ ...p, font_style: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-brand-dark/20">
+                    <option value="">Select style…</option>
+                    {["Serif","Sans-serif","Modern","Classic","Minimal"].map((t) => <option key={t} value={t.toLowerCase()}>{t}</option>)}
+                  </select>
+                </div>
+                {/* Primary color */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Primary Color</label>
+                  <div className="flex items-center gap-2">
+                    <input type="color" value={docStyle.primary_color || "#1e1e2f"}
+                      onChange={(e) => setDocStyle((p) => ({ ...p, primary_color: e.target.value }))}
+                      className="w-10 h-10 border border-gray-200 rounded-lg cursor-pointer p-0.5 bg-white" />
+                    <input type="text" value={docStyle.primary_color}
+                      onChange={(e) => setDocStyle((p) => ({ ...p, primary_color: e.target.value }))}
+                      placeholder="#1e1e2f" maxLength={9}
+                      className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20" />
+                  </div>
+                </div>
+                {/* Secondary color */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Secondary Color</label>
+                  <div className="flex items-center gap-2">
+                    <input type="color" value={docStyle.secondary_color || "#f5a623"}
+                      onChange={(e) => setDocStyle((p) => ({ ...p, secondary_color: e.target.value }))}
+                      className="w-10 h-10 border border-gray-200 rounded-lg cursor-pointer p-0.5 bg-white" />
+                    <input type="text" value={docStyle.secondary_color}
+                      onChange={(e) => setDocStyle((p) => ({ ...p, secondary_color: e.target.value }))}
+                      placeholder="#f5a623" maxLength={9}
+                      className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20" />
+                  </div>
+                </div>
+                {/* Logo placement */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Logo Placement</label>
+                  <select value={docStyle.logo_placement} onChange={(e) => setDocStyle((p) => ({ ...p, logo_placement: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-brand-dark/20">
+                    <option value="">Select placement…</option>
+                    {[["top-left","Top left"],["top-center","Top center"],["top-right","Top right"],["none","No logo"]].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
+                {/* Date format */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Date Format</label>
+                  <select value={docStyle.date_format} onChange={(e) => setDocStyle((p) => ({ ...p, date_format: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-brand-dark/20">
+                    <option value="">Select format…</option>
+                    {["DD Month YYYY","Month DD, YYYY","DD/MM/YYYY","MM/DD/YYYY","YYYY-MM-DD"].map((f) => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </div>
+                {/* Currency */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Default Currency</label>
+                  <select value={docStyle.currency} onChange={(e) => setDocStyle((p) => ({ ...p, currency: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-brand-dark/20">
+                    <option value="">Select currency…</option>
+                    {["KES","USD","EUR","GBP","ZAR","NGN","GHS","UGX","TZS"].map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                {/* Header text */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Header Text</label>
+                  <input type="text" value={docStyle.header_text}
+                    onChange={(e) => setDocStyle((p) => ({ ...p, header_text: e.target.value }))}
+                    placeholder="e.g. Confidential — Company Name"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20" />
+                </div>
+                {/* Footer text */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Footer Text</label>
+                  <input type="text" value={docStyle.footer_text}
+                    onChange={(e) => setDocStyle((p) => ({ ...p, footer_text: e.target.value }))}
+                    placeholder="e.g. © 2025 Company Ltd. All rights reserved."
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20" />
+                </div>
+                {/* Signature name */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Signature Name</label>
+                  <input type="text" value={docStyle.signature_name}
+                    onChange={(e) => setDocStyle((p) => ({ ...p, signature_name: e.target.value }))}
+                    placeholder="e.g. James Kariuki"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20" />
+                </div>
+                {/* Signature title */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Signature Title</label>
+                  <input type="text" value={docStyle.signature_title}
+                    onChange={(e) => setDocStyle((p) => ({ ...p, signature_title: e.target.value }))}
+                    placeholder="e.g. Chief Executive Officer"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20" />
+                </div>
+                {/* Signature contact */}
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Signature Contact</label>
+                  <input type="text" value={docStyle.signature_contact}
+                    onChange={(e) => setDocStyle((p) => ({ ...p, signature_contact: e.target.value }))}
+                    placeholder="e.g. james@company.co.ke | +254 712 345 678"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20" />
+                </div>
+                {/* Standing instructions */}
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Standing Instructions</label>
+                  <textarea value={docStyle.standing_instructions}
+                    onChange={(e) => setDocStyle((p) => ({ ...p, standing_instructions: e.target.value }))}
+                    rows={3}
+                    placeholder="e.g. Always include a Payment Terms section. Always end with a CTA. Never use passive voice."
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-dark/20 resize-none" />
+                  <p className="text-xs text-gray-400 mt-1">Zilo will follow these rules on every document, automatically.</p>
+                </div>
+              </div>
+              <div className="flex justify-end mt-4">
+                <button onClick={saveDocStyle} disabled={docStyleSaving}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors">
+                  {docStyleSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  Save Document Style
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Category selector ── */}

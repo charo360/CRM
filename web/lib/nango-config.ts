@@ -12,6 +12,8 @@ export const NANGO_INTEGRATION_IDS = {
   klaviyo: process.env.NEXT_PUBLIC_NANGO_ID_KLAVIYO || "klaviyo",
   mailchimp: process.env.NEXT_PUBLIC_NANGO_ID_MAILCHIMP || "mailchimp",
   brevo: process.env.NEXT_PUBLIC_NANGO_ID_BREVO || "brevo",
+  google_sheets: process.env.NEXT_PUBLIC_NANGO_ID_GOOGLE_SHEETS || "google-sheet",
+  notion: process.env.NEXT_PUBLIC_NANGO_ID_NOTION || "notion",
 } as const;
 
 export type NangoIntegrationKey = keyof typeof NANGO_INTEGRATION_IDS;

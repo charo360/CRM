@@ -254,3 +254,51 @@ async def upsert_brand_settings(
         upsert=True,
     )
     return await get_brand_settings(db, business_id)
+
+
+# ── Document Style Profile ────────────────────────────────────────────────────
+
+_DOC_STYLE_FIELDS = (
+    "tone",               # e.g. "formal", "conversational", "bold", "friendly"
+    "font_style",         # e.g. "serif", "sans-serif", "modern", "classic"
+    "primary_color",      # hex, e.g. "#1E3A5F"
+    "secondary_color",    # hex, e.g. "#F5A623"
+    "logo_placement",     # "top-left" | "top-center" | "top-right" | "none"
+    "header_text",        # company tagline or standing header line
+    "footer_text",        # disclaimer, copyright, or standing footer line
+    "signature_name",     # sign-off name, e.g. "James Kariuki"
+    "signature_title",    # e.g. "Chief Executive Officer"
+    "signature_contact",  # e.g. "james@company.co.ke | +254 712 345 678"
+    "date_format",        # e.g. "DD Month YYYY", "MM/DD/YYYY"
+    "currency",           # e.g. "KES", "USD"
+    "standing_instructions",  # freeform: "always include payment terms", etc.
+)
+
+_DOC_STYLE_KEY = "document_style"
+
+
+async def get_document_style(db, business_id: str) -> Dict[str, Any]:
+    """Return the document style profile for this business (empty dict if not set)."""
+    doc = await db[BRAND_SETTINGS_COLLECTION].find_one({"user_id": business_id})
+    raw = (doc or {}).get(_DOC_STYLE_KEY) or {}
+    return {f: raw.get(f, "") for f in _DOC_STYLE_FIELDS}
+
+
+async def upsert_document_style(
+    db,
+    business_id: str,
+    fields: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Create or update the document style profile for a business."""
+    allowed = {k: str(v).strip()[:500] for k, v in fields.items() if k in _DOC_STYLE_FIELDS and v is not None}
+    if not allowed:
+        return await get_document_style(db, business_id)
+    await db[BRAND_SETTINGS_COLLECTION].update_one(
+        {"user_id": business_id},
+        {
+            "$set": {f"{_DOC_STYLE_KEY}.{k}": v for k, v in allowed.items()} | {"updated_at": datetime.utcnow()},
+            "$setOnInsert": {"user_id": business_id},
+        },
+        upsert=True,
+    )
+    return await get_document_style(db, business_id)
