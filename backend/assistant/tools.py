@@ -5072,6 +5072,111 @@ async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="web_search",
+    description=(
+        "Search the web for real-time information, news, market data, prices, competitor info, "
+        "industry trends, regulations, or any topic not available in the CRM. "
+        "Use whenever the user's question requires up-to-date external knowledge. "
+        "Returns a list of results with title, url, and a short snippet."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query — be specific and targeted.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Number of results to return (default 5, max 10).",
+            },
+        },
+        "required": ["query"],
+    },
+)
+async def web_search(ctx: ToolContext, args: Dict[str, Any]):
+    import os, httpx
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"error": "query is required"}
+    max_results = min(int(args.get("max_results") or 5), 10)
+
+    tavily_key = os.environ.get("TAVILY_API_KEY", "")
+    if tavily_key:
+        # Tavily — purpose-built for AI agents, returns clean snippets
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": tavily_key,
+                        "query": query,
+                        "max_results": max_results,
+                        "search_depth": "basic",
+                        "include_answer": True,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                results = [
+                    {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
+                    for r in (data.get("results") or [])
+                ]
+                return {
+                    "query": query,
+                    "answer": data.get("answer") or "",
+                    "results": results[:max_results],
+                    "source": "tavily",
+                }
+        except Exception as e:
+            logger.warning("[web_search] Tavily failed: %s — falling back to DuckDuckGo", e)
+
+    # DuckDuckGo Instant Answer API — no key required, best-effort
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://api.duckduckgo.com/",
+                params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+                headers={"User-Agent": "ZiloAI/1.0"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = []
+            # AbstractText is the best instant answer
+            if data.get("AbstractText"):
+                results.append({
+                    "title": data.get("Heading", query),
+                    "url": data.get("AbstractURL", ""),
+                    "snippet": data["AbstractText"],
+                })
+            # RelatedTopics give additional results
+            for topic in (data.get("RelatedTopics") or [])[:max_results]:
+                if isinstance(topic, dict) and topic.get("Text"):
+                    results.append({
+                        "title": topic.get("Text", "")[:80],
+                        "url": topic.get("FirstURL", ""),
+                        "snippet": topic.get("Text", ""),
+                    })
+            if not results:
+                return {
+                    "query": query,
+                    "answer": "",
+                    "results": [],
+                    "source": "duckduckgo",
+                    "note": "No instant answer found. Consider setting TAVILY_API_KEY for richer search results.",
+                }
+            return {
+                "query": query,
+                "answer": data.get("AbstractText") or "",
+                "results": results[:max_results],
+                "source": "duckduckgo",
+            }
+    except Exception as e:
+        logger.error("[web_search] DuckDuckGo fallback failed: %s", e)
+        return {"error": f"Web search unavailable: {e}"}
+
+
+@tool(
     name="outlook_draft",
     description="Save a draft email in Outlook without sending. Returns the draft message_id.",
     parameters={

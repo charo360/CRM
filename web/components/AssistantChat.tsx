@@ -131,6 +131,8 @@ const TOOL_LABELS: Record<string, string> = {
   send_whatsapp_message: "Sending WhatsApp message…",
   // Team
   list_team:             "Checking team…",
+  // Web
+  web_search:            "Searching the web…",
   // Integrations
   integrations_status:   "Checking integrations…",
   get_owner_info:        "Getting business info…",
