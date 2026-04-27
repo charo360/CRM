@@ -46,7 +46,7 @@ async def get_knowledge_chunks(
                 with_payload=True,
             )
             results = response.points
-        except AttributeError:
+        except Exception:
             results = await client.search(
                 collection_name="business_knowledge",
                 query_vector=q_vec,

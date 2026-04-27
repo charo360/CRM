@@ -40,7 +40,7 @@ async def get_customer_memories(
                 with_payload=True,
             )
             results = response.points
-        except AttributeError:
+        except Exception:
             results = await client.search(
                 collection_name="customer_memories",
                 query_vector=q_vec,
