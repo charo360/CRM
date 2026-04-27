@@ -653,7 +653,7 @@ class WhatsAppService:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
-                    f"{self.base_url}/chat/markChatAsRead/{instance_name}",
+                    f"{self.base_url}/message/markMessageAsRead/{instance_name}",
                     headers=self._headers(),
                     json={
                         "readMessages": [
