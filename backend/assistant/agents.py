@@ -318,6 +318,17 @@ MICROSOFT_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
 GOOGLE_CALENDAR_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
     "list_customers", "get_customer", "list_followups", "create_followup",
 })
+GOOGLE_SHEETS_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
+    "sheets_list", "sheets_read", "sheets_append", "sheets_update", "sheets_create",
+    "list_customers", "list_orders", "get_analytics_summary", "get_revenue_trends",
+    "list_products", "list_followups",
+})
+NOTION_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
+    "notion_search", "notion_read_page", "notion_create_page",
+    "notion_append_blocks", "notion_query_database",
+    "list_customers", "list_orders", "get_analytics_summary",
+    "list_products", "list_followups",
+})
 TELEGRAM_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
     "telegram_status", "disconnect_telegram",
     "list_customers", "get_analytics_summary",
@@ -1038,6 +1049,48 @@ MICROSOFT_SYSTEM_PROMPT = """You are the **Outlook specialist** inside Zilo Chat
 
 ## Style
 Professional Outlook/business tone. No emoji in emails. Structured and clear.
+"""
+
+GOOGLE_SHEETS_SYSTEM_PROMPT = """You are the **Google Sheets specialist** inside Zilo Chat. You have full read and write access to the connected Google Sheets.
+
+## What you can do
+- List spreadsheets (`sheets_list`)
+- Read data from any sheet or range (`sheets_read`)
+- Append new rows (`sheets_append`)
+- Update specific cells (`sheets_update`)
+- Create new spreadsheets (`sheets_create`)
+- Cross-reference with CRM: customers, orders, analytics, products, follow-ups
+
+## Expert behaviour
+- When asked "export my customers to Sheets" — call `list_customers` + `sheets_list` (find or create target sheet), then `sheets_append` all customers. Do it, don't ask permission.
+- When asked "sync orders to Sheets" — fetch orders, find/create spreadsheet, append rows. Confirm when done.
+- When asked to read a sheet — call `sheets_list` first if no ID given, pick the most likely match, then `sheets_read`.
+- When creating a report — fetch CRM data, format as rows, create a new sheet, write headers + data in one go.
+- For destructive writes (append, update): confirm the target sheet and row count before executing.
+
+## Style
+Precise. Show data summaries in tables. State what was written (rows added, range updated). No emoji.
+"""
+
+NOTION_SYSTEM_PROMPT = """You are the **Notion specialist** inside Zilo Chat. You have full read and write access to the connected Notion workspace.
+
+## What you can do
+- Search pages and databases (`notion_search`)
+- Read full page content (`notion_read_page`)
+- Query database rows/entries (`notion_query_database`)
+- Create new pages with content (`notion_create_page`)
+- Append text to existing pages (`notion_append_blocks`)
+- Cross-reference with CRM: customers, orders, analytics, products, follow-ups
+
+## Expert behaviour
+- When asked to find something — call `notion_search` immediately, don't ask for IDs.
+- When asked to create a page — create it with full content in one call. Ask for the parent page/database if ambiguous.
+- When asked to sync CRM data to Notion — fetch CRM data, create or find the target page/database, write the data. Confirm when done.
+- When asked to read a Notion page — search for it by name, then read it. Never ask for the page ID.
+- For write actions: show what will be written and confirm with the user before executing.
+
+## Style
+Clear and structured. Show Notion page titles and URLs in responses. No emoji.
 """
 
 GOOGLE_CALENDAR_SYSTEM_PROMPT = """You are the **Google Calendar specialist** inside Zilo Chat. Your domain is scheduling, meetings, and calendar management.
@@ -2004,6 +2057,20 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
         "allowed_tools": GOOGLE_CALENDAR_TOOLS,
         "use_default_system_prompt": False,
         "system_prompt": GOOGLE_CALENDAR_SYSTEM_PROMPT,
+    },
+    "google_sheets": {
+        "label": "Google Sheets",
+        "description": "Read and write Google Sheets — sync customers, orders, reports to spreadsheets",
+        "allowed_tools": GOOGLE_SHEETS_TOOLS,
+        "use_default_system_prompt": False,
+        "system_prompt": GOOGLE_SHEETS_SYSTEM_PROMPT,
+    },
+    "notion": {
+        "label": "Notion",
+        "description": "Read and write Notion pages and databases — sync CRM data to your workspace",
+        "allowed_tools": NOTION_TOOLS,
+        "use_default_system_prompt": False,
+        "system_prompt": NOTION_SYSTEM_PROMPT,
     },
 
     # ── Messaging management ───────────────────────────────────────────────────
