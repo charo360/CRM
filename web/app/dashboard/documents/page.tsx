@@ -41,20 +41,37 @@ function PreviewModal({ doc, onClose }: { doc: Document; onClose: () => void }) 
             <span className="text-sm font-medium text-slate-800 truncate">{doc.name}</span>
             <span className="text-xs text-slate-400 uppercase shrink-0">{doc.asset_kind}</span>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0 ml-3"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0 ml-3">
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+            >
+              Open in new tab
+            </a>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-hidden">
-          <iframe
-            src={viewerUrl}
-            className="w-full h-full border-0"
-            title={doc.name}
-            sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-          />
+          {isPdf ? (
+            <embed
+              src={url}
+              type="application/pdf"
+              className="w-full h-full"
+            />
+          ) : (
+            <iframe
+              src={viewerUrl}
+              className="w-full h-full border-0"
+              title={doc.name}
+            />
+          )}
         </div>
       </div>
     </div>
