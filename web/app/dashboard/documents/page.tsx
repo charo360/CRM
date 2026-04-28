@@ -30,19 +30,19 @@ type SortKey = "newest" | "oldest" | "az";
 function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => void; onCloned: (d: Document) => void }) {
   const [name, setName] = useState(`Clone of ${doc.name}`);
   const [saving, setSaving] = useState(false);
+  const [cloned, setCloned] = useState<Document | null>(null);
 
   const handleClone = async () => {
     setSaving(true);
     try {
-      const cloned = await api.post<Document>(`/design-templates/${doc.id}/clone`, {});
-      if (name.trim() && name.trim() !== `Clone of ${doc.name}`) {
-        const renamed = await api.put<Document>(`/design-templates/${cloned.id}`, { name: name.trim() });
-        onCloned(renamed);
-      } else {
-        onCloned(cloned);
-      }
+      const result = await api.post<Document>(`/design-templates/${doc.id}/clone`, {});
+      const finalName = name.trim();
+      const finalDoc = (finalName && finalName !== `Clone of ${doc.name}`)
+        ? await api.put<Document>(`/design-templates/${result.id}`, { name: finalName })
+        : result;
+      onCloned(finalDoc);
+      setCloned(finalDoc);
       toast.success("Document cloned");
-      onClose();
     } catch {
       toast.error("Clone failed");
     } finally {
@@ -50,40 +50,78 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
     }
   };
 
+  const kindLabel: Record<string, string> = { pdf: "PDF", docx: "Word document", pptx: "PowerPoint presentation" };
+  const templatePrompt = cloned
+    ? `Please generate a new ${kindLabel[cloned.asset_kind] ?? "document"} following the exact same format, structure, and style as my template called "${cloned.name}". Match the layout, tone, and sections from that template.`
+    : "";
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Clone Document</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Create a reusable copy of this document</p>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="mb-4">
-          <label className="block text-xs font-medium text-slate-700 mb-1.5">Clone name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoFocus
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand/50"
-          />
-          <p className="text-xs text-slate-400 mt-1.5">The clone will have the same file and format. You can regenerate it in Zilo Chat referencing this template.</p>
-        </div>
-        <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
-          <button
-            onClick={handleClone}
-            disabled={saving || !name.trim()}
-            className="px-4 py-2 text-sm rounded-lg bg-brand-dark text-white font-medium hover:bg-brand-dark/90 disabled:opacity-50 transition-colors flex items-center gap-1.5"
-          >
-            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Copy className="w-3.5 h-3.5" />}
-            Clone
-          </button>
-        </div>
+        {!cloned ? (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">Clone Document</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Create a reusable copy of this document</p>
+              </div>
+              <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-slate-700 mb-1.5">Clone name</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand/50"
+              />
+              <p className="text-xs text-slate-400 mt-1.5">After cloning, you can open Zilo Chat and the AI will know to follow this template.</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
+              <button
+                onClick={handleClone}
+                disabled={saving || !name.trim()}
+                className="px-4 py-2 text-sm rounded-lg bg-brand-dark text-white font-medium hover:bg-brand-dark/90 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Copy className="w-3.5 h-3.5" />}
+                Clone
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-full bg-violet-100 flex items-center justify-center shrink-0">
+                <Copy className="w-4 h-4 text-violet-600" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">Clone created!</h2>
+                <p className="text-xs text-slate-500 mt-0.5">"{cloned.name}" is ready to use as a template</p>
+              </div>
+            </div>
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4">
+              <p className="text-xs font-medium text-slate-700 mb-1">Zilo Chat will receive this prompt:</p>
+              <p className="text-xs text-slate-500 leading-relaxed italic">"{templatePrompt}"</p>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Link
+                href={`/dashboard/assistant?template_message=${encodeURIComponent(templatePrompt)}`}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm rounded-lg bg-[#009B3A] text-white font-medium hover:bg-[#4CD137] hover:text-[#0a2614] transition-colors"
+                onClick={onClose}
+              >
+                <MessageSquare className="w-4 h-4" />
+                Open in Zilo Chat with template
+              </Link>
+              <button onClick={onClose} className="w-full px-4 py-2 text-sm rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">
+                Done
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

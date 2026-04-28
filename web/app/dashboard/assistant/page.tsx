@@ -97,6 +97,7 @@ function groupByDate(list: AssistantConversationSummary[]) {
 export default function AssistantPage() {
   const searchParams = useSearchParams();
   const requestedConvId = searchParams.get("conversation_id");
+  const templateMessage = searchParams.get("template_message");
 
   const [conversations, setConversations] = useState<AssistantConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(requestedConvId);
@@ -328,6 +329,7 @@ export default function AssistantPage() {
         <AssistantChat
           key={activeId ?? `new-${newNonce}`}
           conversationId={activeId}
+          initialMessage={templateMessage ?? undefined}
           onConversationChange={(id) => {
             setActiveId(id);
             if (!id) return;
