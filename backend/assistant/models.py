@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 # ── Model registry ────────────────────────────────────────────────────────────
 # id ↔ provider + upstream model name. id is what the UI passes.
 MODEL_REGISTRY: Dict[str, Dict[str, str]] = {
-    "deepseek-chat":           {"provider": "deepseek",  "model": "deepseek-chat",             "label": "DeepSeek Chat"},
-    "claude-sonnet-4.5":       {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929","label": "Claude Sonnet 4.5"},
+    "deepseek-v4-pro":         {"provider": "deepseek",  "model": "deepseek-v4-pro",           "label": "DeepSeek V4 Pro"},
+    "deepseek-v4-flash":       {"provider": "deepseek",  "model": "deepseek-v4-flash",         "label": "DeepSeek V4 Flash (fast)"},
+    "claude-sonnet-4.6":       {"provider": "anthropic", "model": "claude-sonnet-4-6",         "label": "Claude Sonnet 4.6"},
     "claude-3.5-sonnet":       {"provider": "anthropic", "model": "claude-3-5-sonnet-latest",  "label": "Claude 3.5 Sonnet"},
-    "grok-4":                  {"provider": "grok",      "model": "grok-4",                    "label": "Grok 4"},
+    "grok-4.20":               {"provider": "grok",      "model": "grok-4.20",                 "label": "Grok 4.20"},
 }
 
-DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-chat")
+DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-v4-pro")
 
 
 def _provider_available(provider: str) -> bool:
