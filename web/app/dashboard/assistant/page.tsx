@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import AssistantChat from "@/components/AssistantChat";
 import { assistantApi, type AssistantConversationSummary } from "@/lib/api";
 import { Plus, MessageSquare, Trash2, Loader2, Pencil, Check, X, Bot } from "lucide-react";
@@ -94,8 +95,11 @@ function groupByDate(list: AssistantConversationSummary[]) {
 }
 
 export default function AssistantPage() {
+  const searchParams = useSearchParams();
+  const requestedConvId = searchParams.get("conversation_id");
+
   const [conversations, setConversations] = useState<AssistantConversationSummary[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(requestedConvId);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -115,9 +119,13 @@ export default function AssistantPage() {
       // Latest first (backend already sorts by updated_at desc, but be safe)
       list.sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
       setConversations(list);
-      // Auto-select the most recent conversation only on the very first load.
-      if (!initialLoadDone.current && list.length) {
-        setActiveId(list[0].id);
+      // Auto-select: prefer conversation_id from URL, else most recent.
+      if (!initialLoadDone.current) {
+        if (requestedConvId) {
+          setActiveId(requestedConvId);
+        } else if (list.length) {
+          setActiveId(list[0].id);
+        }
       }
       initialLoadDone.current = true;
     } catch (e) {
