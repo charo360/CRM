@@ -421,6 +421,134 @@ def make_design_templates_router(db, user_dep):
         await db[COLLECTION].insert_one(clone)
         return _ser(await db[COLLECTION].find_one({"_id": oid}))
 
+    @router.post("/{design_id}/ingest-to-conversation")
+    async def ingest_design_to_conversation(design_id: str, user=user_dep):
+        """Load a design document's text into a new assistant conversation so
+        the AI can read its full structure and use it as a cloning reference."""
+        uid = _tid(user)
+        doc = await db[COLLECTION].find_one({"_id": design_id, "user_id": uid})
+        if not doc:
+            raise HTTPException(404, "Design not found")
+
+        asset_kind = doc.get("asset_kind", "")
+        if asset_kind not in ("pdf", "docx"):
+            raise HTTPException(
+                400,
+                f"Only PDF and Word documents can be used as AI reference templates (got '{asset_kind}').",
+            )
+
+        doc_name = doc.get("name", "template")
+        conv_id = str(uuid.uuid4())
+
+        # Create the conversation record so the assistant page can load it
+        from assistant.models import DEFAULT_MODEL
+        from assistant.agents import resolve_agent_id
+        await db.assistant_conversations.insert_one({
+            "_id": conv_id,
+            "user_id": uid,
+            "title": f"Template: {doc_name}",
+            "model": DEFAULT_MODEL,
+            "messages": [],
+            "agent": resolve_agent_id("general"),
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+        })
+
+        # ── Path 1: source_markdown stored at generation time (most reliable) ─
+        source_markdown = (doc.get("source_markdown") or "").strip()
+        if source_markdown:
+            doc_record = {
+                "_id": str(uuid.uuid4()),
+                "user_id": uid,
+                "conversation_id": conv_id,
+                "filename": f"{doc_name}.md",
+                "mime_type": "text/markdown",
+                "kind": "md",
+                "size": len(source_markdown.encode()),
+                "text": source_markdown,
+                "text_len": len(source_markdown),
+                "b64": None,
+                "created_at": datetime.utcnow(),
+            }
+            await db.assistant_documents.insert_one(doc_record)
+            return {
+                "conversation_id": conv_id,
+                "document": {
+                    "filename": doc_record["filename"],
+                    "kind": "md",
+                    "text_len": doc_record["text_len"],
+                    "has_text": True,
+                },
+            }
+
+        # ── Path 2: fetch raw bytes and extract text ──────────────────────────
+        file_url = doc.get("file_url", "")
+        if not file_url:
+            raise HTTPException(400, "Document has no file and no stored markdown")
+
+        mime_map = {
+            "pdf": "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+        mime_type = mime_map[asset_kind]
+
+        try:
+            if file_url.startswith("http://") or file_url.startswith("https://"):
+                # Use boto3 S3 direct download (bypasses presigned-URL expiry)
+                import os as _os
+                from urllib.parse import urlparse as _urlparse
+                parsed = _urlparse(file_url)
+                # hostname is like "bucket.s3.amazonaws.com" or "bucket.s3.region.amazonaws.com"
+                bucket = parsed.hostname.split(".")[0]
+                key = parsed.path.lstrip("/")
+                aws_key = _os.environ.get("AWS_ACCESS_KEY_ID", "")
+                aws_secret = _os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+                aws_region = _os.environ.get("AWS_DEFAULT_REGION") or _os.environ.get("AWS_REGION") or "us-east-2"
+                if aws_key and aws_secret and bucket and key:
+                    import asyncio
+                    import boto3 as _boto3
+                    def _s3_get():
+                        s3 = _boto3.client(
+                            "s3",
+                            aws_access_key_id=aws_key,
+                            aws_secret_access_key=aws_secret,
+                            region_name=aws_region,
+                        )
+                        return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+                    content = await asyncio.get_event_loop().run_in_executor(None, _s3_get)
+                else:
+                    # No AWS creds — try plain HTTPS fetch (works for public buckets)
+                    import httpx
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.get(file_url)
+                        resp.raise_for_status()
+                        content = resp.content
+            else:
+                backend_dir = Path(__file__).resolve().parent
+                local_path = backend_dir / file_url.lstrip("/")
+                async with aiofiles.open(local_path, "rb") as fh:
+                    content = await fh.read()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[design-templates] ingest-to-conversation file fetch failed")
+            raise HTTPException(502, f"Could not retrieve document file: {exc}") from exc
+
+        from assistant.documents import store_upload
+        try:
+            meta = await store_upload(
+                db,
+                user_id=uid,
+                conversation_id=conv_id,
+                filename=f"{doc_name}.{asset_kind}",
+                mime_type=mime_type,
+                content=content,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        return {"conversation_id": conv_id, "document": meta}
+
     @router.delete("/{design_id}")
     async def delete_template(design_id: str, user=user_dep):
         uid = _tid(user)

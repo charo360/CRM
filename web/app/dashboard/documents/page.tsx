@@ -31,6 +31,8 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
   const [name, setName] = useState(`Clone of ${doc.name}`);
   const [saving, setSaving] = useState(false);
   const [cloned, setCloned] = useState<Document | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [ingesting, setIngesting] = useState(false);
 
   const handleClone = async () => {
     setSaving(true);
@@ -41,6 +43,21 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
         ? await api.put<Document>(`/design-templates/${result.id}`, { name: finalName })
         : result;
       onCloned(finalDoc);
+
+      // Ingest the reference document into a new conversation so the AI can
+      // read its actual content (structure, sections, tone) as context.
+      if (finalDoc.asset_kind === "pdf" || finalDoc.asset_kind === "docx") {
+        setIngesting(true);
+        try {
+          const ingest = await api.post<{ conversation_id: string }>(`/design-templates/${finalDoc.id}/ingest-to-conversation`, {});
+          setConversationId(ingest.conversation_id);
+        } catch {
+          // Non-fatal — fall back to URL-only mode
+        } finally {
+          setIngesting(false);
+        }
+      }
+
       setCloned(finalDoc);
       toast.success("Document cloned");
     } catch {
@@ -53,7 +70,11 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
   const kindLabel: Record<string, string> = { pdf: "PDF", docx: "Word document", pptx: "PowerPoint presentation" };
   const toolHint: Record<string, string> = { pdf: "create_business_document", docx: "create_business_document", pptx: "create_presentation" };
   const templatePrompt = cloned
-    ? `I want to generate a new ${kindLabel[cloned.asset_kind] ?? "document"} using my saved template "${cloned.name}" as the style reference (file: ${resolveMediaUrl(cloned.file_url)}). This is a custom document from my Documents library — do NOT search Orshot for it. Use the ${toolHint[cloned.asset_kind] ?? "create_business_document"} tool to produce a new document that matches the same sections, layout, tone, and professional structure as that template. Ask me what content to fill in.`
+    ? conversationId
+      // Document was ingested — AI has the full content in context
+      ? `I've attached my template "${cloned.name}" as a reference document. Please analyze its structure, sections, layout, and tone, then use the ${toolHint[cloned.asset_kind] ?? "create_business_document"} tool to generate a new ${kindLabel[cloned.asset_kind] ?? "document"} that follows the same format. Ask me what specific content to fill in.`
+      // Fallback for PPTX or if ingest failed — pass the URL
+      : `I want to generate a new ${kindLabel[cloned.asset_kind] ?? "document"} using my saved template "${cloned.name}" as a style reference. This template is from my Documents library — do NOT search Orshot. The file is at: ${resolveMediaUrl(cloned.file_url)}. If you cannot read that file directly, tell me so and ask me to paste the section headings. DO NOT call ${toolHint[cloned.asset_kind] ?? "create_business_document"} yet — first identify or ask about the template's sections, then collect the content from me, then generate.`
     : "";
 
   return (
@@ -105,18 +126,35 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
               </div>
             </div>
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4">
-              <p className="text-xs font-medium text-slate-700 mb-1">Zilo Chat will receive this prompt:</p>
-              <p className="text-xs text-slate-500 leading-relaxed italic">"{templatePrompt}"</p>
+              <p className="text-xs font-medium text-slate-700 mb-1">
+                {conversationId ? "Reference document loaded into chat:" : "Zilo Chat will receive this prompt:"}
+              </p>
+              <p className="text-xs text-slate-500 leading-relaxed italic">
+                {conversationId
+                  ? `"${cloned.name}" has been attached so the AI can read its full structure, sections, and tone.`
+                  : `"${templatePrompt}"`}
+              </p>
             </div>
             <div className="flex flex-col gap-2">
-              <Link
-                href={`/dashboard/assistant?template_message=${encodeURIComponent(templatePrompt)}`}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm rounded-lg bg-[#009B3A] text-white font-medium hover:bg-[#4CD137] hover:text-[#0a2614] transition-colors"
-                onClick={onClose}
-              >
-                <MessageSquare className="w-4 h-4" />
-                Open in Zilo Chat with template
-              </Link>
+              {ingesting ? (
+                <div className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm rounded-lg bg-slate-100 text-slate-500">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Preparing reference document…
+                </div>
+              ) : (
+                <Link
+                  href={
+                    conversationId
+                      ? `/dashboard/assistant?conversation_id=${conversationId}&template_message=${encodeURIComponent(templatePrompt)}`
+                      : `/dashboard/assistant?template_message=${encodeURIComponent(templatePrompt)}`
+                  }
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm rounded-lg bg-[#009B3A] text-white font-medium hover:bg-[#4CD137] hover:text-[#0a2614] transition-colors"
+                  onClick={onClose}
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  Open in Zilo Chat with template
+                </Link>
+              )}
               <button onClick={onClose} className="w-full px-4 py-2 text-sm rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">
                 Done
               </button>
