@@ -293,13 +293,26 @@ def _mk_router(db, get_current_user):
             result: Optional[Dict[str, Any]] = None
             reply_text = ""
 
+            # Send SSE keepalive comments every 15 s so Render's proxy doesn't
+            # close the connection during long tool calls (e.g. web_search).
+            _KEEPALIVE_SEC = 15
+            import asyncio as _asyncio
+
             try:
-                async for event in run_turn_stream(
+                _gen = run_turn_stream(
                     db=db, user=user, history=history, user_message=msg,
                     model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
                     auto_approve_destructive=bool(body.get("auto_approve")),
                     conversation_id=conv_id, agent_id=agent_resolved,
-                ):
+                )
+                while True:
+                    try:
+                        event = await _asyncio.wait_for(_gen.__anext__(), timeout=_KEEPALIVE_SEC)
+                    except _asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    except StopAsyncIteration:
+                        break
                     etype = event.get("type")
                     if etype == "tool_start":
                         yield "data: " + json.dumps({"type": "tool_start", "tool": event.get("tool", "")}) + "\n\n"
