@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import {
   FileText, Download, Trash2, Loader2, Calendar,
   Filter, File, FileSpreadsheet, Presentation,
-  Search, RefreshCw,
+  Search, RefreshCw, Eye, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -25,12 +25,49 @@ type Document = {
 
 type Category = "all" | "pdf" | "docx" | "pptx";
 
+function PreviewModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
+  const url = resolveMediaUrl(doc.file_url);
+  const isPdf = doc.asset_kind === "pdf";
+  const viewerUrl = isPdf
+    ? url
+    : `https://docs.google.com/viewer?url=${encodeURIComponent(url)}&embedded=true`;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <FileText className="w-4 h-4 text-slate-500 shrink-0" />
+            <span className="text-sm font-medium text-slate-800 truncate">{doc.name}</span>
+            <span className="text-xs text-slate-400 uppercase shrink-0">{doc.asset_kind}</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0 ml-3"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <iframe
+            src={viewerUrl}
+            className="w-full h-full border-0"
+            title={doc.name}
+            sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [category, setCategory] = useState<Category>("all");
   const [search, setSearch] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [preview, setPreview] = useState<Document | null>(null);
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -176,6 +213,13 @@ export default function DocumentsPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={() => setPreview(doc)}
+                    className="p-2 text-slate-500 hover:text-brand hover:bg-brand/5 rounded-lg transition-colors"
+                    title="Preview"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </button>
+                  <button
                     onClick={() => void handleDownload(doc.file_url, doc.name)}
                     className="p-2 text-slate-500 hover:text-brand hover:bg-brand/5 rounded-lg transition-colors"
                     title="Download"
@@ -200,6 +244,8 @@ export default function DocumentsPage() {
           })}
         </div>
       )}
+
+      {preview && <PreviewModal doc={preview} onClose={() => setPreview(null)} />}
     </div>
   );
 }
