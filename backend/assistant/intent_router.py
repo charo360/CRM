@@ -572,6 +572,18 @@ async def route_to_agent(
             return "creative"
         logger.info(f"[IntentRouter] leaving creative (explicit exit: {message!r})")
 
+    # ── 0a-2. Sticky routing for document agent ──────────────────────────────
+    # Document sessions (e.g. template cloning) are multi-turn — don't bounce
+    # the user to creative/general just because keywords like "template" match.
+    if prev_agent == "document" and "document" in agent_registry:
+        if not _is_explicit_design_exit(msg_lower):
+            logger.info(
+                "[IntentRouter] sticky → document (active document session; message: %r)",
+                message[:60],
+            )
+            return "document"
+        logger.info(f"[IntentRouter] leaving document (explicit exit: {message!r})")
+
     # ── 0b. Sticky routing — don't break mid-flow on ambiguous replies ────────
     if prev_agent and prev_agent in agent_registry and _is_continuation_message(msg_lower):
         logger.info(f"[IntentRouter] sticky → {prev_agent} (continuation: {message!r})")
