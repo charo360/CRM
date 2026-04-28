@@ -133,6 +133,24 @@ const TOOL_LABELS: Record<string, string> = {
   list_team:             "Checking team…",
   // Web
   web_search:            "Searching the web…",
+  // Documents
+  create_business_document: "Designing document…",
+  create_presentation:   "Building presentation…",
+  generate_document:     "Generating document…",
+  get_document_style:    "Loading document style…",
+  save_document_style:   "Saving document style…",
+  // Google Sheets
+  sheets_list:           "Listing spreadsheets…",
+  sheets_read:           "Reading spreadsheet…",
+  sheets_append:         "Writing to spreadsheet…",
+  sheets_update:         "Updating spreadsheet…",
+  sheets_create:         "Creating spreadsheet…",
+  // Notion
+  notion_search:         "Searching Notion…",
+  notion_read_page:      "Reading Notion page…",
+  notion_create_page:    "Creating Notion page…",
+  notion_append_blocks:  "Writing to Notion…",
+  notion_query_database: "Querying Notion database…",
   // Integrations
   integrations_status:   "Checking integrations…",
   get_owner_info:        "Getting business info…",
@@ -637,7 +655,18 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                         <div className="h-px flex-1 bg-slate-100" />
                       </div>
                     )}
-                    <MessageBubble msg={m} onSuggestionSend={(text) => void send(text)} />
+                    <MessageBubble
+                      msg={m}
+                      onSuggestionSend={(text) => void send(text)}
+                      onUserResend={
+                        m.role === "user"
+                          ? (editedText) => {
+                              setMessages((prev) => prev.slice(0, i));
+                              void send(editedText);
+                            }
+                          : undefined
+                      }
+                    />
                   </React.Fragment>
                 );
               })}
@@ -1125,26 +1154,157 @@ function extractOrshotRenderContext(steps: AssistantStep[] | undefined): {
   return null;
 }
 
+// ── Inline form ──────────────────────────────────────────────────────────────
+// The AI embeds a fenced JSON block: :::form\n{...}\n:::
+// We parse it out, render real input fields, and submit the answers back.
+
+interface FormField {
+  id: string;
+  label: string;
+  placeholder?: string;
+  type?: "text" | "number" | "textarea";
+  unit?: string;
+}
+
+interface InlineFormDef {
+  title?: string;
+  fields: FormField[];
+  before: string;  // content before the :::form block
+  after: string;   // content after the :::form block
+}
+
+function extractInlineForm(content: string): InlineFormDef | null {
+  if (!content) return null;
+  const match = content.match(/^([\s\S]*?):::form\s*\n([\s\S]*?)\n:::([\s\S]*)$/m);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[2]);
+    if (!Array.isArray(parsed.fields) || parsed.fields.length === 0) return null;
+    return {
+      title: parsed.title ?? undefined,
+      fields: parsed.fields,
+      before: match[1].trim(),
+      after: match[3].trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function InlineForm({
+  form,
+  onSubmit,
+}: {
+  form: InlineFormDef;
+  onSubmit: (text: string) => void;
+}) {
+  const [values, setValues] = React.useState<Record<string, string>>(() =>
+    Object.fromEntries(form.fields.map((f) => [f.id, ""]))
+  );
+  const [submitted, setSubmitted] = React.useState(false);
+
+  const handleSubmit = () => {
+    const lines = form.fields
+      .map((f) => {
+        const v = (values[f.id] ?? "").trim();
+        return `${f.label}: ${v || "—"}`;
+      })
+      .join("\n");
+    onSubmit(lines);
+    setSubmitted(true);
+  };
+
+  const allFilled = form.fields.every((f) => (values[f.id] ?? "").trim() !== "");
+
+  if (submitted) {
+    return (
+      <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[13px] text-slate-500">
+        ✓ Answers submitted
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-brand/25 bg-white shadow-sm">
+      {form.title && (
+        <div className="border-b border-brand/15 bg-brand/5 px-4 py-2.5 text-[12px] font-semibold text-brand-dark">
+          {form.title}
+        </div>
+      )}
+      <div className="divide-y divide-slate-100">
+        {form.fields.map((f) => (
+          <div key={f.id} className="flex items-start gap-3 px-4 py-2.5">
+            <label className="w-40 shrink-0 pt-1.5 text-[12px] font-medium leading-snug text-slate-600">
+              {f.label}
+              {f.unit && <span className="ml-1 text-slate-400">({f.unit})</span>}
+            </label>
+            {f.type === "textarea" ? (
+              <textarea
+                rows={2}
+                value={values[f.id] ?? ""}
+                onChange={(e) => setValues((v) => ({ ...v, [f.id]: e.target.value }))}
+                placeholder={f.placeholder ?? ""}
+                className="flex-1 resize-none rounded-lg border border-slate-200 px-2.5 py-1.5 text-[13px] text-slate-800 outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
+              />
+            ) : (
+              <input
+                type={f.type === "number" ? "number" : "text"}
+                value={values[f.id] ?? ""}
+                onChange={(e) => setValues((v) => ({ ...v, [f.id]: e.target.value }))}
+                placeholder={f.placeholder ?? ""}
+                className="flex-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[13px] text-slate-800 outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
+              />
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-end border-t border-slate-100 px-4 py-2.5">
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={!allFilled}
+          className="rounded-xl bg-brand px-5 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-40"
+        >
+          Submit answers
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   onSuggestionSend,
+  onUserResend,
 }: {
   msg: AssistantMessage;
   onSuggestionSend?: (text: string) => void;
+  onUserResend?: (text: string) => void;
 }) {
   const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
   const [showWaPicker, setShowWaPicker] = useState(false);
   const [orshotEditOpen, setOrshotEditOpen] = useState(false);
+  const [editingUserPrompt, setEditingUserPrompt] = useState(false);
+  const [editedUserPrompt, setEditedUserPrompt] = useState(msg.content ?? "");
   const [checkedOptions, setCheckedOptions] = useState<Set<string>>(new Set());
   const stepsKey = JSON.stringify(msg.steps ?? []);
   const orshotCtx = useMemo(() => extractOrshotRenderContext(msg.steps), [stepsKey]);
+
+  // Inline form — takes priority over chip options when detected
+  const inlineForm = useMemo(() => {
+    if (msg.role !== "assistant") return null;
+    return extractInlineForm(msg.content ?? "");
+  }, [msg.role, msg.content]);
+
   // Promote bullet/lettered/numbered option lists to tap-to-send chips with A/B/C
-  // letter badges, unless the backend already supplied msg.suggestions (avoid dupes).
+  // letter badges, unless the backend already supplied msg.suggestions (avoid dupes)
+  // or we're rendering a form instead.
   const inlineOptions = useMemo(() => {
     if (msg.role !== "assistant") return null;
+    if (inlineForm) return null;
     if (msg.suggestions && msg.suggestions.length > 0) return null;
     return extractInlineOptionList(msg.content ?? "");
-  }, [msg.role, msg.content, msg.suggestions]);
+  }, [msg.role, msg.content, msg.suggestions, inlineForm]);
 
   async function handleExport(format: "pdf" | "docx") {
     if (!msg.content || exporting) return;
@@ -1163,8 +1323,58 @@ function MessageBubble({
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[14px] text-slate-900">
-          {msg.content}
+        <div className="max-w-[85%] space-y-1.5">
+          {editingUserPrompt ? (
+            <div className="rounded-2xl rounded-br-md border border-slate-200 bg-white p-2.5 shadow-sm">
+              <textarea
+                value={editedUserPrompt}
+                onChange={(e) => setEditedUserPrompt(e.target.value)}
+                rows={3}
+                className="w-full resize-y rounded-lg border border-slate-200 px-2.5 py-2 text-[13px] text-slate-900 focus:border-brand/50 focus:outline-none"
+              />
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingUserPrompt(false);
+                    setEditedUserPrompt(msg.content ?? "");
+                  }}
+                  className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!editedUserPrompt.trim() || !onUserResend}
+                  onClick={() => {
+                    if (!onUserResend || !editedUserPrompt.trim()) return;
+                    setEditingUserPrompt(false);
+                    onUserResend(editedUserPrompt.trim());
+                  }}
+                  className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-brand-dark disabled:opacity-50"
+                >
+                  Resend
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[14px] text-slate-900">
+              {msg.content}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                setEditedUserPrompt(msg.content ?? "");
+                setEditingUserPrompt((v) => !v);
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-500 hover:border-slate-300 hover:text-slate-700"
+            >
+              <PencilLine size={9} />
+              Edit & resend
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1191,7 +1401,13 @@ function MessageBubble({
             )}
             <div className="text-[14px] leading-relaxed text-slate-800">
               {msg.content ? (
-                inlineOptions && onSuggestionSend ? (
+                inlineForm && onSuggestionSend ? (
+                  <>
+                    {inlineForm.before && <MarkdownBody content={inlineForm.before} />}
+                    <InlineForm form={inlineForm} onSubmit={onSuggestionSend} />
+                    {inlineForm.after && <MarkdownBody content={inlineForm.after} />}
+                  </>
+                ) : inlineOptions && onSuggestionSend ? (
                   <>
                     {inlineOptions.before && <MarkdownBody content={inlineOptions.before} />}
                     <div className="mt-2 flex flex-col items-stretch gap-1.5">
@@ -1278,6 +1494,7 @@ function MessageBubble({
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
+            <DocumentPreview steps={msg.steps} />
             {msg.suggestions &&
               msg.suggestions.length > 0 &&
               onSuggestionSend && (
@@ -1299,7 +1516,6 @@ function MessageBubble({
                   </div>
                 </div>
               )}
-            {/* Action buttons — shown for substantial replies */}
             {hasContent && (
               <div className="flex flex-wrap items-center gap-1.5 pt-1">
                 <span className="text-[10px] text-slate-400">Download as</span>
@@ -1380,9 +1596,26 @@ function MarkdownBody({ content }: { content: string }) {
             />
           ),
           hr: () => <hr className="my-3 border-slate-200" />,
-          a: (p) => (
-            <a className="text-brand-dark underline hover:text-brand-dark" target="_blank" rel="noreferrer" {...p} />
-          ),
+          a: ({ href, children, ...rest }) => {
+            const isDoc = typeof href === "string" && /\.(pdf|docx|pptx)(\?|$)/i.test(href);
+            if (isDoc) {
+              const name = (typeof children === "string" ? children : "document").replace(/[^\w\-. ]/g, "_");
+              return (
+                <a
+                  href={href}
+                  className="text-brand-dark underline hover:text-brand-dark"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void downloadAsset(href, name).catch(() => window.open(href, "_blank", "noopener,noreferrer"));
+                  }}
+                  {...rest}
+                >
+                  {children}
+                </a>
+              );
+            }
+            return <a href={href} className="text-brand-dark underline hover:text-brand-dark" target="_blank" rel="noreferrer" {...rest}>{children}</a>;
+          },
           // ── Image: preserve aspect ratio; avoid stretched or broken previews ──
           img: ({ src, alt }) => {
             const raw = typeof src === "string" ? src.trim() : "";
@@ -1471,6 +1704,104 @@ function StepsTrail({ steps }: { steps: AssistantStep[] }) {
           {friendlyToolLabel(s.tool).replace(/…$/, "")}
         </span>
       ))}
+    </div>
+  );
+}
+
+function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
+  const [collapsed, setCollapsed] = React.useState(false);
+  const [wordLoading, setWordLoading] = React.useState(false);
+
+  const docStep = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find(
+        (s) =>
+          (s.tool === "generate_document" || s.tool === "create_business_document") &&
+          (s.result as Record<string, unknown>)?.html_preview,
+      ),
+    [steps],
+  );
+
+  if (!docStep) return null;
+
+  const result = docStep.result as Record<string, unknown>;
+  const htmlPreview = result.html_preview as string;
+  const filename = (result.filename as string | undefined) ?? "document";
+  const s3Url = (result.download_url ?? result.pdf_url) as string | undefined;
+  const contentMd = result.content_md as string | undefined;
+
+  /** Download as Word — reuses the existing assistantApi.exportDocument helper */
+  const handleDownloadWord = async () => {
+    if (!contentMd) return;
+    setWordLoading(true);
+    try {
+      const baseName = filename.replace(/\.\w+$/, "");
+      await assistantApi.exportDocument(contentMd, "docx", baseName);
+    } catch (err) {
+      console.error("[DocumentPreview] Word download failed", err);
+    } finally {
+      setWordLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+      {/* Header bar */}
+      <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
+          <FileText size={13} className="text-brand shrink-0" />
+          Document Preview
+        </div>
+        <div className="flex items-center gap-2">
+          {s3Url && (
+            <button
+              type="button"
+              onClick={() =>
+                void downloadAsset(s3Url, filename).catch(() =>
+                  window.open(s3Url, "_blank", "noopener,noreferrer")
+                )
+              }
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+            >
+              <Download size={10} />
+              PDF
+            </button>
+          )}
+          {contentMd && (
+            <button
+              type="button"
+              onClick={() => void handleDownloadWord()}
+              disabled={wordLoading}
+              className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10.5px] font-medium text-blue-700 hover:border-blue-400 hover:bg-blue-100 disabled:opacity-50"
+            >
+              {wordLoading ? (
+                <Loader2 size={10} className="animate-spin" />
+              ) : (
+                <Download size={10} />
+              )}
+              Word
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            className="text-[10.5px] font-medium text-slate-400 hover:text-slate-600"
+          >
+            {collapsed ? "Show" : "Hide"}
+          </button>
+        </div>
+      </div>
+
+      {/* Rendered document — injected via srcDoc so CSS is isolated and no fetch needed */}
+      {!collapsed && (
+        <iframe
+          srcDoc={htmlPreview}
+          title="Document Preview"
+          className="w-full border-0 bg-white"
+          style={{ height: "700px" }}
+          sandbox="allow-same-origin"
+        />
+      )}
     </div>
   );
 }

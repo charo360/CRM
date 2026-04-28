@@ -135,6 +135,7 @@ export default function Sidebar() {
     { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDays },
     { href: "/dashboard/shopify", label: "Shopify", icon: ShoppingBag },
     { href: "/dashboard/design-templates", label: "Design library", icon: Layers },
+    { href: "/dashboard/documents", label: "Documents", icon: FileText },
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const NAV_GROUPS = [

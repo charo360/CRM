@@ -2316,8 +2316,6 @@ async def delete_automation(ctx: ToolContext, args: Dict[str, Any]):
 # ═════════════════════════════════════════════════════════════════════════════
 # DOCUMENT GENERATION
 # ═════════════════════════════════════════════════════════════════════════════
-# In-memory store: key → filepath (survives the request, cleaned up lazily)
-_doc_store: Dict[str, str] = {}
 
 
 @tool(
@@ -2326,7 +2324,11 @@ _doc_store: Dict[str, str] = {}
         "Convert markdown content into a downloadable PDF or DOCX file and return a download link. "
         "Call this after writing a full document (proposal, report, invoice, contract) so the user can download it immediately. "
         "Pass the complete markdown as `content`. Set `format` to 'pdf' or 'docx'. "
-        "Set `filename` to a short descriptive name without extension (e.g. 'business-proposal')."
+        "Set `filename` to a short descriptive name without extension (e.g. 'business-proposal'). "
+        "Use `template` to control the visual design: "
+        "'professional' (default) — branded header bar with accent colour, clean sans-serif; "
+        "'minimal' — ultra-clean white layout, uppercase section headings, no coloured bars; "
+        "'executive' — dark navy header, Playfair Display serif headings, dark table headers — ideal for proposals and contracts."
     ),
     parameters={
         "type": "object",
@@ -2334,11 +2336,35 @@ _doc_store: Dict[str, str] = {}
             "content":  {"type": "string", "description": "The full Markdown content to export."},
             "format":   {"type": "string", "enum": ["pdf", "docx"], "default": "pdf"},
             "filename": {"type": "string", "description": "Base filename without extension, e.g. 'q1-report'."},
+            "template": {
+                "type": "string",
+                "enum": ["professional", "minimal", "executive"],
+                "default": "professional",
+                "description": "Visual design template for the document.",
+            },
+            "image_prompt": {
+                "type": "string",
+                "description": (
+                    "Optional. A prompt for a hero image that visually represents the document's actual subject matter. "
+                    "Only include when an image genuinely elevates the document — e.g. a client proposal, marketing strategy, business plan, pitch deck. "
+                    "Skip for invoices, receipts, payment requests, legal contracts, internal memos, or any document where an image would feel out of place. "
+                    "Write the prompt as if briefing a real photographer — describe the scene, lighting, mood, and subject with specificity. "
+                    "CRITICAL prompt rules to avoid AI-looking results: "
+                    "(1) Describe a simple, uncluttered scene with ONE clear subject — not 'a boardroom with many elements'. "
+                    "(2) Reference real photography styles: 'shot on Canon EOS R5', 'f/2.8 shallow depth of field', 'natural window light', 'golden hour'. "
+                    "(3) Never use the words 'photorealistic', 'hyperrealistic', 'cinematic', 'digital art', 'render', '3D', or 'illustration'. "
+                    "(4) Be specific to the document topic: for a resort proposal write 'A quiet infinity pool overlooking the ocean at dusk, warm ambient light, shot on 35mm'; "
+                    "for a restaurant business plan write 'Empty upscale restaurant interior, warm pendant lighting, dark wood tables, soft bokeh background, shot at f/1.8'. "
+                    "The more specific and grounded in real photography the prompt is, the less it will look AI-generated."
+                ),
+            },
         },
         "required": ["content"],
     },
 )
 async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
+    import asyncio
+    import base64
     import re as _re
     import uuid as _uuid
     content = (args.get("content") or "").strip()
@@ -2347,30 +2373,155 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     fmt = (args.get("format") or "pdf").lower()
     if fmt not in ("pdf", "docx"):
         fmt = "pdf"
+    template = (args.get("template") or "professional").lower()
+    if template not in ("professional", "minimal", "executive"):
+        template = "professional"
 
     raw_name = (args.get("filename") or "document").strip()
     safe = _re.sub(r"[^\w\-]", "_", raw_name)[:60] or "document"
     filename = f"{safe}.{fmt}"
 
+    # Fetch business name and document style for branded output
+    owner = await ctx.db.users.find_one({"_id": ctx.business_id})
+    business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business") if owner else "My Business"
+    doc_style: Dict[str, Any] = {}
     try:
-        from .document_generator import generate_pdf, generate_docx
-        if fmt == "pdf":
-            filepath = generate_pdf(content, filename)
-        else:
-            filepath = generate_docx(content, filename)
+        from saved_designs import get_document_style as _get_doc_style
+        doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
+    except Exception:
+        pass
+
+    _title = raw_name.replace("-", " ").replace("_", " ").title()
+
+    # Generate a hero image only when the AI explicitly provides an image_prompt
+    # The AI decides based on document content whether an image adds value
+    hero_image_url: str | None = None
+    _image_prompt = (args.get("image_prompt") or "").strip()
+    if _image_prompt:
+        try:
+            from nano_banana_service import generate_creative_image
+            _hero_result = await generate_creative_image(
+                prompt=_image_prompt + ", shot on full-frame camera, natural lighting, no text, no watermarks, no logos, clean composition",
+                format="landscape",
+                quality="pro",
+            )
+            if _hero_result.get("success"):
+                hero_image_url = _hero_result["image_url"]
+                logger.info("[generate_document] Hero image generated: %s", hero_image_url)
+            else:
+                logger.warning("[generate_document] Hero image failed: %s", _hero_result.get("error"))
+        except Exception as _he:
+            logger.warning("[generate_document] Hero image skipped: %s", _he)
+
+    # Generate HTML preview (used for the in-chat iframe and, for PDF, as WeasyPrint source)
+    preview_key: str | None = None
+    html_doc: str | None = None
+    try:
+        from .document_generator import generate_html_document, store_html_preview
+        html_doc = generate_html_document(
+            content, title=_title, business_name=business_name,
+            style=doc_style, template=template, hero_image_url=hero_image_url,
+        )
+        preview_key = store_html_preview(html_doc)
+    except Exception:
+        logger.warning("[generate_document] HTML preview generation failed")
+
+    if fmt == "pdf":
+        # Use Playwright (HTML→PDF) for polished, branded output
+        try:
+            from .document_generator import generate_pdf_from_html
+            if html_doc is None:
+                from .document_generator import generate_html_document
+                html_doc = generate_html_document(
+                    content, title=_title, business_name=business_name,
+                    style=doc_style, template=template, hero_image_url=hero_image_url,
+                )
+            filepath = await asyncio.get_event_loop().run_in_executor(
+                None, generate_pdf_from_html, html_doc, filename
+            )
+        except Exception as e:
+            logger.exception("[generate_document] WeasyPrint PDF failed, falling back to ReportLab")
+            try:
+                from .document_generator import generate_pdf
+                filepath = generate_pdf(content, filename, business_name=business_name, style=doc_style)
+            except Exception as e2:
+                return {"error": f"PDF generation failed: {e2}"}
+    else:
+        # DOCX with brand styling
+        try:
+            from .document_generator import generate_docx
+            filepath = generate_docx(content, filename, business_name=business_name, style=doc_style)
+        except Exception as e:
+            logger.exception("[generate_document] DOCX generation failed")
+            return {"error": f"DOCX generation failed: {e}"}
+
+    # Upload to S3 so the file persists beyond the current process
+    file_url = None
+    try:
+        from pathlib import Path as _Path
+        from image_handler import S3Handler
+        _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
+        file_bytes = _filepath.read_bytes()
+        b64 = base64.b64encode(file_bytes).decode()
+        ext = "pdf" if fmt == "pdf" else "docx"
+        s3_name = f"doc-{_uuid.uuid4().hex[:8]}.{ext}"
+        content_type = "application/pdf" if fmt == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        file_url = await S3Handler.upload_file(b64, s3_name, content_type=content_type)
     except Exception as e:
-        logger.exception("[generate_document] generation failed")
-        return {"error": f"Document generation failed: {e}"}
+        logger.warning("[generate_document] S3 upload failed, serving from temp: %s", e)
+    finally:
+        try:
+            _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
+            _filepath.unlink(missing_ok=True)
+        except Exception:
+            pass
 
-    key = str(_uuid.uuid4())
-    _doc_store[key] = filepath
+    # Save to design library
+    if file_url:
+        try:
+            from saved_designs import insert_saved_design
+            await insert_saved_design(
+                ctx.db,
+                ctx.business_id,
+                name=(raw_name or "Document")[:200],
+                asset_kind=fmt,
+                file_url=file_url,
+                thumbnail_url=None,
+                source_tool="generate_document",
+                conversation_id=ctx.user.get("_active_conversation_id"),
+            )
+        except Exception:
+            logger.exception("[generate_document] saved_designs insert skipped")
 
-    return {
-        "status": "ready",
-        "download_url": f"/proxy/assistant/download/{key}",
-        "filename": filename,
-        "format": fmt,
-    }
+    if file_url:
+        return {
+            "status": "ready",
+            "download_url": file_url,
+            "filename": filename,
+            "format": fmt,
+            "template": template,
+            "html_preview": html_doc or "",  # Stripped from LLM context by orchestrator
+            "content_md": content,            # Stripped from LLM context by orchestrator
+            "message": f"✅ **{raw_name}** is ready. See the document preview below.",
+        }
+    else:
+        # Fallback: in-memory store (only if S3 failed)
+        key = str(_uuid.uuid4())
+        _fallback_doc_store[key] = str(filepath)
+        return {
+            "status": "ready",
+            "download_url": f"/api/assistant/download/{key}",
+            "filename": filename,
+            "format": fmt,
+            "template": template,
+            "html_preview": html_doc or "",  # Stripped from LLM context by orchestrator
+            "content_md": content,            # Stripped from LLM context by orchestrator
+            "message": f"✅ **{raw_name}** is ready. See the document preview below.",
+        }
+
+
+# Fallback in-memory store for when S3 upload fails
+_fallback_doc_store: Dict[str, str] = {}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -4259,10 +4410,14 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
         pass
 
     md = f"# {title}\n\n{content}"
+    preview_key: str | None = None
+    html_preview: str | None = None
     try:
-        from .document_generator import generate_pdf as _gen_pdf
+        from .document_generator import generate_html_document, generate_pdf_from_html, store_html_preview
+        html_preview = generate_html_document(md, title=title, business_name=business_name, style=doc_style)
+        preview_key = store_html_preview(html_preview)
         filepath = await asyncio.get_event_loop().run_in_executor(
-            None, _gen_pdf, md, None, business_name, doc_style
+            None, generate_pdf_from_html, html_preview, None
         )
     except Exception as e:
         logger.exception("[create_business_document] PDF generation failed")
@@ -4304,6 +4459,9 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
     return {
         "success": True,
         "pdf_url": pdf_url,
+        "download_url": pdf_url,
+        "filename": f"{title}.pdf",
+        "html_preview": html_preview or "",   # Stripped from LLM context by orchestrator
         "markdown": f"📄 **[Download {title}]({pdf_url})**" if pdf_url else "",
     }
 
@@ -4336,14 +4494,22 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    from presentation_service import generate_presentation
+    from presentation_service import generate_presentation_with_upload
     title = args.get("title", "Presentation")
     slides_data = args.get("slides_data", [])
 
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = owner.get("business_name") or owner.get("owner_name") or "My Business" if owner else "My Business"
 
-    result = generate_presentation(title, slides_data, business_name)
+    # Fetch document style for branded output
+    doc_style: Dict[str, Any] = {}
+    try:
+        from saved_designs import get_document_style as _get_doc_style
+        doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
+    except Exception:
+        pass
+
+    result = await generate_presentation_with_upload(title, slides_data, business_name, doc_style)
 
     if result.get("error"):
         return {"error": result["error"]}

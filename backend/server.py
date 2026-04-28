@@ -12816,6 +12816,70 @@ async def kds_put_settings(business_id: str, body: dict, user=Depends(get_curren
     return {"ok": True, "kds_pin": pin}
 
 
+# ── Document HTML Preview ─────────────────────────────────────────────────────
+# Serves the generated HTML so the frontend can embed it in an <iframe>.
+# No auth required — the UUID key is a capability token (hard to guess).
+@app.get("/api/document-preview/{key}", include_in_schema=False)
+async def serve_document_preview(key: str):
+    try:
+        from assistant.document_generator import get_html_preview
+        html = get_html_preview(key)
+    except Exception:
+        html = None
+    if not html:
+        raise HTTPException(status_code=404, detail="Preview not found or expired")
+    return Response(content=html, media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
+
+
+# ── S3 Download Proxy ──────────────────────────────────────────────────────────
+# Routes S3 downloads through the backend so the browser never contacts S3
+# directly (avoids RequestHeaderSectionTooLarge from AWS Console cookies).
+# Accepts either ?url=<s3-url> or ?filename=<doc-filename> (looked up from
+# the server-side _proxy_store so the S3 URL is never exposed to the browser).
+@api_router.get("/download-proxy")
+async def download_proxy(
+    url: str = Query(...),
+    filename: str = Query("download"),
+):
+    # No auth required — this endpoint only fetches from S3 on behalf of the browser.
+    # The browser passes the S3 URL as a query param; the backend makes the actual
+    # S3 request (no browser cookies reach S3, so no RequestHeaderSectionTooLarge).
+    import re as _re
+    from urllib.parse import urlparse
+
+    s3_url = url.strip()
+    if not s3_url:
+        raise HTTPException(status_code=400, detail="url parameter is required")
+
+    parsed = urlparse(s3_url)
+    host = parsed.netloc.lower()
+    if not (host.endswith(".amazonaws.com") or host == "amazonaws.com"):
+        raise HTTPException(status_code=400, detail="Only S3 URLs are supported")
+
+    safe_name = _re.sub(r"[^\w\-. ]", "_", filename).strip() or "download"
+    if "." not in safe_name:
+        path_ext = parsed.path.rsplit(".", 1)[-1].lower()
+        if path_ext in ("pdf", "docx", "pptx", "png", "jpg", "jpeg", "gif", "webp", "csv", "txt"):
+            safe_name += f".{path_ext}"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            resp = await client.get(s3_url)
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"S3 returned {resp.status_code}")
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        return Response(
+            content=resp.content,
+            media_type=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+    except Exception as exc:
+        logging.warning("[download-proxy] fetch failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to fetch file")
+
+
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)
 

@@ -11,10 +11,26 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "zilo_docs"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── In-memory HTML preview store ─────────────────────────────────────────────
+# Keyed by a UUID hex so the frontend can embed an <iframe> without S3/auth.
+# Lives for the lifetime of the server process — good enough for a chat session.
+_html_preview_store: Dict[str, str] = {}
+
+
+def store_html_preview(html: str) -> str:
+    """Cache an HTML document string and return a short retrieval key."""
+    key = uuid.uuid4().hex
+    _html_preview_store[key] = html
+    return key
+
+
+def get_html_preview(key: str) -> Optional[str]:
+    return _html_preview_store.get(key)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,22 +247,29 @@ def generate_pdf(
             if rows:
                 ncols = max(len(r) for r in rows)
                 rows = [r + [""] * (ncols - len(r)) for r in rows]
-                col_w = (A4[0] - 4.4 * cm) / ncols
-                tbl = Table(rows, colWidths=[col_w] * ncols, repeatRows=1)
+                avail_w = A4[0] - 4.4 * cm
+                col_w = avail_w / ncols
+                # Wrap cells in Paragraph so long text flows instead of overflowing
+                hdr_style = ParagraphStyle("TblH", fontName=BOLD_FONT, fontSize=10,
+                                           leading=14, textColor=INK)
+                cell_style = ParagraphStyle("TblC", fontName=BODY_FONT, fontSize=10,
+                                            leading=14, textColor=INK)
+                para_rows = []
+                for ri, row in enumerate(rows):
+                    st = hdr_style if ri == 0 else cell_style
+                    para_rows.append([Paragraph(str(cell), st) for cell in row])
+                tbl = Table(para_rows, colWidths=[col_w] * ncols, repeatRows=1,
+                            hAlign="LEFT")
                 tbl.setStyle(TableStyle([
                     ("BACKGROUND",    (0, 0), (-1, 0),  TABLE_HEAD),
-                    ("TEXTCOLOR",     (0, 0), (-1, 0),  INK),
-                    ("FONTNAME",      (0, 0), (-1, 0),  BOLD_FONT),
-                    ("FONTSIZE",      (0, 0), (-1, 0),  10),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0),  8),
-                    ("TOPPADDING",    (0, 0), (-1, 0),  8),
-                    ("FONTNAME",      (0, 1), (-1, -1), BODY_FONT),
-                    ("FONTSIZE",      (0, 1), (-1, -1), 10),
+                    ("LINEBELOW",     (0, 0), (-1, 0),  1.5, ACCENT),
                     ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, TABLE_ALT]),
-                    ("PADDING",       (0, 1), (-1, -1), 6),
                     ("GRID",          (0, 0), (-1, -1), 0.4, RULE),
-                    ("LINEBELOW",     (0, 0), (-1, 0),  1,   ACCENT),
-                    ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                    ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING",    (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                    ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
                 ]))
                 story.append(tbl)
                 story.append(Spacer(1, 10))
@@ -280,14 +303,772 @@ def generate_pdf(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HTML document template (Jinja2) — used for preview + WeasyPrint PDF
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family={{ google_font }}:wght@400;600;700&display=swap">
+<style>
+  :root {
+    --primary:   {{ primary_color }};
+    --secondary: {{ secondary_color }};
+    --ink:       #111827;
+    --body:      #374151;
+    --muted:     #6B7280;
+    --rule:      #E5E7EB;
+    --code-bg:   #F3F4F6;
+    --table-alt: #F9FAFB;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: '{{ google_font }}', {{ font_stack }};
+    font-size: 11pt;
+    line-height: 1.7;
+    color: var(--body);
+    background: #fff;
+    padding: 0;
+  }
+
+  .page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 52px 60px;
+    overflow-x: hidden;
+  }
+
+  /* Header bar */
+  .doc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 20px;
+    border-bottom: 3px solid var(--primary);
+    margin-bottom: 36px;
+  }
+  .doc-header-left h1 {
+    font-size: 22pt;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.2;
+    margin-bottom: 4px;
+  }
+  .doc-header-left .business-name {
+    font-size: 10pt;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .doc-header-right {
+    text-align: right;
+    font-size: 9pt;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+  .doc-header-right .header-text {
+    font-weight: 600;
+    color: var(--primary);
+  }
+
+  /* Body content */
+  h1 { display: none; } /* title shown in header already */
+
+  h2 {
+    font-size: 14pt;
+    font-weight: 700;
+    color: var(--ink);
+    margin-top: 32px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--rule);
+  }
+  h3 {
+    font-size: 12pt;
+    font-weight: 600;
+    color: var(--ink);
+    margin-top: 22px;
+    margin-bottom: 6px;
+  }
+  h4 {
+    font-size: 11pt;
+    font-weight: 600;
+    color: var(--primary);
+    margin-top: 16px;
+    margin-bottom: 4px;
+  }
+  p {
+    margin-bottom: 10px;
+    color: var(--body);
+  }
+  ul, ol {
+    margin: 6px 0 12px 22px;
+  }
+  li {
+    margin-bottom: 4px;
+  }
+  hr {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 24px 0;
+  }
+  strong { color: var(--ink); }
+
+  /* Tables */
+  .table-wrap { width: 100%; overflow-x: hidden; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 20px;
+    font-size: 10pt;
+    table-layout: fixed;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  thead tr {
+    background: var(--secondary);
+    border-bottom: 2px solid var(--primary);
+  }
+  thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: 0.01em;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  tbody tr { border-bottom: 1px solid var(--rule); }
+  tbody tr:nth-child(even) { background: var(--table-alt); }
+  tbody td {
+    padding: 9px 14px;
+    vertical-align: top;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    line-height: 1.55;
+  }
+
+  /* Code */
+  pre, code {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 9pt;
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: #1E293B;
+  }
+  pre { padding: 12px 16px; margin: 12px 0; display: block; }
+
+  /* Signature block */
+  .signature {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 2px solid var(--primary);
+    width: 260px;
+  }
+  .signature .sig-name {
+    font-size: 11pt;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 2px;
+  }
+  .signature .sig-title,
+  .signature .sig-contact {
+    font-size: 9.5pt;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* Hero image banner (professional template) */
+  .doc-hero {
+    width: 100%;
+    height: 180px;
+    object-fit: cover;
+    display: block;
+    margin-bottom: 0;
+  }
+
+  /* Footer */
+  .doc-footer {
+    margin-top: 48px;
+    padding-top: 10px;
+    border-top: 1px solid var(--rule);
+    font-size: 8.5pt;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  /* Print / PDF overrides */
+  @media print {
+    body { padding: 0; }
+    .page { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  {% if hero_image_url %}
+  <img src="{{ hero_image_url }}" class="doc-hero" alt="">
+  {% endif %}
+
+  <!-- Document header -->
+  <div class="doc-header">
+    <div class="doc-header-left">
+      {% if logo_url %}<img src="{{ logo_url }}" alt="{{ business_name }}" style="height:36px;max-width:140px;object-fit:contain;margin-bottom:8px;display:block;">{% endif %}
+      <h1 class="doc-title">{{ title }}</h1>
+      <div class="business-name">{{ business_name }}</div>
+    </div>
+    <div class="doc-header-right">
+      {% if header_text %}<div class="header-text">{{ header_text }}</div>{% endif %}
+      <div>{{ date_str }}</div>
+    </div>
+  </div>
+
+  <!-- Document body -->
+  <div class="doc-body">
+    {{ body_html }}
+  </div>
+
+  <!-- Signature -->
+  {% if signature_name or signature_title or signature_contact %}
+  <div class="signature">
+    {% if signature_name %}<div class="sig-name">{{ signature_name }}</div>{% endif %}
+    {% if signature_title %}<div class="sig-title">{{ signature_title }}</div>{% endif %}
+    {% if signature_contact %}<div class="sig-contact">{{ signature_contact }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Footer -->
+  <div class="doc-footer">
+    {% if footer_text %}{{ footer_text }}{% else %}Generated by <strong>Zilo Chat</strong> · {{ business_name }}{% endif %}
+    &nbsp;·&nbsp; {{ date_str }}
+  </div>
+
+</div>
+</body>
+</html>"""
+
+
+_HTML_TEMPLATE_MINIMAL = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --accent: {{ primary_color }};
+    --ink:    #0F172A;
+    --body:   #334155;
+    --muted:  #94A3B8;
+    --rule:   #E2E8F0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.75;
+    color: var(--body);
+    background: #F8FAFC;
+  }
+  .page {
+    max-width: 760px;
+    margin: 0 auto;
+    background: #fff;
+    padding: 56px 68px;
+    overflow-x: hidden;
+  }
+  .doc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 40px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .doc-header-left .doc-title {
+    font-size: 20pt;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.02em;
+  }
+  .doc-header-left .business-name {
+    font-size: 9pt;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .doc-header-right {
+    text-align: right;
+    font-size: 8.5pt;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  h1 { display: none; }
+  h2 {
+    font-size: 9.5pt;
+    font-weight: 600;
+    color: var(--ink);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-top: 30px;
+    margin-bottom: 8px;
+  }
+  h3 {
+    font-size: 10.5pt;
+    font-weight: 600;
+    color: var(--ink);
+    margin-top: 20px;
+    margin-bottom: 5px;
+  }
+  h4 {
+    font-size: 10pt;
+    font-weight: 500;
+    color: var(--accent);
+    margin-top: 14px;
+    margin-bottom: 3px;
+  }
+  p { margin-bottom: 10px; }
+  ul, ol { margin: 5px 0 10px 20px; }
+  li { margin-bottom: 3px; }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 20px 0; }
+  strong { color: var(--ink); font-weight: 600; }
+  .table-wrap { width: 100%; overflow-x: hidden; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 18px;
+    font-size: 9.5pt;
+    table-layout: fixed;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  thead th {
+    padding: 9px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--ink);
+    border-bottom: 1.5px solid var(--ink);
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  tbody tr { border-bottom: 1px solid var(--rule); }
+  tbody td {
+    padding: 8px 12px;
+    vertical-align: top;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  pre, code {
+    font-family: 'Courier New', monospace;
+    font-size: 8.5pt;
+    background: #F1F5F9;
+    border-radius: 3px;
+    padding: 2px 5px;
+  }
+  pre { padding: 10px 14px; margin: 10px 0; display: block; }
+  .signature {
+    margin-top: 36px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    width: 240px;
+  }
+  .sig-name { font-size: 10pt; font-weight: 600; color: var(--ink); }
+  .sig-title, .sig-contact { font-size: 9pt; color: var(--muted); }
+  .doc-footer {
+    margin-top: 44px;
+    padding-top: 10px;
+    border-top: 1px solid var(--rule);
+    font-size: 8pt;
+    color: var(--muted);
+    text-align: center;
+  }
+  @media print { body { background: #fff; } .page { padding: 0; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="doc-header">
+    <div class="doc-header-left">
+      {% if logo_url %}<img src="{{ logo_url }}" alt="{{ business_name }}" style="height:28px;max-width:120px;object-fit:contain;margin-bottom:6px;display:block;">{% endif %}
+      <div class="doc-title">{{ title }}</div>
+      <div class="business-name">{{ business_name }}</div>
+    </div>
+    <div class="doc-header-right">
+      {% if header_text %}<div>{{ header_text }}</div>{% endif %}
+      <div>{{ date_str }}</div>
+    </div>
+  </div>
+  <div class="doc-body">{{ body_html }}</div>
+  {% if signature_name or signature_title or signature_contact %}
+  <div class="signature">
+    {% if signature_name %}<div class="sig-name">{{ signature_name }}</div>{% endif %}
+    {% if signature_title %}<div class="sig-title">{{ signature_title }}</div>{% endif %}
+    {% if signature_contact %}<div class="sig-contact">{{ signature_contact }}</div>{% endif %}
+  </div>
+  {% endif %}
+  <div class="doc-footer">
+    {% if footer_text %}{{ footer_text }}{% else %}Prepared by <strong>{{ business_name }}</strong> · Powered by Zilo Chat{% endif %}
+    &nbsp;·&nbsp; {{ date_str }}
+  </div>
+</div>
+</body>
+</html>"""
+
+
+_HTML_TEMPLATE_EXECUTIVE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Source+Sans+3:wght@400;600&display=swap">
+<style>
+  :root {
+    --primary:  {{ primary_color }};
+    --ink:      #0F172A;
+    --body:     #1E293B;
+    --muted:    #64748B;
+    --rule:     #CBD5E1;
+    --dark-hdr: #0F172A;
+    --table-alt:#F8FAFC;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Source Sans 3', 'Helvetica Neue', sans-serif;
+    font-size: 11pt;
+    line-height: 1.7;
+    color: var(--body);
+    background: #fff;
+  }
+  .page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 0 52px 0;
+    overflow-x: hidden;
+  }
+  .doc-header {
+    position: relative;
+    background: var(--dark-hdr);
+    color: #fff;
+    padding: 36px 52px 28px;
+    margin-bottom: 36px;
+    overflow: hidden;
+  }
+  .doc-header-bg {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center;
+    {% if hero_image_url %}background-image: url('{{ hero_image_url }}');{% endif %}
+    opacity: 0.22;
+  }
+  .doc-header-overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(15,23,42,0.97) 0%, rgba(15,23,42,0.80) 100%);
+  }
+  .doc-header-content {
+    position: relative;
+    z-index: 2;
+  }
+  .doc-header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .doc-header-left .doc-title {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 24pt;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1.2;
+    margin-bottom: 6px;
+  }
+  .doc-header-left .business-name {
+    font-size: 10pt;
+    color: rgba(255,255,255,0.5);
+  }
+  .doc-header-right {
+    text-align: right;
+    font-size: 9pt;
+    color: rgba(255,255,255,0.5);
+    line-height: 1.8;
+  }
+  .doc-header-right .header-text {
+    font-weight: 600;
+    color: var(--primary);
+  }
+  .doc-header-divider {
+    border: none;
+    border-top: 1px solid rgba(255,255,255,0.12);
+    margin-top: 20px;
+  }
+  .doc-body { padding: 0 52px; }
+  h1 { display: none; }
+  h2 {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 15pt;
+    font-weight: 600;
+    color: var(--ink);
+    margin-top: 32px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid var(--primary);
+  }
+  h3 {
+    font-size: 12pt;
+    font-weight: 600;
+    color: var(--ink);
+    margin-top: 22px;
+    margin-bottom: 6px;
+  }
+  h4 {
+    font-size: 10.5pt;
+    font-weight: 600;
+    color: var(--primary);
+    margin-top: 15px;
+    margin-bottom: 4px;
+  }
+  p { margin-bottom: 10px; }
+  ul, ol { margin: 6px 0 12px 22px; }
+  li { margin-bottom: 4px; }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 22px 0; }
+  strong { color: var(--ink); font-weight: 600; }
+  .table-wrap { width: 100%; overflow-x: hidden; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 20px;
+    font-size: 10pt;
+    table-layout: fixed;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  thead tr { background: var(--dark-hdr); }
+  thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    color: #fff;
+    letter-spacing: 0.02em;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  tbody tr { border-bottom: 1px solid var(--rule); }
+  tbody tr:nth-child(even) { background: var(--table-alt); }
+  tbody td {
+    padding: 9px 14px;
+    vertical-align: top;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  pre, code {
+    font-family: 'Courier New', monospace;
+    font-size: 9pt;
+    background: #F1F5F9;
+    border-radius: 4px;
+    padding: 2px 6px;
+  }
+  pre { padding: 12px 16px; margin: 12px 0; display: block; }
+  .signature {
+    margin: 40px 52px 0;
+    padding-top: 16px;
+    border-top: 2px solid var(--primary);
+    width: 260px;
+  }
+  .sig-name { font-size: 11pt; font-weight: 600; color: var(--ink); margin-bottom: 2px; }
+  .sig-title, .sig-contact { font-size: 9.5pt; color: var(--muted); }
+  .doc-footer {
+    margin: 44px 52px 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--rule);
+    font-size: 8.5pt;
+    color: var(--muted);
+    text-align: center;
+  }
+  @media print { .page { padding-bottom: 0; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="doc-header">
+    <div class="doc-header-bg"></div>
+    <div class="doc-header-overlay"></div>
+    <div class="doc-header-content">
+      <div class="doc-header-top">
+        <div class="doc-header-left">
+          {% if logo_url %}<img src="{{ logo_url }}" alt="{{ business_name }}" style="height:32px;max-width:130px;object-fit:contain;margin-bottom:10px;display:block;filter:brightness(0) invert(1);opacity:0.9;">{% endif %}
+          <div class="doc-title">{{ title }}</div>
+          <div class="business-name">{{ business_name }}</div>
+        </div>
+        <div class="doc-header-right">
+          {% if header_text %}<div class="header-text">{{ header_text }}</div>{% endif %}
+          <div>{{ date_str }}</div>
+        </div>
+      </div>
+      <hr class="doc-header-divider">
+    </div>
+  </div>
+  <div class="doc-body">{{ body_html }}</div>
+  {% if signature_name or signature_title or signature_contact %}
+  <div class="signature">
+    {% if signature_name %}<div class="sig-name">{{ signature_name }}</div>{% endif %}
+    {% if signature_title %}<div class="sig-title">{{ signature_title }}</div>{% endif %}
+    {% if signature_contact %}<div class="sig-contact">{{ signature_contact }}</div>{% endif %}
+  </div>
+  {% endif %}
+  <div class="doc-footer">
+    {% if footer_text %}{{ footer_text }}{% else %}Generated by <strong>Zilo Chat</strong> · {{ business_name }}{% endif %}
+    &nbsp;·&nbsp; {{ date_str }}
+  </div>
+</div>
+</body>
+</html>"""
+
+
+_TEMPLATE_MAP = {
+    "professional": _HTML_TEMPLATE,
+    "minimal":      _HTML_TEMPLATE_MINIMAL,
+    "executive":    _HTML_TEMPLATE_EXECUTIVE,
+}
+
+
+def _font_stack_for_style(font_style: str) -> tuple[str, str]:
+    """Return (google_font_name, css_generic_stack)."""
+    s = (font_style or "").lower()
+    if s in ("serif", "classic"):
+        return "Libre Baskerville", "Georgia, 'Times New Roman', serif"
+    if s == "modern":
+        return "DM Sans", "'Helvetica Neue', Arial, sans-serif"
+    if s == "minimal":
+        return "Inter", "system-ui, sans-serif"
+    # default sans-serif / professional
+    return "Inter", "'Helvetica Neue', Arial, sans-serif"
+
+
+def generate_html_document(
+    markdown_content: str,
+    title: str = "Document",
+    business_name: str = "",
+    style: Optional[Dict[str, Any]] = None,
+    template: str = "professional",
+    hero_image_url: Optional[str] = None,
+) -> str:
+    """Render the document as a self-contained HTML string for preview or WeasyPrint."""
+    from jinja2 import Template
+
+    style = style or {}
+    primary_color   = _safe_hex(style.get("primary_color", ""), "#4F46E5")
+    secondary_color = _safe_hex(style.get("secondary_color", ""), "#EEF2FF")
+    google_font, font_stack = _font_stack_for_style(style.get("font_style", ""))
+
+    # Logo from brand kit — shown in header, never duplicated in body
+    logo_url: str = style.get("logo_url", "") or style.get("default_logo_url", "") or ""
+
+    # Convert markdown body (strip leading h1 — title shown in header)
+    body_md = re.sub(r"^\s*#[^#][^\n]*\n?", "", markdown_content, count=1).strip()
+    body_html = _md_to_html(body_md)
+    # Strip standalone <img> paragraphs at the start of the body — these are logo
+    # images the AI occasionally places in the markdown. They belong in the header,
+    # not floating in the middle of the document.
+    body_html = re.sub(r"^\s*<p>\s*<img[^>]+>\s*</p>\s*", "", body_html, count=3)
+    # Wrap every <table> in a .table-wrap div so long rows never overflow the page
+    body_html = re.sub(r"(<table>)", r'<div class="table-wrap">\1', body_html)
+    body_html = re.sub(r"(</table>)", r"\1</div>", body_html)
+
+    date_fmt = style.get("date_format", "") or "DD Month YYYY"
+    now = datetime.utcnow()
+    if "YYYY" in date_fmt and "Month" in date_fmt:
+        date_str = now.strftime("%-d %B %Y") if os.name != "nt" else now.strftime("%d %B %Y").lstrip("0")
+    elif "MM/DD/YYYY" in date_fmt:
+        date_str = now.strftime("%m/%d/%Y")
+    elif "DD/MM/YYYY" in date_fmt:
+        date_str = now.strftime("%d/%m/%Y")
+    else:
+        date_str = now.strftime("%d %B %Y")
+
+    tmpl_str = _TEMPLATE_MAP.get(template, _HTML_TEMPLATE)
+    tmpl = Template(tmpl_str)
+    return tmpl.render(
+        title=title,
+        business_name=business_name or "My Business",
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+        google_font=google_font,
+        font_stack=font_stack,
+        header_text=style.get("header_text", ""),
+        footer_text=style.get("footer_text", ""),
+        signature_name=style.get("signature_name", ""),
+        signature_title=style.get("signature_title", ""),
+        signature_contact=style.get("signature_contact", ""),
+        date_str=date_str,
+        body_html=body_html,
+        hero_image_url=hero_image_url or "",
+        logo_url=logo_url,
+    )
+
+
+def generate_pdf_from_html(
+    html: str,
+    filename: Optional[str] = None,
+) -> str:
+    """Convert HTML string to PDF.
+
+    Primary:  Playwright/Chromium — full CSS support, images, gradients, custom fonts.
+    Fallback: WeasyPrint — used if Playwright is unavailable.
+    """
+    filename = filename or f"zilo_{uuid.uuid4().hex[:8]}.pdf"
+    if not filename.endswith(".pdf"):
+        filename += ".pdf"
+    filepath = TEMP_DIR / filename
+
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page(viewport={"width": 1200, "height": 900})
+            # `load` waits for stylesheets and web fonts to finish loading
+            page.set_content(html, wait_until="load")
+            page.pdf(
+                path=str(filepath),
+                format="A4",
+                print_background=True,
+                margin={"top": "0mm", "right": "0mm", "bottom": "0mm", "left": "0mm"},
+            )
+            browser.close()
+        return str(filepath)
+    except Exception:
+        # WeasyPrint fallback — works without Chromium installed
+        import weasyprint
+        weasyprint.HTML(string=html).write_pdf(str(filepath))
+        return str(filepath)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DOCX  (python-docx)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_docx(markdown_content: str, filename: str | None = None) -> str:
+def generate_docx(
+    markdown_content: str,
+    filename: str | None = None,
+    business_name: str = "",
+    style: dict | None = None,
+) -> str:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.shared import Cm, Pt, RGBColor
+
+    style = style or {}
 
     filename = filename or f"zilo_{uuid.uuid4().hex[:8]}.docx"
     if not filename.endswith(".docx"):
@@ -295,6 +1076,17 @@ def generate_docx(markdown_content: str, filename: str | None = None) -> str:
     filepath = TEMP_DIR / filename
 
     doc = Document()
+
+    # ── colour palette — use saved brand colors when available ────────────
+    PRIMARY_HEX = _safe_hex(style.get("primary_color", ""), "#4F46E5")
+    SECONDARY_HEX = _safe_hex(style.get("secondary_color", ""), "#EEF2FF")
+    pr = int(PRIMARY_HEX[1:3], 16)
+    pg = int(PRIMARY_HEX[3:5], 16)
+    pb = int(PRIMARY_HEX[5:7], 16)
+    ACCENT = RGBColor(pr, pg, pb)
+
+    # ── fonts — serif vs sans-serif based on style profile ────────────────
+    BODY_FONT, BOLD_FONT = _resolve_fonts(style.get("font_style", ""))
 
     # Page margins
     for section in doc.sections:
@@ -314,14 +1106,14 @@ def generate_docx(markdown_content: str, filename: str | None = None) -> str:
         pPr.append(spg)
 
     # ── helper: add horizontal rule ─────────────────────────────────────────
-    def _add_rule(para):
+    def _add_rule(para, color: str = "E5E7EB"):
         pPr = para._p.get_or_add_pPr()
         pBdr = OxmlElement("w:pBdr")
         bottom = OxmlElement("w:bottom")
         bottom.set(qn("w:val"), "single")
         bottom.set(qn("w:sz"), "4")
         bottom.set(qn("w:space"), "1")
-        bottom.set(qn("w:color"), "E5E7EB")
+        bottom.set(qn("w:color"), color)
         pBdr.append(bottom)
         pPr.append(pBdr)
 
@@ -335,31 +1127,45 @@ def generate_docx(markdown_content: str, filename: str | None = None) -> str:
         shd.set(qn("w:fill"), hex_color)
         tcPr.append(shd)
 
+    # ── Header text (from style profile) ──────────────────────────────────
+    header_text = (style.get("header_text") or "").strip()
+    if header_text:
+        hp = doc.add_paragraph()
+        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = hp.add_run(header_text)
+        run.font.size = Pt(8)
+        run.font.color.rgb = RGBColor(0x6B, 0x72, 0x80)
+        run.font.name = BODY_FONT
+        _spacing(hp, before=0, after=60)
+
     html = _md_to_html(markdown_content)
     blocks = _parse_blocks(html)
 
-    _OL_CTR = 0
     for kind, raw in blocks:
         if kind == "h1":
             p = doc.add_heading(_strip(raw), level=1)
             p.runs[0].font.color.rgb = RGBColor(0x11, 0x18, 0x27)
             p.runs[0].font.size = Pt(22)
-            _add_rule(p)
+            p.runs[0].font.name = BOLD_FONT
+            _add_rule(p, PRIMARY_HEX.lstrip("#"))
             _spacing(p, before=0, after=120)
         elif kind == "h2":
             p = doc.add_heading(_strip(raw), level=2)
             p.runs[0].font.color.rgb = RGBColor(0x11, 0x18, 0x27)
             p.runs[0].font.size = Pt(16)
+            p.runs[0].font.name = BOLD_FONT
             _add_rule(p)
             _spacing(p, before=240, after=80)
         elif kind == "h3":
             p = doc.add_heading(_strip(raw), level=3)
             p.runs[0].font.size = Pt(13)
+            p.runs[0].font.name = BOLD_FONT
             _spacing(p, before=160, after=60)
         elif kind == "h4":
             p = doc.add_heading(_strip(raw), level=4)
             p.runs[0].font.size = Pt(11)
-            p.runs[0].font.color.rgb = RGBColor(0x4F, 0x46, 0xE5)
+            p.runs[0].font.color.rgb = ACCENT
+            p.runs[0].font.name = BOLD_FONT
         elif kind == "hr":
             p = doc.add_paragraph()
             _add_rule(p)
@@ -370,20 +1176,22 @@ def generate_docx(markdown_content: str, filename: str | None = None) -> str:
                 run.font.name = "Courier New"
                 run.font.size = Pt(9)
                 run.font.color.rgb = RGBColor(0x1E, 0x29, 0x3B)
-            # light-gray shading for code block paragraph
             _shade_cell_like_para = OxmlElement("w:pPr")
             shd = OxmlElement("w:shd")
             shd.set(qn("w:val"), "clear")
             shd.set(qn("w:color"), "auto")
             shd.set(qn("w:fill"), "F3F4F6")
-            rPr = OxmlElement("w:rPr")
             _shade_cell_like_para.append(shd)
             p._p.insert(0, _shade_cell_like_para)
         elif kind == "ul":
             p = doc.add_paragraph(raw, style="List Bullet")
+            for run in p.runs:
+                run.font.name = BODY_FONT
             _spacing(p, before=0, after=40)
         elif kind == "ol":
             p = doc.add_paragraph(raw, style="List Number")
+            for run in p.runs:
+                run.font.name = BODY_FONT
             _spacing(p, before=0, after=40)
         elif kind == "table":
             rows = _parse_table(raw)
@@ -398,27 +1206,69 @@ def generate_docx(markdown_content: str, filename: str | None = None) -> str:
                         cell.text = text
                         para = cell.paragraphs[0]
                         if i == 0:
-                            # Header row
-                            _shade_cell(cell, "EEF2FF")
+                            _shade_cell(cell, SECONDARY_HEX.lstrip("#"))
                             if para.runs:
                                 para.runs[0].bold = True
                                 para.runs[0].font.color.rgb = RGBColor(0x11, 0x18, 0x27)
+                                para.runs[0].font.name = BOLD_FONT
                         elif i % 2 == 0:
                             _shade_cell(cell, "F9FAFB")
+                        else:
+                            for run in para.runs:
+                                run.font.name = BODY_FONT
                 doc.add_paragraph()
         elif kind == "p":
             p = doc.add_paragraph(raw)
+            for run in p.runs:
+                run.font.name = BODY_FONT
             _spacing(p, before=0, after=80)
+
+    # ── Signature block (from style profile) ─────────────────────────────
+    sig_name = (style.get("signature_name") or "").strip()
+    sig_title = (style.get("signature_title") or "").strip()
+    sig_contact = (style.get("signature_contact") or "").strip()
+    if sig_name or sig_title or sig_contact:
+        doc.add_paragraph()
+        sig_rule = doc.add_paragraph()
+        _add_rule(sig_rule, PRIMARY_HEX.lstrip("#"))
+        _spacing(sig_rule, before=200, after=80)
+        if sig_name:
+            sp = doc.add_paragraph(sig_name)
+            for run in sp.runs:
+                run.bold = True
+                run.font.size = Pt(11)
+                run.font.color.rgb = RGBColor(0x11, 0x18, 0x27)
+                run.font.name = BOLD_FONT
+            _spacing(sp, before=0, after=20)
+        if sig_title:
+            sp = doc.add_paragraph(sig_title)
+            for run in sp.runs:
+                run.font.size = Pt(9.5)
+                run.font.color.rgb = RGBColor(0x6B, 0x72, 0x80)
+                run.font.name = BODY_FONT
+            _spacing(sp, before=0, after=10)
+        if sig_contact:
+            sp = doc.add_paragraph(sig_contact)
+            for run in sp.runs:
+                run.font.size = Pt(9.5)
+                run.font.color.rgb = RGBColor(0x6B, 0x72, 0x80)
+                run.font.name = BODY_FONT
+            _spacing(sp, before=0, after=10)
 
     # ── Footer ───────────────────────────────────────────────────────────────
     doc.add_paragraph()
-    footer_p = doc.add_paragraph(
-        f"Generated by Zilo Chat · {datetime.utcnow().strftime('%d %b %Y, %H:%M')} UTC"
-    )
+    footer_rule = doc.add_paragraph()
+    _add_rule(footer_rule)
+    _spacing(footer_rule, before=200, after=60)
+    footer_text = (style.get("footer_text") or "").strip()
+    footer_line = footer_text or f"Generated by Zilo Chat · {business_name or ''}"
+    footer_line += f" · {datetime.utcnow().strftime('%d %b %Y')}"
+    footer_p = doc.add_paragraph(footer_line)
     footer_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if footer_p.runs:
         footer_p.runs[0].font.size = Pt(8.5)
         footer_p.runs[0].font.color.rgb = RGBColor(0x6B, 0x72, 0x80)
+        footer_p.runs[0].font.name = BODY_FONT
 
     doc.save(str(filepath))
     return str(filepath)

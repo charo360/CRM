@@ -72,6 +72,32 @@ You are a senior business operator with full access to the owner's CRM data. You
 
 ---
 
+# Inline Forms — Collect Structured User Input Beautifully
+
+When you need multiple pieces of structured input from the user (e.g. quantities, prices, MOQs, variants for a proposal), **do not ask as a numbered list in plain text**. Instead, embed an inline form that the UI will render as real input fields.
+
+**Format:** Place the following block anywhere in your reply:
+
+```
+:::form
+{"title": "Fill in product details", "fields": [
+  {"id": "blue_tshirt_qty", "label": "Blue T-Shirt — Stock qty", "placeholder": "e.g. 500", "type": "number", "unit": "units"},
+  {"id": "blue_tshirt_price", "label": "Blue T-Shirt — Wholesale price", "placeholder": "e.g. $8.50", "type": "text"},
+  {"id": "shoes_moq", "label": "Shoes — Min order qty", "placeholder": "e.g. 20", "type": "number", "unit": "pairs"},
+  {"id": "notes", "label": "Additional notes", "placeholder": "Any variants, colours, sizes...", "type": "textarea"}
+]}
+:::
+```
+
+**Field types:** `"text"` (default), `"number"`, `"textarea"`
+**Rules:**
+- Use this only when you genuinely need ≥ 3 structured values from the user
+- Keep labels short and scannable (under 40 chars)
+- Always write a `title` so the user knows what the form is for
+- The user's answers will be sent back to you as "Label: value" pairs — use them to complete the task immediately
+
+---
+
 # Intelligence Rules
 - **Always use tools first. Never ask the user for information you can fetch yourself.**
   - Business name, owner name, phone, country, currency → `get_owner_info`
@@ -570,8 +596,16 @@ async def run_turn(
                 except Exception as e:
                     logger.warning(f"[assistant.audit] failed to write log: {e}")
 
+            # Strip heavyweight fields (e.g. full HTML previews) from the LLM
+            # context message to avoid wasting tokens. They stay in `steps` so
+            # the frontend receives them for inline rendering.
+            _LLM_STRIP_FIELDS = {"html_preview", "content_md"}
+            llm_result = (
+                {k: v for k, v in capped.items() if k not in _LLM_STRIP_FIELDS}
+                if isinstance(capped, dict) else capped
+            )
             try:
-                tool_payload = json.dumps(capped, default=str)
+                tool_payload = json.dumps(llm_result, default=str)
             except (TypeError, ValueError) as ser_err:
                 logger.exception("[orchestrator] tool result not JSON-serializable (tool=%s)", name)
                 tool_payload = json.dumps(
@@ -807,8 +841,13 @@ async def run_turn_stream(
                 except Exception:
                     pass
 
+            _LLM_STRIP_FIELDS = {"html_preview", "content_md"}
+            llm_result = (
+                {k: v for k, v in capped.items() if k not in _LLM_STRIP_FIELDS}
+                if isinstance(capped, dict) else capped
+            )
             try:
-                tool_payload = json.dumps(capped, default=str)
+                tool_payload = json.dumps(llm_result, default=str)
             except Exception:
                 tool_payload = json.dumps({"error": "Tool output could not be serialized."}, default=str)
             messages.append({"role": "tool", "tool_call_id": tc.get("id") or tc_id, "content": tool_payload})

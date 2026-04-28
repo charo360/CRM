@@ -97,6 +97,20 @@ def _design_or_creative_document_intent(msg_lower: str) -> bool:
     return False
 
 
+def _is_text_document_intent(msg_lower: str) -> bool:
+    """True when the user clearly wants a written document — never route this to creative."""
+    markers = (
+        "proposal", "business plan", "pitch deck", "executive summary",
+        "partnership", "investment memo", "press release", "meeting minutes",
+        "contract", "letter of intent", "sales letter", "company profile",
+        "onboarding letter", "welcome letter", "write a report",
+        "business document", "formal document", "write a", "draft a",
+        "create a document", "brochure", "presentation", "powerpoint", "pptx",
+        "slide deck",
+    )
+    return any(m in msg_lower for m in markers)
+
+
 def _prefer_creative_agent(msg_lower: str, agent_registry: Dict[str, Any]) -> str:
     """Pick a specialist for graphics / PDF / decks — prefer the creative agent when registered."""
     if "creative" in agent_registry:
@@ -189,8 +203,8 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "post graphic", "social graphic", "instagram graphic", "facebook graphic",
         "caption", "hashtag", "content idea", "content strategy",
         "what to post", "when to post", "best time to post",
-        # design / visual
-        "design", "graphic", "create a graphic", "make a graphic",
+        # design / visual — pure graphics only, NOT text documents
+        "graphic", "create a graphic", "make a graphic",
         "ad design", "design the ad", "design an ad", "design my ad",
         "ad graphic", "ad image", "ad creative", "social graphic",
         "create a flyer", "make a flyer", "make a poster", "banner for",
@@ -199,9 +213,6 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "graphic design", "visual design", "creative design", "marketing design",
         "promotional graphic", "ad visual", "social visual", "post graphic",
         "create visual", "make visual", "design visual", "visual content",
-        "pdf design", "presentation design", "slide design", "deck design",
-        "powerpoint design", "create presentation", "make presentation",
-        "business document", "proposal design", "brochure design",
         "create post", "make a post", "build a post", "generate a post",
     ],
 
@@ -391,6 +402,7 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
     "document": [
         "write a document", "create a document", "draft a document",
         "business proposal", "write a proposal", "draft a proposal",
+        "proposal for", "proposal to", "a proposal",
         "pitch deck", "investor pitch", "write a pitch", "pitch presentation",
         "business plan", "write a business plan", "draft a plan",
         "executive summary", "write an executive summary",
@@ -402,10 +414,14 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "letter of intent", "loi", "write a letter of intent",
         "client onboarding", "onboarding letter", "welcome letter",
         "sales letter", "write a sales letter",
-        "report", "write a report", "market report", "competitor report",
+        "write a report", "market report", "competitor report",
         "business document", "formal document", "professional document",
         "write a letter", "draft a letter", "business letter",
         "company profile", "write a company profile",
+        "presentation", "powerpoint", "power point", "pptx", "ppt",
+        "slide deck", "slideshow", "slides for", "create presentation",
+        "make a presentation", "build a presentation", "brochure",
+        "proposal document", "proposal pdf", "proposal word",
     ],
     "analytics": [
         "analytics", "dashboard", "performance report", "kpi",
@@ -457,9 +473,6 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "social scheduler", "schedule instagram", "schedule facebook",
         "post schedule", "when to post", "content plan",
         "social media plan", "weekly post", "content strategy",
-        "powerpoint", "power point", "ppt ", " ppt", "pptx",
-        "slide deck", "presentation", "slides for",
-        "create presentation", "slide show", "slideshow",
     ],
     "whatsapp": [
         "whatsapp setup", "whatsapp connection", "connect whatsapp",
@@ -524,6 +537,11 @@ _DESIGN_EXIT_MARKERS = (
     "show my analytics", "show my invoices", "list my customers", "list my orders",
     "my revenue", "my pipeline", "create a customer", "create an order",
     "send a broadcast", "schedule a followup",
+    # Document requests always exit creative
+    "write a proposal", "create a proposal", "draft a proposal",
+    "write a document", "create a document", "draft a document",
+    "write a report", "business plan", "business proposal",
+    "partnership proposal", "pitch deck", "presentation",
 )
 
 
@@ -563,6 +581,12 @@ async def route_to_agent(
         and (prev_agent in _creative_agents or design_flow_active)
     )
     if is_active_creative:
+        # Never trap document/proposal requests inside a sticky creative flow.
+        if "document" in agent_registry and _is_text_document_intent(msg_lower):
+            logger.info(
+                "[IntentRouter] leaving creative → document (text document intent during active creative session)"
+            )
+            return "document"
         if not _is_explicit_design_exit(msg_lower):
             logger.info(
                 "[IntentRouter] sticky → creative (active creative session; "
@@ -577,8 +601,13 @@ async def route_to_agent(
         logger.info(f"[IntentRouter] sticky → {prev_agent} (continuation: {message!r})")
         return prev_agent
 
-    # Visual / creative intent → creative agent
-    if "creative" in agent_registry and _design_or_creative_document_intent(msg_lower):
+    # Text document intent → document agent (must check BEFORE creative override)
+    if "document" in agent_registry and _is_text_document_intent(msg_lower):
+        logger.info("[IntentRouter] forced → document (text document/proposal intent)")
+        return "document"
+
+    # Visual / creative intent → creative agent (only for pure graphics/social posts)
+    if "creative" in agent_registry and _design_or_creative_document_intent(msg_lower) and not _is_text_document_intent(msg_lower):
         logger.info("[IntentRouter] forced → creative (visual/layout/deck intent)")
         return "creative"
 
