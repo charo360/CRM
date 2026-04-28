@@ -51,8 +51,9 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
   };
 
   const kindLabel: Record<string, string> = { pdf: "PDF", docx: "Word document", pptx: "PowerPoint presentation" };
+  const toolHint: Record<string, string> = { pdf: "create_business_document", docx: "create_business_document", pptx: "create_presentation" };
   const templatePrompt = cloned
-    ? `Please generate a new ${kindLabel[cloned.asset_kind] ?? "document"} following the exact same format, structure, and style as my template called "${cloned.name}". Match the layout, tone, and sections from that template.`
+    ? `I want to generate a new ${kindLabel[cloned.asset_kind] ?? "document"} using my saved template "${cloned.name}" as the style reference (file: ${resolveMediaUrl(cloned.file_url)}). This is a custom document from my Documents library — do NOT search Orshot for it. Use the ${toolHint[cloned.asset_kind] ?? "create_business_document"} tool to produce a new document that matches the same sections, layout, tone, and professional structure as that template. Ask me what content to fill in.`
     : "";
 
   return (
