@@ -293,39 +293,53 @@ def _mk_router(db, get_current_user):
             result: Optional[Dict[str, Any]] = None
             reply_text = ""
 
-            # Send SSE keepalive comments every 15 s so Render's proxy doesn't
-            # close the connection during long tool calls (e.g. web_search).
-            _KEEPALIVE_SEC = 15
+            # Run the stream in a background task and read events from a queue.
+            # This lets us send SSE keepalive comments every 15 s without
+            # cancelling the in-progress LLM/tool work (which would happen if we
+            # used asyncio.wait_for directly on __anext__()).
             import asyncio as _asyncio
+            _KEEPALIVE_SEC = 15
+            _queue: _asyncio.Queue[Optional[Dict[str, Any]]] = _asyncio.Queue()
 
+            async def _feed() -> None:
+                try:
+                    async for _ev in run_turn_stream(
+                        db=db, user=user, history=history, user_message=msg,
+                        model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
+                        auto_approve_destructive=bool(body.get("auto_approve")),
+                        conversation_id=conv_id, agent_id=agent_resolved,
+                    ):
+                        await _queue.put(_ev)
+                except Exception as _exc:
+                    await _queue.put({"type": "error", "message": str(_exc)})
+                finally:
+                    await _queue.put(None)  # sentinel
+
+            _task = _asyncio.create_task(_feed())
             try:
-                _gen = run_turn_stream(
-                    db=db, user=user, history=history, user_message=msg,
-                    model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
-                    auto_approve_destructive=bool(body.get("auto_approve")),
-                    conversation_id=conv_id, agent_id=agent_resolved,
-                )
                 while True:
                     try:
-                        event = await _asyncio.wait_for(_gen.__anext__(), timeout=_KEEPALIVE_SEC)
+                        item = await _asyncio.wait_for(_queue.get(), timeout=_KEEPALIVE_SEC)
                     except _asyncio.TimeoutError:
                         yield ": keepalive\n\n"
                         continue
-                    except StopAsyncIteration:
+                    if item is None:
                         break
-                    etype = event.get("type")
+                    etype = item.get("type")
                     if etype == "tool_start":
-                        yield "data: " + json.dumps({"type": "tool_start", "tool": event.get("tool", "")}) + "\n\n"
+                        yield "data: " + json.dumps({"type": "tool_start", "tool": item.get("tool", "")}) + "\n\n"
                     elif etype == "token":
-                        token = event.get("text", "")
+                        token = item.get("text", "")
                         reply_text += token
                         yield "data: " + json.dumps({"type": "token", "text": token}) + "\n\n"
                     elif etype == "done":
-                        result = event
+                        result = item
                     elif etype == "error":
-                        yield "data: " + json.dumps({"type": "error", "message": event.get("message", "Unknown error")}) + "\n\n"
+                        yield "data: " + json.dumps({"type": "error", "message": item.get("message", "Unknown error")}) + "\n\n"
+                        _task.cancel()
                         return
             except Exception as e:
+                _task.cancel()
                 logger.exception("[assistant.chat/stream] run_turn_stream failure")
                 yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
                 return
