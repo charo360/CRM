@@ -21,18 +21,13 @@ logger = logging.getLogger(__name__)
 # ── Model registry ────────────────────────────────────────────────────────────
 # id ↔ provider + upstream model name. id is what the UI passes.
 MODEL_REGISTRY: Dict[str, Dict[str, str]] = {
-    "gpt-5":                   {"provider": "openai",    "model": "gpt-5",                     "label": "GPT-5 (best)"},
-    "gpt-4.1":                 {"provider": "openai",    "model": "gpt-4.1",                   "label": "GPT-4.1 (smart)"},
-    "gpt-4.1-mini":            {"provider": "openai",    "model": "gpt-4.1-mini",              "label": "GPT-4.1 mini (fast)"},
-    "gpt-4o-mini":             {"provider": "openai",    "model": "gpt-4o-mini",               "label": "GPT-4o mini"},
-    "gpt-4o":                  {"provider": "openai",    "model": "gpt-4o",                    "label": "GPT-4o"},
+    "deepseek-chat":           {"provider": "deepseek",  "model": "deepseek-chat",             "label": "DeepSeek Chat"},
     "claude-sonnet-4.5":       {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929","label": "Claude Sonnet 4.5"},
     "claude-3.5-sonnet":       {"provider": "anthropic", "model": "claude-3-5-sonnet-latest",  "label": "Claude 3.5 Sonnet"},
-    "deepseek-chat":           {"provider": "deepseek",  "model": "deepseek-chat",             "label": "DeepSeek Chat"},
     "grok-4":                  {"provider": "grok",      "model": "grok-4",                    "label": "Grok 4"},
 }
 
-DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "gpt-5")
+DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-chat")
 
 
 def _provider_available(provider: str) -> bool:
@@ -122,10 +117,7 @@ async def _call_openai_compatible(
     }
     if tools:
         payload["tools"] = tools
-        # OpenAI models ignore system-prompt instructions to call tools and answer
-        # from training data instead. "required" forces at least one tool call per
-        # turn, matching the behaviour of DeepSeek/Grok which respect "auto" fine.
-        payload["tool_choice"] = "required" if provider == "openai" else "auto"
+        payload["tool_choice"] = "auto"
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(
