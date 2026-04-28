@@ -442,14 +442,14 @@ def make_design_templates_router(db, user_dep):
 
         # Create the conversation record so the assistant page can load it
         from assistant.models import DEFAULT_MODEL
-        from assistant.agents import resolve_agent_id
+        from assistant.agents import resolve_agent_id, DOCUMENT_AGENT_ID
         await db.assistant_conversations.insert_one({
             "_id": conv_id,
             "user_id": uid,
             "title": f"Template: {doc_name}",
             "model": DEFAULT_MODEL,
             "messages": [],
-            "agent": resolve_agent_id("general"),
+            "agent": resolve_agent_id(DOCUMENT_AGENT_ID),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
         })

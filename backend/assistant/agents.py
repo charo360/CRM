@@ -98,7 +98,7 @@ SOCIAL_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "list_products", "get_product_images",
     "get_analytics_summary", "list_design_library_assets",
     "create_business_document", "create_presentation",
-}) | _ORSHOT_STUDIO_TOOLS
+})
 
 SALES_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_analytics_summary",
@@ -210,7 +210,7 @@ SOCIAL_SCHEDULER_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "list_products",
     "get_analytics_summary", "list_design_library_assets",
     "create_business_document", "create_presentation",
-}) | _ORSHOT_STUDIO_TOOLS
+})
 WHATSAPP_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "send_whatsapp_message",
     "list_customers", "get_customer", "create_broadcast",
@@ -254,6 +254,50 @@ DOCUMENT_TOOLS: FrozenSet[str] = frozenset({
     "generate_document", "create_business_document", "create_presentation",
     "web_search", "get_document_style", "save_document_style",
 })
+
+# General agent: everything EXCEPT Orshot studio and design-specific tools.
+# Creative/design work should go through the dedicated Design or Creative agent.
+_DESIGN_EXCLUSIVE: FrozenSet[str] = frozenset({
+    "list_orshot_templates", "get_orshot_template_fields", "render_orshot_template",
+    "generate_design_background", "recreate_design_with_ai",
+    "note_design_requirement", "verify_design_ready",
+})
+
+GENERAL_TOOLS: FrozenSet[str] = (
+    # Start from document tools as a solid base, then add CRM/ops tools
+    DOCUMENT_TOOLS
+    | frozenset({
+        # CRM write ops
+        "create_customer", "update_customer", "delete_customer",
+        "create_product", "update_product", "delete_product",
+        "update_order_status", "record_sale",
+        # Follow-ups & broadcasts
+        "create_followup", "list_broadcasts", "create_broadcast",
+        # WhatsApp
+        "send_whatsapp_message",
+        # Integrations & team
+        "integrations_status", "list_team",
+        # Design library (read-only — for referencing brand assets in docs)
+        "list_design_library_assets", "get_product_images",
+        # Bookings & automations
+        "list_bookings", "create_booking", "update_booking_status",
+        "list_automations", "create_automation",
+        # Search & memory
+        "search_documents",
+        # Shopify (read)
+        "list_shopify_orders", "list_shopify_products", "get_shopify_analytics",
+        # Stripe
+        "list_stripe_payments", "list_stripe_invoices",
+        # Loyalty & NPS
+        "get_customer_health",
+        # Ad campaign drafts (data, not creative)
+        "save_meta_ads_campaign_draft", "list_meta_ads_campaign_drafts",
+        "save_x_ads_campaign_draft", "list_x_ads_campaign_drafts",
+        # Ad trends (read-only data)
+        "get_meta_ad_trends", "get_tiktok_ad_trends",
+    })
+    - _DESIGN_EXCLUSIVE  # no Orshot or design-flow tools
+)
 
 # ── App integration tool allowlists ───────────────────────────────────────────
 # Shopify syncs into the CRM so sub-agents can reuse CRM tools.
@@ -1878,7 +1922,7 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
     GENERAL_AGENT_ID: {
         "label": "Zilo",
         "description": "General CRM assistant — documents, analytics, anything not covered by a specialist",
-        "allowed_tools": None,           # full tool registry
+        "allowed_tools": GENERAL_TOOLS,   # excludes Orshot/design tools
         "use_default_system_prompt": True,
         "system_prompt": None,
     },
