@@ -399,6 +399,28 @@ def make_design_templates_router(db, user_dep):
         await db[COLLECTION].update_one({"_id": design_id}, {"$set": upd})
         return _ser(await db[COLLECTION].find_one({"_id": design_id}))
 
+    @router.post("/{design_id}/clone")
+    async def clone_template(design_id: str, user=user_dep):
+        """Duplicate a document as a reusable template clone."""
+        uid = _tid(user)
+        original = await db[COLLECTION].find_one({"_id": design_id, "user_id": uid})
+        if not original:
+            raise HTTPException(404, "Design not found")
+        oid = str(uuid.uuid4())
+        now = datetime.utcnow()
+        clone = {
+            k: v for k, v in original.items()
+            if k not in ("_id", "created_at", "updated_at", "conversation_id", "source_tool")
+        }
+        clone["_id"] = oid
+        clone["user_id"] = uid
+        clone["name"] = f"Clone of {original.get('name', 'Document')}"
+        clone["source"] = "clone"
+        clone["created_at"] = now
+        clone["updated_at"] = now
+        await db[COLLECTION].insert_one(clone)
+        return _ser(await db[COLLECTION].find_one({"_id": oid}))
+
     @router.delete("/{design_id}")
     async def delete_template(design_id: str, user=user_dep):
         uid = _tid(user)
