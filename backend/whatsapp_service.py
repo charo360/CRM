@@ -107,6 +107,7 @@ class WhatsAppService:
         self.db = db
         self.base_url = EVOLUTION_API_URL.rstrip("/")
         self._api_key = EVOLUTION_API_KEY
+        self._conn_throttle: Dict[str, float] = {}  # instance -> last processed timestamp
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -685,7 +686,18 @@ class WhatsAppService:
     async def handle_connection_update(self, instance_name: str, data: dict) -> None:
         """Persist connection state changes from Evolution API webhook."""
         try:
+            import time
             state = data.get("state") or (data.get("instance") or {}).get("state", "")
+
+            # Throttle transitional states (connecting/close) to once per 10 s per instance
+            # to prevent Evolution API flood from hammering the DB and logs.
+            if state in ("connecting", "close"):
+                now = time.monotonic()
+                last = self._conn_throttle.get(instance_name, 0.0)
+                if now - last < 10.0:
+                    return
+                self._conn_throttle[instance_name] = now
+
             user = await self.find_user_by_instance(instance_name)
             if not user:
                 logger.warning(f"[handle_connection_update] no user for instance {instance_name}")
@@ -695,6 +707,7 @@ class WhatsAppService:
 
             if state == "open":
                 update["whatsapp.connected"] = True
+                self._conn_throttle.pop(instance_name, None)  # reset throttle on successful connect
                 # Extract phone number if provided
                 wuid = (data.get("instance") or {}).get("wuid", "")
                 if wuid:

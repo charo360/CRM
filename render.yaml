@@ -23,7 +23,8 @@ services:
       # MONGO_URL, OPENAI_API_KEY, JWT_SECRET, IMGBB_API_KEY,
       # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
       # DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GROK_API_KEY,
-      # EVOLUTION_API_URL, EVOLUTION_API_KEY, PUBLIC_BASE_URL
+      # EVOLUTION_API_URL, EVOLUTION_API_KEY, PUBLIC_BASE_URL,
+      # TAVILY_API_KEY  ← required for web search (get free key at https://tavily.com)
 
   - type: web
     name: zilo-qdrant

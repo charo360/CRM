@@ -7534,6 +7534,7 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
 
 # Webhook secret for verifying Evolution API callbacks
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', os.environ.get('EVOLUTION_API_KEY', ''))
+_webhook_log_throttle: dict = {}  # throttle noisy connection.update log lines
 
 @api_router.post("/webhooks/evolution")
 async def evolution_webhook(request: Request):
@@ -7569,8 +7570,20 @@ async def evolution_webhook(request: Request):
         
         # Normalize event name: Evolution API may send "messages.update" or "MESSAGES_UPDATE"
         event = raw_event.lower().replace("_", ".")
-        
-        logging.info(f"Evolution webhook: raw_event={raw_event!r}, normalized={event!r}, instance={instance_name}")
+
+        # Throttle log noise: only log connection.update at most once per 10 s per instance
+        _should_log = True
+        if event == "connection.update":
+            import time as _time
+            _key = f"_webhook_log_{instance_name}"
+            _last = _webhook_log_throttle.get(_key, 0.0)
+            _now = _time.monotonic()
+            if _now - _last < 10.0:
+                _should_log = False
+            else:
+                _webhook_log_throttle[_key] = _now
+        if _should_log:
+            logging.info(f"Evolution webhook: raw_event={raw_event!r}, normalized={event!r}, instance={instance_name}")
         
         
         whatsapp_service = get_whatsapp_service(db)

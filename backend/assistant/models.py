@@ -127,6 +127,8 @@ async def _call_openai_compatible(
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             json=payload,
         )
+        if r.status_code >= 400:
+            logger.error("[models] %s chat/completions %s: %s", provider, r.status_code, r.text[:500])
         r.raise_for_status()
         data = r.json()
 

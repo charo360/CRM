@@ -687,7 +687,7 @@ async def route_to_agent(
             "Choose the most specific agent. Use 'general' only if nothing else fits."
         )
 
-        raw = await ai._call_llm(prompt, model_pref="standard")
+        raw = await ai._call_openai(prompt)
         match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
         if match:
             data = json.loads(match.group())

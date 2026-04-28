@@ -5277,7 +5277,8 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": "query is required"}
     max_results = min(int(args.get("max_results") or 5), 10)
 
-    tavily_key = os.environ.get("TAVILY_API_KEY", "")
+    tavily_key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    tavily_error: str = ""
     if tavily_key:
         # Tavily — purpose-built for AI agents, returns clean snippets
         try:
@@ -5292,22 +5293,56 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
                         "include_answer": True,
                     },
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                results = [
-                    {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
-                    for r in (data.get("results") or [])
-                ]
-                return {
-                    "query": query,
-                    "answer": data.get("answer") or "",
-                    "results": results[:max_results],
-                    "source": "tavily",
-                }
+                if resp.status_code != 200:
+                    tavily_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                    logger.warning("[web_search] Tavily error %s — falling back to DuckDuckGo", tavily_error)
+                else:
+                    data = resp.json()
+                    results = [
+                        {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
+                        for r in (data.get("results") or [])
+                    ]
+                    return {
+                        "query": query,
+                        "answer": data.get("answer") or "",
+                        "results": results[:max_results],
+                        "source": "tavily",
+                    }
+        except httpx.TimeoutException as e:
+            tavily_error = f"Timeout connecting to Tavily: {e}"
+            logger.warning("[web_search] %s — falling back to DuckDuckGo", tavily_error)
+        except httpx.ConnectError as e:
+            tavily_error = f"Connection error reaching Tavily: {e}"
+            logger.warning("[web_search] %s — falling back to DuckDuckGo", tavily_error)
         except Exception as e:
-            logger.warning("[web_search] Tavily failed: %s — falling back to DuckDuckGo", e)
+            tavily_error = str(e)
+            logger.warning("[web_search] Tavily failed: %s — falling back to DuckDuckGo", tavily_error)
 
-    # DuckDuckGo Instant Answer API — no key required, best-effort
+    # DuckDuckGo full search — no key required, uses duckduckgo-search package
+    try:
+        from duckduckgo_search import AsyncDDGS
+        async with AsyncDDGS() as ddgs:
+            raw = await ddgs.text(query, max_results=max_results)
+        results = [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "snippet": r.get("body", ""),
+            }
+            for r in (raw or [])
+        ]
+        if results:
+            return {
+                "query": query,
+                "answer": "",
+                "results": results[:max_results],
+                "source": "duckduckgo",
+            }
+        logger.warning("[web_search] DuckDuckGo returned no results for: %s", query)
+    except Exception as e:
+        logger.warning("[web_search] DuckDuckGo search failed: %s — trying instant answer", e)
+
+    # DuckDuckGo Instant Answer API — last resort
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -5318,14 +5353,12 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
             resp.raise_for_status()
             data = resp.json()
             results = []
-            # AbstractText is the best instant answer
             if data.get("AbstractText"):
                 results.append({
                     "title": data.get("Heading", query),
                     "url": data.get("AbstractURL", ""),
                     "snippet": data["AbstractText"],
                 })
-            # RelatedTopics give additional results
             for topic in (data.get("RelatedTopics") or [])[:max_results]:
                 if isinstance(topic, dict) and topic.get("Text"):
                     results.append({
@@ -5333,23 +5366,24 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
                         "url": topic.get("FirstURL", ""),
                         "snippet": topic.get("Text", ""),
                     })
-            if not results:
+            if results:
                 return {
                     "query": query,
-                    "answer": "",
-                    "results": [],
+                    "answer": data.get("AbstractText") or "",
+                    "results": results[:max_results],
                     "source": "duckduckgo",
-                    "note": "No instant answer found. Consider setting TAVILY_API_KEY for richer search results.",
                 }
-            return {
-                "query": query,
-                "answer": data.get("AbstractText") or "",
-                "results": results[:max_results],
-                "source": "duckduckgo",
-            }
     except Exception as e:
-        logger.error("[web_search] DuckDuckGo fallback failed: %s", e)
-        return {"error": f"Web search unavailable: {e}"}
+        logger.error("[web_search] All fallbacks failed: %s", e)
+
+    return {
+        "query": query,
+        "answer": "",
+        "results": [],
+        "source": "none",
+        "note": "No results found. Set TAVILY_API_KEY in your deployment environment for reliable web search.",
+        "tavily_error": tavily_error or None,
+    }
 
 
 @tool(
