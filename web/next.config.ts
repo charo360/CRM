@@ -22,6 +22,11 @@ const nextConfig: NextConfig = {
         source: "/proxy/:path*",
         destination: `${BACKEND_ORIGIN}/api/:path*`,
       },
+      {
+        // /api/media/presentations/:file → backend static mount
+        source: "/api/media/presentations/:file*",
+        destination: `${BACKEND_ORIGIN}/api/media/presentations/:file*`,
+      },
     ];
   },
 };

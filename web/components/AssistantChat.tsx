@@ -44,6 +44,8 @@ interface Props {
   /** Fired when a new conversation id is created, or pass `null` when the thread is reset (e.g. agent switch). */
   onConversationChange?: (id: string | null) => void;
   compact?: boolean;
+  /** Pre-fill the message input on mount (e.g. from a template clone). */
+  initialMessage?: string;
 }
 
 // Agent colour coding shown in the live badge
@@ -274,14 +276,14 @@ const BASE_PROMPTS = [
   "Schedule a WhatsApp check-in with my top 5 customers",
 ];
 
-export default function AssistantChat({ conversationId, onConversationChange, compact }: Props) {
+export default function AssistantChat({ conversationId, onConversationChange, compact, initialMessage }: Props) {
   const [models, setModels] = useState<AssistantModel[]>([]);
   const [modelId, setModelId] = useState<string>("");
   const [activeAgent, setActiveAgent] = useState<string>("general");
   const [activeAgentLabel, setActiveAgentLabel] = useState<string>("Zilo");
   const [connectedIntegrations, setConnectedIntegrations] = useState<string[]>([]);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialMessage ?? "");
   const [sending, setSending] = useState(false);
   const [loadingConv, setLoadingConv] = useState(false);
   // Streaming state

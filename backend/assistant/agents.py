@@ -98,7 +98,7 @@ SOCIAL_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "list_products", "get_product_images",
     "get_analytics_summary", "list_design_library_assets",
     "create_business_document", "create_presentation",
-}) | _ORSHOT_STUDIO_TOOLS
+})
 
 SALES_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_analytics_summary",
@@ -210,7 +210,7 @@ SOCIAL_SCHEDULER_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "list_products",
     "get_analytics_summary", "list_design_library_assets",
     "create_business_document", "create_presentation",
-}) | _ORSHOT_STUDIO_TOOLS
+})
 WHATSAPP_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "send_whatsapp_message",
     "list_customers", "get_customer", "create_broadcast",
@@ -254,6 +254,50 @@ DOCUMENT_TOOLS: FrozenSet[str] = frozenset({
     "generate_document", "create_business_document", "create_presentation",
     "web_search", "get_document_style", "save_document_style",
 })
+
+# General agent: everything EXCEPT Orshot studio and design-specific tools.
+# Creative/design work should go through the dedicated Design or Creative agent.
+_DESIGN_EXCLUSIVE: FrozenSet[str] = frozenset({
+    "list_orshot_templates", "get_orshot_template_fields", "render_orshot_template",
+    "generate_design_background", "recreate_design_with_ai",
+    "note_design_requirement", "verify_design_ready",
+})
+
+GENERAL_TOOLS: FrozenSet[str] = (
+    # Start from document tools as a solid base, then add CRM/ops tools
+    DOCUMENT_TOOLS
+    | frozenset({
+        # CRM write ops
+        "create_customer", "update_customer", "delete_customer",
+        "create_product", "update_product", "delete_product",
+        "update_order_status", "record_sale",
+        # Follow-ups & broadcasts
+        "create_followup", "list_broadcasts", "create_broadcast",
+        # WhatsApp
+        "send_whatsapp_message",
+        # Integrations & team
+        "integrations_status", "list_team",
+        # Design library (read-only — for referencing brand assets in docs)
+        "list_design_library_assets", "get_product_images",
+        # Bookings & automations
+        "list_bookings", "create_booking", "update_booking_status",
+        "list_automations", "create_automation",
+        # Search & memory
+        "search_documents",
+        # Shopify (read)
+        "list_shopify_orders", "list_shopify_products", "get_shopify_analytics",
+        # Stripe
+        "list_stripe_payments", "list_stripe_invoices",
+        # Loyalty & NPS
+        "get_customer_health",
+        # Ad campaign drafts (data, not creative)
+        "save_meta_ads_campaign_draft", "list_meta_ads_campaign_drafts",
+        "save_x_ads_campaign_draft", "list_x_ads_campaign_drafts",
+        # Ad trends (read-only data)
+        "get_meta_ad_trends", "get_tiktok_ad_trends",
+    })
+    - _DESIGN_EXCLUSIVE  # no Orshot or design-flow tools
+)
 
 # ── App integration tool allowlists ───────────────────────────────────────────
 # Shopify syncs into the CRM so sub-agents can reuse CRM tools.
@@ -1451,6 +1495,28 @@ You know the structure, style, tone, and required sections for every business do
 - Use `web_search` for market data, industry benchmarks, competitor info, or regulatory context needed in the document.
 - Map out every section the document needs and what information you already have vs what you still need from the user.
 
+### Step 1b: Confirm Existing Info (ALWAYS do this before asking for new info)
+After fetching CRM data, **show the user what you already have** in a compact summary and ask if they want to keep it or change anything. For example:
+
+> "Here's what I have from your business profile:
+> - **Business:** Paya Ventures (Kenya)
+> - **Owner:** Sam
+> - **Products:** Blue T-Shirt (KES 600), T-Shirt (KES 500), Shoes (KES 700)
+> - **Contact:** +254xxx / sam@payaventures.com
+>
+> Should I use this information as-is, or do you want to update anything before we proceed?"
+
+If they say "keep it" → move to Step 2. If they say "change" → ask which field to update, one at a time.
+
+**When cloning a template:** Show the template's section structure first, then present the existing business data that maps to each section, and ask "keep or change?" before collecting any new content.
+
+**CRITICAL — Preserve the original template's style when cloning.** When a user clones a document, they want to change the *information* but keep the *style* (layout, colors, fonts, logo, section order, table columns, tone). Always:
+- Call `get_document_style` to load the brand's saved colors, font, logo placement, and signature.
+- Reproduce the exact same heading structure, section order, table format, and visual layout as the original template.
+- Apply the brand's primary/secondary colors and logo — these come from the style profile automatically.
+- Only change the *content* (names, numbers, dates, descriptions) — never change the structure, tone, or visual design.
+- If the original template has a specific tone (e.g. "warm and confident"), maintain that tone in the new document.
+
 ### Step 2: Ask for Only What's Missing (ONE question at a time)
 You will always have gaps the CRM cannot fill. Ask for them **one at a time**, in a natural conversational way — never a list of 5 questions at once.
 
@@ -1884,7 +1950,7 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
     GENERAL_AGENT_ID: {
         "label": "Zilo",
         "description": "General CRM assistant — documents, analytics, anything not covered by a specialist",
-        "allowed_tools": None,           # full tool registry
+        "allowed_tools": GENERAL_TOOLS,   # excludes Orshot/design tools
         "use_default_system_prompt": True,
         "system_prompt": None,
     },

@@ -4468,8 +4468,9 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="create_presentation",
     description=(
-        "Create an editable PowerPoint presentation (.pptx) slide deck. "
-        "Provide a title and a list of slides with bullet points."
+        "Create a professional, beautifully designed PowerPoint presentation (.pptx) slide deck. "
+        "Supports multiple slide layouts (title, content, two_column, quote, key_points, section, image_text, ending) "
+        "and color themes (dark, light, navy, warm). The first slide auto-becomes a title slide and the last auto-gets an ending slide."
     ),
     parameters={
         "type": "object",
@@ -4479,17 +4480,55 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "The main title of the presentation.",
             },
+            "theme": {
+                "type": "string",
+                "description": 'Color theme: "dark" (deep forest green, default), "light" (white/green), "navy" (blue), "warm" (amber/brown).',
+                "enum": ["dark", "light", "navy", "warm"],
+            },
+            "tagline": {
+                "type": "string",
+                "description": "Optional closing tagline shown on the ending slide (e.g. 'Let\'s grow together').",
+            },
             "slides_data": {
                 "type": "array",
-                "description": "A list of slide objects. Each object should have a 'title' string and a 'content' array of bullet point strings.",
+                "description": (
+                    "List of slide objects. Each has a 'layout' key plus layout-specific keys. "
+                    "Layouts: 'title' (title, subtitle), 'content' (title, content[]), 'section' (title), "
+                    "'two_column' (title, left_items[], right_items[], left_header?, right_header?), "
+                    "'quote' (quote, attribution?), 'key_points' (title, points[{title, description}]), "
+                    "'image_text' (title, content[], image_url?), 'ending' (auto-generated). "
+                    "Default layout is 'content'. First slide auto-becomes 'title', last auto-gets 'ending'."
+                ),
                 "items": {
                     "type": "object",
                     "properties": {
+                        "layout": {
+                            "type": "string",
+                            "enum": ["title", "section", "content", "two_column", "quote", "image_text", "key_points", "ending"],
+                        },
                         "title": {"type": "string"},
-                        "content": {"type": "array", "items": {"type": "string"}}
-                    }
-                }
-            }
+                        "subtitle": {"type": "string"},
+                        "content": {"type": "array", "items": {"type": "string"}},
+                        "left_items": {"type": "array", "items": {"type": "string"}},
+                        "right_items": {"type": "array", "items": {"type": "string"}},
+                        "left_header": {"type": "string"},
+                        "right_header": {"type": "string"},
+                        "quote": {"type": "string"},
+                        "attribution": {"type": "string"},
+                        "points": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "description": {"type": "string"},
+                                },
+                            },
+                        },
+                        "image_url": {"type": "string"},
+                    },
+                },
+            },
         },
     },
 )
@@ -4497,24 +4536,19 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
     from presentation_service import generate_presentation_with_upload
     title = args.get("title", "Presentation")
     slides_data = args.get("slides_data", [])
+    theme_name = args.get("theme", "dark")
+    tagline = args.get("tagline", "")
 
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = owner.get("business_name") or owner.get("owner_name") or "My Business" if owner else "My Business"
 
-    # Fetch document style for branded output
-    doc_style: Dict[str, Any] = {}
-    try:
-        from saved_designs import get_document_style as _get_doc_style
-        doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
-    except Exception:
-        pass
-
-    result = await generate_presentation_with_upload(title, slides_data, business_name, doc_style)
+    result = await generate_presentation_with_upload(title, slides_data, business_name, theme_name=theme_name, tagline=tagline)
 
     if result.get("error"):
         return {"error": result["error"]}
 
     url = result.get("url")
+    thumb_url = result.get("thumbnail_url")
     if url:
         try:
             from saved_designs import insert_saved_design
@@ -4525,16 +4559,26 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 name=(title or "Presentation")[:200],
                 asset_kind="pptx",
                 file_url=url,
-                thumbnail_url=None,
+                thumbnail_url=thumb_url,
                 source_tool="create_presentation",
                 conversation_id=ctx.user.get("_active_conversation_id"),
             )
         except Exception:
             logger.exception("[create_presentation] saved_designs insert skipped")
+
+    # Build markdown with image preview (chat renders ![...](...) as visual card with download)
+    md_parts = []
+    if thumb_url:
+        md_parts.append(f"![{title}]({thumb_url})")
+    if url:
+        md_parts.append(f"📊 **[Download Presentation: {title}]({url})**")
+    markdown = "\n\n".join(md_parts)
+
     return {
         "success": True,
         "pptx_url": url,
-        "markdown": f"📊 **[Download Presentation: {title}]({url})**" if url else "",
+        "thumbnail_url": thumb_url,
+        "markdown": markdown,
     }
 
 
