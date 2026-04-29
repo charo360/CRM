@@ -2352,10 +2352,18 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     safe = _re.sub(r"[^\w\-]", "_", raw_name)[:60] or "document"
     filename = f"{safe}.{fmt}"
 
+    # Fetch saved document style profile so the PDF uses the business's colours, fonts, signature
+    doc_style = {}
+    try:
+        from saved_designs import get_document_style as _get_style
+        doc_style = await _get_style(ctx.db, ctx.business_id)
+    except Exception:
+        pass
+
     try:
         from .document_generator import generate_pdf, generate_docx
         if fmt == "pdf":
-            filepath = generate_pdf(content, filename)
+            filepath = generate_pdf(content, filename, style=doc_style)
         else:
             filepath = generate_docx(content, filename)
     except Exception as e:
@@ -4250,11 +4258,19 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business") if owner else "My Business"
 
+    # Fetch saved document style profile so the PDF uses the business's colours, fonts, signature
+    doc_style = {}
+    try:
+        from saved_designs import get_document_style as _get_style
+        doc_style = await _get_style(ctx.db, ctx.business_id)
+    except Exception:
+        pass
+
     md = f"# {title}\n\n{content}"
     try:
         from .document_generator import generate_pdf as _gen_pdf
         filepath = await asyncio.get_event_loop().run_in_executor(
-            None, _gen_pdf, md, None, business_name
+            None, _gen_pdf, md, None, business_name, doc_style
         )
     except Exception as e:
         logger.exception("[create_business_document] PDF generation failed")
@@ -4289,6 +4305,7 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
             thumbnail_url=None,
             source_tool="create_business_document",
             conversation_id=ctx.user.get("_active_conversation_id"),
+            source_markdown=md,
         )
     except Exception:
         logger.exception("[create_business_document] saved_designs insert skipped")

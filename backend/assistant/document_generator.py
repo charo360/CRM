@@ -93,7 +93,7 @@ def _parse_table(raw: str) -> List[List[str]]:
 # ─────────────────────────────────────────────────────────────────────────────
 # PDF  (reportlab)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_pdf(markdown_content: str, filename: str | None = None, business_name: str | None = None) -> str:
+def generate_pdf(markdown_content: str, filename: str | None = None, business_name: str | None = None, style: dict | None = None) -> str:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -113,17 +113,21 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
         filename += ".pdf"
     filepath = TEMP_DIR / filename
 
-    # ── colour palette ──────────────────────────────────────────────────────
-    INDIGO = colors.HexColor("#4F46E5")
-    INDIGO_LIGHT = colors.HexColor("#818CF8")
-    INK = colors.HexColor("#111827")
-    BODY = colors.HexColor("#374151")
-    MUTED = colors.HexColor("#6B7280")
-    RULE = colors.HexColor("#E5E7EB")
-    CODE_BG = colors.HexColor("#F3F4F6")
-    TABLE_HEAD = colors.HexColor("#EEF2FF")
-    TABLE_ALT = colors.HexColor("#F9FAFB")
-    COVER_BG = colors.HexColor("#4F46E5")
+    # ── colour palette — respect saved style ─────────────────────────────────
+    s = style or {}
+    _pc = s.get("primary_color", "").strip().lstrip("#") or "4F46E5"
+    _sc = s.get("secondary_color", "").strip().lstrip("#") or "818CF8"
+    PRIMARY     = colors.HexColor(f"#{_pc}")
+    PRIMARY_L   = colors.HexColor(f"#{_sc}")
+    INK         = colors.HexColor("#111827")
+    BODY        = colors.HexColor("#374151")
+    MUTED       = colors.HexColor("#6B7280")
+    RULE        = colors.HexColor("#E5E7EB")
+    CODE_BG     = colors.HexColor("#F3F4F6")
+    # Derive table head / alt from primary colour (light tint)
+    TABLE_HEAD  = colors.HexColor(f"#{_sc[:2]}F2{_sc[2:]}" if len(_sc) == 6 else "#EEF2FF")
+    TABLE_ALT   = colors.HexColor("#F9FAFB")
+    COVER_BG    = PRIMARY
 
     # ── Extract title from first H1 ─────────────────────────────────────────
     html_full = _md_to_html(markdown_content)
@@ -178,25 +182,34 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
         name = kw.pop("name")
         return ParagraphStyle(name, parent=parent, **kw)
 
+    # ── Font selection from style ────────────────────────────────────────────
+    _fs = (s.get("font_style") or "").lower()
+    if "serif" in _fs or "classic" in _fs:
+        _heading_font = "Times-Bold"
+        _body_font = "Times-Roman"
+    else:
+        _heading_font = "Helvetica-Bold"
+        _body_font = "Helvetica"
+
     # ── Cover page styles ────────────────────────────────────────────────────
     COVER_TITLE = _s(name="ZCoverTitle", fontSize=28, leading=34, textColor=colors.white,
-                     fontName="Helvetica-Bold", alignment=1, spaceAfter=12)
-    COVER_SUB = _s(name="ZCoverSub", fontSize=13, leading=18, textColor=colors.HexColor("#C7D2FE"),
-                   fontName="Helvetica", alignment=1, spaceAfter=6)
-    COVER_DATE = _s(name="ZCoverDate", fontSize=10, leading=14, textColor=colors.HexColor("#A5B4FC"),
-                    fontName="Helvetica", alignment=1)
+                     fontName=_heading_font, alignment=1, spaceAfter=12)
+    COVER_SUB = _s(name="ZCoverSub", fontSize=13, leading=18, textColor=colors.HexColor(f"#{_sc}"),
+                   fontName=_body_font, alignment=1, spaceAfter=6)
+    COVER_DATE = _s(name="ZCoverDate", fontSize=10, leading=14, textColor=colors.HexColor(f"#{_sc}"),
+                    fontName=_body_font, alignment=1)
 
     # ── Body styles ──────────────────────────────────────────────────────────
-    H1 = _s(name="ZH1", parent=base["Title"],   fontSize=20, leading=26, spaceAfter=6,  textColor=INK, fontName="Helvetica-Bold")
-    H2 = _s(name="ZH2", parent=base["Heading2"], fontSize=15, leading=19, spaceBefore=20, spaceAfter=6,  textColor=INK, fontName="Helvetica-Bold")
-    H3 = _s(name="ZH3", parent=base["Heading3"], fontSize=12.5, leading=16, spaceBefore=14, spaceAfter=4,  textColor=INK, fontName="Helvetica-Bold")
-    H4 = _s(name="ZH4", parent=base["Heading4"], fontSize=11, leading=15, spaceBefore=10, spaceAfter=2,  textColor=INDIGO, fontName="Helvetica-Bold")
-    BP = _s(name="ZBP", fontSize=10.5, leading=16.5, spaceAfter=7, textColor=BODY)
-    LI = _s(name="ZLI", fontSize=10.5, leading=16.5, spaceAfter=3, textColor=BODY, leftIndent=18, bulletIndent=4)
+    H1 = _s(name="ZH1", parent=base["Title"],   fontSize=20, leading=26, spaceAfter=6,  textColor=INK, fontName=_heading_font)
+    H2 = _s(name="ZH2", parent=base["Heading2"], fontSize=15, leading=19, spaceBefore=20, spaceAfter=6,  textColor=INK, fontName=_heading_font)
+    H3 = _s(name="ZH3", parent=base["Heading3"], fontSize=12.5, leading=16, spaceBefore=14, spaceAfter=4,  textColor=INK, fontName=_heading_font)
+    H4 = _s(name="ZH4", parent=base["Heading4"], fontSize=11, leading=15, spaceBefore=10, spaceAfter=2,  textColor=PRIMARY, fontName=_heading_font)
+    BP = _s(name="ZBP", fontSize=10.5, leading=16.5, spaceAfter=7, textColor=BODY, fontName=_body_font)
+    LI = _s(name="ZLI", fontSize=10.5, leading=16.5, spaceAfter=3, textColor=BODY, leftIndent=18, bulletIndent=4, fontName=_body_font)
     CODE = _s(name="ZCode", fontSize=9,  leading=13, spaceAfter=8, textColor=colors.HexColor("#1E293B"),
               fontName="Courier", leftIndent=12, backColor=CODE_BG, borderPadding=6)
-    TBL_CELL = _s(name="ZTblCell", fontSize=9.5, leading=13, textColor=BODY)
-    TBL_HEAD_CELL = _s(name="ZTblHead", fontSize=9.5, leading=13, textColor=INK, fontName="Helvetica-Bold")
+    TBL_CELL = _s(name="ZTblCell", fontSize=9.5, leading=13, textColor=BODY, fontName=_body_font)
+    TBL_HEAD_CELL = _s(name="ZTblHead", fontSize=9.5, leading=13, textColor=INK, fontName=_heading_font)
 
     story = []
 
@@ -241,10 +254,10 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
                 _first_h1 = False
                 continue
             story.append(Paragraph(_strip(raw), H1))
-            story.append(HRFlowable(width="100%", thickness=1.2, color=INDIGO, spaceAfter=10))
+            story.append(HRFlowable(width="100%", thickness=1.2, color=PRIMARY, spaceAfter=10))
         elif kind == "h2":
             story.append(Paragraph(_inline(_strip(raw)), H2))
-            story.append(HRFlowable(width="40%", thickness=2, color=INDIGO_LIGHT, spaceAfter=8))
+            story.append(HRFlowable(width="40%", thickness=2, color=PRIMARY_L, spaceAfter=8))
         elif kind == "h3":
             story.append(Paragraph(_inline(_strip(raw)), H3))
         elif kind == "h4":
@@ -290,13 +303,35 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
                     ("PADDING",      (0, 1), (-1, -1), 6),
                     # Border
                     ("GRID",         (0, 0), (-1, -1), 0.4, RULE),
-                    ("LINEBELOW",    (0, 0), (-1, 0),  1,   colors.HexColor("#C7D2FE")),
+                    ("LINEBELOW",    (0, 0), (-1, 0),  1,   PRIMARY_L),
                     ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
                 ]))
                 story.append(tbl)
                 story.append(Spacer(1, 10))
         elif kind == "p":
             story.append(Paragraph(_inline(raw), BP))
+
+    # ── Signature block from style profile ───────────────────────────────────
+    _sig_name = (s.get("signature_name") or "").strip()
+    _sig_title = (s.get("signature_title") or "").strip()
+    _sig_contact = (s.get("signature_contact") or "").strip()
+    if _sig_name or _sig_title or _sig_contact:
+        story.append(Spacer(1, 16))
+        story.append(HRFlowable(width="100%", thickness=0.4, color=RULE, spaceAfter=8))
+        SIG = _s(name="ZSig", fontSize=10.5, leading=15, textColor=BODY, fontName=_body_font)
+        if _sig_name:
+            story.append(Paragraph(f"<b>{_sig_name}</b>", SIG))
+        if _sig_title:
+            story.append(Paragraph(_sig_title, SIG))
+        if _sig_contact:
+            story.append(Paragraph(_sig_contact, SIG))
+
+    # ── Footer text from style profile ────────────────────────────────────────
+    _footer_text = (s.get("footer_text") or "").strip()
+    if _footer_text:
+        story.append(Spacer(1, 12))
+        FTR_CUSTOM = _s(name="ZFtrCustom", fontSize=8.5, leading=12, textColor=MUTED, fontName=_body_font)
+        story.append(Paragraph(_footer_text, FTR_CUSTOM))
 
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
     return str(filepath)
