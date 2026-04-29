@@ -93,13 +93,14 @@ def _parse_table(raw: str) -> List[List[str]]:
 # ─────────────────────────────────────────────────────────────────────────────
 # PDF  (reportlab)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
+def generate_pdf(markdown_content: str, filename: str | None = None, business_name: str | None = None) -> str:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import cm
+    from reportlab.lib.units import cm, mm
     from reportlab.platypus import (
         HRFlowable,
+        PageBreak,
         Paragraph,
         SimpleDocTemplate,
         Spacer,
@@ -112,19 +113,9 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         filename += ".pdf"
     filepath = TEMP_DIR / filename
 
-    doc = SimpleDocTemplate(
-        str(filepath),
-        pagesize=A4,
-        rightMargin=2.2 * cm,
-        leftMargin=2.2 * cm,
-        topMargin=2.4 * cm,
-        bottomMargin=2.2 * cm,
-        title=filename.replace(".pdf", ""),
-        author="Zilo Chat",
-    )
-
     # ── colour palette ──────────────────────────────────────────────────────
     INDIGO = colors.HexColor("#4F46E5")
+    INDIGO_LIGHT = colors.HexColor("#818CF8")
     INK = colors.HexColor("#111827")
     BODY = colors.HexColor("#374151")
     MUTED = colors.HexColor("#6B7280")
@@ -132,6 +123,53 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
     CODE_BG = colors.HexColor("#F3F4F6")
     TABLE_HEAD = colors.HexColor("#EEF2FF")
     TABLE_ALT = colors.HexColor("#F9FAFB")
+    COVER_BG = colors.HexColor("#4F46E5")
+
+    # ── Extract title from first H1 ─────────────────────────────────────────
+    html_full = _md_to_html(markdown_content)
+    blocks = _parse_blocks(html_full)
+    doc_title = "Document"
+    for kind, raw in blocks:
+        if kind == "h1":
+            doc_title = _strip(raw)
+            break
+
+    # ── Page template with header/footer ─────────────────────────────────────
+    page_w, page_h = A4
+
+    def _header_footer(canvas, doc):
+        canvas.saveState()
+        # Header line on pages after the cover
+        if doc.page > 1:
+            canvas.setStrokeColor(RULE)
+            canvas.setLineWidth(0.5)
+            canvas.line(2.2 * cm, page_h - 1.8 * cm, page_w - 2.2 * cm, page_h - 1.8 * cm)
+            canvas.setFont("Helvetica", 7.5)
+            canvas.setFillColor(MUTED)
+            canvas.drawString(2.2 * cm, page_h - 1.6 * cm, business_name or "Zilo Chat")
+            canvas.drawRightString(page_w - 2.2 * cm, page_h - 1.6 * cm, doc_title)
+        # Footer with page number
+        canvas.setStrokeColor(RULE)
+        canvas.setLineWidth(0.3)
+        canvas.line(2.2 * cm, 1.6 * cm, page_w - 2.2 * cm, 1.6 * cm)
+        canvas.setFont("Helvetica", 7.5)
+        canvas.setFillColor(MUTED)
+        if doc.page > 1:
+            canvas.drawCentredString(page_w / 2, 1.0 * cm, f"Page {doc.page - 1}")
+        canvas.drawRightString(page_w - 2.2 * cm, 1.0 * cm,
+                               f"Generated via Zilo Chat · {datetime.utcnow().strftime('%d %b %Y')}")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        str(filepath),
+        pagesize=A4,
+        rightMargin=2.2 * cm,
+        leftMargin=2.2 * cm,
+        topMargin=2.4 * cm,
+        bottomMargin=2.2 * cm,
+        title=doc_title,
+        author=business_name or "Zilo Chat",
+    )
 
     base = getSampleStyleSheet()
 
@@ -140,19 +178,52 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         name = kw.pop("name")
         return ParagraphStyle(name, parent=parent, **kw)
 
-    H1 = _s(name="ZH1", parent=base["Title"],   fontSize=22, leading=28, spaceAfter=4,  textColor=INK, fontName="Helvetica-Bold")
-    H2 = _s(name="ZH2", parent=base["Heading2"], fontSize=16, leading=20, spaceBefore=18, spaceAfter=4,  textColor=INK, fontName="Helvetica-Bold")
-    H3 = _s(name="ZH3", parent=base["Heading3"], fontSize=13, leading=17, spaceBefore=12, spaceAfter=3,  textColor=INK, fontName="Helvetica-Bold")
+    # ── Cover page styles ────────────────────────────────────────────────────
+    COVER_TITLE = _s(name="ZCoverTitle", fontSize=28, leading=34, textColor=colors.white,
+                     fontName="Helvetica-Bold", alignment=1, spaceAfter=12)
+    COVER_SUB = _s(name="ZCoverSub", fontSize=13, leading=18, textColor=colors.HexColor("#C7D2FE"),
+                   fontName="Helvetica", alignment=1, spaceAfter=6)
+    COVER_DATE = _s(name="ZCoverDate", fontSize=10, leading=14, textColor=colors.HexColor("#A5B4FC"),
+                    fontName="Helvetica", alignment=1)
+
+    # ── Body styles ──────────────────────────────────────────────────────────
+    H1 = _s(name="ZH1", parent=base["Title"],   fontSize=20, leading=26, spaceAfter=6,  textColor=INK, fontName="Helvetica-Bold")
+    H2 = _s(name="ZH2", parent=base["Heading2"], fontSize=15, leading=19, spaceBefore=20, spaceAfter=6,  textColor=INK, fontName="Helvetica-Bold")
+    H3 = _s(name="ZH3", parent=base["Heading3"], fontSize=12.5, leading=16, spaceBefore=14, spaceAfter=4,  textColor=INK, fontName="Helvetica-Bold")
     H4 = _s(name="ZH4", parent=base["Heading4"], fontSize=11, leading=15, spaceBefore=10, spaceAfter=2,  textColor=INDIGO, fontName="Helvetica-Bold")
-    BP = _s(name="ZBP", fontSize=11, leading=17, spaceAfter=7, textColor=BODY)
-    LI = _s(name="ZLI", fontSize=11, leading=17, spaceAfter=3, textColor=BODY, leftIndent=16, bulletIndent=4)
+    BP = _s(name="ZBP", fontSize=10.5, leading=16.5, spaceAfter=7, textColor=BODY)
+    LI = _s(name="ZLI", fontSize=10.5, leading=16.5, spaceAfter=3, textColor=BODY, leftIndent=18, bulletIndent=4)
     CODE = _s(name="ZCode", fontSize=9,  leading=13, spaceAfter=8, textColor=colors.HexColor("#1E293B"),
               fontName="Courier", leftIndent=12, backColor=CODE_BG, borderPadding=6)
-    FTR = _s(name="ZFtr", fontSize=8.5, leading=12, textColor=MUTED, alignment=1)
+    TBL_CELL = _s(name="ZTblCell", fontSize=9.5, leading=13, textColor=BODY)
+    TBL_HEAD_CELL = _s(name="ZTblHead", fontSize=9.5, leading=13, textColor=INK, fontName="Helvetica-Bold")
 
     story = []
-    html = _md_to_html(markdown_content)
-    blocks = _parse_blocks(html)
+
+    # ── Cover page ───────────────────────────────────────────────────────────
+    # Colored background block via a full-width table
+    cover_content = [
+        [Spacer(1, 60)],
+        [Paragraph(doc_title, COVER_TITLE)],
+        [Spacer(1, 8)],
+        [Paragraph(business_name or "", COVER_SUB)],
+        [Spacer(1, 4)],
+        [Paragraph(datetime.utcnow().strftime("%B %d, %Y"), COVER_DATE)],
+        [Spacer(1, 60)],
+    ]
+    cover_tbl = Table(cover_content, colWidths=[page_w - 4.4 * cm])
+    cover_tbl.setStyle(TableStyle([
+        ("BACKGROUND",   (0, 0), (-1, -1), COVER_BG),
+        ("ALIGN",        (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 24),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 24),
+        ("TOPPADDING",   (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+        ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+    ]))
+    story.append(cover_tbl)
+    story.append(PageBreak())
 
     # inline bold/italic helper
     def _inline(text: str) -> str:
@@ -162,17 +233,22 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         return text
 
     _OL_CTR = 0
+    _first_h1 = True
     for kind, raw in blocks:
         if kind == "h1":
+            # Skip the first H1 — it's already on the cover page
+            if _first_h1:
+                _first_h1 = False
+                continue
             story.append(Paragraph(_strip(raw), H1))
             story.append(HRFlowable(width="100%", thickness=1.2, color=INDIGO, spaceAfter=10))
         elif kind == "h2":
-            story.append(Paragraph(_strip(raw), H2))
-            story.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceAfter=6))
+            story.append(Paragraph(_inline(_strip(raw)), H2))
+            story.append(HRFlowable(width="40%", thickness=2, color=INDIGO_LIGHT, spaceAfter=8))
         elif kind == "h3":
-            story.append(Paragraph(_strip(raw), H3))
+            story.append(Paragraph(_inline(_strip(raw)), H3))
         elif kind == "h4":
-            story.append(Paragraph(_strip(raw), H4))
+            story.append(Paragraph(_inline(_strip(raw)), H4))
         elif kind == "hr":
             story.append(Spacer(1, 4))
             story.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceAfter=8))
@@ -189,8 +265,16 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
                 ncols = max(len(r) for r in rows)
                 # pad short rows
                 rows = [r + [""] * (ncols - len(r)) for r in rows]
+                # Convert cells to Paragraphs for inline formatting
+                para_rows = []
+                for i, row in enumerate(rows):
+                    para_row = []
+                    for cell in row:
+                        style = TBL_HEAD_CELL if i == 0 else TBL_CELL
+                        para_row.append(Paragraph(_inline(cell), style))
+                    para_rows.append(para_row)
                 col_w = (A4[0] - 4.4 * cm) / ncols
-                tbl = Table(rows, colWidths=[col_w] * ncols, repeatRows=1)
+                tbl = Table(para_rows, colWidths=[col_w] * ncols, repeatRows=1)
                 tbl.setStyle(TableStyle([
                     # Header
                     ("BACKGROUND",   (0, 0), (-1, 0),  TABLE_HEAD),
@@ -214,15 +298,7 @@ def generate_pdf(markdown_content: str, filename: str | None = None) -> str:
         elif kind == "p":
             story.append(Paragraph(_inline(raw), BP))
 
-    # ── Footer ───────────────────────────────────────────────────────────────
-    story.append(Spacer(1, 24))
-    story.append(HRFlowable(width="100%", thickness=0.4, color=RULE, spaceAfter=6))
-    story.append(Paragraph(
-        f"Generated by <b>Zilo Chat</b> · {datetime.utcnow().strftime('%d %b %Y, %H:%M')} UTC",
-        FTR,
-    ))
-
-    doc.build(story)
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
     return str(filepath)
 
 

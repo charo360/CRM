@@ -169,9 +169,13 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
 function PreviewModal({ doc, onClose }: { doc: Document; onClose: () => void }) {
   const url = resolveMediaUrl(doc.file_url);
   const isPdf = doc.asset_kind === "pdf";
+  const [loading, setLoading] = useState(true);
+  const [viewerError, setViewerError] = useState(false);
+
+  // Google Docs Viewer for non-PDF; direct iframe for PDF (browser's built-in viewer)
   const viewerUrl = isPdf
-    ? url
-    : `https://docs.google.com/viewer?url=${encodeURIComponent(url)}&embedded=true`;
+    ? url!
+    : `https://docs.google.com/viewer?url=${encodeURIComponent(url!)}&embedded=true`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -183,8 +187,14 @@ function PreviewModal({ doc, onClose }: { doc: Document; onClose: () => void }) 
             <span className="text-xs text-slate-400 uppercase shrink-0">{doc.asset_kind}</span>
           </div>
           <div className="flex items-center gap-2 shrink-0 ml-3">
+            <button
+              onClick={() => downloadAsset(doc.file_url, doc.name)}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-1"
+            >
+              <Download className="w-3 h-3" /> Download
+            </button>
             <a
-              href={url}
+              href={url!}
               target="_blank"
               rel="noopener noreferrer"
               className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
@@ -199,18 +209,37 @@ function PreviewModal({ doc, onClose }: { doc: Document; onClose: () => void }) 
             </button>
           </div>
         </div>
-        <div className="flex-1 overflow-hidden">
-          {isPdf ? (
-            <embed
-              src={url}
-              type="application/pdf"
-              className="w-full h-full"
-            />
+        <div className="flex-1 overflow-hidden relative bg-slate-50">
+          {loading && !viewerError && (
+            <div className="absolute inset-0 flex items-center justify-center z-10">
+              <div className="flex flex-col items-center gap-2 text-slate-400">
+                <Loader2 className="w-6 h-6 animate-spin" />
+                <span className="text-sm">Loading preview…</span>
+              </div>
+            </div>
+          )}
+          {viewerError ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="flex flex-col items-center gap-3 text-slate-500">
+                <FileText className="w-10 h-10 text-slate-300" />
+                <p className="text-sm">Preview not available for this file type.</p>
+                <a
+                  href={url!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 text-sm font-medium rounded-lg bg-brand-dark text-white hover:bg-brand-dark/90 transition-colors"
+                >
+                  Download to view
+                </a>
+              </div>
+            </div>
           ) : (
             <iframe
               src={viewerUrl}
               className="w-full h-full border-0"
               title={doc.name}
+              onLoad={() => setLoading(false)}
+              onError={() => { setLoading(false); setViewerError(true); }}
             />
           )}
         </div>
