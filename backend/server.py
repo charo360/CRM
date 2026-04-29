@@ -11182,6 +11182,10 @@ async def health_check_head():
 # Serve static files (product images)
 app.mount("/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
 
+# Serve generated presentations (PPTX)
+os.makedirs(str(ROOT_DIR / "public" / "presentations"), exist_ok=True)
+app.mount("/api/media/presentations", StaticFiles(directory=str(ROOT_DIR / "public" / "presentations")), name="presentations")
+
 # Serve static pages (privacy policy, account deletion, etc.)
 app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="static")
 
