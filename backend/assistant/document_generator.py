@@ -93,13 +93,15 @@ def _parse_table(raw: str) -> List[List[str]]:
 # ─────────────────────────────────────────────────────────────────────────────
 # PDF  (reportlab)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_pdf(markdown_content: str, filename: str | None = None, business_name: str | None = None, style: dict | None = None) -> str:
+def generate_pdf(markdown_content: str, filename: str | None = None, business_name: str | None = None, style: dict | None = None, logo_url: str | None = None) -> str:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm, mm
+    from reportlab.lib.utils import ImageReader
     from reportlab.platypus import (
         HRFlowable,
+        Image,
         PageBreak,
         Paragraph,
         SimpleDocTemplate,
@@ -129,6 +131,21 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
     TABLE_ALT   = colors.HexColor("#F9FAFB")
     COVER_BG    = PRIMARY
 
+    # ── Download logo if available ────────────────────────────────────────────
+    logo_path: str | None = None
+    if logo_url:
+        try:
+            import httpx as _httpx
+            import tempfile as _tf
+            resp = _httpx.get(logo_url, timeout=10.0, follow_redirects=True)
+            if resp.status_code == 200 and len(resp.content) > 100:
+                _logo_tmp = _tf.NamedTemporaryFile(suffix=".png", delete=False)
+                _logo_tmp.write(resp.content)
+                _logo_tmp.close()
+                logo_path = _logo_tmp.name
+        except Exception:
+            pass  # non-fatal — continue without logo
+
     # ── Extract title from first H1 ─────────────────────────────────────────
     html_full = _md_to_html(markdown_content)
     blocks = _parse_blocks(html_full)
@@ -141,6 +158,11 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
     # ── Page template with header/footer ─────────────────────────────────────
     page_w, page_h = A4
 
+    # ── Logo placement from style ────────────────────────────────────────────
+    _logo_placement = (s.get("logo_placement") or "top-left").lower()
+    if _logo_placement == "none":
+        _logo_placement = None
+
     def _header_footer(canvas, doc):
         canvas.saveState()
         # Header line on pages after the cover
@@ -148,15 +170,32 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
             canvas.setStrokeColor(RULE)
             canvas.setLineWidth(0.5)
             canvas.line(2.2 * cm, page_h - 1.8 * cm, page_w - 2.2 * cm, page_h - 1.8 * cm)
-            canvas.setFont("Helvetica", 7.5)
-            canvas.setFillColor(MUTED)
-            canvas.drawString(2.2 * cm, page_h - 1.6 * cm, business_name or "Zilo Chat")
-            canvas.drawRightString(page_w - 2.2 * cm, page_h - 1.6 * cm, doc_title)
+            # Logo in header if placement is top-left/top-right
+            if logo_path and _logo_placement in ("top-left", "top-right"):
+                try:
+                    logo_w, logo_h = 24, 24
+                    if _logo_placement == "top-left":
+                        canvas.drawImage(logo_path, 2.2 * cm, page_h - 1.5 * cm - logo_h, logo_w, logo_h, mask="auto")
+                        canvas.setFont(_body_font, 7.5)
+                        canvas.setFillColor(MUTED)
+                        canvas.drawString(2.2 * cm + logo_w + 4, page_h - 1.6 * cm, business_name or "")
+                    else:
+                        canvas.drawImage(logo_path, page_w - 2.2 * cm - logo_w, page_h - 1.5 * cm - logo_h, logo_w, logo_h, mask="auto")
+                        canvas.setFont(_body_font, 7.5)
+                        canvas.setFillColor(MUTED)
+                        canvas.drawRightString(page_w - 2.2 * cm - logo_w - 4, page_h - 1.6 * cm, doc_title)
+                except Exception:
+                    pass
+            else:
+                canvas.setFont(_body_font, 7.5)
+                canvas.setFillColor(MUTED)
+                canvas.drawString(2.2 * cm, page_h - 1.6 * cm, business_name or "Zilo Chat")
+                canvas.drawRightString(page_w - 2.2 * cm, page_h - 1.6 * cm, doc_title)
         # Footer with page number
         canvas.setStrokeColor(RULE)
         canvas.setLineWidth(0.3)
         canvas.line(2.2 * cm, 1.6 * cm, page_w - 2.2 * cm, 1.6 * cm)
-        canvas.setFont("Helvetica", 7.5)
+        canvas.setFont(_body_font, 7.5)
         canvas.setFillColor(MUTED)
         if doc.page > 1:
             canvas.drawCentredString(page_w / 2, 1.0 * cm, f"Page {doc.page - 1}")
@@ -215,15 +254,23 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
 
     # ── Cover page ───────────────────────────────────────────────────────────
     # Colored background block via a full-width table
-    cover_content = [
-        [Spacer(1, 60)],
-        [Paragraph(doc_title, COVER_TITLE)],
-        [Spacer(1, 8)],
-        [Paragraph(business_name or "", COVER_SUB)],
-        [Spacer(1, 4)],
-        [Paragraph(datetime.utcnow().strftime("%B %d, %Y"), COVER_DATE)],
-        [Spacer(1, 60)],
-    ]
+    cover_rows = []
+    cover_rows.append([Spacer(1, 30)])
+    # Logo on cover page (top-center or top-left)
+    if logo_path and _logo_placement != "none":
+        try:
+            logo_w = 80
+            cover_rows.append([Image(logo_path, width=logo_w, height=logo_w)])
+            cover_rows.append([Spacer(1, 16)])
+        except Exception:
+            pass
+    cover_rows.append([Paragraph(doc_title, COVER_TITLE)])
+    cover_rows.append([Spacer(1, 8)])
+    cover_rows.append([Paragraph(business_name or "", COVER_SUB)])
+    cover_rows.append([Spacer(1, 4)])
+    cover_rows.append([Paragraph(datetime.utcnow().strftime("%B %d, %Y"), COVER_DATE)])
+    cover_rows.append([Spacer(1, 60)])
+    cover_content = cover_rows
     cover_tbl = Table(cover_content, colWidths=[page_w - 4.4 * cm])
     cover_tbl.setStyle(TableStyle([
         ("BACKGROUND",   (0, 0), (-1, -1), COVER_BG),
@@ -334,6 +381,14 @@ def generate_pdf(markdown_content: str, filename: str | None = None, business_na
         story.append(Paragraph(_footer_text, FTR_CUSTOM))
 
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+
+    # Clean up temp logo file
+    if logo_path:
+        try:
+            os.unlink(logo_path)
+        except Exception:
+            pass
+
     return str(filepath)
 
 

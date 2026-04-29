@@ -2360,10 +2360,18 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     except Exception:
         pass
 
+    # Fetch brand logo URL
+    logo_url = None
+    try:
+        from saved_designs import get_primary_logo_url as _get_logo
+        logo_url = await _get_logo(ctx.db, ctx.business_id)
+    except Exception:
+        pass
+
     try:
         from .document_generator import generate_pdf, generate_docx
         if fmt == "pdf":
-            filepath = generate_pdf(content, filename, style=doc_style)
+            filepath = generate_pdf(content, filename, style=doc_style, logo_url=logo_url)
         else:
             filepath = generate_docx(content, filename)
     except Exception as e:
@@ -4266,11 +4274,19 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
     except Exception:
         pass
 
+    # Fetch brand logo URL
+    logo_url = None
+    try:
+        from saved_designs import get_primary_logo_url as _get_logo
+        logo_url = await _get_logo(ctx.db, ctx.business_id)
+    except Exception:
+        pass
+
     md = f"# {title}\n\n{content}"
     try:
         from .document_generator import generate_pdf as _gen_pdf
         filepath = await asyncio.get_event_loop().run_in_executor(
-            None, _gen_pdf, md, None, business_name, doc_style
+            None, _gen_pdf, md, None, business_name, doc_style, logo_url
         )
     except Exception as e:
         logger.exception("[create_business_document] PDF generation failed")
