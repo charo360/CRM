@@ -298,7 +298,7 @@ async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
         imgs.insert(0, orig)
 
     # Convert private S3 URLs to publicly accessible proxy URLs so that
-    # the AI can share them with users and pass them to Orshot without
+    # the AI can share them with users and pass them to design tools without
     # triggering S3 AccessDenied errors.
     backend_url = (
         _os.environ.get("BACKEND_PUBLIC_URL")
@@ -532,7 +532,7 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
         "(`default_logo_url`, `brand_primary_color`, `brand_font`). "
         "Use for Meta/Google ads, proposals, and any time industry-aware advice is needed. "
         "For design work, **always call this first** so you can pass the brand logo URL and "
-        "primary colour into `render_orshot_template.modifications` and `generate_design_background.logo_url`."
+        "primary colour into Gemini design tools (brand_color, logo_url) and `generate_design_background.logo_url`."
     ),
     parameters={"type": "object", "properties": {}},
     destructive=False,
@@ -569,8 +569,8 @@ async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
         "business_type":   (settings.get("business_type") or "").strip(),
         "business_description_hint": (bk.get("business_description") or "")[:400],
         "products_services_hint":    (bk.get("products_services") or "")[:400],
-        # Brand kit — pass these straight into render_orshot_template.modifications
-        # (logo image fields, brand colour fields) and generate_design_background.logo_url.
+        # Brand kit — pass these straight into Gemini design tools
+        # (brand_color, logo_url) and generate_design_background.logo_url.
         "default_logo_url":    default_logo_url,
         "brand_primary_color": brand_primary_color,
         "brand_font":          brand_font,
@@ -2616,7 +2616,7 @@ async def get_tiktok_ad_trends(ctx: ToolContext, args: Dict[str, Any]):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Visual assets — Nano Banana / Gemini AI images; Orshot for template graphics; .pptx via python-pptx
+# Visual assets — Gemini AI images for social posts/ads/carousels; .pptx via python-pptx
 
 @tool(
     name="generate_creative_image",
@@ -2624,8 +2624,8 @@ async def get_tiktok_ad_trends(ctx: ToolContext, args: Dict[str, Any]):
         "Generate a creative, conceptual, or lifestyle image using Google's Nano Banana AI model (via OpenRouter). "
         "Use this for standalone AI image generation — product lifestyle shots, mood scenes, conceptual backgrounds, "
         "people with products, brand imagery. "
-        "For branded layouts, pass the returned image_url as the image field value in `render_orshot_template` — "
-        "the AI picks a matching Orshot template and places this image into it."
+        "For branded layouts, pass the returned image_url as product_image_url to `generate_ad_creative` or "
+        "`generate_social_post` — the AI creates a professional branded design with this image."
     ),
     parameters={
         "type": "object",
@@ -2670,459 +2670,461 @@ async def generate_creative_image(ctx: ToolContext, args: Dict[str, Any]):
         "success": True,
         "image_url": image_url,
         "markdown": f"![Generated image]({image_url})",
-        "note": "Use this URL as an image field value in `render_orshot_template.modifications` when your Orshot template expects a photo URL.",
+        "note": "Use this URL as product_image_url in `generate_ad_creative` or `generate_social_post` when creating branded designs.",
     }
 
 
-@tool(
-    name="list_orshot_templates",
-    description=(
-        "List Orshot Studio templates in the workspace. Each template object has id, name, canvas size, "
-        "and thumbnail_url. "
-        "CRITICAL — URL RULE: When showing templates to the user, you MUST copy the thumbnail_url value "
-        "character-for-character exactly as it appears in this tool's JSON response. Do not retype it, "
-        "do not reconstruct it, do not shorten it. Select the value from the JSON, paste it. "
-        "Every real thumbnail_url in this response starts with https://storage.orshot.com/ — "
-        "if what you are about to write does NOT start with https://storage.orshot.com/, stop and "
-        "fetch the value again from the tool result. "
-        "NEVER invent, guess, or approximate a URL. Forbidden examples: https://example.com/..., "
-        "template1.jpg, thumbnail_url_1, /images/..., or any string not present verbatim in the JSON. "
-        "If a template object has a null or empty thumbnail_url, skip it entirely and pick the next one. "
-        "Show 3 best fits for the brief, not the full list."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "page": {"type": "integer", "default": 1, "description": "Pagination page (1-based)."},
-            "limit": {
-                "type": "integer",
-                "default": 20,
-                "description": "Page size (max 20).",
-            },
-        },
-        "required": [],
-    },
-)
-async def list_orshot_templates(ctx: ToolContext, args: Dict[str, Any]):
-    from orshot_service import list_studio_templates
-    from .design_state import update_design_state, load_design_state
-
-    page = int(args.get("page") or 1)
-    limit = int(args.get("limit") or 20)
-    result = await list_studio_templates(page=page, limit=limit)
-
-    # Persist which template ids were surfaced this turn so "See more options"
-    # can skip them next time without the AI having to remember the full list.
-    # Also advance flow_step to awaiting_template if we are currently at
-    # awaiting_platform or awaiting_product (i.e. the first time templates are shown).
-    try:
-        templates = (result or {}).get("templates") or []
-        ids = [t.get("id") for t in templates if isinstance(t, dict) and t.get("id") is not None]
-        conv_id = ctx.user.get("_active_conversation_id")
-        if ids and conv_id:
-            existing = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            current_step = existing.get("flow_step") or ""
-            advance = current_step in ("awaiting_product", "awaiting_platform", "")
-            await update_design_state(
-                ctx.db,
-                conv_id,
-                ctx.business_id,
-                add_templates_shown=ids,
-                **({"flow_step": "awaiting_template"} if advance else {}),
-            )
-    except Exception:
-        logger.exception("[list_orshot_templates] design_state update skipped")
-
-    # Annotate each template so the model can identify which thumbnail_url to use.
-    # The model MUST copy the thumbnail_url value verbatim from this response into markdown.
-    try:
-        templates = (result or {}).get("templates") or []
-        for t in templates:
-            if isinstance(t, dict) and t.get("thumbnail_url"):
-                t["_url_instruction"] = (
-                    f"USE EXACTLY: {t['thumbnail_url']}"
-                )
-    except Exception:
-        pass
-
-    return result
+# ═════════════════════════════════════════════════════════════════════════════
+# GEMINI DESIGN TOOLS — direct AI image generation for social posts & ads
+# ═════════════════════════════════════════════════════════════════════════════
 
 
 @tool(
-    name="get_orshot_template_fields",
+    name="generate_social_post",
     description=(
-        "Fetch the **modification keys** for one Orshot template (for mapping user feedback to fields). "
-        "Call **once** after you pick `template_id` — use internally to know which keys to change on edits; "
-        "do **not** dump the full list to the user unless they ask. Same schema as GET /api/orshot/templates/{id}."
+        "Generate a professional social media post graphic using Gemini AI. "
+        "Creates a polished, ready-to-post image with headline, subtext, CTA, and brand colors. "
+        "Supports all major platforms (Instagram, Facebook, TikTok, LinkedIn, X). "
+        "If a product image URL is available, the product becomes the hero of the design. "
+        "Use this for any social media post — product launches, announcements, promotions, brand awareness."
     ),
     parameters={
         "type": "object",
+        "required": ["headline"],
         "properties": {
-            "template_id": {
+            "headline": {
                 "type": "string",
-                "description": "Orshot template id. Omit to use ORSHOT_DEFAULT_TEMPLATE_ID env.",
+                "description": "Main headline text — bold, eye-catching, largest text on the design.",
             },
-        },
-        "required": [],
-    },
-)
-async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
-    import os as _os
-
-    from orshot_service import get_studio_template
-
-    explicit_tid = (args.get("template_id") or "").strip()
-    tid = explicit_tid or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-    if not tid:
-        return {"error": "Pass template_id or set ORSHOT_DEFAULT_TEMPLATE_ID on the server."}
-
-    data = await get_studio_template(tid)
-    if data.get("error"):
-        # Only fall back to the env default when the caller did NOT explicitly pass a
-        # template_id. If they did, surface the error so the AI doesn't silently end up
-        # reading a different template's fields and rendering with mismatched modifications.
-        default_tid = (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-        if not explicit_tid and default_tid and default_tid != tid:
-            logger.warning("[get_orshot_template_fields] template %s failed (%s), retrying with default %s", tid, data["error"], default_tid)
-            data = await get_studio_template(default_tid)
-            if not data.get("error"):
-                data["_fallback_used"] = True
-                data["_original_template_id"] = tid
-        if data.get("error"):
-            err = data.get("error") or "unknown error"
-            return {
-                "error": f"Could not fetch fields for template {tid!r}: {err}. "
-                         "Check that the template_id is correct and the Orshot API key is valid. "
-                         "Call list_orshot_templates to get valid template ids.",
-                "template_id": tid,
-            }
-
-    mods = data.get("modifications") or []
-    fields: list = []
-    for m in mods if isinstance(mods, list) else []:
-        if not isinstance(m, dict):
-            continue
-        ex = m.get("example")
-        if isinstance(ex, str) and len(ex) > 800:
-            ex = ex[:800] + "…"
-        fields.append(
-            {
-                "key": m.get("key") or m.get("id"),
-                "type": m.get("type"),
-                "help_text": m.get("helpText") or m.get("help_text") or m.get("description"),
-                "example": ex,
-                "page_number": m.get("page_number"),
-                "page_id": m.get("page_id"),
-            }
-        )
-
-    pages_raw = data.get("pages_data") or []
-    page_count = len(pages_raw) if isinstance(pages_raw, list) else 0
-
-    # Persist the field list so the render-time guard and `verify_design_ready`
-    # can detect logo-incompatible templates without re-hitting Orshot.
-    try:
-        from .design_state import update_design_state, load_design_state
-
-        conv_id = ctx.user.get("_active_conversation_id")
-        if conv_id and fields:
-            existing = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            current_step = existing.get("flow_step") or ""
-            # Only advance to awaiting_copy_approval if we are currently at
-            # awaiting_template (i.e. the user just picked a template and the
-            # agent is now studying its fields). Do NOT advance the step if called
-            # during template browsing or at any other phase.
-            advance_step = current_step == "awaiting_template"
-            await update_design_state(
-                ctx.db,
-                conv_id,
-                ctx.business_id,
-                locked_template_fields=fields,
-                **({"flow_step": "awaiting_copy_approval"} if advance_step else {}),
-            )
-    except Exception:
-        logger.exception("[get_orshot_template_fields] design_state update skipped")
-
-    return {
-        "success": True,
-        "template_id": data.get("id"),
-        "name": data.get("name"),
-        "canvas_width": data.get("canvas_width"),
-        "canvas_height": data.get("canvas_height"),
-        "thumbnail_url": data.get("thumbnail_url"),
-        "page_count": page_count,
-        "fields": fields,
-        "note": (
-            "Use `key` in `render_orshot_template.modifications`. Any text field also accepts "
-            "style overrides via `<key>.color`, `<key>.fontFamily`, `<key>.fontSize`, "
-            "`<key>.backgroundColor`, `<key>.fontWeight`, `<key>.textAlign` — use these to "
-            "apply the brand colour/font from `get_owner_info` to any headline/CTA/body field, "
-            "even when the template has no dedicated brand-colour field. "
-            "Full `pages_data` is omitted to keep chat storage small."
-        ),
-    }
-
-
-@tool(
-    name="render_orshot_template",
-    description=(
-        "Render a graphic from an **Orshot Studio** template (hosted layouts — import from Canva/Figma supported in Orshot). "
-        "Requires server env **ORSHOT_API_KEY**. Optional **ORSHOT_DEFAULT_TEMPLATE_ID** supplies a default when `template_id` is omitted. "
-        "**modifications** keys must match Orshot Studio dynamic parameters (often `pageN@field_name` on carousels). "
-        "Use `get_orshot_template_fields` once to learn keys, then keep them in mind for refinements. "
-        "**Style overrides:** any text/image field accepts dot-notation style parameters in `modifications` — "
-        "e.g. `\"headline\": \"Big Sale\"` plus `\"headline.color\": \"#FF6600\"`, `\"headline.fontFamily\": \"Inter\"`, "
-        "`\"headline.fontSize\": \"48px\"`, `\"cta.backgroundColor\": \"#FF6600\"`, `\"cta.fontWeight\": \"700\"`. "
-        "This means brand colour/font from `get_owner_info` apply to *any* headline/CTA/body field even when the "
-        "template has no dedicated brand-colour field — just append `.color` / `.fontFamily` to the field key. "
-        "Optional **`presentation_label`** (e.g. 'Option A', 'Final') helps you show two variants or a final pass. "
-        "Default response_type is **base64**; the server re-uploads to your S3 so image links always work."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "template_id": {
+            "subtext": {
                 "type": "string",
-                "description": "Orshot template ID from Workspaces / Template Playground. Omit to use ORSHOT_DEFAULT_TEMPLATE_ID env.",
+                "description": "Secondary text below the headline — smaller, supporting message.",
             },
-            "modifications": {
-                "type": "object",
-                "description": (
-                    "Dynamic field values for the template (Studio parameter names → strings or image URLs). "
-                    "Supports per-field style overrides via dot notation: `<key>.color`, `<key>.fontFamily`, "
-                    "`<key>.fontSize`, `<key>.backgroundColor`, `<key>.fontWeight`, `<key>.textAlign`, "
-                    "`<key>.letterSpacing`, `<key>.lineHeight`, `<key>.opacity`, `<key>.borderRadius` (image), "
-                    "`<key>.borderColor` (image). Use these to apply brand colour/font to any field."
-                ),
-                "additionalProperties": True,
-            },
-            "response_type": {
+            "cta": {
                 "type": "string",
-                "enum": ["url", "base64", "binary"],
-                "default": "base64",
-                "description": "How Orshot returns the asset; default base64 avoids broken third-party S3 presigns — server saves to your bucket.",
+                "description": "Call-to-action text — e.g. 'Shop Now', 'Learn More', 'Link in Bio'.",
             },
-            "response_format": {
+            "brand_color": {
                 "type": "string",
-                "enum": ["png", "jpg", "jpeg", "webp", "pdf"],
-                "default": "png",
+                "description": "Primary brand color as hex (e.g. '#4CD137'). Used as accent throughout the design. Get from get_owner_info.brand_primary_color.",
+            },
+            "style": {
+                "type": "string",
+                "description": "Optional style direction — e.g. 'minimalist', 'bold and vibrant', 'elegant', 'playful', 'corporate'.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "URL of a product photo to feature as the hero image. Get from get_product_images or list_products.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL — placed subtly in corner. Get from get_owner_info.default_logo_url.",
             },
             "platform": {
                 "type": "string",
-                "enum": ["instagram", "facebook", "tiktok", "youtube", "linkedin", "x", "general"],
-                "default": "general",
+                "enum": [
+                    "instagram_post", "instagram_story", "facebook_post",
+                    "tiktok", "youtube_thumb", "linkedin", "x_post",
+                    "general_square", "general_story", "general_landscape",
+                ],
+                "default": "instagram_post",
+                "description": "Target platform — controls aspect ratio and format.",
             },
-            "content_type": {
+            "quality": {
                 "type": "string",
-                "enum": ["ad", "post", "story", "carousel", "general"],
-                "default": "general",
-            },
-            "format": {
-                "type": "string",
-                "enum": ["square", "story", "landscape", "portrait", "general"],
-                "default": "general",
-            },
-            "name": {
-                "type": "string",
-                "description": "Label for Design library + image caption (e.g. 'Spring drop — Option A').",
-            },
-            "presentation_label": {
-                "type": "string",
-                "description": "Short label echoed in the tool result for chat, e.g. 'Option A', 'Option B', 'Final'.",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+                "description": "pro = best quality (slower), fast = quick generation. Use pro by default for posts.",
             },
         },
-        "required": ["modifications"],
     },
 )
-async def render_orshot_template(ctx: ToolContext, args: Dict[str, Any]):
-    import os as _os
+async def generate_social_post(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import generate_social_post as _gen
 
-    from orshot_service import render_studio_template
+    # Auto-fetch brand kit if not provided
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
 
-    explicit_tid = (args.get("template_id") or "").strip()
-    tid = explicit_tid or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-    if not tid:
-        return {
-            "error": "No template_id: pass template_id in the tool call or set ORSHOT_DEFAULT_TEMPLATE_ID on the server.",
-        }
-    template_id_used = str(tid)
-
-    mods = args.get("modifications")
-    if not isinstance(mods, dict):
-        mods = {}
-
-    # ── Pre-render guard ─────────────────────────────────────────────────────
-    # Verify that user-stated requirements (recorded via note_design_requirement)
-    # are actually present in the modifications dict BEFORE we burn an Orshot
-    # credit. Runs against the original `mods` — pre-presigning — so substring
-    # matches against brand asset URLs are reliable. Best-effort: any failure
-    # in the guard itself never blocks the render.
-    original_mods = dict(mods)
-    try:
-        from .design_state import load_design_state
-
-        conv_id = ctx.user.get("_active_conversation_id")
-        if conv_id:
-            state = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            pending = set(state.get("pending_requirements") or [])
-            quotes = state.get("requirement_quotes") or {}
-            staged_url = state.get("staged_image_url") or ""
-            template_fields = state.get("locked_template_fields") or None
-            brand = await _load_brand_kit(ctx) if pending else {}
-            business_email = await _load_business_email(ctx)
-
-            unmet: List[Dict[str, str]] = []
-            if pending:
-                unmet.extend(_evaluate_design_requirements(
-                    pending, original_mods, brand, staged_url, template_fields,
-                ))
-            # Anti-fabrication scanner runs on every render, regardless of pending.
-            unmet.extend(_detect_fabricated_facts(
-                original_mods, quotes, business_email, template_fields,
-            ))
-            if unmet:
-                logger.info(
-                    "[render_orshot_template] blocked by guard (conv=%s, unmet=%s)",
-                    conv_id, [u["code"] for u in unmet],
-                )
-                return {
-                    "error": "render_blocked_by_requirements",
-                    "reason": "One or more recorded user requirements are not satisfied by the modifications, "
-                              "or the modifications contain fabricated facts (offers/URLs the user never stated). "
-                              "Fix each item below, then call render_orshot_template again.",
-                    "unmet": unmet,
-                    "pending_requirements": sorted(pending),
-                }
-    except Exception:
-        logger.exception("[render_orshot_template] pre-render guard skipped")
-
-    # Auto-presign any private S3 image URLs so Orshot's server can fetch them
-    mods = await _presign_modifications(mods)
-
-    response_type = args.get("response_type") or "base64"
-    response_format = args.get("response_format") or "png"
-    if response_format == "jpeg":
-        response_format = "jpg"
-
-    platform = args.get("platform", "general")
-    content_type = args.get("content_type", "general")
-    fmt = args.get("format", "general")
-    pres = (args.get("presentation_label") or "").strip()
-    name = (args.get("name") or pres or "Orshot graphic")[:200]
-
-    result = await render_studio_template(
-        tid,
-        mods,
-        response_type=response_type,
-        response_format=response_format,
+    result = await _gen(
+        headline=args.get("headline", ""),
+        subtext=args.get("subtext", ""),
+        cta=args.get("cta", ""),
+        brand_color=brand_color,
+        style=args.get("style", ""),
+        product_description="",
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "instagram_post"),
+        quality=args.get("quality", "pro"),
     )
+
     if result.get("error"):
-        # Only fall back to the env default when the caller did NOT explicitly pass a
-        # template_id. If they did, the user/AI explicitly chose this template — silently
-        # rendering with a different one would be a critical correctness bug (the design
-        # would not match the locked template). Surface the error so the AI can re-fetch
-        # fields with `get_orshot_template_fields` and retry with correct modifications.
-        default_tid = (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-        if not explicit_tid and default_tid and default_tid != tid:
-            logger.warning("[render_orshot_template] template %s failed (%s), retrying with default %s", tid, result["error"], default_tid)
-            result = await render_studio_template(
-                default_tid,
-                mods,
-                response_type=response_type,
-                response_format=response_format,
-            )
-            if not result.get("error"):
-                template_id_used = default_tid
-        if result.get("error"):
-            return result
+        return {"error": result["error"]}
 
-    image_url = result.get("image_url")
+    image_url = result["image_url"]
+    platform = args.get("platform", "instagram_post")
+    name = (args.get("headline") or "Social Post")[:200]
 
-    # ── Logo compositor ──────────────────────────────────────────────────────
-    # When the user asked for their logo (`include_logo` in pending) and the
-    # rendered modifications don't already contain the logo URL, paste the
-    # brand logo onto the rendered image. This guarantees logo presence even
-    # on templates that have no dedicated logo field. Best-effort: any
-    # failure here falls back to the un-composited render.
-    if image_url:
-        try:
-            from .design_state import load_design_state
-
-            conv_id = ctx.user.get("_active_conversation_id")
-            if conv_id:
-                state = await load_design_state(ctx.db, conv_id, ctx.business_id)
-                pending = set(state.get("pending_requirements") or [])
-                if "include_logo" in pending:
-                    brand = await _load_brand_kit(ctx)
-                    logo = brand.get("default_logo_url") or ""
-                    mod_blob = " ".join(_norm(v) for v in original_mods.values())
-                    if logo and _norm(logo) not in mod_blob:
-                        composited = await _composite_logo_on_image(image_url, logo)
-                        if composited:
-                            logger.info(
-                                "[render_orshot_template] logo composited (conv=%s, tid=%s)",
-                                conv_id, template_id_used,
-                            )
-                            image_url = composited
-                            result["image_url"] = composited
-                            urls = result.get("image_urls")
-                            if isinstance(urls, list) and urls:
-                                urls[0] = composited
-        except Exception:
-            logger.exception("[render_orshot_template] logo compositing skipped")
-
-    if image_url:
-        try:
-            from saved_designs import insert_saved_design
-
-            await insert_saved_design(
-                ctx.db,
-                ctx.business_id,
-                name=name,
-                asset_kind="image",
-                file_url=image_url,
-                thumbnail_url=image_url,
-                source_tool="render_orshot_template",
-                conversation_id=ctx.user.get("_active_conversation_id"),
-                platform=platform,
-                content_type=content_type,
-                format=fmt,
-            )
-        except Exception:
-            logger.exception("[render_orshot_template] saved_designs insert skipped")
-
-        # Persist the locked template + last render so the next turn's prompt
-        # can show the AI exactly which template_id is in play (no silent swaps).
-        try:
-            from .design_state import update_design_state
-
-            explicit_name = (args.get("name") or "").strip() or (args.get("presentation_label") or "").strip()
-            await update_design_state(
-                ctx.db,
-                ctx.user.get("_active_conversation_id"),
-                ctx.business_id,
-                locked_template_id=str(template_id_used),
-                locked_template_name=explicit_name or None,
-                chosen_platform=(platform if platform and platform != "general" else None),
-                chosen_format=(fmt if fmt and fmt != "general" else None),
-                last_render_url=image_url,
-                # Persist the original (pre-presigning) modifications so
-                # verify_design_ready can audit logo / colour / copy presence
-                # against the stable URLs the AI actually passed.
-                last_render_modifications=original_mods,
-                flow_step="refining",
-            )
-        except Exception:
-            logger.exception("[render_orshot_template] design_state update skipped")
+    # Save to design library
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="generate_social_post",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+            platform=platform,
+            content_type="post",
+        )
+    except Exception:
+        logger.exception("[generate_social_post] saved_designs insert skipped")
 
     return {
         "success": True,
-        "template_id_used": template_id_used,
         "image_url": image_url,
-        "image_urls": result.get("image_urls"),
-        "presentation_label": pres or None,
         "markdown": f"![{name}]({image_url})" if image_url else "",
-        "note": "Carousel templates may return multiple URLs in image_urls.",
+        "platform": platform,
+    }
+
+
+@tool(
+    name="generate_ad_creative",
+    description=(
+        "Generate a high-converting ad creative using Gemini AI. Creates a scroll-stopping "
+        "ad image with headline, offer, CTA button, and brand colors. Optimized for Facebook/Instagram ads "
+        "but supports all platforms. If a product image is available, it becomes the hero. "
+        "Use this for paid ad creatives — conversion ads, awareness ads, promotional ads."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["headline"],
+        "properties": {
+            "headline": {
+                "type": "string",
+                "description": "Ad headline — bold, scroll-stopping, largest text. E.g. 'Summer Sale Is Here!'",
+            },
+            "offer": {
+                "type": "string",
+                "description": "Offer or value proposition — prominent, eye-catching. E.g. '50% OFF Everything', 'Buy 2 Get 1 Free'.",
+            },
+            "cta": {
+                "type": "string",
+                "description": "Call-to-action button text. E.g. 'Shop Now', 'Get Offer', 'Learn More'.",
+                "default": "Shop Now",
+            },
+            "urgency": {
+                "type": "string",
+                "description": "Urgency cue — small text near CTA. E.g. 'Limited time only', 'While stocks last', 'Ends Sunday'.",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Primary brand color as hex. Get from get_owner_info.brand_primary_color.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Product photo URL — becomes the hero of the ad. Get from get_product_images.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL. Get from get_owner_info.default_logo_url.",
+            },
+            "platform": {
+                "type": "string",
+                "enum": [
+                    "facebook_ad", "instagram_post", "instagram_story",
+                    "tiktok", "youtube_thumb", "linkedin", "x_post",
+                    "general_square", "general_story", "general_landscape",
+                ],
+                "default": "facebook_ad",
+                "description": "Target platform — controls aspect ratio.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+                "description": "pro = best quality, fast = quicker. Use pro for ads.",
+            },
+        },
+    },
+)
+async def generate_ad_creative(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import generate_ad_creative as _gen
+
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
+
+    result = await _gen(
+        headline=args.get("headline", ""),
+        offer=args.get("offer", ""),
+        cta=args.get("cta", "Shop Now"),
+        brand_color=brand_color,
+        product_description="",
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "facebook_ad"),
+        urgency=args.get("urgency", ""),
+        quality=args.get("quality", "pro"),
+    )
+
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    image_url = result["image_url"]
+    platform = args.get("platform", "facebook_ad")
+    name = (args.get("headline") or "Ad Creative")[:200]
+
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="generate_ad_creative",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+            platform=platform,
+            content_type="ad",
+        )
+    except Exception:
+        logger.exception("[generate_ad_creative] saved_designs insert skipped")
+
+    return {
+        "success": True,
+        "image_url": image_url,
+        "markdown": f"![{name}]({image_url})" if image_url else "",
+        "platform": platform,
+    }
+
+
+@tool(
+    name="generate_carousel_cover",
+    description=(
+        "Generate the cover slide (first slide) of a social media carousel post using Gemini AI. "
+        "Creates a bold hook slide with a swipe cue that makes viewers want to swipe through. "
+        "Sets the visual style (colors, typography, layout) for the full carousel."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["headline"],
+        "properties": {
+            "headline": {
+                "type": "string",
+                "description": "Carousel hook headline — bold, makes people want to swipe. E.g. '5 Ways to...', 'The Secret to...', 'Before & After'",
+            },
+            "subtext": {
+                "type": "string",
+                "description": "Supporting text on the cover slide.",
+            },
+            "slide_count": {
+                "type": "integer",
+                "default": 5,
+                "description": "Total number of slides in the carousel — shown as '1/N' on the cover.",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Primary brand color as hex. Get from get_owner_info.brand_primary_color.",
+            },
+            "topic": {
+                "type": "string",
+                "description": "What the carousel is about — helps the AI set the right visual tone.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Product photo URL to feature on the cover slide.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL.",
+            },
+            "platform": {
+                "type": "string",
+                "enum": [
+                    "instagram_post", "facebook_post", "linkedin",
+                    "general_square", "general_landscape",
+                ],
+                "default": "instagram_post",
+                "description": "Target platform — carousels are typically square.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+            },
+        },
+    },
+)
+async def generate_carousel_cover(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import generate_carousel_cover as _gen
+
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
+
+    result = await _gen(
+        headline=args.get("headline", ""),
+        subtext=args.get("subtext", ""),
+        slide_count=int(args.get("slide_count", 5)),
+        brand_color=brand_color,
+        topic=args.get("topic", ""),
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "instagram_post"),
+        quality=args.get("quality", "pro"),
+    )
+
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    image_url = result["image_url"]
+    platform = args.get("platform", "instagram_post")
+    name = (args.get("headline") or "Carousel")[:200]
+
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="generate_carousel_cover",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+            platform=platform,
+            content_type="carousel",
+        )
+    except Exception:
+        logger.exception("[generate_carousel_cover] saved_designs insert skipped")
+
+    return {
+        "success": True,
+        "image_url": image_url,
+        "markdown": f"![{name}]({image_url})" if image_url else "",
+        "platform": platform,
+    }
+
+
+@tool(
+    name="refine_design",
+    description=(
+        "Refine an existing AI-generated design based on user feedback. Uses the current design "
+        "as a reference and applies the requested changes while keeping what works. "
+        "Use this when the user wants to tweak a generated post/ad — change colors, adjust text, "
+        "try a different style, or fix something they don't like."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["original_image_url", "feedback"],
+        "properties": {
+            "original_image_url": {
+                "type": "string",
+                "description": "URL of the current design image to refine.",
+            },
+            "feedback": {
+                "type": "string",
+                "description": "What the user wants changed. E.g. 'Make the background darker', 'Change the headline to X', 'Make it more vibrant'.",
+            },
+            "headline": {
+                "type": "string",
+                "description": "Headline text to preserve/apply on the refined design.",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Brand color to maintain in the refined design.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Product photo URL — re-inject if the product was lost.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL.",
+            },
+            "platform": {
+                "type": "string",
+                "enum": [
+                    "instagram_post", "instagram_story", "facebook_post", "facebook_ad",
+                    "tiktok", "youtube_thumb", "linkedin", "x_post",
+                    "general_square", "general_story", "general_landscape",
+                ],
+                "default": "instagram_post",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+            },
+        },
+    },
+)
+async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import regenerate_with_feedback
+
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
+
+    result = await regenerate_with_feedback(
+        original_image_url=args.get("original_image_url", ""),
+        feedback=args.get("feedback", ""),
+        headline=args.get("headline", ""),
+        brand_color=brand_color,
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "instagram_post"),
+        quality=args.get("quality", "pro"),
+    )
+
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    image_url = result["image_url"]
+    name = "Refined design"
+
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="refine_design",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+        )
+    except Exception:
+        logger.exception("[refine_design] saved_designs insert skipped")
+
+    return {
+        "success": True,
+        "image_url": image_url,
+        "markdown": f"![{name}]({image_url})" if image_url else "",
     }
 
 
@@ -3611,8 +3613,8 @@ async def _composite_logo_on_image(
 ) -> Optional[str]:
     """Paste the brand logo onto a rendered design and upload the result.
 
-    Used as a deterministic fallback when the locked Orshot template has no
-    image field for the logo (or the AI didn't place it). Both inputs are
+    Used as a deterministic fallback when the generated design has no
+    logo visible. Both inputs are
     fetched over HTTP; the composite is re-uploaded to this deployment's S3
     bucket via ``S3Handler.upload_file`` and the new presigned URL is returned.
 
@@ -3668,7 +3670,7 @@ async def _composite_logo_on_image(
         composed = await _asyncio.get_event_loop().run_in_executor(None, _do_composite)
         b64 = _b64.b64encode(composed).decode("ascii")
         data_url = f"data:image/png;base64,{b64}"
-        fn = f"orshot-logo-{uuid.uuid4()}.png"
+        fn = f"logo-composite-{uuid.uuid4()}.png"
         return await S3Handler.upload_file(data_url, fn)
     except Exception:
         logger.exception(
@@ -3939,196 +3941,6 @@ def _detect_fabricated_facts(
 
 
 @tool(
-    name="note_design_requirement",
-    description=(
-        "Record a design requirement the user has explicitly stated this turn so the "
-        "server can verify it before any design is presented as final. Call this "
-        "**immediately** when the user says things like 'include my logo', 'use my "
-        "brand colours', 'design this product photo', 'add a CTA button', "
-        "'show the price', 'mention 20% off', 'add my website'. The pre-render guard "
-        "and `verify_design_ready` will block / flag any final design that doesn't "
-        "satisfy these. Allowed `requirement` values: `include_logo`, `use_brand_color`, "
-        "`use_brand_font`, `stage_product`, `include_cta`, `include_headline`, "
-        "`include_price`, `include_offer`, `include_website`. "
-        "**For `include_offer` and `include_website` you MUST pass `user_quote` "
-        "containing the user's verbatim wording** (e.g. `user_quote='20% off until "
-        "Friday'` or `user_quote='zilo.shop'`) — the anti-fabrication scanner uses it "
-        "to verify the modification value matches what the user actually said."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "requirement": {
-                "type": "string",
-                "enum": sorted(_ALLOWED_DESIGN_REQUIREMENTS),
-                "description": "The requirement code to record.",
-            },
-            "user_quote": {
-                "type": "string",
-                "description": (
-                    "The user's verbatim wording for this requirement. Required for "
-                    "`include_offer` and `include_website` (the scanner verifies the "
-                    "modification value contains this quote). Optional but recommended "
-                    "for other requirements as an audit trail."
-                ),
-            },
-        },
-        "required": ["requirement"],
-    },
-    destructive=False,
-)
-async def note_design_requirement(ctx: ToolContext, args: Dict[str, Any]):
-    req = (args.get("requirement") or "").strip()
-    if req not in _ALLOWED_DESIGN_REQUIREMENTS:
-        return {
-            "error": "unknown_requirement",
-            "allowed": sorted(_ALLOWED_DESIGN_REQUIREMENTS),
-        }
-
-    quote = (args.get("user_quote") or "").strip()[:200]
-    if req in _REQUIREMENTS_NEEDING_QUOTE and not quote:
-        return {
-            "error": "user_quote_required",
-            "fix": (
-                f"`{req}` requires `user_quote` containing the user's verbatim wording "
-                "so the anti-fabrication scanner can verify the modification value "
-                "matches what they actually said. Re-call this tool with `user_quote` set."
-            ),
-        }
-
-    conv_id = ctx.user.get("_active_conversation_id")
-    if not conv_id:
-        return {"error": "No active conversation_id — requirement not persisted."}
-
-    from .design_state import update_design_state
-
-    update_kwargs: Dict[str, Any] = {"add_pending_requirements": [req]}
-    if quote:
-        # Persist as a nested field (`requirement_quotes.<req>`) so each requirement
-        # keeps its own verbatim audit trail. update_design_state forwards arbitrary
-        # `**fields` kwargs into a Mongo `$set`, and dotted keys are valid there.
-        update_kwargs[f"requirement_quotes.{req}"] = quote
-
-    try:
-        await update_design_state(
-            ctx.db,
-            conv_id,
-            ctx.business_id,
-            **update_kwargs,
-        )
-    except Exception:
-        logger.exception("[note_design_requirement] persist failed")
-        return {"error": "persist_failed"}
-
-    return {
-        "success": True,
-        "recorded": req,
-        "user_quote": quote,
-        "note": "This requirement will be verified by the render-time guard and `verify_design_ready`.",
-    }
-
-
-@tool(
-    name="verify_design_ready",
-    description=(
-        "Run the deterministic pre-presentation check on the latest render. Returns "
-        "`ready=true` when every recorded requirement (logo, brand colour, staging, "
-        "headline, CTA, price) is satisfied by the most recent `render_orshot_template` "
-        "call's `modifications`. Returns `ready=false` with `unmet` (list of "
-        "`{code, fix}`) when something is missing — follow each `fix` exactly, "
-        "re-render, then call this tool again. **Always call this before telling "
-        "the user a design is final, ready, or done.**"
-    ),
-    parameters={"type": "object", "properties": {}},
-    destructive=False,
-)
-async def verify_design_ready(ctx: ToolContext, args: Dict[str, Any]):
-    conv_id = ctx.user.get("_active_conversation_id")
-    if not conv_id:
-        return {"ready": False, "error": "No active conversation_id."}
-
-    from .design_state import load_design_state, update_design_state
-
-    state = await load_design_state(ctx.db, conv_id, ctx.business_id)
-    pending = set(state.get("pending_requirements") or [])
-    quotes = state.get("requirement_quotes") or {}
-    last_mods = state.get("last_render_modifications") or {}
-    last_render_url = state.get("last_render_url") or ""
-    staged_url = state.get("staged_image_url") or ""
-    template_fields = state.get("locked_template_fields") or None
-
-    if not last_render_url:
-        return {
-            "ready": False,
-            "unmet": [{
-                "code": "no_render",
-                "fix": "No design has been rendered yet for this conversation. Walk through "
-                       "Phase 2 (generate_design_background) and Phase 3 (render_orshot_template) first.",
-            }],
-            "checked": {"pending_requirements": sorted(pending)},
-        }
-
-    business_email = await _load_business_email(ctx)
-    brand = await _load_brand_kit(ctx) if pending else {}
-
-    unmet: List[Dict[str, str]] = []
-    if pending:
-        unmet.extend(_evaluate_design_requirements(
-            pending, last_mods, brand, staged_url, template_fields,
-        ))
-    # Anti-fabrication scanner runs unconditionally so we never finalise a design
-    # with an invented discount or URL — even when no requirements were recorded.
-    unmet.extend(_detect_fabricated_facts(
-        last_mods, quotes, business_email, template_fields,
-    ))
-
-    async def _mark_done() -> None:
-        try:
-            await update_design_state(
-                ctx.db, conv_id, ctx.business_id, flow_step="done"
-            )
-        except Exception:
-            logger.exception("[verify_design_ready] flow_step update skipped")
-
-    if not pending and not unmet:
-        await _mark_done()
-        return {
-            "ready": True,
-            "unmet": [],
-            "checked": {
-                "pending_requirements": [],
-                "has_last_render": True,
-                "has_staged_image": bool(staged_url),
-            },
-            "note": "No explicit requirements were recorded for this conversation. "
-                    "If the user mentioned logo / brand colour / specific copy, call "
-                    "`note_design_requirement` first, then verify again.",
-        }
-
-    is_ready = len(unmet) == 0
-    if is_ready:
-        await _mark_done()
-
-    return {
-        "ready": is_ready,
-        "unmet": unmet,
-        "checked": {
-            "pending_requirements": sorted(pending),
-            "modification_keys": sorted(last_mods.keys()),
-            "has_logo_in_brand_kit": bool(brand.get("default_logo_url")),
-            "has_brand_color":       bool(brand.get("brand_primary_color")),
-            "has_brand_font":        bool(brand.get("brand_font")),
-            "has_staged_image":      bool(staged_url),
-            "has_image_field_in_template": bool(_image_fields(template_fields)),
-            "last_render_url":       last_render_url,
-        },
-    }
-
-
-
-
-
-
 async def _presign_s3_url(url: str) -> str:
     """Return a publicly accessible URL for a private S3 object.
 
@@ -4151,7 +3963,7 @@ async def _presign_s3_url(url: str) -> str:
         if not bucket:
             bucket = (_os.environ.get("AWS_BUCKET_NAME") or "").strip()
 
-        # Prefer backend proxy — Orshot's servers can call our own endpoint
+        # Prefer backend proxy — external services can call our own endpoint
         backend_url = (
             _os.environ.get("BACKEND_PUBLIC_URL")
             or _os.environ.get("PUBLIC_BASE_URL")
@@ -4159,7 +3971,7 @@ async def _presign_s3_url(url: str) -> str:
         ).rstrip("/")
         if backend_url and key:
             proxy = f"{backend_url}/api/images/s3/{key}"
-            logger.debug("[render_orshot] Using proxy URL for %s → %s", key[:60], proxy[:80])
+            logger.debug("[_make_accessible_url] Using proxy URL for %s → %s", key[:60], proxy[:80])
             return proxy
 
         # Fallback: presign directly against S3
@@ -4170,7 +3982,7 @@ async def _presign_s3_url(url: str) -> str:
         )
         return presigned
     except Exception as _e:
-        logger.warning("[render_orshot] Could not build accessible URL for %s: %s", url[:80], _e)
+        logger.warning("[_make_accessible_url] Could not build accessible URL for %s: %s", url[:80], _e)
         return url
 
 
@@ -4195,9 +4007,9 @@ async def _presign_modifications(mods: dict) -> dict:
         "lighting and environment. THE PRODUCT IS NEVER ALTERED — not the shape, color, label, or texture. "
         "Only the background and scene around it are created. "
         "(B) no product_image_url → Gemini generates a pure lifestyle/concept scene from scratch. "
-        "Pass format to match the Orshot template you chose (square / story / landscape / portrait). "
-        "The returned background_url is the enhanced product photo — place it into the Orshot template's "
-        "image field via render_orshot_template to produce the final branded graphic."
+        "Pass format to match the platform canvas you chose (square / story / landscape / portrait). "
+        "The returned background_url is the enhanced product photo — pass it as product_image_url "
+        "to generate_ad_creative or generate_social_post to produce the final branded graphic."
     ),
     parameters={
         "type": "object",
@@ -4327,7 +4139,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
                 "format": fmt,
                 "style": style,
                 "markdown": f"![Edited product background]({bg_url})",
-                "next_step": "Call list_orshot_templates, pick the best template, call get_orshot_template_fields, then render_orshot_template placing this background_url into the template's image field.",
+                "next_step": "Pass this background_url as product_image_url to generate_ad_creative or generate_social_post to create the final branded design.",
             }
         # Fallback to raw product image if editing fails
         logger.warning("[generate_design_background] Gemini edit failed (%s), using raw product image", result.get("error"))
@@ -4339,7 +4151,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
             "format": fmt,
             "style": style,
             "markdown": f"![Product background]({product_image_url})",
-            "next_step": "Call list_orshot_templates, pick the best template, call get_orshot_template_fields, then render_orshot_template placing this background_url into the template's image field.",
+            "next_step": "Pass this background_url as product_image_url to generate_ad_creative or generate_social_post to create the final branded design.",
         }
 
     # ── Route B: generate a scene from scratch ────────────────────────────────
@@ -4367,7 +4179,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
         "format": fmt,
         "style": style,
         "markdown": f"![AI Background]({bg_url})",
-        "next_step": "Call list_orshot_templates, pick the best template, call get_orshot_template_fields, then render_orshot_template placing this background_url into the template's image field.",
+        "next_step": "Pass this background_url as product_image_url to generate_ad_creative or generate_social_post to create the final branded design.",
     }
 
 

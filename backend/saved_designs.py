@@ -46,6 +46,7 @@ async def insert_saved_design(
     platform: str = "general",
     content_type: str = "",
     format: str = "",
+    source_markdown: Optional[str] = None,
 ) -> None:
     """Best-effort insert; failures are logged and do not break the assistant tool."""
     if not file_url:
@@ -73,6 +74,7 @@ async def insert_saved_design(
         "is_default": False,
         "created_at": now,
         "conversation_id": conversation_id,
+        "source_markdown": source_markdown or "",
     }
     try:
         await db[COLLECTION].insert_one(doc)

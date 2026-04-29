@@ -6266,10 +6266,10 @@ async def s3_presign_get(request: S3PresignGetRequest, user=Depends(get_current_
 async def s3_image_proxy(key_path: str):
     """
     Public image proxy — downloads an object from S3 using server-side credentials
-    and streams it back. Used by Orshot (and other external services) to fetch
-    product images from the private bucket without needing presigned URLs.
+    and streams it back. Used by external services to fetch product images from
+    the private bucket without needing presigned URLs.
 
-    The endpoint is intentionally unauthenticated so that Orshot's render servers
+    The endpoint is intentionally unauthenticated so that external render services
     can access it. Key paths are UUID-based and unguessable in practice.
     """
     if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
@@ -12069,7 +12069,7 @@ try:
 except Exception as _e:
     logging.error(f"[design-templates] failed to mount routes: {_e}")
 
-# ── Orshot (template schema + render for dashboard / integrations) ───────────
+# ── Orshot (template schema + render — legacy, kept for backward compat) ─────
 try:
     from orshot_routes import make_orshot_router as _mk_orshot_router
     api_router.include_router(_mk_orshot_router(Depends(get_current_user)))

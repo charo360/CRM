@@ -21,7 +21,7 @@ _META_FALLBACK = [
     "Video or Reels-style ad — I need a script and shot ideas",
     "I have creative files — I'll attach them; align copy to them",
     "Show me a text preview of the ad, then I'll say what to tweak",
-    "Create a square promo graphic for Instagram (Design agent — Orshot)",
+    "Create a square promo graphic for Instagram (Design agent — AI)",
     "Generate a simple slide deck outline then build the .pptx",
 ]
 
@@ -177,7 +177,7 @@ For Meta Ads, mix **step-by-step** options with **branch** options when relevant
 - image vs video / creative upload vs generate copy
 - "show preview then I'll tweak"
 - save draft when a plan exists
-- **Visuals:** Suggest "Create a graphic" (Design agent — `render_orshot_template` / Orshot, or `create_business_document` for PDF).
+- **Visuals:** Suggest "Create a graphic" (Design agent — `generate_ad_creative` / `generate_social_post`, or `create_business_document` for PDF).
 """
         extra_social = ""
         if agent_id in ("social_media", "creative"):

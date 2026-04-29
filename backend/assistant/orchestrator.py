@@ -296,7 +296,7 @@ _MAX_TOOL_RESULT_JSON_CHARS = 80_000
 
 
 def _limit_tool_result_size(result: Any) -> Any:
-    """Replace oversized tool JSON with a short preview (Orshot template payloads, etc.)."""
+    """Replace oversized tool JSON with a short preview (design payloads, etc.)."""
     try:
         s = json.dumps(result, default=str)
     except (TypeError, ValueError):

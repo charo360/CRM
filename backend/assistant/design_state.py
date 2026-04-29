@@ -2,15 +2,14 @@
 
 Mirrors AutoReply v2's `conversation_states` pattern: the LLM remains the brain,
 this module just persists a compact snapshot of decisions the AI has already made
-(locked template, chosen platform, staged image URL, …) so that:
+(locked product, chosen platform, generated image URL, …) so that:
 
   - long conversations don't lose the lock when chat history gets truncated
   - a server restart mid-flow doesn't reset what the user picked
-  - each turn's system prompt can show the AI exactly what's already locked,
-    making the "no silent template swap" rule self-enforcing
+  - each turn's system prompt can show the AI exactly what's already locked
 
 State is updated as a side-effect of successful design-tool calls
-(`render_orshot_template`, `generate_design_background`, `list_orshot_templates`).
+(`generate_social_post`, `generate_ad_creative`, `generate_carousel_cover`, `refine_design`).
 The orchestrator loads it at the start of each design-agent turn and injects a
 short markdown preamble into the system prompt.
 
@@ -38,8 +37,6 @@ _MAX_TEMPLATES_SHOWN = 60
 FLOW_STEPS = (
     "awaiting_product",
     "awaiting_platform",
-    "awaiting_creation_mode",
-    "awaiting_template",
     "awaiting_copy_approval",
     "awaiting_greenlight",
     "refining",
@@ -54,49 +51,32 @@ _STEP_NEXT_ACTION: Dict[str, str] = {
         "2. '📎 I have my own image — I'll attach it via the paperclip' — for custom/non-catalog images.\n"
         "3. '🎉 It's a promotion or offer — no specific product'\n"
         "4. '📣 Announcement or news'\n"
-        "FORBIDDEN THIS TURN: `list_orshot_templates`, `render_orshot_template`, "
-        "`get_orshot_template_fields`, `generate_design_background`, `recreate_design_with_ai`, "
-        "`verify_design_ready`. Platform noted — it will be used later."
+        "FORBIDDEN THIS TURN: `generate_social_post`, `generate_ad_creative`, "
+        "`generate_carousel_cover`, `refine_design`. Platform noted — it will be used later."
     ),
     "awaiting_platform": (
         "Product is locked. Now handle platform. "
         "Check the conversation history — did the user already state a platform "
         "(e.g. 'Facebook post', 'Instagram story', 'TikTok', 'LinkedIn')? "
-        "If YES: confirm it aloud (e.g. 'Facebook it is!') then move to creation mode — "
-        "ask HOW they want to create the design (see awaiting_creation_mode). "
+        "If YES: confirm it aloud (e.g. 'Facebook it is!') then move to copy approval. "
         "If NO: ask ONE question — show platform options as tap chips and wait. "
-        "FORBIDDEN: `list_orshot_templates`, `render_orshot_template`, `get_orshot_template_fields`."
-    ),
-    "awaiting_creation_mode": (
-        "Platform is locked. Now ask HOW the user wants to create the design. "
-        "Show these options as tap chips:\n"
-        "- 🖼️ **Pick from templates** — Browse layouts and choose one\n"
-        "- 🤖 **AI picks the best template** — Let me choose the perfect layout\n"
-        "- ✨ **AI generates a custom design** — Create something unique with AI\n"
-        "Do NOT call any design tools yet. Wait for their choice before proceeding."
-    ),
-    "awaiting_template": (
-        "User chose to pick from templates. Call `list_orshot_templates` and show 3 templates "
-        "with the exact thumbnail_url values copied verbatim from the tool result — "
-        "never invent or retype a URL. Always add 'See more options' and 'You pick the best one' chips. "
-        "If templates have already been shown and user is still picking, do NOT call "
-        "`list_orshot_templates` again — just wait."
+        "FORBIDDEN: `generate_social_post`, `generate_ad_creative`, `generate_carousel_cover`."
     ),
     "awaiting_copy_approval": (
-        "Template is locked and its fields have been studied. Propose copy for each text field "
-        "within the character limits you already noted. Ask the user to approve or tweak. "
-        "Do NOT call `get_orshot_template_fields` again (already done). Do NOT render yet."
+        "Platform is locked. Propose copy (headline, tagline, CTA) and ask the user "
+        "to approve or tweak. Do NOT generate yet — wait for their approval."
     ),
     "awaiting_greenlight": (
-        "Product is staged (staged_image_url is set). Copy is approved. "
-        "If the user just said 'yes', 'go ahead', 'render it', or any approval phrase, "
-        "call `render_orshot_template` immediately — do NOT ask again. "
-        "If no approval yet, show a brief plan (template + copy + staged image) and ask: "
-        "'Shall I render it?'"
+        "Copy is approved. "
+        "If the user just said 'yes', 'go ahead', 'generate it', or any approval phrase, "
+        "call the appropriate Gemini design tool immediately — do NOT ask again. "
+        "Use `generate_social_post` for organic posts, `generate_ad_creative` for ads, "
+        "`generate_carousel_cover` for carousels. "
+        "If no approval yet, show a brief plan and ask: 'Shall I generate it?'"
     ),
     "refining": (
-        "Design is rendered. Present the image to the user and ask if they want "
-        "any tweaks (headline, template, colours). If they approve, call `verify_design_ready`."
+        "Design is generated. Present the image to the user and ask if they want "
+        "any tweaks. If they want changes, use `refine_design` with their feedback."
     ),
     "done": (
         "Design is finalised. Ask the user what they want to do next — "
@@ -212,32 +192,15 @@ def format_design_state_for_prompt(state: Dict[str, Any]) -> str:
         bits = [b for b in (plat, asp) if b]
         lines.append(f"- 📱 **Platform:** {' · '.join(bits)}")
 
-    tid = state.get("locked_template_id")
-    tname = state.get("locked_template_name")
-    if tid:
-        nm = tname or "(unnamed)"
-        lines.append(f"- 🔒 **Locked template:** {nm} (id `{tid}`)")
-
-    staged = state.get("staged_image_url")
-    if staged:
-        lines.append(f"- 🖼️ **Approved staged shot:** {staged}")
-
     last_render = state.get("last_render_url")
-    if last_render and last_render != staged:
-        lines.append(f"- 🎨 **Last render:** {last_render}")
+    if last_render:
+        lines.append(f"- 🎨 **Generated design:** {last_render}")
 
     pending = state.get("pending_requirements") or []
     if isinstance(pending, list) and pending:
-        # User-stated requirements the render-time guard will enforce.
-        # Show them so the AI knows what `verify_design_ready` will check.
         lines.append(
             f"- ✅ **User requirements (must satisfy before final):** {', '.join(sorted(set(pending)))}"
         )
-
-    shown = state.get("templates_shown") or []
-    if isinstance(shown, list) and shown:
-        # Only show the count to keep the prompt compact; the full list is in DB.
-        lines.append(f"- 🗂️ **Templates already shown this thread:** {len(shown)} (skip these on 'See more options')")
 
     if not lines:
         return ""
