@@ -46,7 +46,7 @@ async def bootstrap_collections() -> None:
     from qdrant_client.models import Distance, VectorParams
     q = get_qdrant()
     existing = {c.name for c in (await q.get_collections()).collections}
-    for name in ("customer_memories", "business_knowledge"):
+    for name in ("customer_memories", "business_knowledge", "owner_preferences"):
         if name not in existing:
             await q.create_collection(
                 collection_name=name,

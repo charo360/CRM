@@ -1,16 +1,10 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { marketingApi } from "@/lib/api";
+import { marketingApi, socialSchedulerApi, type ScheduledPost, type SocialAnalytics } from "@/lib/api";
 import { MarketingApiBanner } from "@/components/marketing/MarketingApiBanner";
 import { BulkScheduleSection } from "@/components/marketing/BulkScheduleSection";
-import {
-  type ScheduledPost,
-  type SocialChannel,
-  listScheduledPosts,
-  upsertScheduledPost,
-  deleteScheduledPost,
-} from "@/lib/marketing-stubs";
+import { type SocialChannel } from "@/lib/marketing-stubs";
 import {
   POST_KIND_LABELS,
   PLACEMENT_PRESETS,
@@ -33,6 +27,14 @@ import {
   CheckCircle2,
   FileText,
   AlertCircle,
+  BarChart2,
+  RefreshCw,
+  Eye,
+  ThumbsUp,
+  MessageCircle,
+  Share2,
+  MousePointer,
+  TrendingUp,
 } from "lucide-react";
 
 const CHANNELS: { id: SocialChannel; label: string }[] = [
@@ -40,6 +42,7 @@ const CHANNELS: { id: SocialChannel; label: string }[] = [
   { id: "instagram", label: "Instagram" },
   { id: "linkedin", label: "LinkedIn" },
   { id: "x", label: "X" },
+  { id: "tiktok", label: "TikTok" },
 ];
 
 const STATUS_STYLE: Record<string, string> = {
@@ -68,6 +71,7 @@ const CHAR_LIMITS: Record<SocialChannel, number> = {
   facebook: 63206,
   instagram: 2200,
   linkedin: 3000,
+  tiktok: 2200,
 };
 
 const BEST_TIMES: Record<SocialChannel, string> = {
@@ -75,7 +79,259 @@ const BEST_TIMES: Record<SocialChannel, string> = {
   instagram: "Tue–Fri 11 AM, 2 PM",
   linkedin: "Tue–Thu 8–10 AM",
   x: "Mon–Fri 9 AM, 12 PM",
+  tiktok: "Tue–Fri 7–9 PM",
 };
+
+const PERIOD_OPTIONS = [7, 30, 90] as const;
+type Period = typeof PERIOD_OPTIONS[number];
+
+const CHANNEL_COLOURS: Record<string, string> = {
+  facebook:  "bg-blue-100 text-blue-700",
+  instagram: "bg-pink-100 text-pink-700",
+  linkedin:  "bg-sky-100 text-sky-700",
+  x:         "bg-slate-100 text-slate-700",
+  tiktok:    "bg-purple-100 text-purple-700",
+};
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function AnalyticsTab() {
+  const [days, setDays] = React.useState<Period>(30);
+  const [channel, setChannel] = React.useState<string>("");
+  const [data, setData] = React.useState<SocialAnalytics | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [lastFetched, setLastFetched] = React.useState<Date | null>(null);
+
+  const load = React.useCallback(async (d: Period, ch: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await socialSchedulerApi.analytics(d, ch || undefined);
+      setData(result);
+      setLastFetched(new Date());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load analytics");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => { void load(days, channel); }, [load, days, channel]);
+
+  const channelEntries = Object.entries(data?.by_channel ?? {}).sort((a, b) => b[1].reach - a[1].reach);
+
+  return (
+    <div className="space-y-5">
+      {/* Controls */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex rounded-lg border border-slate-200 bg-white overflow-hidden">
+          {PERIOD_OPTIONS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setDays(p)}
+              className={`px-4 py-1.5 text-xs font-medium ${
+                days === p ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {p}d
+            </button>
+          ))}
+        </div>
+        <select
+          value={channel}
+          onChange={(e) => setChannel(e.target.value)}
+          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:border-brand"
+        >
+          <option value="">All platforms</option>
+          {CHANNELS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+        </select>
+        <button
+          type="button"
+          onClick={() => void load(days, channel)}
+          disabled={loading}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+          Refresh
+        </button>
+        {lastFetched && (
+          <span className="text-[11px] text-slate-400">
+            Updated {lastFetched.toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+      )}
+
+      {loading && !data && (
+        <div className="flex justify-center py-16 text-slate-400">
+          <Loader2 className="animate-spin" size={24} />
+        </div>
+      )}
+
+      {data && (
+        <>
+          {/* Overview stat cards */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              { label: "Total reach",       value: fmt(data.totals.reach),   icon: Eye,            color: "text-brand" },
+              { label: "Total likes",        value: fmt(data.totals.likes),   icon: ThumbsUp,       color: "text-pink-500" },
+              { label: "Comments",           value: fmt(data.totals.comments),icon: MessageCircle,  color: "text-amber-500" },
+              { label: "Avg engagement rate",value: `${data.avg_engagement_rate}%`, icon: TrendingUp, color: "text-emerald-500" },
+            ].map((c) => (
+              <div key={c.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className={`mb-1 ${c.color}`}><c.icon size={16} /></div>
+                <p className="text-xl font-bold text-slate-900">{c.value}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">{c.label}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Secondary stats row */}
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Shares",           value: fmt(data.totals.shares),          icon: Share2 },
+              { label: "Clicks",           value: fmt(data.totals.clicks),          icon: MousePointer },
+              { label: "Avg reach / post", value: fmt(data.avg_reach_per_post),     icon: BarChart2 },
+            ].map((c) => (
+              <div key={c.label} className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm flex items-center gap-3">
+                <c.icon size={18} className="text-slate-400 shrink-0" />
+                <div>
+                  <p className="text-lg font-bold text-slate-900">{c.value}</p>
+                  <p className="text-[11px] text-slate-500">{c.label}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Per-platform breakdown */}
+          {channelEntries.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+              <div className="border-b border-slate-100 bg-slate-50/80 px-4 py-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">By platform</h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[600px] text-sm">
+                  <thead className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    <tr className="border-b border-slate-100">
+                      <th className="px-4 py-2 text-left">Platform</th>
+                      <th className="px-4 py-2 text-right">Posts</th>
+                      <th className="px-4 py-2 text-right">Reach</th>
+                      <th className="px-4 py-2 text-right">Likes</th>
+                      <th className="px-4 py-2 text-right">Comments</th>
+                      <th className="px-4 py-2 text-right">Shares</th>
+                      <th className="px-4 py-2 text-right">Clicks</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {channelEntries.map(([ch, stats]) => (
+                      <tr key={ch} className="hover:bg-slate-50/80">
+                        <td className="px-4 py-3">
+                          <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize ${
+                            CHANNEL_COLOURS[ch] ?? "bg-slate-100 text-slate-700"
+                          }`}>{ch}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-slate-700">{stats.posts}</td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-900">{fmt(stats.reach)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(stats.likes)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(stats.comments)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(stats.shares)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(stats.clicks)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Top posts table */}
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+            <div className="border-b border-slate-100 bg-slate-50/80 px-4 py-3 flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Published posts — engagement
+              </h3>
+              {data.unsynced_posts > 0 && (
+                <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                  {data.unsynced_posts} post{data.unsynced_posts > 1 ? "s" : ""} awaiting sync
+                </span>
+              )}
+            </div>
+            {data.top_posts.length === 0 ? (
+              <p className="px-4 py-10 text-center text-sm text-slate-400">
+                No published posts in the last {days} days.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[700px] text-sm">
+                  <thead className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    <tr className="border-b border-slate-100">
+                      <th className="px-4 py-2 text-left">Post</th>
+                      <th className="px-4 py-2 text-left">Channels</th>
+                      <th className="px-4 py-2 text-right">Reach</th>
+                      <th className="px-4 py-2 text-right">Likes</th>
+                      <th className="px-4 py-2 text-right">Comments</th>
+                      <th className="px-4 py-2 text-right">Shares</th>
+                      <th className="px-4 py-2 text-right">Clicks</th>
+                      <th className="px-4 py-2 text-right">Synced</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {data.top_posts.map((p) => (
+                      <tr key={p.id} className="hover:bg-slate-50/80">
+                        <td className="px-4 py-3 max-w-[200px]">
+                          <p className="truncate font-medium text-slate-900">{p.title || "Untitled"}</p>
+                          <p className="text-[10px] text-slate-400">
+                            {new Date(p.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {p.channels.map((ch) => (
+                              <span key={ch} className={`rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${
+                                CHANNEL_COLOURS[ch] ?? "bg-slate-100 text-slate-700"
+                              }`}>{ch}</span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-900">{fmt(p.reach)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(p.likes)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(p.comments)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(p.shares)}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">{fmt(p.clicks)}</td>
+                        <td className="px-4 py-3 text-right">
+                          {p.engagement_synced_at ? (
+                            <span className="text-[10px] text-emerald-600">
+                              {new Date(p.engagement_synced_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-amber-500">Pending</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <p className="text-[11px] text-slate-400 text-center">
+            Showing {data.total_posts} published post{data.total_posts !== 1 ? "s" : ""} · Metrics sync automatically every 30 min after publishing
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
 
 function SummaryCards({ rows }: { rows: ScheduledPost[] }) {
   const counts = {
@@ -124,11 +380,10 @@ function rowPreview(r: ScheduledPost): { url?: string; video: boolean; count: nu
       count: a.length,
     };
   }
-  return {
-    url: r.media_preview_data_url,
-    video: false,
-    count: r.media_file_name || r.media_preview_data_url ? 1 : 0,
-  };
+  if (r.image_url) {
+    return { url: r.image_url, video: false, count: 1 };
+  }
+  return { url: undefined, video: false, count: 0 };
 }
 
 export default function SocialSchedulerPage() {
@@ -136,16 +391,23 @@ export default function SocialSchedulerPage() {
   const [modal, setModal] = useState<Partial<ScheduledPost> | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [hydrated, setHydrated] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"posts" | "analytics">("posts");
 
-  const refresh = useCallback(() => {
-    setRows(listScheduledPosts());
+  const refresh = useCallback(async () => {
+    try {
+      const { posts } = await socialSchedulerApi.list();
+      setRows(posts);
+    } catch {
+      setRows([]);
+    }
   }, []);
 
   useEffect(() => {
-    refresh();
+    void refresh();
     setHydrated(true);
   }, [refresh]);
 
@@ -166,20 +428,31 @@ export default function SocialSchedulerPage() {
     setModal(emptyForm());
   }
 
-  function duplicatePost(row: ScheduledPost) {
-    upsertScheduledPost({
-      ...row,
-      id: undefined,
-      title: `${row.title} (copy)`,
-      status: "draft",
-      scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
-    });
-    refresh();
+  async function duplicatePost(row: ScheduledPost) {
+    try {
+      await socialSchedulerApi.create({
+        title: `${row.title} (copy)`,
+        body: row.body,
+        channels: row.channels as SocialChannel[],
+        scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
+        status: "draft",
+        post_kind: row.post_kind,
+        placement_id: row.placement_id,
+        placement_width: row.placement_width,
+        placement_height: row.placement_height,
+        link_url: row.link_url,
+        assets: row.assets,
+        image_url: row.image_url,
+      });
+      await refresh();
+    } catch { /* silent */ }
   }
 
-  function quickToggleStatus(row: ScheduledPost) {
-    upsertScheduledPost({ ...row, status: STATUS_NEXT[row.status] ?? "draft" });
-    refresh();
+  async function quickToggleStatus(row: ScheduledPost) {
+    try {
+      await socialSchedulerApi.update(row.id, { status: STATUS_NEXT[row.status] ?? "draft" });
+      await refresh();
+    } catch { /* silent */ }
   }
 
   function openEdit(row: ScheduledPost) {
@@ -189,38 +462,43 @@ export default function SocialSchedulerPage() {
     setModal({ ...row, scheduled_at: at });
   }
 
-  function saveModal() {
+  async function saveModal() {
     if (!modal?.title?.trim() || !modal.body?.trim()) return;
-    const preset = presetById(modal.placement_id);
-    const w =
-      modal.placement_id === "custom"
-        ? modal.placement_width ?? 1080
-        : preset.width;
-    const h =
-      modal.placement_id === "custom"
-        ? modal.placement_height ?? 1080
-        : preset.height;
+    const preset = presetById(modal.placement_id as PostPlacementId | undefined);
+    const w = modal.placement_id === "custom" ? modal.placement_width ?? 1080 : preset.width;
+    const h = modal.placement_id === "custom" ? modal.placement_height ?? 1080 : preset.height;
 
-    upsertScheduledPost({
-      id: modal.id,
+    const payload = {
       title: modal.title.trim(),
       body: modal.body.trim(),
       channels: (modal.channels?.length ? modal.channels : ["facebook"]) as SocialChannel[],
       scheduled_at: modal.scheduled_at
         ? new Date(modal.scheduled_at).toISOString()
         : new Date().toISOString(),
-      status: modal.status ?? "draft",
+      status: (modal.status ?? "draft") as ScheduledPost["status"],
       post_kind: modal.post_kind,
       placement_id: modal.placement_id,
       placement_width: w,
       placement_height: h,
       link_url: modal.link_url?.trim() || undefined,
       assets: modal.assets,
-      media_file_name: modal.media_file_name,
-      media_preview_data_url: modal.media_preview_data_url,
-    });
-    refresh();
-    setModal(null);
+      image_url: modal.image_url,
+    };
+
+    setSaving(true);
+    try {
+      if (modal.id) {
+        await socialSchedulerApi.update(modal.id, payload);
+      } else {
+        await socialSchedulerApi.create(payload);
+      }
+      await refresh();
+      setModal(null);
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "Failed to save post");
+    } finally {
+      setSaving(false);
+    }
   }
 
   function toggleChannel(ch: SocialChannel) {
@@ -272,18 +550,43 @@ export default function SocialSchedulerPage() {
             the post editor to generate title and caption from a short brief.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openNew}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white hover:bg-brand"
-        >
-          <Plus size={16} />
-          New post
-        </button>
+        {activeTab === "posts" && (
+          <button
+            type="button"
+            onClick={openNew}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white hover:bg-brand"
+          >
+            <Plus size={16} />
+            New post
+          </button>
+        )}
+      </div>
+
+      {/* Tab switcher */}
+      <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 w-fit">
+        {(["posts", "analytics"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            className={`inline-flex items-center gap-2 rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+              activeTab === tab
+                ? "bg-white text-slate-900 shadow-sm"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            {tab === "posts" ? <CalendarClock size={14} /> : <BarChart2 size={14} />}
+            {tab === "posts" ? "Posts" : "Analytics"}
+          </button>
+        ))}
       </div>
 
       <MarketingApiBanner product="Social scheduling" />
 
+      {activeTab === "analytics" && <AnalyticsTab />}
+
+      {activeTab === "posts" && (
+        <>
       {rows.length > 0 && <SummaryCards rows={rows} />}
 
       <BulkScheduleSection onCommitted={refresh} />
@@ -327,8 +630,8 @@ export default function SocialSchedulerPage() {
             ) : (
               filtered.map((r) => {
                 const pv = rowPreview(r);
-                const pk = r.post_kind;
-                const place = presetById(r.placement_id);
+                const pk = r.post_kind as PostKind | undefined;
+                const place = presetById(r.placement_id as PostPlacementId | undefined);
                 const dim =
                   r.placement_id === "custom" && r.placement_width && r.placement_height
                     ? `${r.placement_width}×${r.placement_height}`
@@ -361,7 +664,7 @@ export default function SocialSchedulerPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-[11px] text-slate-700">
-                    {pk ? POST_KIND_LABELS[pk] : "—"}
+                    {pk ? (POST_KIND_LABELS as Record<string, string>)[pk] ?? pk : "—"}
                     {r.link_url ? (
                       <p className="mt-0.5 truncate text-[10px] text-brand-dark">{r.link_url}</p>
                     ) : null}
@@ -379,8 +682,6 @@ export default function SocialSchedulerPage() {
                       <p className="mt-0.5 line-clamp-2 text-[10px] text-slate-400">
                         {r.assets.map((a) => a.file_name).join(" · ")}
                       </p>
-                    ) : r.media_file_name ? (
-                      <p className="mt-0.5 text-[10px] text-slate-400">File: {r.media_file_name}</p>
                     ) : null}
                   </td>
                   <td className="px-4 py-3">
@@ -400,7 +701,7 @@ export default function SocialSchedulerPage() {
                     <button
                       type="button"
                       title="Click to toggle status"
-                      onClick={() => quickToggleStatus(r)}
+                      onClick={() => void quickToggleStatus(r)}
                       className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium cursor-pointer hover:opacity-75 transition-opacity ${STATUS_STYLE[r.status] ?? "bg-slate-100"}`}
                     >
                       {STATUS_ICON[r.status]}
@@ -412,12 +713,17 @@ export default function SocialSchedulerPage() {
                       className="mr-0.5 inline-flex rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title="Edit">
                       <Pencil size={13} />
                     </button>
-                    <button type="button" onClick={() => duplicatePost(r)}
+                    <button type="button" onClick={() => void duplicatePost(r)}
                       className="mr-0.5 inline-flex rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title="Duplicate">
                       <Copy size={13} />
                     </button>
                     <button type="button"
-                      onClick={() => { if (confirm("Delete this post?")) { deleteScheduledPost(r.id); refresh(); } }}
+                      onClick={async () => {
+                        if (confirm("Delete this post?")) {
+                          await socialSchedulerApi.delete(r.id);
+                          await refresh();
+                        }
+                      }}
                       className="inline-flex rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500" title="Delete">
                       <Trash2 size={13} />
                     </button>
@@ -438,6 +744,8 @@ export default function SocialSchedulerPage() {
           <li>Worker: cron or queue consumes scheduled rows and updates status to published/failed.</li>
         </ul>
       </section>
+        </>
+      )}
 
       {modal && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
@@ -642,7 +950,7 @@ export default function SocialSchedulerPage() {
                   </div>
                 </div>
               ) : null}
-              {(modal.media_preview_data_url || modal.media_file_name || (modal.assets && modal.assets.length > 0)) && (
+              {(modal.image_url || (modal.assets && modal.assets.length > 0)) && (
                 <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
                   <div className="flex flex-wrap gap-2">
                     {modal.assets?.length
@@ -664,23 +972,15 @@ export default function SocialSchedulerPage() {
                           </div>
                         ))
                       : null}
-                    {!modal.assets?.length && modal.media_preview_data_url ? (
+                    {!modal.assets?.length && modal.image_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={modal.media_preview_data_url}
-                        alt=""
+                        src={modal.image_url}
+                        alt="Design"
                         className="h-20 w-20 rounded-md border border-slate-200 object-cover"
                       />
                     ) : null}
                   </div>
-                  {modal.media_file_name && !modal.assets?.length ? (
-                    <p className="text-[11px] text-slate-600">
-                      <span className="font-medium">Design file:</span> {modal.media_file_name}
-                    </p>
-                  ) : null}
-                  <p className="text-[10px] text-slate-400">
-                    Large videos may store filename only until your upload API runs.
-                  </p>
                 </div>
               )}
               <div className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
@@ -698,10 +998,12 @@ export default function SocialSchedulerPage() {
               </button>
               <button
                 type="button"
-                onClick={saveModal}
-                className="rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white hover:bg-brand"
+                disabled={saving}
+                onClick={() => void saveModal()}
+                className="inline-flex items-center gap-2 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white hover:bg-brand disabled:opacity-60"
               >
-                Save
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                {saving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>

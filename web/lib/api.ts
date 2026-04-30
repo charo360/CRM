@@ -158,10 +158,13 @@ export interface TeamMember {
   id: string;
   name: string;
   email: string;
+  phone_number?: string | null;
   role: string;
   user_id?: string | null;
   permissions?: string[];
+  status?: string;
   created_at?: string;
+  temp_password?: string | null;
 }
 
 export interface FollowUp {
@@ -631,8 +634,11 @@ export const authApi = {
     api.post<{
       token?: string;
       access_token?: string;
+      must_change_password?: boolean;
       user?: Record<string, unknown>;
     }>("/auth/login-web", body),
+  changePassword: (new_password: string) =>
+    api.post<{ status: string }>("/auth/change-password", { new_password }),
   register: (data: { business_name: string; owner_name: string }) =>
     api.post<Record<string, unknown>>("/auth/register", data),
   me: () => api.get<Record<string, unknown>>("/auth/me"),
@@ -859,6 +865,8 @@ export const assistantApi = {
       { cache: "no-store" },
     ),
   agents: () => api.get<{ agents: AssistantAgent[] }>("/assistant/agents"),
+  suggestions: () =>
+    api.get<{ suggestions: string[]; personalized: boolean }>("/assistant/suggestions"),
   listConversations: () => api.get<AssistantConversationSummary[]>("/assistant/conversations"),
   getConversation: (id: string) => api.get<AssistantConversation>(`/assistant/conversations/${id}`),
   deleteConversation: (id: string) =>
@@ -979,39 +987,91 @@ export const assistantApi = {
   },
 };
 
-// ── Orshot (design templates — schema + render for assistant chat manual edit) ─
+// ── Shotstack (unified video/image/voice generation) ─────────────────────────────
 
-export interface OrshotTemplateField {
-  key?: string | null;
-  type?: string | null;
-  help_text?: string | null;
-  example?: string | null;
-  page_number?: number;
-  page_id?: string | null;
+export interface ShotstackAsset {
+  type: "image" | "video" | "title" | "audio" | "voice";
+  src?: string;
+  text?: string;
+  style?: Record<string, unknown>;
+  start?: number;
+  length?: number;
+  position?: string;
+  transition?: Record<string, unknown>;
 }
 
-export interface OrshotTemplateSchemaResponse {
-  success: boolean;
-  template_id?: number;
-  name?: string;
+export interface ShotstackTemplate {
+  id?: string;
+  name: string;
   description?: string;
-  canvas_width?: number;
-  canvas_height?: number;
-  thumbnail_url?: string;
-  pages?: unknown[];
-  fields: OrshotTemplateField[];
+  type: "image" | "voice" | "combined";
+  format: string;
+  dimensions: { width: number; height: number };
+  duration?: number;
+  assets: ShotstackAsset[];
+  voice?: {
+    text?: string;
+    voice?: string;
+    start?: number;
+    length?: number;
+    effect?: string;
+  };
+  background?: string;
+  music?: string;
+  created_at?: string;
+  updated_at?: string;
+  user_id?: string;
 }
 
-export const orshotApi = {
-  getTemplate: (templateId: number) =>
-    api.get<OrshotTemplateSchemaResponse>(`/orshot/templates/${templateId}`),
-  render: (body: {
-    template_id: number;
-    modifications: Record<string, unknown>;
-    response_type?: "url" | "base64" | "binary";
-    response_format?: "png" | "jpg" | "jpeg" | "webp" | "pdf";
-  }) =>
-    api.post<{ success: boolean; image_url?: string; image_urls?: string[] }>("/orshot/render", body),
+export interface ShotstackRenderRequest {
+  template_id?: string;
+  template?: ShotstackTemplate;
+  modifications?: Record<string, unknown>;
+  output_format?: string;
+  webhook_url?: string;
+}
+
+export interface ShotstackRenderResponse {
+  id: string;
+  status: string;
+  message?: string;
+  render_url?: string;
+  expires_at?: string;
+  template_name?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ShotstackVoice {
+  id: string;
+  name: string;
+  language: string;
+  gender: "male" | "female";
+}
+
+export const shotstackApi = {
+  // Templates
+  listTemplates: (type?: string) =>
+    api.get<{ templates: ShotstackTemplate[] }>(`/shotstack/templates${type ? `?type=${type}` : ""}`),
+  getTemplate: (id: string) => api.get<{ template: ShotstackTemplate }>(`/shotstack/templates/${id}`),
+  createTemplate: (template: Omit<ShotstackTemplate, "id" | "created_at" | "updated_at" | "user_id">) =>
+    api.post<{ template: ShotstackTemplate }>("/shotstack/templates", template),
+  updateTemplate: (id: string, template: Partial<ShotstackTemplate>) =>
+    api.put<{ template: ShotstackTemplate }>(`/shotstack/templates/${id}`, template),
+  deleteTemplate: (id: string) => api.delete<{ status: string; id: string }>(`/shotstack/templates/${id}`),
+  
+  // Rendering
+  render: (request: ShotstackRenderRequest) =>
+    api.post<ShotstackRenderResponse>("/shotstack/render", request),
+  getRenderStatus: (id: string) => api.get<ShotstackRenderResponse>(`/shotstack/render/${id}`),
+  listRenders: (limit?: number, status?: string) =>
+    api.get<{ renders: ShotstackRenderResponse[] }>(`/shotstack/renders${status ? `?status=${status}` : ""}`),
+  deleteRender: (id: string) => api.delete<{ status: string; id: string }>(`/shotstack/render/${id}`),
+  
+  // Utilities
+  listVoices: () => api.get<{ voices: { english: ShotstackVoice[]; other: ShotstackVoice[] } }>("/shotstack/voices"),
+  searchStock: (query: string, type: string = "video", limit?: number) =>
+    api.get<{ results: unknown[] }>(`/shotstack/stock?query=${encodeURIComponent(query)}&type=${type}${limit ? `&limit=${limit}` : ""}`),
 };
 
 /** Meta Ads campaign drafts — Mongo-backed, shared with the Meta Ads assistant agent. */
@@ -1079,6 +1139,65 @@ export const marketingApi = {
   /** AI-generated title + caption for the social scheduler (uses server AI config). */
   draftSocialPost: (body: { prompt: string; channels?: string[] }) =>
     api.post<{ title: string; body: string }>("/marketing/social-post-draft", body),
+};
+
+// ── Social Scheduler API (MongoDB-backed) ─────────────────────────────────────
+
+export interface ScheduledPostAsset {
+  file_name: string;
+  mime_type: string;
+  preview_data_url?: string;
+  s3_url?: string;
+}
+
+export interface ScheduledPost {
+  id: string;
+  title: string;
+  body: string;
+  channels: string[];
+  scheduled_at: string;
+  status: "draft" | "scheduled" | "published" | "failed";
+  created_at: string;
+  updated_at?: string;
+  post_kind?: string;
+  placement_id?: string;
+  placement_width?: number;
+  placement_height?: number;
+  link_url?: string;
+  assets?: ScheduledPostAsset[];
+  image_url?: string;
+}
+
+export type ScheduledPostInput = Omit<ScheduledPost, "id" | "created_at" | "updated_at">;
+
+export interface SocialAnalytics {
+  period_days: number;
+  total_posts: number;
+  unsynced_posts: number;
+  totals: { likes: number; comments: number; shares: number; reach: number; clicks: number; saves: number };
+  by_channel: Record<string, { likes: number; comments: number; shares: number; reach: number; clicks: number; posts: number }>;
+  top_posts: Array<{
+    id: string; title: string; channels: string[]; date: string;
+    likes: number; comments: number; shares: number; reach: number; clicks: number;
+    engagement_score: number; zernio_post_id?: string; engagement_synced_at?: string;
+  }>;
+  avg_reach_per_post: number;
+  avg_engagement_rate: number;
+}
+
+export const socialSchedulerApi = {
+  list: (status?: string) =>
+    api.get<{ posts: ScheduledPost[] }>(`/marketing/social-posts${status ? `?status=${status}` : ""}`),
+  create: (body: Partial<ScheduledPostInput> & { title: string; body: string }) =>
+    api.post<{ post: ScheduledPost }>("/marketing/social-posts", body),
+  update: (id: string, body: Partial<ScheduledPostInput>) =>
+    api.patch<{ post: ScheduledPost }>(`/marketing/social-posts/${id}`, body),
+  delete: (id: string) =>
+    api.delete<{ status: string; id: string }>(`/marketing/social-posts/${id}`),
+  analytics: (days = 30, channel?: string) =>
+    api.get<SocialAnalytics>(
+      `/marketing/social-posts/analytics?days=${days}${channel ? `&channel=${channel}` : ""}`
+    ),
 };
 
 export const metaApi = {
@@ -1469,6 +1588,145 @@ export const seoApi = {
 
   // Summary
   summary: () => api.get<SeoSummary>("/seo/summary"),
+};
+
+// ── Zernio Live Ads ───────────────────────────────────────────────────────────
+
+export interface ZernioCampaignMetrics {
+  spend: number;
+  impressions: number;
+  reach: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  engagement?: number;
+  conversions?: number;
+  roas?: number;
+}
+
+export interface ZernioCampaign {
+  id: string;
+  name: string;
+  status: string;
+  platform?: string;
+  objective?: string;
+  daily_budget?: number;
+  metrics?: ZernioCampaignMetrics;
+  /** Some API responses nest metrics directly on campaign */
+  spend?: number;
+  impressions?: number;
+  clicks?: number;
+  reach?: number;
+}
+
+export interface ZernioAdsInsights {
+  period_days: number;
+  total_campaigns: number;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  reach: number;
+  conversions: number;
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  campaigns: ZernioCampaign[];
+  error?: string | null;
+}
+
+export const zernioAdsApi = {
+  insights: (platform?: string, days = 30) => {
+    const q = new URLSearchParams({ days: String(days) });
+    if (platform) q.set("platform", platform);
+    return api.get<ZernioAdsInsights>(`/marketing/meta-ads/insights?${q}`);
+  },
+  liveCampaigns: (platform?: string, status?: string, days = 30) => {
+    const q = new URLSearchParams({ days: String(days) });
+    if (platform) q.set("platform", platform);
+    if (status) q.set("status", status);
+    return api.get<{ campaigns: ZernioCampaign[]; error?: string }>(`/marketing/meta-ads/live-campaigns?${q}`);
+  },
+  updateCampaignStatus: (campaignId: string, status: "active" | "paused", platform?: string) =>
+    api.post<Record<string, unknown>>(`/marketing/meta-ads/campaigns/${campaignId}/status`, { status, platform }),
+  updateCampaignBudget: (campaignId: string, body: { daily_budget?: number; lifetime_budget?: number; bid_strategy?: string; platform?: string }) =>
+    api.put<Record<string, unknown>>(`/marketing/meta-ads/campaigns/${campaignId}/budget`, body),
+  accounts: () => api.get<{ accounts: unknown[]; error?: string }>("/marketing/meta-ads/accounts"),
+  boostPost: (body: { post_id: string; platform: string; daily_budget: number; duration_days: number; objective?: string; audience?: Record<string, unknown> }) =>
+    api.post<Record<string, unknown>>("/marketing/meta-ads/boost", body),
+  createCtwa: (body: { platform: string; whatsapp_number: string; creative: Record<string, unknown>; daily_budget: number; duration_days: number; audience?: Record<string, unknown> }) =>
+    api.post<Record<string, unknown>>("/marketing/meta-ads/ctwa", body),
+};
+
+// ── Ad Health Monitor ─────────────────────────────────────────────────────────
+
+export interface AdHealthCampaign {
+  campaign_id: string;
+  name: string;
+  status: string;
+  platform: string;
+  health_score: number;
+  zone: "healthy" | "warning" | "critical" | "insufficient_data";
+  issues: string[];
+  spend: number;
+  impressions: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  roas: number;
+  conversions: number;
+}
+
+export interface AdHealthReport {
+  campaigns: AdHealthCampaign[];
+  summary: { critical: number; warning: number; healthy: number; total: number };
+  days: number;
+  error?: string | null;
+}
+
+export interface AdAlertRule {
+  id: string;
+  name: string;
+  condition: string;
+  operator: string;
+  value: number;
+  action: "auto_pause" | "alert_only";
+  min_spend: number;
+  min_impressions: number;
+  notify_whatsapp: boolean;
+  enabled: boolean;
+  is_default: boolean;
+  created_at: string | null;
+}
+
+export interface AdAlertHistoryEntry {
+  id: string;
+  campaign_id: string;
+  campaign_name: string;
+  rule_name: string;
+  action: string;
+  health_score: number | null;
+  zone: string;
+  metrics: { spend?: number; ctr?: number; roas?: number };
+  fired_at: string;
+}
+
+export const adHealthApi = {
+  report: (days = 7, zone?: string) => {
+    const q = new URLSearchParams({ days: String(days) });
+    if (zone) q.set("zone", zone);
+    return api.get<AdHealthReport>(`/marketing/ad-health?${q}`);
+  },
+  history: (limit = 50) =>
+    api.get<{ history: AdAlertHistoryEntry[] }>(`/marketing/ad-health/history?limit=${limit}`),
+  listRules: () =>
+    api.get<{ rules: AdAlertRule[] }>("/marketing/ad-health/rules"),
+  createRule: (body: Omit<AdAlertRule, "id" | "is_default" | "created_at">) =>
+    api.post<{ rule: AdAlertRule }>("/marketing/ad-health/rules", body),
+  updateRule: (id: string, body: Partial<AdAlertRule>) =>
+    api.patch<{ rule: AdAlertRule }>(`/marketing/ad-health/rules/${id}`, body),
+  deleteRule: (id: string) =>
+    api.delete<{ status: string; id: string }>(`/marketing/ad-health/rules/${id}`),
 };
 
 // ── SEO LangGraph Agent ───────────────────────────────────────────────────────

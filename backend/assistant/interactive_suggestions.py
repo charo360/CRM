@@ -21,7 +21,7 @@ _META_FALLBACK = [
     "Video or Reels-style ad — I need a script and shot ideas",
     "I have creative files — I'll attach them; align copy to them",
     "Show me a text preview of the ad, then I'll say what to tweak",
-    "Create a square promo graphic for Instagram (Design agent — Orshot)",
+    "Create a square promo graphic for Instagram (Design agent — AI)",
     "Generate a simple slide deck outline then build the .pptx",
 ]
 
@@ -158,79 +158,101 @@ async def build_reply_suggestions(
         return _fallback_chips(agent_id, 6 if agent_id != "google_ads" else 4)
 
     try:
-        from ai_service import get_drafter
-
-        ai = get_drafter()
+        import os, httpx
         label = _ads_specialist_label(agent_id)
-        extra_x = ""
-        if agent_id == "x_ads":
-            extra_x = """
-For X Ads, chips should cover: objective choice, audience/geo, post copy + CTA, image vs video, budget/metrics, save draft.
-"""
-        extra_meta = ""
+
+        # Phase-detection context injected per agent
+        phase_guidance = ""
         if agent_id == "meta_ads":
-            extra_meta = """
-For Meta Ads, mix **step-by-step** options with **branch** options when relevant, e.g.:
-- full campaign from catalog in one go
-- "suggest which products to advertise" using business type
-- user picks products themselves
-- image vs video / creative upload vs generate copy
-- "show preview then I'll tweak"
-- save draft when a plan exists
-- **Visuals:** Suggest "Create a graphic" (Design agent — `render_orshot_template` / Orshot, or `create_business_document` for PDF).
-"""
-        extra_social = ""
-        if agent_id in ("social_media", "creative"):
-            extra_social = """
-For Social Media, chips must match what the assistant is CURRENTLY asking — not generic social topics.
-- If the assistant is asking about **platform or format** (e.g. "square or landscape?", "Feed or Story?"): chips = the format options themselves ("Square", "Landscape", "Feed", "Story — vertical", etc.)
-- If the assistant is asking **what the post is about** (product, promo, announcement): chips = the real options listed in the reply, or "Feature a product", "Announce a promotion", "Share an update"
-- If the assistant just **showed templates**: chips = template names from the reply, plus "See more options"
-- If the assistant just **proposed copy**: chips = "Looks good, let's render", "Change the headline", "Different tone", "Add a CTA"
-- If the assistant just **showed the final design**: chips = "Love it", "Try a different template", "Tweak the copy", "Post this now"
-- Only fall back to brainstorming/hashtag/caption chips when the conversation is truly open-ended (no specific question pending).
-"""
-        extra_google = ""
-        if agent_id == "google_ads":
-            extra_google = """
-For Google Ads, chips should move the user toward: campaign type, keywords/negatives, bidding/budget, RSA copy, or extensions.
-"""
-        extra_design = ""
-        if agent_id in ("design", "creative"):
-            extra_design = """
-For the Creative Director (Design), chips must match the current phase of the conversation:
-- Phase 1a (no product picked yet): offer real product names from the reply if listed, or "Show my catalog".
-- Phase 1b (product picked, asking platform): offer platform+format options — "Instagram Feed", "Instagram Story", "Facebook Post", "TikTok", "Pinterest".
-- Phase 1c (platform locked, choose path): "Show me templates", "You design it — surprise me".
-- Phase 1d (template locked, copy): "Love it, let's go", "Try a different angle", "Change the headline", "Skip the offer line".
-- Phase 1e (brief shown, awaiting green-light): "Yes, let's render it", "Change the platform", "Swap the template".
-- Phase 3 (design shown): "Love it — finalise", "Try a different headline", "Two variants please", "Different template".
-Keep chips ≤ 80 characters. Sound like a human tapping a quick reply, not a menu label.
-"""
-        prompt = f"""The user is in Zilo Chat with the {label} specialist.
+            phase_guidance = """
+READ THE CONVERSATION STATE and generate chips that ADVANCE it — never reset it.
 
-User said (last message):
-{user_message[:800]}
+Detect the current phase:
+- Product selection shown → chips = exact product names listed + "Recommend the best one" + "Test two at once"
+- Concept/scene options shown (A, B, C or more) → chips = one "Go with [option name]" chip per option listed (e.g. "Go with A — The desk moment", "Go with B — The before/after", "Go with C — The phone-in-hand") + "Mix two together" + "Describe my own"
+- Concept A/B pitch shown (only 2 options) → chips = "Go with Concept A", "Go with Concept B", "Mix both", "Show a third direction"
+- Concept approved, refining copy → chips = "Looks good, generate it", "Punchier headline", "Different CTA", "Try Story format"
+- Design image just shown → chips = "Love it", "Headline needs work", "Try darker background", "Second version", "Write Meta Ads copy"
+- Open strategy talk → chips = "Let's build the creative", "What audience to target?", "Suggest a budget"
 
-Assistant just replied (excerpt):
-{reply[:3500]}
-
-Produce **4 to 6** **very short** follow-up messages the user can **tap to send**. Sound natural (first person), not robotic.
-{extra_meta}{extra_google}{extra_x}{extra_social}{extra_design}
-Rules:
-- Each chip ≤ 100 characters if possible.
-- No "1." numbering inside chip text.
-- Chips are conversation replies ONLY — things the user would say to continue the chat.
-- NEVER suggest file or sharing actions: no "Download as", "PDF", "Word", "DOCX", "Send via WhatsApp", "Export", "Save as", "Share", or any variation. Those are UI buttons, not conversation replies.
-- NEVER repeat a chip that is already a bullet option in the assistant reply — the UI already renders those as tappable chips. Only add chips for paths NOT already listed.
-- If the assistant reply lists product names as options, echo the product names as chips (so they match exactly what the user sees).
-- JSON only, one line:
-{{"chips": ["...", "...", "...", "...", "..."]}}
+CRITICAL: Count the EXACT number of options (A, B, C...) in the reply and produce one chip per option. Never drop an option.
+NEVER show "Build the full ad end-to-end" or "Recommend which products" once the conversation has started — those are reset chips, not progression chips.
 """
-        raw = await ai._call_llm(prompt, model_pref="standard")
-        chips = _parse_chips_json(raw)
-        if len(chips) >= 3:
-            return chips[:6]
+        elif agent_id in ("social_media", "creative", "design"):
+            phase_guidance = """
+Chips must match the CURRENT conversation phase:
+- Asking platform/format → chips = the format options ("Instagram Feed", "Story", "Facebook Post", etc.)
+- Scene/concept options shown (A, B, C or more) → chips = one chip per option listed (e.g. "Go with A — The desk moment") — include ALL options shown, never skip one
+- Concept A/B pitch shown (only 2 options) → "Go with Concept A", "Go with Concept B", "Mix both", "Third direction"
+- Copy proposed → "Looks good, generate it", "Change headline", "Different tone", "Punchier hook"
+- Design just shown → "Love it", "Headline needs work", "Try darker colours", "Different layout", "Story version"
+"""
+        elif agent_id == "x_ads":
+            phase_guidance = "Chips should advance: objective → audience/geo → copy+CTA → image vs video → budget → save draft."
+        elif agent_id == "google_ads":
+            phase_guidance = "Chips should advance: campaign type → keywords → budget/bidding → RSA copy → extensions."
+
+        prompt = f"""You are generating tap-to-send reply chips for a user chatting with the {label} specialist in Zilo Chat.
+
+User's last message:
+{user_message[:600]}
+
+Assistant's reply:
+{reply[:3000]}
+
+{phase_guidance}
+
+Output 4 to 6 short chips the user can tap to continue. Rules:
+- Each chip ≤ 90 characters, written in first person as if the user is speaking
+- Chips must advance the conversation to the NEXT step — never offer what was just answered
+- No numbering inside chip text
+- No file/download/share actions
+- Do NOT repeat options already listed as bullets in the assistant reply
+- JSON only, one line: {{"chips": ["...", "...", "..."]}}"""
+
+        # Use DeepSeek (same provider the assistant uses) — fast model for chips
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        openrouter_key = os.environ.get("OPENROUTER_KEY", "").strip()
+
+        raw = None
+        if deepseek_key:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {deepseek_key}"},
+                    json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}],
+                          "temperature": 0.4, "max_tokens": 200},
+                )
+                r.raise_for_status()
+                raw = r.json()["choices"][0]["message"]["content"]
+        elif openai_key:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}],
+                          "temperature": 0.4, "max_tokens": 200},
+                )
+                r.raise_for_status()
+                raw = r.json()["choices"][0]["message"]["content"]
+        elif openrouter_key:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {openrouter_key}"},
+                    json={"model": "google/gemini-flash-1.5", "messages": [{"role": "user", "content": prompt}],
+                          "temperature": 0.4, "max_tokens": 200},
+                )
+                r.raise_for_status()
+                raw = r.json()["choices"][0]["message"]["content"]
+
+        if raw:
+            chips = _parse_chips_json(raw)
+            if len(chips) >= 3:
+                return chips[:6]
+            logger.warning("[interactive_suggestions] parsed < 3 chips from: %s", raw[:200])
+
     except Exception as exc:
         logger.warning("[interactive_suggestions] LLM chips failed: %s", exc)
 

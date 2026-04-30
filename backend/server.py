@@ -1,5 +1,7 @@
 import os
 import sys
+import secrets
+import string
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -16,8 +18,14 @@ else:
     print("STARTUP_CHECK: AWS Credentials NOT DETECTED")
 
 # Validate environment on startup
+_STARTUP_CONFIG_ERROR: str = ""  # Set if a critical env var is missing — surfaced via /health
+
+
 def validate_startup_env():
-    """Quick validation to catch common issues"""
+    """Quick validation to catch common issues. Logs errors but does NOT exit —
+    letting Uvicorn start ensures the /health endpoint is reachable so platforms
+    (Railway, Render, Docker) can show the config error rather than a crash loop."""
+    global _STARTUP_CONFIG_ERROR
     ai_provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
     if ai_provider == 'deepseek':
         api_key = os.environ.get('DEEPSEEK_API_KEY', '')
@@ -27,12 +35,13 @@ def validate_startup_env():
         api_key = os.environ.get('OPENAI_API_KEY', '')
         key_name = 'OPENAI_API_KEY'
         label = 'OpenAI'
-    
+
     if not api_key or api_key in ('your_openai_api_key_here', 'your_deepseek_api_key_here'):
+        msg = f"{key_name} not configured in .env file — AI features will not work."
         print("\n" + "="*60)
-        print(f"[CRITICAL] ERROR: {key_name} not configured in .env file")
+        print(f"[CRITICAL] ERROR: {msg}")
         print("="*60 + "\n")
-        sys.exit(1)
+        _STARTUP_CONFIG_ERROR = msg  # surfaced via /health; do NOT sys.exit here
     else:
         print(f"[OK] {label} API Key loaded (ends with: ...{api_key[-10:]})")
 
@@ -41,7 +50,7 @@ def validate_startup_env():
         print("[OK] Anthropic API Key DETECTED")
     else:
         print("[INFO] Anthropic API Key NOT DETECTED (Claude will not work)")
-        
+
     if os.environ.get('GROK_API_KEY') or os.environ.get('XS_API_KEY'):
         print("[OK] Grok/xAI API Key DETECTED")
     else:
@@ -323,7 +332,17 @@ if os.environ.get('TUNNEL_MODE') == 'true':
     db = client[db_name]
 else:
     mongo_url = os.environ['MONGO_URL']
-    client = AsyncIOMotorClient(mongo_url)
+    client = AsyncIOMotorClient(
+        mongo_url,
+        maxPoolSize=50,
+        minPoolSize=5,
+        maxIdleTimeMS=45_000,
+        serverSelectionTimeoutMS=10_000,
+        connectTimeoutMS=10_000,
+        socketTimeoutMS=30_000,
+        retryWrites=True,
+        retryReads=True,
+    )
     db = client[os.environ.get('DB_NAME', 'whatsapp_crm')]
 
 router = Router(db) # specific router for agents
@@ -494,10 +513,14 @@ async def _backfill_all_users_names():
     """Fix fallback names (Customer XXXX / Contact XXXX / raw phone) for all users"""
     from whatsapp_service import get_whatsapp_service, EVOLUTION_API_URL, EVOLUTION_API_KEY
     import httpx as _httpx, re as _re
-    users = await db.users.find(
-        {"whatsapp.instance_name": {"$exists": True, "$ne": ""}},
-        {"_id": 1, "whatsapp": 1}
-    ).to_list(None)
+    try:
+        users = await db.users.find(
+            {"whatsapp.instance_name": {"$exists": True, "$ne": ""}},
+            {"_id": 1, "whatsapp": 1}
+        ).to_list(None)
+    except Exception as e:
+        logging.warning(f"[NameBackfill] Could not fetch users (DB unavailable?): {e}")
+        return
     for u in users:
         try:
             uid = u["_id"]
@@ -701,18 +724,20 @@ async def execute_broadcast_automations():
 
 @app.get("/health")
 async def health_check():
-    try:
-        with open("trace.log", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.utcnow().isoformat()} - Health check called\n")
-    except:
-        pass
-    # Include AI status so you can always verify AI is working
+    # Surface startup config errors so platforms (Railway/Render/Docker) show the
+    # real problem instead of a generic "service unavailable" crash loop message.
+    if _STARTUP_CONFIG_ERROR:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "service": "crm-backend", "config_error": _STARTUP_CONFIG_ERROR},
+        )
     try:
         drafter = get_drafter()
         ai_status = drafter.get_status()
-    except:
+    except Exception:
         ai_status = {"ready": False, "error": "drafter not initialized"}
-    return {"status": "ok", "service": "crm-backend", "trace": "active", "ai": ai_status}
+    return {"status": "ok", "service": "crm-backend", "ai": ai_status}
 
 # ============ HELPER FUNCTIONS ============
 
@@ -887,11 +912,18 @@ class TeamMemberRole:
     MANAGER = "manager"
     EMPLOYEE = "employee"
 
+_ROLE_ALIASES = {"admin": "manager", "staff": "employee"}  # web UI aliases
+
+def _normalize_role(role: str) -> str:
+    """Map web UI role aliases to canonical backend roles."""
+    return _ROLE_ALIASES.get(role.lower(), role.lower())
+
 class TeamMemberInvite(BaseModel):
-    phone_number: str  # Primary identifier — employee logs in with this
+    phone_number: Optional[str] = None  # Primary login identifier (mobile); optional for web-only invites
     name: str
-    role: str = "employee"  # owner, manager, employee
-    email: Optional[str] = None  # Optional, for reference only
+    role: str = "employee"  # owner, manager, employee (or aliases: admin, staff)
+    email: Optional[str] = None
+    permissions: Optional[List[str]] = None
 
 class TeamMemberResponse(BaseModel):
     id: str
@@ -904,11 +936,14 @@ class TeamMemberResponse(BaseModel):
     invited_by: str
     created_at: datetime
     last_active: Optional[datetime] = None
+    permissions: List[str] = []
+    temp_password: Optional[str] = None  # Returned once on email invite; not stored in plain text
 
 class TeamMemberUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     status: Optional[str] = None
+    permissions: Optional[List[str]] = None
 
 class ConversationAssignment(BaseModel):
     customer_id: str
@@ -2173,11 +2208,13 @@ async def login_web(req: WebLoginRequest):
 
     user_id = user["_id"]
     phone = user.get("phone_number") or ""
+    must_change = bool(user.get("is_temp_password"))
     token = create_token(user_id, phone)
     return serialize_doc({
         "status": "success",
         "token": token,
         "access_token": token,
+        "must_change_password": must_change,
         "is_new_user": not user.get("setup_complete", True),
         "user": {
             "id": user_id,
@@ -2190,8 +2227,28 @@ async def login_web(req: WebLoginRequest):
             "role": user.get("role", TeamMemberRole.OWNER),
             "settings": user.get("settings", {}),
             "auth_provider": user.get("auth_provider", "email_web"),
+            "must_change_password": must_change,
         },
     })
+
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+@api_router.post("/auth/change-password")
+async def change_password(req: ChangePasswordRequest, user = Depends(get_current_user)):
+    """Set a new password. Clears the is_temp_password flag."""
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": _hash_password(req.new_password), "is_temp_password": False}}
+    )
+    # Update team_member status from 'invited' to 'active' once they've set their password
+    await db.team_members.update_one(
+        {"user_id": user["_id"], "status": "invited"},
+        {"$set": {"status": "active"}}
+    )
+    return {"status": "success", "message": "Password updated"}
 
 
 @api_router.post("/auth/register")
@@ -2677,63 +2734,133 @@ def check_permission(user: dict, required_role: str) -> bool:
     required_level = role_hierarchy.get(required_role, 1)
     return user_level >= required_level
 
-@api_router.post("/team/invite", response_model=TeamMemberResponse)
-async def invite_team_member(invite: TeamMemberInvite, user = Depends(get_current_user)):
-    """Invite a new team member (Owner/Manager only)"""
-    if not check_permission(user, TeamMemberRole.MANAGER):
-        raise HTTPException(status_code=403, detail="Only owners and managers can invite team members")
-    
-    business_id = user.get("business_id", user["_id"])
+def _generate_temp_password(length: int = 10) -> str:
+    """Generate a memorable temporary password: 2 words + digits pattern."""
+    alphabet = string.ascii_letters + string.digits
+    # Format: Xxxx####  — easy to read, hard to guess
+    upper = secrets.choice(string.ascii_uppercase)
+    lower = ''.join(secrets.choice(string.ascii_lowercase) for _ in range(4))
+    digits = ''.join(secrets.choice(string.digits) for _ in range(4))
+    return upper + lower + digits
 
-    # Normalize phone number
-    phone = invite.phone_number.strip()
-    if not phone or len(phone) < 8:
-        raise HTTPException(status_code=400, detail="Valid phone number is required")
 
-    # Check if phone already added to this business
-    existing = await db.team_members.find_one({"business_id": business_id, "phone_number": phone})
-    if existing:
-        raise HTTPException(status_code=400, detail="This phone number is already on your team")
-
-    # Validate role
-    if invite.role not in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
+async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str, invited_by: str) -> dict:
+    """Shared helper: build and insert a team member document.
+    If an email is provided, also creates a web-login user account and returns
+    the one-time temp_password in the returned dict (never persisted in plain text).
+    """
+    canonical_role = _normalize_role(invite.role)
+    if canonical_role not in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
         raise HTTPException(status_code=400, detail="Can only invite employees or managers")
 
-    # Create team member — status is "invited" until they log in for the first time
+    phone = (invite.phone_number or "").strip()
+    email = (invite.email or "").strip().lower() or None
+
+    # Dedup checks
+    if phone:
+        if len(phone) < 8:
+            raise HTTPException(status_code=400, detail="Phone number must include country code (e.g. +1234567890)")
+        existing = await db.team_members.find_one({"business_id": business_id, "phone_number": phone})
+        if existing:
+            raise HTTPException(status_code=400, detail="This phone number is already on your team")
+    elif email:
+        existing = await db.team_members.find_one({"business_id": business_id, "email": email})
+        if existing:
+            raise HTTPException(status_code=400, detail="This email is already on your team")
+    else:
+        raise HTTPException(status_code=400, detail="Either phone number or email is required")
+
+    now = datetime.utcnow()
     member_id = str(uuid.uuid4())
-    team_member = {
+    temp_password: Optional[str] = None
+    linked_user_id: Optional[str] = None
+
+    # For email-based invites: create a web-login user account so they can log in immediately
+    if email:
+        existing_user = await db.users.find_one({"email": email})
+        if existing_user:
+            # Re-use existing user if already registered (e.g. they were an owner elsewhere)
+            linked_user_id = existing_user["_id"]
+        else:
+            temp_password = _generate_temp_password()
+            new_user_id = str(uuid.uuid4())
+            placeholder_phone = _web_placeholder_phone(new_user_id)
+            # Fetch business name for context
+            biz_owner = await db.users.find_one({"_id": business_id})
+            biz_name = biz_owner.get("business_name", "") if biz_owner else ""
+            await db.users.insert_one({
+                "_id": new_user_id,
+                "email": email,
+                "password_hash": _hash_password(temp_password),
+                "is_temp_password": True,
+                "phone_number": placeholder_phone,
+                "business_name": biz_name,
+                "owner_name": invite.name.strip(),
+                "role": canonical_role,
+                "business_id": business_id,  # linked to the inviting business
+                "auth_provider": "email_web",
+                "subscription_active": False,
+                "setup_complete": True,
+                "created_at": now,
+                "settings": {},
+            })
+            linked_user_id = new_user_id
+
+    doc = {
         "_id": member_id,
-        "user_id": None,  # Linked automatically when they log in with this phone
-        "name": invite.name,
-        "email": invite.email,  # Optional reference
-        "phone_number": phone,
-        "role": invite.role,
+        "user_id": linked_user_id,
+        "name": invite.name.strip(),
+        "email": email,
+        "phone_number": phone or None,
+        "role": canonical_role,
+        "permissions": invite.permissions or [],
         "business_id": business_id,
-        "status": "invited",
-        "invited_by": user["_id"],
-        "created_at": datetime.utcnow(),
-        "last_active": None
+        "status": "active" if email else "invited",
+        "invited_by": invited_by,
+        "created_at": now,
+        "last_active": None,
+        "_temp_password": temp_password,  # carried through to response only; not a real field
     }
-    await db.team_members.insert_one(team_member)
+    await db.team_members.insert_one({k: v for k, v in doc.items() if k != "_temp_password"})
+    return doc
 
-    # Notify the employee via WhatsApp on the business instance
-    try:
-        business_owner = await db.users.find_one({"_id": business_id})
-        business_name = business_owner.get("business_name", "Your employer") if business_owner else "Your employer"
-        ws = get_whatsapp_service(db)
-        await ws.send_message(
-            user_id=business_id,
-            to_number=phone,
-            message=(
-                f"👋 Hi {invite.name}! You've been added to *{business_name}*'s team as {invite.role}.\n\n"
-                f"Download the CRM app and enter your phone number (*{phone}*) to log in — no extra steps needed!"
-            ),
-            send_context="auto_reply"
-        )
-    except Exception as e:
-        logging.warning(f"Could not send WhatsApp invite notification: {e}")
 
-    return TeamMemberResponse(**{**team_member, "id": member_id})
+@api_router.post("/team/invite", response_model=TeamMemberResponse)
+async def invite_team_member(invite: TeamMemberInvite, user = Depends(get_current_user)):
+    """Invite a new team member via phone (mobile flow). Owner/Manager only."""
+    if not check_permission(user, TeamMemberRole.MANAGER):
+        raise HTTPException(status_code=403, detail="Only owners and managers can invite team members")
+    business_id = user.get("business_id", user["_id"])
+    doc = await _create_team_member_doc(db, invite, business_id, user["_id"])
+
+    if doc.get("phone_number"):
+        try:
+            business_owner = await db.users.find_one({"_id": business_id})
+            business_name = business_owner.get("business_name", "Your employer") if business_owner else "Your employer"
+            ws = get_whatsapp_service(db)
+            await ws.send_message(
+                user_id=business_id,
+                to_number=doc["phone_number"],
+                message=(
+                    f"👋 Hi {doc['name']}! You've been added to *{business_name}*'s team as {doc['role']}.\n\n"
+                    f"Download the CRM app and enter your phone number (*{doc['phone_number']}*) to log in — no extra steps needed!"
+                ),
+                send_context="auto_reply"
+            )
+        except Exception as e:
+            logging.warning(f"Could not send WhatsApp invite notification: {e}")
+
+    return TeamMemberResponse(**{**doc, "id": doc["_id"], "temp_password": doc.get("_temp_password")})
+
+
+@api_router.post("/team/members", response_model=TeamMemberResponse)
+async def create_team_member(invite: TeamMemberInvite, user = Depends(get_current_user)):
+    """Add a new team member (web dashboard flow — email or phone). Owner/Manager only."""
+    if not check_permission(user, TeamMemberRole.MANAGER):
+        raise HTTPException(status_code=403, detail="Only owners and managers can add team members")
+    business_id = user.get("business_id", user["_id"])
+    doc = await _create_team_member_doc(db, invite, business_id, user["_id"])
+    return TeamMemberResponse(**{**doc, "id": doc["_id"], "temp_password": doc.get("_temp_password")})
 
 @api_router.get("/team/members")
 async def get_team_members(user = Depends(get_current_user)):
@@ -2745,10 +2872,11 @@ async def get_team_members(user = Depends(get_current_user)):
         members.append({
             "id": member["_id"],
             "name": member["name"],
-            "email": member.get("email", ""),
+            "email": member.get("email") or "",
             "phone_number": member.get("phone_number"),
             "user_id": member.get("user_id"),
             "role": member["role"],
+            "permissions": member.get("permissions") or [],
             "business_id": member["business_id"],
             "status": member["status"],
             "invited_by": member["invited_by"],
@@ -2779,10 +2907,14 @@ async def update_team_member(member_id: str, updates: TeamMemberUpdate, user = D
     update_data = {}
     if updates.name:
         update_data["name"] = updates.name
-    if updates.role and updates.role in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
-        update_data["role"] = updates.role
+    if updates.role:
+        canonical = _normalize_role(updates.role)
+        if canonical in [TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER]:
+            update_data["role"] = canonical
     if updates.status and updates.status in ["active", "suspended"]:
         update_data["status"] = updates.status
+    if updates.permissions is not None:
+        update_data["permissions"] = updates.permissions
     
     if update_data:
         await db.team_members.update_one({"_id": member_id}, {"$set": update_data})
@@ -6266,10 +6398,10 @@ async def s3_presign_get(request: S3PresignGetRequest, user=Depends(get_current_
 async def s3_image_proxy(key_path: str):
     """
     Public image proxy — downloads an object from S3 using server-side credentials
-    and streams it back. Used by Orshot (and other external services) to fetch
-    product images from the private bucket without needing presigned URLs.
+    and streams it back. Used by external services to fetch product images from
+    the private bucket without needing presigned URLs.
 
-    The endpoint is intentionally unauthenticated so that Orshot's render servers
+    The endpoint is intentionally unauthenticated so that external render services
     can access it. Key paths are UUID-based and unguessable in practice.
     """
     if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
@@ -6286,11 +6418,15 @@ async def s3_image_proxy(key_path: str):
         from fastapi.responses import StreamingResponse as _StreamingResponse
         import io as _io
 
+        from botocore.config import Config as _BotoConfig
+        _region = os.environ.get("AWS_REGION", "us-east-1")
         s3 = boto3.client(
             "s3",
             aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
             aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            region_name=_region,
+            endpoint_url=f"https://s3.{_region}.amazonaws.com",
+            config=_BotoConfig(signature_version="s3v4"),
         )
         obj = s3.get_object(Bucket=bucket, Key=key)
         content_type = obj.get("ContentType") or "application/octet-stream"
@@ -11398,6 +11534,38 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"[shopify-autopilot] Failed to start runner: {e}")
 
+    # Start social post publisher (checks every 60 s for due scheduled posts)
+    try:
+        from social_post_publisher import run_publisher as _run_publisher
+        asyncio.create_task(_run_publisher(db))
+        logging.info("[social-publisher] Post publisher started")
+    except Exception as e:
+        logging.error(f"[social-publisher] Failed to start publisher: {e}")
+
+    # Start social engagement syncer (syncs likes/reach/clicks every 30 min)
+    try:
+        from social_engagement_syncer import run_engagement_syncer as _run_engagement_syncer
+        asyncio.create_task(_run_engagement_syncer(db))
+        logging.info("[engagement-syncer] Engagement syncer started")
+    except Exception as e:
+        logging.error(f"[engagement-syncer] Failed to start engagement syncer: {e}")
+
+    # Start Meta Ads monitor (legacy — checks Meta Graph API, requires META_ADS_ACCESS_TOKEN)
+    try:
+        from meta_ads_monitor import run_meta_ads_monitor as _run_meta_ads_monitor
+        asyncio.create_task(_run_meta_ads_monitor(db))
+        logging.info("[meta-ads-monitor] Meta Ads monitor started")
+    except Exception as e:
+        logging.error(f"[meta-ads-monitor] Failed to start Meta Ads monitor: {e}")
+
+    # Start Zernio Ad Health Monitor (scores campaigns, auto-pauses underperformers, WhatsApp alerts)
+    try:
+        from ad_health_monitor import run_ad_health_monitor as _run_ad_health_monitor
+        asyncio.create_task(_run_ad_health_monitor(db))
+        logging.info("[ad-health-monitor] Zernio Ad Health Monitor started")
+    except Exception as e:
+        logging.error(f"[ad-health-monitor] Failed to start: {e}")
+
     # Bootstrap Qdrant vector collections (customer_memories + business_knowledge).
     # Runs silently if QDRANT_URL is not configured (local dev without Qdrant).
     if os.getenv("QDRANT_URL"):
@@ -11985,6 +12153,89 @@ async def telegram_user_disconnect(user=Depends(get_current_user)):
     return {"status": "disconnected", "connected": False}
 
 
+# ── Paystack (Africa payments) ───────────────────────────────────────────────
+
+@api_router.get("/paystack/connection")
+async def paystack_get_connection(user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    doc = await db.users.find_one({"_id": user_id}, {"paystack_secret_key": 1})
+    connected = bool(doc and doc.get("paystack_secret_key"))
+    biz = (doc or {}).get("business_name", "")
+    return {"connected": connected, "business_name": biz if connected else None}
+
+@api_router.post("/paystack/connect")
+async def paystack_connect(body: dict, user=Depends(get_current_user)):
+    secret_key = (body.get("secret_key") or "").strip()
+    if not secret_key or not secret_key.startswith("sk_"):
+        raise HTTPException(400, "Invalid Paystack secret key (must start with sk_)")
+    user_id = user.get("business_id", user["_id"])
+    # Validate key with Paystack API
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.paystack.co/business",
+                headers={"Authorization": f"Bearer {secret_key}"}
+            )
+            if r.status_code != 200:
+                raise HTTPException(400, "Paystack rejected this key — check it is a live or test secret key")
+            biz_name = r.json().get("data", {}).get("name", "")
+    except HTTPException:
+        raise
+    except Exception:
+        biz_name = ""
+    await db.users.update_one({"_id": user_id}, {"$set": {"paystack_secret_key": secret_key}})
+    return {"status": "connected", "connected": True, "business_name": biz_name}
+
+@api_router.delete("/paystack/connect")
+async def paystack_disconnect(user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    await db.users.update_one({"_id": user_id}, {"$unset": {"paystack_secret_key": ""}})
+    return {"status": "disconnected", "connected": False}
+
+
+# ── PayHero (M-Pesa / Kenya mobile money) ────────────────────────────────────
+
+@api_router.get("/payhero/connection")
+async def payhero_get_connection(user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1})
+    connected = bool(doc and doc.get("payhero_username"))
+    return {"connected": connected, "username": doc.get("payhero_username") if connected else None}
+
+@api_router.post("/payhero/connect")
+async def payhero_connect(body: dict, user=Depends(get_current_user)):
+    username = (body.get("username") or "").strip()
+    password = (body.get("password") or "").strip()
+    if not username or not password:
+        raise HTTPException(400, "Username and password are required")
+    user_id = user.get("business_id", user["_id"])
+    import base64 as _b64
+    encoded = _b64.b64encode(f"{username}:{password}".encode()).decode()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://backend.payhero.co.ke/api/v2/channels",
+                headers={"Authorization": f"Basic {encoded}"}
+            )
+            if r.status_code == 401:
+                raise HTTPException(400, "PayHero rejected these credentials — check your username and password")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    await db.users.update_one(
+        {"_id": user_id},
+        {"$set": {"payhero_username": username, "payhero_password": password}}
+    )
+    return {"status": "connected", "connected": True, "username": username}
+
+@api_router.delete("/payhero/connect")
+async def payhero_disconnect(user=Depends(get_current_user)):
+    user_id = user.get("business_id", user["_id"])
+    await db.users.update_one({"_id": user_id}, {"$unset": {"payhero_username": "", "payhero_password": ""}})
+    return {"status": "disconnected", "connected": False}
+
+
 # ── AI Assistant routes ──
 try:
     from assistant.routes import _mk_router as _mk_assistant_router
@@ -11993,6 +12244,13 @@ try:
     logging.info("[assistant] routes mounted at /api/assistant/*")
 except Exception as _e:
     logging.error(f"[assistant] failed to mount routes: {_e}")
+
+# ── Assistant AI Draft alias (frontend expects /assistant/ai-draft) ─────────────────
+@api_router.post("/assistant/ai-draft")
+async def assistant_ai_draft_alias(req: Request, user=Depends(get_current_user)):
+    """Thin alias to the assistant router's /ai-draft for frontend compatibility."""
+    from assistant.routes import ai_draft as _ai_draft_handler
+    return await _ai_draft_handler(req, user)
 
 # ── Marketing (Meta Ads drafts, etc.) ──
 try:
@@ -12069,13 +12327,29 @@ try:
 except Exception as _e:
     logging.error(f"[design-templates] failed to mount routes: {_e}")
 
-# ── Orshot (template schema + render for dashboard / integrations) ───────────
+# ── Shotstack (video/image/voice generation — unified) ────────────────────────
 try:
-    from orshot_routes import make_orshot_router as _mk_orshot_router
-    api_router.include_router(_mk_orshot_router(Depends(get_current_user)))
-    logging.info("[orshot] routes mounted at /api/orshot/*")
+    from shotstack_routes import make_shotstack_router as _mk_shotstack_router
+    api_router.include_router(_mk_shotstack_router(Depends(get_current_user)))
+    logging.info("[shotstack] routes mounted at /api/shotstack/*")
 except Exception as _e:
-    logging.error(f"[orshot] failed to mount routes: {_e}")
+    logging.error(f"[shotstack] failed to mount routes: {_e}")
+
+# ── SEO + Auto-Blogging ───────────────────────────────────────────────────────
+try:
+    from seo.routes import make_seo_router as _mk_seo_router
+    api_router.include_router(_mk_seo_router(db, Depends(get_current_user)))
+    logging.info("[seo] routes mounted at /api/seo/*")
+except Exception as _e:
+    logging.error(f"[seo] failed to mount routes: {_e}")
+
+# ── SEO LangGraph Agent ───────────────────────────────────────────────────────
+try:
+    from seo_agent.routes import make_seo_agent_router as _mk_seo_agent_router
+    api_router.include_router(_mk_seo_agent_router(db, Depends(get_current_user)))
+    logging.info("[seo-agent] routes mounted at /api/seo-agent/*")
+except Exception as _e:
+    logging.error(f"[seo-agent] failed to mount routes: {_e}")
 
 # NOTE: app.include_router(api_router) is deferred to end of file so all routes and
 # sub-routers are registered first (avoids missing routes with uvicorn --reload on Windows).

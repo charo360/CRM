@@ -171,6 +171,11 @@ const TOOL_LABELS: Record<string, string> = {
   list_automations:      "Checking automations…",
   create_automation:     "Creating automation…",
   toggle_automation:     "Toggling automation…",
+  // Video generation
+  create_kling_video:        "Creating AI video…",
+  get_kling_video_status:    "Rendering video…",
+  create_video:              "Creating video…",
+  get_video_status:          "Rendering video…",
 };
 
 function friendlyToolLabel(tool: string): string {
@@ -282,6 +287,9 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   const [activeAgent, setActiveAgent] = useState<string>("general");
   const [activeAgentLabel, setActiveAgentLabel] = useState<string>("Zilo");
   const [connectedIntegrations, setConnectedIntegrations] = useState<string[]>([]);
+  const [quickPrompts, setQuickPrompts] = useState<string[]>(BASE_PROMPTS.slice(0, 8));
+  const [promptsPersonalized, setPromptsPersonalized] = useState(false);
+  const [loadingPrompts, setLoadingPrompts] = useState(false);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState(initialMessage ?? "");
   const [sending, setSending] = useState(false);
@@ -321,7 +329,20 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         );
       });
 
-    // Load connected integrations for dynamic quick prompts (best-effort)
+    // Load personalized suggestions in background — chips already visible with BASE_PROMPTS
+    assistantApi
+      .suggestions()
+      .then((r) => {
+        if (r.suggestions && r.suggestions.length >= 4) {
+          setQuickPrompts(r.suggestions.slice(0, 8));
+          setPromptsPersonalized(r.personalized ?? false);
+        }
+      })
+      .catch(() => {
+        // Keep BASE_PROMPTS fallback already set in initial state
+      });
+
+    // Also load connected integrations (still used for secondary extras)
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     if (token) {
       const integrationIds = "shopify,stripe,klaviyo,mailchimp,brevo,slack,google-mail,microsoft,google-calendar";
@@ -538,16 +559,16 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     }
   }
 
-  // Build dynamic quick prompts: base + up to 2 prompts from each connected integration
-  const quickPrompts = (() => {
+  // Merge integration-specific extras into the personalized prompts (keep max 8)
+  const mergedPrompts = (() => {
     const extras: string[] = [];
     for (const key of connectedIntegrations) {
       const pool = INTEGRATION_PROMPTS[key];
-      if (pool) extras.push(pool[0]); // one prompt per connected app
+      if (pool) extras.push(pool[0]);
     }
-    // Merge: keep base prompts but replace last slots with app-specific ones (max 8 total)
-    const combined = [...BASE_PROMPTS.slice(0, Math.max(4, 8 - extras.length)), ...extras];
-    return combined.slice(0, 8);
+    if (!extras.length) return quickPrompts.slice(0, 8);
+    const base = quickPrompts.slice(0, Math.max(4, 8 - extras.length));
+    return [...base, ...extras].slice(0, 8);
   })();
 
   const empty = messages.length === 0 && !loadingConv;
@@ -616,17 +637,39 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                   Ask anything — I'll automatically route to the right specialist. Attach a document and I'll read it with you.
                 </p>
               </div>
+
+              {/* Suggestions header with personalized badge */}
+              <div className="flex w-full max-w-2xl items-center justify-between px-0.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  {promptsPersonalized ? "Suggested for you" : "Quick start"}
+                </p>
+                {promptsPersonalized && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-semibold text-brand-dark">
+                    <svg viewBox="0 0 10 10" className="h-2.5 w-2.5 fill-current"><circle cx="5" cy="5" r="5" /></svg>
+                    Personalized
+                  </span>
+                )}
+              </div>
+
+              {/* Suggestion chips — skeleton while loading */}
               <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
-                {quickPrompts.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => void send(p)}
-                    className="rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-sm text-slate-700 shadow-sm transition hover:border-brand/50 hover:bg-brand/10 hover:shadow"
-                  >
-                    {p}
-                  </button>
-                ))}
+                {loadingPrompts
+                  ? Array.from({ length: 8 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="h-11 animate-pulse rounded-xl border border-slate-100 bg-slate-100"
+                      />
+                    ))
+                  : mergedPrompts.map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => void send(p)}
+                        className="rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-sm text-slate-700 shadow-sm transition hover:border-brand/50 hover:bg-brand/10 hover:shadow"
+                      >
+                        {p}
+                      </button>
+                    ))}
               </div>
               <div className="flex items-center gap-2 text-[11px] text-slate-400">
                 <Paperclip size={11} /> Click the paperclip below to attach a PDF, DOCX, or image.
@@ -689,6 +732,10 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                           </span>
                         ))}
                       </div>
+                    )}
+                    {/* Video rendering skeleton — shown while Kling is generating */}
+                    {streamingTools.some(t => t === "create_kling_video" || t === "get_kling_video_status" || t === "create_video" || t === "get_video_status") && (
+                      <VideoRenderingCard />
                     )}
                     {/* Streaming reply text */}
                     {streamingText ? (
@@ -1090,20 +1137,28 @@ function extractInlineOptionList(content: string):
   // ── Informational-list guard ────────────────────────────────────────────────
   // Only promote to clickable chips when items look like genuine user choices.
   // Informational lists (facts, summaries, confirmations) stay as plain markdown.
-  const isFactItem = (label: string) => {
+  const isFactItem = (label: string, display?: string) => {
     const plain = label.replace(/\*\*/g, "").trim();
     // "Key: value" or "Key — value" patterns (e.g. "Duration: 2 weeks", "Budget: KES 500")
     if (/^[A-Za-z][^:]{0,35}:\s+\S/.test(plain)) return true;
-    if (/^[A-Za-z][^—]{0,35}—\s+\S/.test(plain)) return true;
+    // "Key — value" patterns (e.g. "Duration — 2 weeks") — but NOT "A — Title" (single-letter option labels)
+    { const m = /^([A-Za-z][^—]{0,35})—\s+\S/.exec(plain); if (m && m[1].trim().length > 1) return true; }
     // Starts with a quote (e.g. Message Preview: "Hello...")
     if (/^["'"']/.test(plain)) return true;
     // Very long labels (>55 chars) are descriptions, not action chips
     if (plain.length > 55) return true;
     // Contains currency/numbers suggesting it's a data point
     if (/\b(KES|USD|EUR|GBP|\$|€|£)\s*[\d,]+/.test(plain)) return true;
+    // Short labels like "A.", "B.", "1." come from bold-letter patterns in concept pitches.
+    // Check the full display text — if it's long or contains "key: value" patterns it's a description.
+    if (plain.length <= 3 && display) {
+      const plainDisplay = display.replace(/\*\*/g, "").trim();
+      if (plainDisplay.length > 55) return true;
+      if (/^[A-Za-z0-9][^:]{0,35}:\s+\S/.test(plainDisplay)) return true;
+    }
     return false;
   };
-  const factCount = parsed.filter((o) => isFactItem(o.label)).length;
+  const factCount = parsed.filter((o) => isFactItem(o.label, o.display)).length;
   // If more than half are facts, don't promote to chips
   if (factCount > parsed.length / 2) return null;
 
@@ -1496,6 +1551,7 @@ function MessageBubble({
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
+            <VideoPreview steps={msg.steps} />
             <DocumentPreview steps={msg.steps} />
             {msg.suggestions &&
               msg.suggestions.length > 0 &&
@@ -1804,6 +1860,100 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
           sandbox="allow-same-origin"
         />
       )}
+    </div>
+  );
+}
+
+function VideoRenderingCard() {
+  return (
+    <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+      <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand animate-pulse" aria-hidden>
+          <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9Zm4.5.5v8l5-4-5-4Z" />
+        </svg>
+        <span className="text-[12px] font-semibold text-slate-700">Rendering video…</span>
+        <Loader2 size={11} className="ml-auto animate-spin text-brand" />
+      </div>
+      <div className="flex aspect-video items-center justify-center bg-slate-900">
+        <div className="flex flex-col items-center gap-3 text-slate-400">
+          <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-slate-800">
+            <svg viewBox="0 0 16 16" className="h-7 w-7 fill-slate-500 animate-pulse" aria-hidden>
+              <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9Zm4.5.5v8l5-4-5-4Z" />
+            </svg>
+            <span className="absolute inset-0 rounded-full border-2 border-brand/40 animate-ping" />
+          </div>
+          <p className="text-[11px] font-medium">AI video generating — this takes 2–4 min</p>
+          <div className="h-1 w-40 overflow-hidden rounded-full bg-slate-700">
+            <div className="h-full w-1/3 rounded-full bg-brand animate-[loading-bar_1.8s_ease-in-out_infinite]" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VideoPreview({ steps }: { steps?: AssistantStep[] }) {
+  const videoStep = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find(
+        (s) =>
+          (s.tool === "get_video_status" &&
+            (s.result as Record<string, unknown>)?.status === "done" &&
+            (s.result as Record<string, unknown>)?.url) ||
+          (s.tool === "get_kling_video_status" &&
+            (s.result as Record<string, unknown>)?.status === "success" &&
+            (s.result as Record<string, unknown>)?.url),
+      ),
+    [steps],
+  );
+
+  if (!videoStep) return null;
+
+  const result = videoStep.result as Record<string, unknown>;
+  const url = result.url as string;
+  const title = (result.title as string | undefined) ?? "Promo Video";
+  const aspectRatio = (result.aspect_ratio as string | undefined) ?? "16:9";
+
+  // Determine container max-width based on aspect ratio
+  const isPortrait = aspectRatio === "9:16";
+  const isSquare = aspectRatio === "1:1";
+  const containerClass = isPortrait
+    ? "mx-auto max-w-[270px]" // Portrait: 9:16 = narrow
+    : isSquare
+      ? "mx-auto max-w-[480px]" // Square: 1:1
+      : ""; // Landscape: full width
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand" aria-hidden>
+            <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9Zm4.5.5v8l5-4-5-4Z" />
+          </svg>
+          {title}
+        </div>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+        >
+          <Download size={10} />
+          Download
+        </a>
+      </div>
+      {/* Video player */}
+      <div className="bg-black">
+        <div className={containerClass}>
+          <video
+            src={url}
+            controls
+            playsInline
+            className="block h-auto w-full"
+          />
+        </div>
+      </div>
     </div>
   );
 }

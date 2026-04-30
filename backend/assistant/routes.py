@@ -19,6 +19,7 @@ from .intent_router import route_to_agent
 from .models import DEFAULT_MODEL, list_available_models, stream_reply
 from .orchestrator import run_turn, run_turn_stream
 from .titler import generate_title
+from .agent_workspace import load_workspace, update_workspace, workspace_to_context_line
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,41 @@ router = APIRouter(prefix="/assistant", tags=["assistant"])
 # ── Rate limit: 30 turns per 60 seconds per user ─────────────────────────────
 _RATE_WINDOW_SEC = 60
 _RATE_MAX = 30
+# In-memory fallback (single-process only)
 _rate_hits: Dict[str, Deque[float]] = defaultdict(deque)
 
 
-def _check_rate_limit(user_id: str) -> None:
+async def _check_rate_limit(user_id: str) -> None:
+    """Rate-limit check: Redis sliding window with in-memory fallback."""
     now = time.time()
+    try:
+        from redis_client import get_redis
+        r = await get_redis()
+        if r:
+            key = f"rl:assistant:{user_id}"
+            pipe = r.pipeline()
+            # Remove hits outside the window, add current timestamp, count, set expiry
+            pipe.zremrangebyscore(key, 0, now - _RATE_WINDOW_SEC)
+            pipe.zadd(key, {str(now): now})
+            pipe.zcard(key)
+            pipe.expire(key, _RATE_WINDOW_SEC + 1)
+            results = await pipe.execute()
+            count = results[2]  # zcard result
+            if count > _RATE_MAX:
+                # Find the oldest hit still in window to compute retry-after
+                oldest = await r.zrange(key, 0, 0, withscores=True)
+                retry = int(_RATE_WINDOW_SEC - (now - oldest[0][1])) + 1 if oldest else _RATE_WINDOW_SEC
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Too many assistant requests. Try again in {retry}s.",
+                )
+            return
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[rate_limit] Redis check failed, falling back to in-memory: %s", exc)
+
+    # In-memory fallback
     dq = _rate_hits[user_id]
     while dq and now - dq[0] > _RATE_WINDOW_SEC:
         dq.popleft()
@@ -42,6 +73,33 @@ def _check_rate_limit(user_id: str) -> None:
             detail=f"Too many assistant requests. Try again in {retry}s.",
         )
     dq.append(now)
+
+
+def _extract_workspace_updates(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Scan tool step results for facts worth persisting to the agent workspace.
+
+    Looks at tool outputs from a turn for brand_color, product names, etc.
+    Returns a (possibly empty) dict of workspace fields to upsert.
+    """
+    updates: Dict[str, Any] = {}
+    for step in result.get("steps") or []:
+        tool = step.get("tool", "")
+        r = step.get("result") or {}
+        if not isinstance(r, dict):
+            continue
+        # get_owner_info → capture brand color
+        if tool == "get_owner_info":
+            if r.get("brand_primary_color"):
+                updates["brand_color"] = r["brand_primary_color"]
+        # generate_social_post / generate_ad_creative → capture platform from args
+        if tool in ("generate_social_post", "generate_ad_creative", "generate_carousel_cover"):
+            args = step.get("arguments") or {}
+            if isinstance(args, dict):
+                if args.get("platform"):
+                    updates["platform"] = args["platform"]
+                if args.get("headline"):
+                    updates["approved_copy"] = args["headline"]
+    return updates
 
 
 def _mk_router(db, get_current_user):
@@ -59,6 +117,111 @@ def _mk_router(db, get_current_user):
     async def agents_list(user=Depends(get_current_user)):
         """Specialist agents (e.g. Meta Ads) — each uses a dedicated prompt and tool set."""
         return {"agents": list_agents_public()}
+
+    @router.get("/suggestions")
+    async def get_suggestions(user=Depends(get_current_user)):
+        """Return personalized quick-action suggestions for the chat empty state.
+
+        Combines:
+          1. Owner preferences (learned from past sessions via Qdrant)
+          2. Recent conversation topics (last 5 conversations)
+          3. Business context (connected integrations / recent agent usage)
+        Falls back to sensible defaults when no history exists.
+        """
+        import asyncio as _asyncio
+        user_id = user.get("business_id", user["_id"])
+
+        # Fetch recent conversations + owner preferences in parallel
+        try:
+            recent_convs, owner_prefs_raw = await _asyncio.gather(
+                db.assistant_conversations.find(
+                    {"user_id": user_id}
+                ).sort("updated_at", -1).to_list(5),
+                _get_all_owner_prefs_safe(user_id),
+            )
+        except Exception:
+            recent_convs, owner_prefs_raw = [], []
+
+        # Build context string for the suggestion LLM call
+        pref_lines = "\n".join(f"- {p['summary']}" for p in owner_prefs_raw[:10]) if owner_prefs_raw else ""
+        recent_topics = []
+        recent_agents: list = []
+        for c in recent_convs:
+            if c.get("title") and c["title"] != "New chat":
+                recent_topics.append(c["title"])
+            if c.get("agent") and c["agent"] not in ("general", None):
+                recent_agents.append(c["agent"])
+
+        topics_line = "\n".join(f"- {t}" for t in recent_topics) if recent_topics else ""
+        agents_used = list(dict.fromkeys(recent_agents))[:4]  # unique, preserve order
+
+        try:
+            from .models import chat_with_tools as _chat
+            prompt_parts = [
+                "You are generating personalized quick-action suggestion chips for a CRM AI assistant.",
+                "The chips appear on the empty chat screen so the owner can tap one to instantly start a task.",
+                "",
+                "Generate exactly 8 suggestion chips.",
+                "Rules:",
+                "- Each chip is 4-9 words, action-oriented, starts with a verb",
+                "- Mix across: analytics, marketing/campaigns, customers, content creation, operations",
+                "- Lean toward what this specific owner actually uses (see context below)",
+                "- Be specific — use their business context, not generic CRM phrases",
+                "- NO duplicate themes across the 8 chips",
+                "- Output ONLY a JSON array of 8 strings, nothing else",
+                "",
+            ]
+            if pref_lines:
+                prompt_parts += ["Owner preferences learned from past sessions:", pref_lines, ""]
+            if topics_line:
+                prompt_parts += ["Recent conversation topics:", topics_line, ""]
+            if agents_used:
+                prompt_parts.append(f"Specialist agents recently used: {', '.join(agents_used)}")
+            prompt_parts += [
+                "",
+                "Output format (JSON array only, no markdown):",
+                '["chip 1", "chip 2", "chip 3", "chip 4", "chip 5", "chip 6", "chip 7", "chip 8"]',
+            ]
+
+            resp = await _chat(
+                messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
+                tools=[],
+                temperature=0.7,
+                timeout=8.0,
+            )
+            raw = (resp.get("content") or "").strip()
+            # Parse JSON array
+            import json as _json, re as _re
+            match = _re.search(r'\[.*?\]', raw, _re.DOTALL)
+            if match:
+                chips = _json.loads(match.group())
+                if isinstance(chips, list) and len(chips) >= 4:
+                    return {"suggestions": chips[:8], "personalized": bool(pref_lines or topics_line)}
+        except Exception as exc:
+            logger.debug("[suggestions] LLM generation failed, using fallback: %s", exc)
+
+        # Fallback: static defaults
+        return {
+            "suggestions": [
+                "What's my revenue this week?",
+                "Show me overdue follow-ups",
+                "Draft a promo broadcast for VIP customers",
+                "Which orders are still pending?",
+                "Help me set up a Facebook ad campaign",
+                "Who are my top customers this month?",
+                "Generate a sales report as a PDF",
+                "Which customers haven't bought in 60 days?",
+            ],
+            "personalized": False,
+        }
+
+    async def _get_all_owner_prefs_safe(business_id: str) -> list:
+        """Wrapper — returns [] on any error."""
+        try:
+            from memory.owner_prefs import get_all_owner_preferences
+            return await get_all_owner_preferences(business_id)
+        except Exception:
+            return []
 
     @router.get("/conversations")
     async def list_conversations(user=Depends(get_current_user)):
@@ -112,7 +275,7 @@ def _mk_router(db, get_current_user):
             raise HTTPException(400, "message is required")
 
         user_id = user.get("business_id", user["_id"])
-        _check_rate_limit(user_id)
+        await _check_rate_limit(user_id)
         conv_id = body.get("conversation_id")
         conv: Dict[str, Any]
         if conv_id:
@@ -153,13 +316,18 @@ def _mk_router(db, get_current_user):
             design_flow_active=design_flow_active,
         )
 
+        # Load shared agent workspace — inject as context when agent switches
+        workspace = await load_workspace(db, conv_id)
+        workspace_ctx = workspace_to_context_line(workspace)
+        user_with_ctx = {**user, "_workspace_context": workspace_ctx} if workspace_ctx else user
+
         # Strip non-serializable keys from history before passing to LLM
         clean_history = [_strip_storage_fields(m) for m in history]
 
         try:
             result = await run_turn(
                 db=db,
-                user=user,
+                user=user_with_ctx,
                 history=clean_history,
                 user_message=msg,
                 model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
@@ -172,6 +340,14 @@ def _mk_router(db, get_current_user):
             raise HTTPException(500, f"Assistant error: {e}")
 
         active_agent = result.get("active_agent") or agent_resolved
+
+        # Update shared workspace from tool results (fire-and-forget)
+        import asyncio as _asyncio
+        _asyncio.create_task(update_workspace(
+            db, conv_id, user_id,
+            _extract_workspace_updates(result),
+            agent_id=active_agent,
+        ))
 
         # Persist the new messages + step trace
         new_msgs = result["messages_to_append"]
@@ -248,7 +424,7 @@ def _mk_router(db, get_current_user):
 
         async def _generate():
             try:
-                _check_rate_limit(user_id)
+                await _check_rate_limit(user_id)
             except HTTPException as e:
                 yield "data: " + json.dumps({"type": "error", "message": e.detail}) + "\n\n"
                 return
@@ -288,6 +464,11 @@ def _mk_router(db, get_current_user):
             )
             agent_label = AGENT_REGISTRY.get(agent_resolved, {}).get("label", "Zilo")
 
+            # Load shared agent workspace and inject context when agent switches
+            workspace = await load_workspace(db, conv_id)
+            workspace_ctx = workspace_to_context_line(workspace)
+            user_with_ctx = {**user, "_workspace_context": workspace_ctx} if workspace_ctx else user
+
             yield "data: " + json.dumps({"type": "thinking", "agent": agent_resolved, "agent_label": agent_label}) + "\n\n"
 
             result: Optional[Dict[str, Any]] = None
@@ -304,7 +485,7 @@ def _mk_router(db, get_current_user):
             async def _feed() -> None:
                 try:
                     async for _ev in run_turn_stream(
-                        db=db, user=user, history=history, user_message=msg,
+                        db=db, user=user_with_ctx, history=history, user_message=msg,
                         model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
                         auto_approve_destructive=bool(body.get("auto_approve")),
                         conversation_id=conv_id, agent_id=agent_resolved,
@@ -351,6 +532,13 @@ def _mk_router(db, get_current_user):
             active_agent = result.get("active_agent") or agent_resolved
             if not reply_text:
                 reply_text = result.get("reply") or ""
+
+            # Update shared workspace from tool results (fire-and-forget)
+            _asyncio.create_task(update_workspace(
+                db, conv_id, user_id,
+                _extract_workspace_updates(result),
+                agent_id=active_agent,
+            ))
 
             # Persist
             new_msgs = result.get("messages_to_append") or []

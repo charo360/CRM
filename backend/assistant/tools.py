@@ -298,7 +298,7 @@ async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
         imgs.insert(0, orig)
 
     # Convert private S3 URLs to publicly accessible proxy URLs so that
-    # the AI can share them with users and pass them to Orshot without
+    # the AI can share them with users and pass them to design tools without
     # triggering S3 AccessDenied errors.
     backend_url = (
         _os.environ.get("BACKEND_PUBLIC_URL")
@@ -532,7 +532,7 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
         "(`default_logo_url`, `brand_primary_color`, `brand_font`). "
         "Use for Meta/Google ads, proposals, and any time industry-aware advice is needed. "
         "For design work, **always call this first** so you can pass the brand logo URL and "
-        "primary colour into `render_orshot_template.modifications` and `generate_design_background.logo_url`."
+        "primary colour into Gemini design tools (brand_color, logo_url) and `generate_design_background.logo_url`."
     ),
     parameters={"type": "object", "properties": {}},
     destructive=False,
@@ -569,8 +569,8 @@ async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
         "business_type":   (settings.get("business_type") or "").strip(),
         "business_description_hint": (bk.get("business_description") or "")[:400],
         "products_services_hint":    (bk.get("products_services") or "")[:400],
-        # Brand kit — pass these straight into render_orshot_template.modifications
-        # (logo image fields, brand colour fields) and generate_design_background.logo_url.
+        # Brand kit — pass these straight into Gemini design tools
+        # (brand_color, logo_url) and generate_design_background.logo_url.
         "default_logo_url":    default_logo_url,
         "brand_primary_color": brand_primary_color,
         "brand_font":          brand_font,
@@ -784,36 +784,50 @@ async def create_product(ctx: ToolContext, args: Dict[str, Any]):
 
 @tool(
     name="update_product",
-    description="Update a product in the catalog (price, name, description, stock).",
+    description="Update a product in the catalog. Can update name, price, discount price, description, category, sub-category, stock status, and stock quantity.",
     parameters={
         "type": "object",
         "required": ["product_id"],
         "properties": {
-            "product_id": {"type": "string"},
+            "product_id": {"type": "string", "description": "Product ID from list_products"},
             "name": {"type": "string"},
             "price": {"type": "number"},
+            "discount_price": {"type": "number", "description": "Sale/discounted price (set to 0 to remove)"},
             "description": {"type": "string"},
+            "category": {"type": "string", "description": "Product category e.g. 'AI Design', 'Image Generation', 'AI Infrastructure'"},
+            "sub_category": {"type": "string"},
             "in_stock": {"type": "boolean"},
+            "stock_quantity": {"type": "integer", "description": "Inventory count (set to track stock levels)"},
         },
     },
     destructive=True,
 )
 async def update_product(ctx: ToolContext, args: Dict[str, Any]):
+    from bson import ObjectId
     pid = args["product_id"]
+    # Support both ObjectId and string _id
+    try:
+        oid = ObjectId(pid)
+        query = {"$or": [{"_id": oid}, {"_id": pid}], "user_id": ctx.business_id}
+    except Exception:
+        query = {"_id": pid, "user_id": ctx.business_id}
+
     updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
-    for k in ("name", "description"):
+    for k in ("name", "description", "category", "sub_category"):
         if k in args and args[k] is not None:
             updates[k] = args[k]
     if "price" in args and args["price"] is not None:
         updates["price"] = float(args["price"])
+    if "discount_price" in args and args["discount_price"] is not None:
+        updates["discount_price"] = float(args["discount_price"]) or None
     if "in_stock" in args and args["in_stock"] is not None:
         updates["in_stock"] = bool(args["in_stock"])
-    res = await ctx.db.products.update_one(
-        {"_id": pid, "user_id": ctx.business_id},
-        {"$set": updates},
-    )
+    if "stock_quantity" in args and args["stock_quantity"] is not None:
+        updates["stock_quantity"] = int(args["stock_quantity"])
+
+    res = await ctx.db.products.update_one(query, {"$set": updates})
     if res.matched_count == 0:
-        return {"error": "Product not found"}
+        return {"error": "Product not found — double-check the product_id from list_products"}
     return {"status": "updated", "product_id": pid, "changed": list(updates.keys())}
 
 
@@ -2616,7 +2630,7 @@ async def get_tiktok_ad_trends(ctx: ToolContext, args: Dict[str, Any]):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Visual assets — Nano Banana / Gemini AI images; Orshot for template graphics; .pptx via python-pptx
+# Visual assets — Gemini AI images for social posts/ads/carousels; .pptx via python-pptx
 
 @tool(
     name="generate_creative_image",
@@ -2624,8 +2638,8 @@ async def get_tiktok_ad_trends(ctx: ToolContext, args: Dict[str, Any]):
         "Generate a creative, conceptual, or lifestyle image using Google's Nano Banana AI model (via OpenRouter). "
         "Use this for standalone AI image generation — product lifestyle shots, mood scenes, conceptual backgrounds, "
         "people with products, brand imagery. "
-        "For branded layouts, pass the returned image_url as the image field value in `render_orshot_template` — "
-        "the AI picks a matching Orshot template and places this image into it."
+        "For branded layouts, pass the returned image_url as product_image_url to `generate_ad_creative` or "
+        "`generate_social_post` — the AI creates a professional branded design with this image."
     ),
     parameters={
         "type": "object",
@@ -2633,9 +2647,15 @@ async def get_tiktok_ad_trends(ctx: ToolContext, args: Dict[str, Any]):
             "prompt": {
                 "type": "string",
                 "description": (
-                    "Detailed visual description of the image to generate. Be specific: lighting, mood, setting, "
-                    "subject, colours, style. E.g. 'A confident woman in her 30s holding a brown glass skincare serum bottle "
-                    "in a minimalist bathroom, golden hour light, soft shadows, editorial photography style, clean white background'."
+                    "Detailed visual description of the image. ALWAYS include: (1) camera angle — e.g. "
+                    "'3/4 angle from slightly below' or 'eye-level editorial shot' or 'low-angle hero shot'; "
+                    "(2) lighting — e.g. 'soft side-lit studio light with a subtle fill light'; "
+                    "(3) composition — e.g. 'subject at left Rule-of-Thirds intersection, 50% negative space right'; "
+                    "(4) style — e.g. 'clean editorial photography, Canva Pro aesthetic, minimal, premium'; "
+                    "(5) what NOT to include — e.g. 'no text overlays, no busy backgrounds, no watermarks'. "
+                    "Example: 'A premium dark glass perfume bottle at a 3/4 angle from slightly below, "
+                    "soft studio side-lighting with a gradient shadow, placed at left Rule-of-Thirds, "
+                    "deep navy background, 50% negative space, editorial photography, no text, no artifacts'."
                 )
             },
             "format": {
@@ -2670,459 +2690,482 @@ async def generate_creative_image(ctx: ToolContext, args: Dict[str, Any]):
         "success": True,
         "image_url": image_url,
         "markdown": f"![Generated image]({image_url})",
-        "note": "Use this URL as an image field value in `render_orshot_template.modifications` when your Orshot template expects a photo URL.",
+        "note": "Use this URL as product_image_url in `generate_ad_creative` or `generate_social_post` when creating branded designs.",
     }
 
 
-@tool(
-    name="list_orshot_templates",
-    description=(
-        "List Orshot Studio templates in the workspace. Each template object has id, name, canvas size, "
-        "and thumbnail_url. "
-        "CRITICAL — URL RULE: When showing templates to the user, you MUST copy the thumbnail_url value "
-        "character-for-character exactly as it appears in this tool's JSON response. Do not retype it, "
-        "do not reconstruct it, do not shorten it. Select the value from the JSON, paste it. "
-        "Every real thumbnail_url in this response starts with https://storage.orshot.com/ — "
-        "if what you are about to write does NOT start with https://storage.orshot.com/, stop and "
-        "fetch the value again from the tool result. "
-        "NEVER invent, guess, or approximate a URL. Forbidden examples: https://example.com/..., "
-        "template1.jpg, thumbnail_url_1, /images/..., or any string not present verbatim in the JSON. "
-        "If a template object has a null or empty thumbnail_url, skip it entirely and pick the next one. "
-        "Show 3 best fits for the brief, not the full list."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "page": {"type": "integer", "default": 1, "description": "Pagination page (1-based)."},
-            "limit": {
-                "type": "integer",
-                "default": 20,
-                "description": "Page size (max 20).",
-            },
-        },
-        "required": [],
-    },
-)
-async def list_orshot_templates(ctx: ToolContext, args: Dict[str, Any]):
-    from orshot_service import list_studio_templates
-    from .design_state import update_design_state, load_design_state
-
-    page = int(args.get("page") or 1)
-    limit = int(args.get("limit") or 20)
-    result = await list_studio_templates(page=page, limit=limit)
-
-    # Persist which template ids were surfaced this turn so "See more options"
-    # can skip them next time without the AI having to remember the full list.
-    # Also advance flow_step to awaiting_template if we are currently at
-    # awaiting_platform or awaiting_product (i.e. the first time templates are shown).
-    try:
-        templates = (result or {}).get("templates") or []
-        ids = [t.get("id") for t in templates if isinstance(t, dict) and t.get("id") is not None]
-        conv_id = ctx.user.get("_active_conversation_id")
-        if ids and conv_id:
-            existing = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            current_step = existing.get("flow_step") or ""
-            advance = current_step in ("awaiting_product", "awaiting_platform", "")
-            await update_design_state(
-                ctx.db,
-                conv_id,
-                ctx.business_id,
-                add_templates_shown=ids,
-                **({"flow_step": "awaiting_template"} if advance else {}),
-            )
-    except Exception:
-        logger.exception("[list_orshot_templates] design_state update skipped")
-
-    # Annotate each template so the model can identify which thumbnail_url to use.
-    # The model MUST copy the thumbnail_url value verbatim from this response into markdown.
-    try:
-        templates = (result or {}).get("templates") or []
-        for t in templates:
-            if isinstance(t, dict) and t.get("thumbnail_url"):
-                t["_url_instruction"] = (
-                    f"USE EXACTLY: {t['thumbnail_url']}"
-                )
-    except Exception:
-        pass
-
-    return result
+# ═════════════════════════════════════════════════════════════════════════════
+# GEMINI DESIGN TOOLS — direct AI image generation for social posts & ads
+# ═════════════════════════════════════════════════════════════════════════════
 
 
 @tool(
-    name="get_orshot_template_fields",
+    name="generate_social_post",
     description=(
-        "Fetch the **modification keys** for one Orshot template (for mapping user feedback to fields). "
-        "Call **once** after you pick `template_id` — use internally to know which keys to change on edits; "
-        "do **not** dump the full list to the user unless they ask. Same schema as GET /api/orshot/templates/{id}."
+        "Generate a professional social media post graphic using Gemini AI. "
+        "Creates a polished, ready-to-post image with headline, subtext, CTA, and brand colors. "
+        "Supports all major platforms (Instagram, Facebook, TikTok, LinkedIn, X). "
+        "If a product image URL is available, the product becomes the hero of the design. "
+        "Use this for any social media post — product launches, announcements, promotions, brand awareness."
     ),
     parameters={
         "type": "object",
+        "required": ["headline"],
         "properties": {
-            "template_id": {
+            "headline": {
                 "type": "string",
-                "description": "Orshot template id. Omit to use ORSHOT_DEFAULT_TEMPLATE_ID env.",
+                "description": "Main headline text — bold, eye-catching, largest text on the design.",
             },
-        },
-        "required": [],
-    },
-)
-async def get_orshot_template_fields(ctx: ToolContext, args: Dict[str, Any]):
-    import os as _os
-
-    from orshot_service import get_studio_template
-
-    explicit_tid = (args.get("template_id") or "").strip()
-    tid = explicit_tid or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-    if not tid:
-        return {"error": "Pass template_id or set ORSHOT_DEFAULT_TEMPLATE_ID on the server."}
-
-    data = await get_studio_template(tid)
-    if data.get("error"):
-        # Only fall back to the env default when the caller did NOT explicitly pass a
-        # template_id. If they did, surface the error so the AI doesn't silently end up
-        # reading a different template's fields and rendering with mismatched modifications.
-        default_tid = (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-        if not explicit_tid and default_tid and default_tid != tid:
-            logger.warning("[get_orshot_template_fields] template %s failed (%s), retrying with default %s", tid, data["error"], default_tid)
-            data = await get_studio_template(default_tid)
-            if not data.get("error"):
-                data["_fallback_used"] = True
-                data["_original_template_id"] = tid
-        if data.get("error"):
-            err = data.get("error") or "unknown error"
-            return {
-                "error": f"Could not fetch fields for template {tid!r}: {err}. "
-                         "Check that the template_id is correct and the Orshot API key is valid. "
-                         "Call list_orshot_templates to get valid template ids.",
-                "template_id": tid,
-            }
-
-    mods = data.get("modifications") or []
-    fields: list = []
-    for m in mods if isinstance(mods, list) else []:
-        if not isinstance(m, dict):
-            continue
-        ex = m.get("example")
-        if isinstance(ex, str) and len(ex) > 800:
-            ex = ex[:800] + "…"
-        fields.append(
-            {
-                "key": m.get("key") or m.get("id"),
-                "type": m.get("type"),
-                "help_text": m.get("helpText") or m.get("help_text") or m.get("description"),
-                "example": ex,
-                "page_number": m.get("page_number"),
-                "page_id": m.get("page_id"),
-            }
-        )
-
-    pages_raw = data.get("pages_data") or []
-    page_count = len(pages_raw) if isinstance(pages_raw, list) else 0
-
-    # Persist the field list so the render-time guard and `verify_design_ready`
-    # can detect logo-incompatible templates without re-hitting Orshot.
-    try:
-        from .design_state import update_design_state, load_design_state
-
-        conv_id = ctx.user.get("_active_conversation_id")
-        if conv_id and fields:
-            existing = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            current_step = existing.get("flow_step") or ""
-            # Only advance to awaiting_copy_approval if we are currently at
-            # awaiting_template (i.e. the user just picked a template and the
-            # agent is now studying its fields). Do NOT advance the step if called
-            # during template browsing or at any other phase.
-            advance_step = current_step == "awaiting_template"
-            await update_design_state(
-                ctx.db,
-                conv_id,
-                ctx.business_id,
-                locked_template_fields=fields,
-                **({"flow_step": "awaiting_copy_approval"} if advance_step else {}),
-            )
-    except Exception:
-        logger.exception("[get_orshot_template_fields] design_state update skipped")
-
-    return {
-        "success": True,
-        "template_id": data.get("id"),
-        "name": data.get("name"),
-        "canvas_width": data.get("canvas_width"),
-        "canvas_height": data.get("canvas_height"),
-        "thumbnail_url": data.get("thumbnail_url"),
-        "page_count": page_count,
-        "fields": fields,
-        "note": (
-            "Use `key` in `render_orshot_template.modifications`. Any text field also accepts "
-            "style overrides via `<key>.color`, `<key>.fontFamily`, `<key>.fontSize`, "
-            "`<key>.backgroundColor`, `<key>.fontWeight`, `<key>.textAlign` — use these to "
-            "apply the brand colour/font from `get_owner_info` to any headline/CTA/body field, "
-            "even when the template has no dedicated brand-colour field. "
-            "Full `pages_data` is omitted to keep chat storage small."
-        ),
-    }
-
-
-@tool(
-    name="render_orshot_template",
-    description=(
-        "Render a graphic from an **Orshot Studio** template (hosted layouts — import from Canva/Figma supported in Orshot). "
-        "Requires server env **ORSHOT_API_KEY**. Optional **ORSHOT_DEFAULT_TEMPLATE_ID** supplies a default when `template_id` is omitted. "
-        "**modifications** keys must match Orshot Studio dynamic parameters (often `pageN@field_name` on carousels). "
-        "Use `get_orshot_template_fields` once to learn keys, then keep them in mind for refinements. "
-        "**Style overrides:** any text/image field accepts dot-notation style parameters in `modifications` — "
-        "e.g. `\"headline\": \"Big Sale\"` plus `\"headline.color\": \"#FF6600\"`, `\"headline.fontFamily\": \"Inter\"`, "
-        "`\"headline.fontSize\": \"48px\"`, `\"cta.backgroundColor\": \"#FF6600\"`, `\"cta.fontWeight\": \"700\"`. "
-        "This means brand colour/font from `get_owner_info` apply to *any* headline/CTA/body field even when the "
-        "template has no dedicated brand-colour field — just append `.color` / `.fontFamily` to the field key. "
-        "Optional **`presentation_label`** (e.g. 'Option A', 'Final') helps you show two variants or a final pass. "
-        "Default response_type is **base64**; the server re-uploads to your S3 so image links always work."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "template_id": {
+            "subtext": {
                 "type": "string",
-                "description": "Orshot template ID from Workspaces / Template Playground. Omit to use ORSHOT_DEFAULT_TEMPLATE_ID env.",
+                "description": "Secondary text below the headline — smaller, supporting message.",
             },
-            "modifications": {
-                "type": "object",
-                "description": (
-                    "Dynamic field values for the template (Studio parameter names → strings or image URLs). "
-                    "Supports per-field style overrides via dot notation: `<key>.color`, `<key>.fontFamily`, "
-                    "`<key>.fontSize`, `<key>.backgroundColor`, `<key>.fontWeight`, `<key>.textAlign`, "
-                    "`<key>.letterSpacing`, `<key>.lineHeight`, `<key>.opacity`, `<key>.borderRadius` (image), "
-                    "`<key>.borderColor` (image). Use these to apply brand colour/font to any field."
-                ),
-                "additionalProperties": True,
-            },
-            "response_type": {
+            "cta": {
                 "type": "string",
-                "enum": ["url", "base64", "binary"],
-                "default": "base64",
-                "description": "How Orshot returns the asset; default base64 avoids broken third-party S3 presigns — server saves to your bucket.",
+                "description": "Call-to-action text — e.g. 'Shop Now', 'Learn More', 'Link in Bio'.",
             },
-            "response_format": {
+            "brand_color": {
                 "type": "string",
-                "enum": ["png", "jpg", "jpeg", "webp", "pdf"],
-                "default": "png",
+                "description": "Primary brand color as hex (e.g. '#4CD137'). Used as accent throughout the design. Get from get_owner_info.brand_primary_color.",
+            },
+            "style": {
+                "type": "string",
+                "description": "Optional style direction — e.g. 'minimalist', 'bold and vibrant', 'elegant', 'playful', 'corporate'.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "URL of a product photo to feature as the hero image. Get from get_product_images or list_products.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL — placed subtly in corner. Get from get_owner_info.default_logo_url.",
             },
             "platform": {
                 "type": "string",
-                "enum": ["instagram", "facebook", "tiktok", "youtube", "linkedin", "x", "general"],
-                "default": "general",
+                "enum": [
+                    "instagram_post", "instagram_story", "facebook_post",
+                    "tiktok", "youtube_thumb", "linkedin", "x_post",
+                    "general_square", "general_story", "general_landscape",
+                ],
+                "default": "instagram_post",
+                "description": "Target platform — controls aspect ratio and format.",
             },
-            "content_type": {
+            "quality": {
                 "type": "string",
-                "enum": ["ad", "post", "story", "carousel", "general"],
-                "default": "general",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+                "description": "pro = best quality (slower), fast = quick generation. Use pro by default for posts.",
             },
-            "format": {
+            "trend_context": {
                 "type": "string",
-                "enum": ["square", "story", "landscape", "portrait", "general"],
-                "default": "general",
-            },
-            "name": {
-                "type": "string",
-                "description": "Label for Design library + image caption (e.g. 'Spring drop — Option A').",
-            },
-            "presentation_label": {
-                "type": "string",
-                "description": "Short label echoed in the tool result for chat, e.g. 'Option A', 'Option B', 'Final'.",
+                "description": (
+                    "2-3 sentence summary of current design trends or high-performing ad styles "
+                    "researched via web_search BEFORE calling this tool. E.g. 'Bold typographic ads with "
+                    "minimal product shots are dominating AI tool promotions in 2025. Dark backgrounds "
+                    "with a single neon accent outperform light designs 3:1 in this category.' "
+                    "This context shapes the design to feel current and scroll-stopping."
+                ),
             },
         },
-        "required": ["modifications"],
     },
 )
-async def render_orshot_template(ctx: ToolContext, args: Dict[str, Any]):
-    import os as _os
+async def generate_social_post(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import generate_social_post as _gen
 
-    from orshot_service import render_studio_template
+    # Auto-fetch brand kit if not provided
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
 
-    explicit_tid = (args.get("template_id") or "").strip()
-    tid = explicit_tid or (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-    if not tid:
-        return {
-            "error": "No template_id: pass template_id in the tool call or set ORSHOT_DEFAULT_TEMPLATE_ID on the server.",
-        }
-    template_id_used = str(tid)
-
-    mods = args.get("modifications")
-    if not isinstance(mods, dict):
-        mods = {}
-
-    # ── Pre-render guard ─────────────────────────────────────────────────────
-    # Verify that user-stated requirements (recorded via note_design_requirement)
-    # are actually present in the modifications dict BEFORE we burn an Orshot
-    # credit. Runs against the original `mods` — pre-presigning — so substring
-    # matches against brand asset URLs are reliable. Best-effort: any failure
-    # in the guard itself never blocks the render.
-    original_mods = dict(mods)
-    try:
-        from .design_state import load_design_state
-
-        conv_id = ctx.user.get("_active_conversation_id")
-        if conv_id:
-            state = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            pending = set(state.get("pending_requirements") or [])
-            quotes = state.get("requirement_quotes") or {}
-            staged_url = state.get("staged_image_url") or ""
-            template_fields = state.get("locked_template_fields") or None
-            brand = await _load_brand_kit(ctx) if pending else {}
-            business_email = await _load_business_email(ctx)
-
-            unmet: List[Dict[str, str]] = []
-            if pending:
-                unmet.extend(_evaluate_design_requirements(
-                    pending, original_mods, brand, staged_url, template_fields,
-                ))
-            # Anti-fabrication scanner runs on every render, regardless of pending.
-            unmet.extend(_detect_fabricated_facts(
-                original_mods, quotes, business_email, template_fields,
-            ))
-            if unmet:
-                logger.info(
-                    "[render_orshot_template] blocked by guard (conv=%s, unmet=%s)",
-                    conv_id, [u["code"] for u in unmet],
-                )
-                return {
-                    "error": "render_blocked_by_requirements",
-                    "reason": "One or more recorded user requirements are not satisfied by the modifications, "
-                              "or the modifications contain fabricated facts (offers/URLs the user never stated). "
-                              "Fix each item below, then call render_orshot_template again.",
-                    "unmet": unmet,
-                    "pending_requirements": sorted(pending),
-                }
-    except Exception:
-        logger.exception("[render_orshot_template] pre-render guard skipped")
-
-    # Auto-presign any private S3 image URLs so Orshot's server can fetch them
-    mods = await _presign_modifications(mods)
-
-    response_type = args.get("response_type") or "base64"
-    response_format = args.get("response_format") or "png"
-    if response_format == "jpeg":
-        response_format = "jpg"
-
-    platform = args.get("platform", "general")
-    content_type = args.get("content_type", "general")
-    fmt = args.get("format", "general")
-    pres = (args.get("presentation_label") or "").strip()
-    name = (args.get("name") or pres or "Orshot graphic")[:200]
-
-    result = await render_studio_template(
-        tid,
-        mods,
-        response_type=response_type,
-        response_format=response_format,
+    result = await _gen(
+        headline=args.get("headline", ""),
+        subtext=args.get("subtext", ""),
+        cta=args.get("cta", ""),
+        brand_color=brand_color,
+        style=args.get("style", ""),
+        product_description="",
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "instagram_post"),
+        quality=args.get("quality", "pro"),
+        trend_context=args.get("trend_context", ""),
     )
+
     if result.get("error"):
-        # Only fall back to the env default when the caller did NOT explicitly pass a
-        # template_id. If they did, the user/AI explicitly chose this template — silently
-        # rendering with a different one would be a critical correctness bug (the design
-        # would not match the locked template). Surface the error so the AI can re-fetch
-        # fields with `get_orshot_template_fields` and retry with correct modifications.
-        default_tid = (_os.environ.get("ORSHOT_DEFAULT_TEMPLATE_ID") or "").strip()
-        if not explicit_tid and default_tid and default_tid != tid:
-            logger.warning("[render_orshot_template] template %s failed (%s), retrying with default %s", tid, result["error"], default_tid)
-            result = await render_studio_template(
-                default_tid,
-                mods,
-                response_type=response_type,
-                response_format=response_format,
-            )
-            if not result.get("error"):
-                template_id_used = default_tid
-        if result.get("error"):
-            return result
+        return {"error": result["error"]}
 
-    image_url = result.get("image_url")
+    image_url = result["image_url"]
+    platform = args.get("platform", "instagram_post")
+    name = (args.get("headline") or "Social Post")[:200]
 
-    # ── Logo compositor ──────────────────────────────────────────────────────
-    # When the user asked for their logo (`include_logo` in pending) and the
-    # rendered modifications don't already contain the logo URL, paste the
-    # brand logo onto the rendered image. This guarantees logo presence even
-    # on templates that have no dedicated logo field. Best-effort: any
-    # failure here falls back to the un-composited render.
-    if image_url:
-        try:
-            from .design_state import load_design_state
-
-            conv_id = ctx.user.get("_active_conversation_id")
-            if conv_id:
-                state = await load_design_state(ctx.db, conv_id, ctx.business_id)
-                pending = set(state.get("pending_requirements") or [])
-                if "include_logo" in pending:
-                    brand = await _load_brand_kit(ctx)
-                    logo = brand.get("default_logo_url") or ""
-                    mod_blob = " ".join(_norm(v) for v in original_mods.values())
-                    if logo and _norm(logo) not in mod_blob:
-                        composited = await _composite_logo_on_image(image_url, logo)
-                        if composited:
-                            logger.info(
-                                "[render_orshot_template] logo composited (conv=%s, tid=%s)",
-                                conv_id, template_id_used,
-                            )
-                            image_url = composited
-                            result["image_url"] = composited
-                            urls = result.get("image_urls")
-                            if isinstance(urls, list) and urls:
-                                urls[0] = composited
-        except Exception:
-            logger.exception("[render_orshot_template] logo compositing skipped")
-
-    if image_url:
-        try:
-            from saved_designs import insert_saved_design
-
-            await insert_saved_design(
-                ctx.db,
-                ctx.business_id,
-                name=name,
-                asset_kind="image",
-                file_url=image_url,
-                thumbnail_url=image_url,
-                source_tool="render_orshot_template",
-                conversation_id=ctx.user.get("_active_conversation_id"),
-                platform=platform,
-                content_type=content_type,
-                format=fmt,
-            )
-        except Exception:
-            logger.exception("[render_orshot_template] saved_designs insert skipped")
-
-        # Persist the locked template + last render so the next turn's prompt
-        # can show the AI exactly which template_id is in play (no silent swaps).
-        try:
-            from .design_state import update_design_state
-
-            explicit_name = (args.get("name") or "").strip() or (args.get("presentation_label") or "").strip()
-            await update_design_state(
-                ctx.db,
-                ctx.user.get("_active_conversation_id"),
-                ctx.business_id,
-                locked_template_id=str(template_id_used),
-                locked_template_name=explicit_name or None,
-                chosen_platform=(platform if platform and platform != "general" else None),
-                chosen_format=(fmt if fmt and fmt != "general" else None),
-                last_render_url=image_url,
-                # Persist the original (pre-presigning) modifications so
-                # verify_design_ready can audit logo / colour / copy presence
-                # against the stable URLs the AI actually passed.
-                last_render_modifications=original_mods,
-                flow_step="refining",
-            )
-        except Exception:
-            logger.exception("[render_orshot_template] design_state update skipped")
+    # Save to design library
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="generate_social_post",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+            platform=platform,
+            content_type="post",
+        )
+    except Exception:
+        logger.exception("[generate_social_post] saved_designs insert skipped")
 
     return {
         "success": True,
-        "template_id_used": template_id_used,
         "image_url": image_url,
-        "image_urls": result.get("image_urls"),
-        "presentation_label": pres or None,
         "markdown": f"![{name}]({image_url})" if image_url else "",
-        "note": "Carousel templates may return multiple URLs in image_urls.",
+        "platform": platform,
+    }
+
+
+@tool(
+    name="generate_ad_creative",
+    description=(
+        "Generate a high-converting ad creative using Gemini AI. Creates a scroll-stopping "
+        "ad image with headline, offer, CTA button, and brand colors. Optimized for Facebook/Instagram ads "
+        "but supports all platforms. If a product image is available, it becomes the hero. "
+        "Use this for paid ad creatives — conversion ads, awareness ads, promotional ads."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["headline"],
+        "properties": {
+            "headline": {
+                "type": "string",
+                "description": "Ad headline — bold, scroll-stopping, largest text. E.g. 'Summer Sale Is Here!'",
+            },
+            "offer": {
+                "type": "string",
+                "description": "Offer or value proposition — prominent, eye-catching. E.g. '50% OFF Everything', 'Buy 2 Get 1 Free'.",
+            },
+            "cta": {
+                "type": "string",
+                "description": "Call-to-action button text. E.g. 'Shop Now', 'Get Offer', 'Learn More'.",
+                "default": "Shop Now",
+            },
+            "urgency": {
+                "type": "string",
+                "description": "Urgency cue — small text near CTA. E.g. 'Limited time only', 'While stocks last', 'Ends Sunday'.",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Primary brand color as hex. Get from get_owner_info.brand_primary_color.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Product photo URL — becomes the hero of the ad. Get from get_product_images.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL. Get from get_owner_info.default_logo_url.",
+            },
+            "platform": {
+                "type": "string",
+                "enum": [
+                    "facebook_ad", "instagram_post", "instagram_story",
+                    "tiktok", "youtube_thumb", "linkedin", "x_post",
+                    "general_square", "general_story", "general_landscape",
+                ],
+                "default": "facebook_ad",
+                "description": "Target platform — controls aspect ratio.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+                "description": "pro = best quality, fast = quicker. Use pro for ads.",
+            },
+            "trend_context": {
+                "type": "string",
+                "description": (
+                    "2-3 sentence summary of current ad design trends researched via web_search "
+                    "BEFORE calling this tool. Include what visual styles, hooks, or formats are "
+                    "performing in this product niche right now. This is injected into the design "
+                    "prompt to produce a current, scroll-stopping result."
+                ),
+            },
+        },
+    },
+)
+async def generate_ad_creative(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import generate_ad_creative as _gen
+
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
+
+    result = await _gen(
+        headline=args.get("headline", ""),
+        offer=args.get("offer", ""),
+        cta=args.get("cta", "Shop Now"),
+        brand_color=brand_color,
+        product_description="",
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "facebook_ad"),
+        urgency=args.get("urgency", ""),
+        quality=args.get("quality", "pro"),
+        trend_context=args.get("trend_context", ""),
+    )
+
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    image_url = result["image_url"]
+    platform = args.get("platform", "facebook_ad")
+    name = (args.get("headline") or "Ad Creative")[:200]
+
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="generate_ad_creative",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+            platform=platform,
+            content_type="ad",
+        )
+    except Exception:
+        logger.exception("[generate_ad_creative] saved_designs insert skipped")
+
+    return {
+        "success": True,
+        "image_url": image_url,
+        "markdown": f"![{name}]({image_url})" if image_url else "",
+        "platform": platform,
+    }
+
+
+@tool(
+    name="generate_carousel_cover",
+    description=(
+        "Generate the cover slide (first slide) of a social media carousel post using Gemini AI. "
+        "Creates a bold hook slide with a swipe cue that makes viewers want to swipe through. "
+        "Sets the visual style (colors, typography, layout) for the full carousel."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["headline"],
+        "properties": {
+            "headline": {
+                "type": "string",
+                "description": "Carousel hook headline — bold, makes people want to swipe. E.g. '5 Ways to...', 'The Secret to...', 'Before & After'",
+            },
+            "subtext": {
+                "type": "string",
+                "description": "Supporting text on the cover slide.",
+            },
+            "slide_count": {
+                "type": "integer",
+                "default": 5,
+                "description": "Total number of slides in the carousel — shown as '1/N' on the cover.",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Primary brand color as hex. Get from get_owner_info.brand_primary_color.",
+            },
+            "topic": {
+                "type": "string",
+                "description": "What the carousel is about — helps the AI set the right visual tone.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Product photo URL to feature on the cover slide.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL.",
+            },
+            "platform": {
+                "type": "string",
+                "enum": [
+                    "instagram_post", "facebook_post", "linkedin",
+                    "general_square", "general_landscape",
+                ],
+                "default": "instagram_post",
+                "description": "Target platform — carousels are typically square.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+            },
+        },
+    },
+)
+async def generate_carousel_cover(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import generate_carousel_cover as _gen
+
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
+
+    result = await _gen(
+        headline=args.get("headline", ""),
+        subtext=args.get("subtext", ""),
+        slide_count=int(args.get("slide_count", 5)),
+        brand_color=brand_color,
+        topic=args.get("topic", ""),
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "instagram_post"),
+        quality=args.get("quality", "pro"),
+    )
+
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    image_url = result["image_url"]
+    platform = args.get("platform", "instagram_post")
+    name = (args.get("headline") or "Carousel")[:200]
+
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="generate_carousel_cover",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+            platform=platform,
+            content_type="carousel",
+        )
+    except Exception:
+        logger.exception("[generate_carousel_cover] saved_designs insert skipped")
+
+    return {
+        "success": True,
+        "image_url": image_url,
+        "markdown": f"![{name}]({image_url})" if image_url else "",
+        "platform": platform,
+    }
+
+
+@tool(
+    name="refine_design",
+    description=(
+        "Refine an existing AI-generated design based on user feedback. Uses the current design "
+        "as a reference and applies the requested changes while keeping what works. "
+        "Use this when the user wants to tweak a generated post/ad — change colors, adjust text, "
+        "try a different style, or fix something they don't like."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["original_image_url", "feedback"],
+        "properties": {
+            "original_image_url": {
+                "type": "string",
+                "description": "URL of the current design image to refine.",
+            },
+            "feedback": {
+                "type": "string",
+                "description": "What the user wants changed. E.g. 'Make the background darker', 'Change the headline to X', 'Make it more vibrant'.",
+            },
+            "headline": {
+                "type": "string",
+                "description": "Headline text to preserve/apply on the refined design.",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Brand color to maintain in the refined design.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Product photo URL — re-inject if the product was lost.",
+            },
+            "logo_url": {
+                "type": "string",
+                "description": "Brand logo URL.",
+            },
+            "platform": {
+                "type": "string",
+                "enum": [
+                    "instagram_post", "instagram_story", "facebook_post", "facebook_ad",
+                    "tiktok", "youtube_thumb", "linkedin", "x_post",
+                    "general_square", "general_story", "general_landscape",
+                ],
+                "default": "instagram_post",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "default": "pro",
+            },
+        },
+    },
+)
+async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
+    from gemini_design_service import regenerate_with_feedback
+
+    brand_color = args.get("brand_color", "")
+    logo_url = args.get("logo_url", "")
+    if not brand_color or not logo_url:
+        brand = await _load_brand_kit(ctx)
+        if not brand_color:
+            brand_color = brand.get("brand_primary_color", "")
+        if not logo_url:
+            logo_url = brand.get("default_logo_url", "")
+
+    result = await regenerate_with_feedback(
+        original_image_url=args.get("original_image_url", ""),
+        feedback=args.get("feedback", ""),
+        headline=args.get("headline", ""),
+        brand_color=brand_color,
+        product_image_url=args.get("product_image_url"),
+        logo_url=logo_url or None,
+        platform=args.get("platform", "instagram_post"),
+        quality=args.get("quality", "pro"),
+    )
+
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    image_url = result["image_url"]
+    name = "Refined design"
+
+    try:
+        from saved_designs import insert_saved_design
+        await insert_saved_design(
+            ctx.db, ctx.business_id,
+            name=name,
+            asset_kind="image",
+            file_url=image_url,
+            thumbnail_url=image_url,
+            source_tool="refine_design",
+            conversation_id=ctx.user.get("_active_conversation_id"),
+        )
+    except Exception:
+        logger.exception("[refine_design] saved_designs insert skipped")
+
+    return {
+        "success": True,
+        "image_url": image_url,
+        "markdown": f"![{name}]({image_url})" if image_url else "",
     }
 
 
@@ -3225,8 +3268,7 @@ def _compose_recreate_prompt(
     return (
         "You are recreating a marketing design. The FIRST image is the layout reference — "
         "reproduce its composition, proportions, and visual style EXACTLY. The SECOND image "
-        "(if present) is the real product to feature. The THIRD image (if present) is the "
-        "brand logo for context only.\n\n"
+        "(if present) is the real product to feature.\n\n"
         "STRICT RULES — read carefully, no exceptions:\n"
         "1. Reproduce the reference layout 100% as it is — same panels, same hierarchy, "
         "same shape and placement of headline, body text, image area, and call-to-action zone.\n"
@@ -3240,9 +3282,10 @@ def _compose_recreate_prompt(
         "5. Replace the reference's product imagery with the supplied product photo when "
         "present. Do not redraw or stylise the product — keep its real shape, colour, and "
         "branding intact.\n"
-        "6. Do not include any logo placeholder text like 'YOUR BRAND' or 'LOGO HERE' — the "
-        "real brand logo is composited onto the output afterwards, leave clear space in the "
-        "bottom-right corner for it.\n\n"
+        "6. Do NOT draw, invent, or place any logo, brand mark, icon, or watermark. "
+        "The real brand logo will be composited on top afterwards. "
+        "Leave a visually clean, uncluttered zone in the bottom-right corner "
+        "(roughly 15% of canvas width) — no text, no pattern, no dark imagery there.\n\n"
         "ALLOWED FACTS (the only text/data you may render):\n"
         f"{allowed_block}\n\n"
         + (f"ADDITIONAL DIRECTION:\n{extra_notes}\n\n" if extra_notes else "")
@@ -3476,7 +3519,7 @@ async def recreate_design_with_ai(ctx: ToolContext, args: Dict[str, Any]):
         reference_image_url=reference_url,
         prompt=prompt,
         product_image_url=product_image_url,
-        logo_url=fact_pack.get("default_logo_url") or None,
+        logo_url=None,  # don't send — Gemini redraws logos; PIL composites the real one below
         format=fmt,
         quality=quality,
     )
@@ -3487,7 +3530,7 @@ async def recreate_design_with_ai(ctx: ToolContext, args: Dict[str, Any]):
     if not image_url:
         return {"error": "Renderer returned no image URL."}
 
-    # Composite the real brand logo on top so it's pixel-identical to the file.
+    # PIL-composite the real pixel-perfect brand logo onto the finished design.
     logo = fact_pack.get("default_logo_url") or ""
     if logo:
         try:
@@ -3606,15 +3649,14 @@ async def _composite_logo_on_image(
     logo_url: str,
     *,
     position: str = "bottom-right",
-    width_pct: float = 0.10,
+    width_pct: float = 0.13,
     margin_pct: float = 0.04,
 ) -> Optional[str]:
     """Paste the brand logo onto a rendered design and upload the result.
 
-    Used as a deterministic fallback when the locked Orshot template has no
-    image field for the logo (or the AI didn't place it). Both inputs are
-    fetched over HTTP; the composite is re-uploaded to this deployment's S3
-    bucket via ``S3Handler.upload_file`` and the new presigned URL is returned.
+    Adds a smart background pill behind the logo so it stays readable on any
+    background colour. Both inputs are fetched over HTTP; the composite is
+    re-uploaded to S3 via ``S3Handler.upload_file``.
 
     Returns ``None`` on any failure so the caller can fall back to the
     un-composited render — this helper must never break the render path.
@@ -3626,7 +3668,7 @@ async def _composite_logo_on_image(
         import base64 as _b64
         import io as _io
         import httpx as _httpx
-        from PIL import Image as _Image
+        from PIL import Image as _Image, ImageDraw as _ImageDraw
         from image_handler import S3Handler
 
         async with _httpx.AsyncClient(timeout=30.0) as client:
@@ -3647,19 +3689,54 @@ async def _composite_logo_on_image(
             logo = logo.resize((target_w, target_h), _Image.LANCZOS)
 
             margin = max(8, int(base.width * margin_pct))
-            if position == "top-left":
-                xy = (margin, margin)
-            elif position == "top-right":
-                xy = (base.width - logo.width - margin, margin)
-            elif position == "bottom-left":
-                xy = (margin, base.height - logo.height - margin)
-            else:  # bottom-right (default)
-                xy = (
-                    base.width - logo.width - margin,
-                    base.height - logo.height - margin,
-                )
+            pad = max(6, int(base.width * 0.015))  # inner padding around logo
 
-            base.alpha_composite(logo, dest=xy)
+            if position == "top-left":
+                lx, ly = margin + pad, margin + pad
+            elif position == "top-right":
+                lx = base.width - logo.width - margin - pad
+                ly = margin + pad
+            elif position == "bottom-left":
+                lx = margin + pad
+                ly = base.height - logo.height - margin - pad
+            else:  # bottom-right (default)
+                lx = base.width - logo.width - margin - pad
+                ly = base.height - logo.height - margin - pad
+
+            # Sample the average brightness of the region where the logo will sit.
+            sample_box = (
+                max(0, lx - pad), max(0, ly - pad),
+                min(base.width,  lx + logo.width  + pad),
+                min(base.height, ly + logo.height + pad),
+            )
+            region = base.crop(sample_box).convert("RGB")
+            pixels = list(region.getdata())
+            avg_brightness = sum(0.299 * r + 0.587 * g + 0.114 * b for r, g, b in pixels) / max(1, len(pixels))
+
+            # Choose a contrasting pill background (semi-transparent)
+            if avg_brightness > 140:
+                pill_color = (0, 0, 0, 130)       # dark pill on light bg
+            else:
+                pill_color = (255, 255, 255, 130)  # light pill on dark bg
+
+            # Draw the rounded-rectangle background pill
+            pill_w = logo.width + pad * 2
+            pill_h = logo.height + pad * 2
+            pill_x = lx - pad
+            pill_y = ly - pad
+            radius = max(4, pad)
+
+            pill = _Image.new("RGBA", base.size, (0, 0, 0, 0))
+            draw = _ImageDraw.Draw(pill)
+            draw.rounded_rectangle(
+                [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
+                radius=radius,
+                fill=pill_color,
+            )
+            base = _Image.alpha_composite(base, pill)
+
+            # Composite logo on top of the pill
+            base.alpha_composite(logo, dest=(lx, ly))
 
             buf = _io.BytesIO()
             base.convert("RGB").save(buf, format="PNG", optimize=True)
@@ -3668,7 +3745,7 @@ async def _composite_logo_on_image(
         composed = await _asyncio.get_event_loop().run_in_executor(None, _do_composite)
         b64 = _b64.b64encode(composed).decode("ascii")
         data_url = f"data:image/png;base64,{b64}"
-        fn = f"orshot-logo-{uuid.uuid4()}.png"
+        fn = f"logo-composite-{uuid.uuid4()}.png"
         return await S3Handler.upload_file(data_url, fn)
     except Exception:
         logger.exception(
@@ -3939,196 +4016,16 @@ def _detect_fabricated_facts(
 
 
 @tool(
-    name="note_design_requirement",
-    description=(
-        "Record a design requirement the user has explicitly stated this turn so the "
-        "server can verify it before any design is presented as final. Call this "
-        "**immediately** when the user says things like 'include my logo', 'use my "
-        "brand colours', 'design this product photo', 'add a CTA button', "
-        "'show the price', 'mention 20% off', 'add my website'. The pre-render guard "
-        "and `verify_design_ready` will block / flag any final design that doesn't "
-        "satisfy these. Allowed `requirement` values: `include_logo`, `use_brand_color`, "
-        "`use_brand_font`, `stage_product`, `include_cta`, `include_headline`, "
-        "`include_price`, `include_offer`, `include_website`. "
-        "**For `include_offer` and `include_website` you MUST pass `user_quote` "
-        "containing the user's verbatim wording** (e.g. `user_quote='20% off until "
-        "Friday'` or `user_quote='zilo.shop'`) — the anti-fabrication scanner uses it "
-        "to verify the modification value matches what the user actually said."
-    ),
+    name="_presign_s3_url",
+    description="Return a publicly accessible URL for a private S3 object.",
     parameters={
         "type": "object",
         "properties": {
-            "requirement": {
-                "type": "string",
-                "enum": sorted(_ALLOWED_DESIGN_REQUIREMENTS),
-                "description": "The requirement code to record.",
-            },
-            "user_quote": {
-                "type": "string",
-                "description": (
-                    "The user's verbatim wording for this requirement. Required for "
-                    "`include_offer` and `include_website` (the scanner verifies the "
-                    "modification value contains this quote). Optional but recommended "
-                    "for other requirements as an audit trail."
-                ),
-            },
+            "url": {"type": "string", "description": "The S3 URL to presign"}
         },
-        "required": ["requirement"],
+        "required": ["url"],
     },
-    destructive=False,
 )
-async def note_design_requirement(ctx: ToolContext, args: Dict[str, Any]):
-    req = (args.get("requirement") or "").strip()
-    if req not in _ALLOWED_DESIGN_REQUIREMENTS:
-        return {
-            "error": "unknown_requirement",
-            "allowed": sorted(_ALLOWED_DESIGN_REQUIREMENTS),
-        }
-
-    quote = (args.get("user_quote") or "").strip()[:200]
-    if req in _REQUIREMENTS_NEEDING_QUOTE and not quote:
-        return {
-            "error": "user_quote_required",
-            "fix": (
-                f"`{req}` requires `user_quote` containing the user's verbatim wording "
-                "so the anti-fabrication scanner can verify the modification value "
-                "matches what they actually said. Re-call this tool with `user_quote` set."
-            ),
-        }
-
-    conv_id = ctx.user.get("_active_conversation_id")
-    if not conv_id:
-        return {"error": "No active conversation_id — requirement not persisted."}
-
-    from .design_state import update_design_state
-
-    update_kwargs: Dict[str, Any] = {"add_pending_requirements": [req]}
-    if quote:
-        # Persist as a nested field (`requirement_quotes.<req>`) so each requirement
-        # keeps its own verbatim audit trail. update_design_state forwards arbitrary
-        # `**fields` kwargs into a Mongo `$set`, and dotted keys are valid there.
-        update_kwargs[f"requirement_quotes.{req}"] = quote
-
-    try:
-        await update_design_state(
-            ctx.db,
-            conv_id,
-            ctx.business_id,
-            **update_kwargs,
-        )
-    except Exception:
-        logger.exception("[note_design_requirement] persist failed")
-        return {"error": "persist_failed"}
-
-    return {
-        "success": True,
-        "recorded": req,
-        "user_quote": quote,
-        "note": "This requirement will be verified by the render-time guard and `verify_design_ready`.",
-    }
-
-
-@tool(
-    name="verify_design_ready",
-    description=(
-        "Run the deterministic pre-presentation check on the latest render. Returns "
-        "`ready=true` when every recorded requirement (logo, brand colour, staging, "
-        "headline, CTA, price) is satisfied by the most recent `render_orshot_template` "
-        "call's `modifications`. Returns `ready=false` with `unmet` (list of "
-        "`{code, fix}`) when something is missing — follow each `fix` exactly, "
-        "re-render, then call this tool again. **Always call this before telling "
-        "the user a design is final, ready, or done.**"
-    ),
-    parameters={"type": "object", "properties": {}},
-    destructive=False,
-)
-async def verify_design_ready(ctx: ToolContext, args: Dict[str, Any]):
-    conv_id = ctx.user.get("_active_conversation_id")
-    if not conv_id:
-        return {"ready": False, "error": "No active conversation_id."}
-
-    from .design_state import load_design_state, update_design_state
-
-    state = await load_design_state(ctx.db, conv_id, ctx.business_id)
-    pending = set(state.get("pending_requirements") or [])
-    quotes = state.get("requirement_quotes") or {}
-    last_mods = state.get("last_render_modifications") or {}
-    last_render_url = state.get("last_render_url") or ""
-    staged_url = state.get("staged_image_url") or ""
-    template_fields = state.get("locked_template_fields") or None
-
-    if not last_render_url:
-        return {
-            "ready": False,
-            "unmet": [{
-                "code": "no_render",
-                "fix": "No design has been rendered yet for this conversation. Walk through "
-                       "Phase 2 (generate_design_background) and Phase 3 (render_orshot_template) first.",
-            }],
-            "checked": {"pending_requirements": sorted(pending)},
-        }
-
-    business_email = await _load_business_email(ctx)
-    brand = await _load_brand_kit(ctx) if pending else {}
-
-    unmet: List[Dict[str, str]] = []
-    if pending:
-        unmet.extend(_evaluate_design_requirements(
-            pending, last_mods, brand, staged_url, template_fields,
-        ))
-    # Anti-fabrication scanner runs unconditionally so we never finalise a design
-    # with an invented discount or URL — even when no requirements were recorded.
-    unmet.extend(_detect_fabricated_facts(
-        last_mods, quotes, business_email, template_fields,
-    ))
-
-    async def _mark_done() -> None:
-        try:
-            await update_design_state(
-                ctx.db, conv_id, ctx.business_id, flow_step="done"
-            )
-        except Exception:
-            logger.exception("[verify_design_ready] flow_step update skipped")
-
-    if not pending and not unmet:
-        await _mark_done()
-        return {
-            "ready": True,
-            "unmet": [],
-            "checked": {
-                "pending_requirements": [],
-                "has_last_render": True,
-                "has_staged_image": bool(staged_url),
-            },
-            "note": "No explicit requirements were recorded for this conversation. "
-                    "If the user mentioned logo / brand colour / specific copy, call "
-                    "`note_design_requirement` first, then verify again.",
-        }
-
-    is_ready = len(unmet) == 0
-    if is_ready:
-        await _mark_done()
-
-    return {
-        "ready": is_ready,
-        "unmet": unmet,
-        "checked": {
-            "pending_requirements": sorted(pending),
-            "modification_keys": sorted(last_mods.keys()),
-            "has_logo_in_brand_kit": bool(brand.get("default_logo_url")),
-            "has_brand_color":       bool(brand.get("brand_primary_color")),
-            "has_brand_font":        bool(brand.get("brand_font")),
-            "has_staged_image":      bool(staged_url),
-            "has_image_field_in_template": bool(_image_fields(template_fields)),
-            "last_render_url":       last_render_url,
-        },
-    }
-
-
-
-
-
-
 async def _presign_s3_url(url: str) -> str:
     """Return a publicly accessible URL for a private S3 object.
 
@@ -4151,7 +4048,7 @@ async def _presign_s3_url(url: str) -> str:
         if not bucket:
             bucket = (_os.environ.get("AWS_BUCKET_NAME") or "").strip()
 
-        # Prefer backend proxy — Orshot's servers can call our own endpoint
+        # Prefer backend proxy — external services can call our own endpoint
         backend_url = (
             _os.environ.get("BACKEND_PUBLIC_URL")
             or _os.environ.get("PUBLIC_BASE_URL")
@@ -4159,7 +4056,7 @@ async def _presign_s3_url(url: str) -> str:
         ).rstrip("/")
         if backend_url and key:
             proxy = f"{backend_url}/api/images/s3/{key}"
-            logger.debug("[render_orshot] Using proxy URL for %s → %s", key[:60], proxy[:80])
+            logger.debug("[_make_accessible_url] Using proxy URL for %s → %s", key[:60], proxy[:80])
             return proxy
 
         # Fallback: presign directly against S3
@@ -4170,7 +4067,7 @@ async def _presign_s3_url(url: str) -> str:
         )
         return presigned
     except Exception as _e:
-        logger.warning("[render_orshot] Could not build accessible URL for %s: %s", url[:80], _e)
+        logger.warning("[_make_accessible_url] Could not build accessible URL for %s: %s", url[:80], _e)
         return url
 
 
@@ -4195,9 +4092,9 @@ async def _presign_modifications(mods: dict) -> dict:
         "lighting and environment. THE PRODUCT IS NEVER ALTERED — not the shape, color, label, or texture. "
         "Only the background and scene around it are created. "
         "(B) no product_image_url → Gemini generates a pure lifestyle/concept scene from scratch. "
-        "Pass format to match the Orshot template you chose (square / story / landscape / portrait). "
-        "The returned background_url is the enhanced product photo — place it into the Orshot template's "
-        "image field via render_orshot_template to produce the final branded graphic."
+        "Pass format to match the platform canvas you chose (square / story / landscape / portrait). "
+        "The returned background_url is the enhanced product photo — pass it as product_image_url "
+        "to generate_ad_creative or generate_social_post to produce the final branded graphic."
     ),
     parameters={
         "type": "object",
@@ -4327,7 +4224,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
                 "format": fmt,
                 "style": style,
                 "markdown": f"![Edited product background]({bg_url})",
-                "next_step": "Call list_orshot_templates, pick the best template, call get_orshot_template_fields, then render_orshot_template placing this background_url into the template's image field.",
+                "next_step": "Pass this background_url as product_image_url to generate_ad_creative or generate_social_post to create the final branded design.",
             }
         # Fallback to raw product image if editing fails
         logger.warning("[generate_design_background] Gemini edit failed (%s), using raw product image", result.get("error"))
@@ -4339,7 +4236,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
             "format": fmt,
             "style": style,
             "markdown": f"![Product background]({product_image_url})",
-            "next_step": "Call list_orshot_templates, pick the best template, call get_orshot_template_fields, then render_orshot_template placing this background_url into the template's image field.",
+            "next_step": "Pass this background_url as product_image_url to generate_ad_creative or generate_social_post to create the final branded design.",
         }
 
     # ── Route B: generate a scene from scratch ────────────────────────────────
@@ -4367,7 +4264,7 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
         "format": fmt,
         "style": style,
         "markdown": f"![AI Background]({bg_url})",
-        "next_step": "Call list_orshot_templates, pick the best template, call get_orshot_template_fields, then render_orshot_template placing this background_url into the template's image field.",
+        "next_step": "Pass this background_url as product_image_url to generate_ad_creative or generate_social_post to create the final branded design.",
     }
 
 
@@ -4719,6 +4616,200 @@ async def list_meta_ads_campaign_drafts(ctx: ToolContext, args: Dict[str, Any]):
             for r in rows
         ],
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# META ADS — LIVE CAMPAIGN MANAGEMENT (Marketing API)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@tool(
+    name="list_meta_campaigns",
+    description=(
+        "List live Meta (Facebook/Instagram) ad campaigns in the connected ad account. "
+        "Returns id, name, status, objective, daily_budget, start/stop times. "
+        "Use status_filter=ACTIVE to see only running campaigns, PAUSED for paused ones, ALL for everything."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "status_filter": {
+                "type": "string",
+                "description": "ACTIVE | PAUSED | ARCHIVED | DELETED | ALL (default ALL)",
+            },
+            "limit": {"type": "integer", "description": "Max campaigns to return (default 50)"},
+        },
+    },
+)
+async def list_meta_campaigns(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import list_campaigns, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    campaigns = await list_campaigns(
+        status_filter=args.get("status_filter"),
+        limit=min(int(args.get("limit") or 50), 100),
+    )
+    return {"count": len(campaigns), "campaigns": campaigns}
+
+
+@tool(
+    name="get_meta_campaign_performance",
+    description=(
+        "Get real engagement and spend metrics for Meta ad campaigns from the Marketing API. "
+        "Returns spend, impressions, clicks, CTR, CPC, CPM, reach, and ROAS for each campaign. "
+        "Leave campaign_id empty to get performance across ALL campaigns in the account. "
+        "Use days=7 for last week, days=30 for last month."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "campaign_id": {
+                "type": "string",
+                "description": "Specific campaign ID to fetch. Leave empty for all campaigns.",
+            },
+            "days": {
+                "type": "integer",
+                "description": "Lookback window in days: 1, 3, 7, 14, 30, or 90. Default 7.",
+            },
+        },
+    },
+)
+async def get_meta_campaign_performance(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import get_campaign_insights, get_account_insights, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    days = int(args.get("days") or 7)
+    campaign_id = (args.get("campaign_id") or "").strip()
+    if campaign_id:
+        result = await get_campaign_insights(campaign_id, days=days)
+        if not result:
+            return {"error": f"No insights found for campaign {campaign_id} in the last {days} days."}
+        return result
+    else:
+        rows = await get_account_insights(days=days)
+        total_spend = sum(r["spend"] for r in rows)
+        total_clicks = sum(r["clicks"] for r in rows)
+        total_impressions = sum(r["impressions"] for r in rows)
+        avg_roas = round(
+            sum(r["roas"] * r["spend"] for r in rows) / total_spend, 2
+        ) if total_spend > 0 else 0.0
+        rows_sorted = sorted(rows, key=lambda x: x["spend"], reverse=True)
+        return {
+            "period_days": days,
+            "campaign_count": len(rows),
+            "totals": {
+                "spend": round(total_spend, 2),
+                "clicks": total_clicks,
+                "impressions": total_impressions,
+                "avg_roas": avg_roas,
+            },
+            "campaigns": rows_sorted,
+        }
+
+
+@tool(
+    name="update_meta_campaign_status",
+    description=(
+        "Pause, reactivate, or delete a Meta (Facebook/Instagram) ad campaign via the Marketing API. "
+        "Use status=PAUSED to stop a campaign that is underperforming or overspending. "
+        "Use status=ACTIVE to re-enable a paused campaign. "
+        "Use status=DELETED to permanently remove it (irreversible). "
+        "Always confirm the campaign name and reason before calling this. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "campaign_id": {"type": "string", "description": "The Meta campaign ID to update"},
+            "status": {
+                "type": "string",
+                "description": "New status: ACTIVE | PAUSED | DELETED",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief reason for the status change (for audit log)",
+            },
+        },
+        "required": ["campaign_id", "status"],
+    },
+    destructive=True,
+)
+async def update_meta_campaign_status(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import update_campaign_status, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    campaign_id = (args.get("campaign_id") or "").strip()
+    status = (args.get("status") or "").strip()
+    if not campaign_id or not status:
+        return {"error": "campaign_id and status are required"}
+
+    result = await update_campaign_status(campaign_id, status)
+
+    if result.get("success"):
+        await ctx.db.meta_ads_campaign_drafts.update_one(
+            {"user_id": ctx.business_id, "meta_campaign_id": campaign_id},
+            {"$set": {"status": status.lower(), "updated_at": datetime.utcnow()}},
+        )
+        logger.info(
+            "[meta_ads] Campaign %s set to %s by agent. Reason: %s",
+            campaign_id, status, args.get("reason", "not provided"),
+        )
+    return result
+
+
+@tool(
+    name="update_meta_campaign_budget",
+    description=(
+        "Update the daily budget of a live Meta (Facebook/Instagram) ad campaign. "
+        "Provide new_daily_budget as a dollar amount (e.g. 25.00 means $25/day). "
+        "Use this to scale up a well-performing campaign or reduce spend on a costly one. "
+        "Always state the reason and current performance before adjusting."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "campaign_id": {"type": "string", "description": "The Meta campaign ID to update"},
+            "new_daily_budget": {
+                "type": "number",
+                "description": "New daily budget in dollars (e.g. 25.00 = $25/day)",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief reason for the budget change (for audit log)",
+            },
+        },
+        "required": ["campaign_id", "new_daily_budget"],
+    },
+    destructive=True,
+)
+async def update_meta_campaign_budget(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import update_campaign_budget, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    campaign_id = (args.get("campaign_id") or "").strip()
+    dollars = float(args.get("new_daily_budget") or 0)
+    if not campaign_id or dollars <= 0:
+        return {"error": "campaign_id and a positive new_daily_budget (dollars) are required"}
+
+    cents = int(dollars * 100)
+    result = await update_campaign_budget(campaign_id, cents)
+    if result.get("success"):
+        logger.info(
+            "[meta_ads] Campaign %s budget set to $%.2f by agent. Reason: %s",
+            campaign_id, dollars, args.get("reason", "not provided"),
+        )
+    return result
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5962,3 +6053,1295 @@ async def notion_query_database(ctx: ToolContext, args: Dict[str, Any]):
                 row[prop_name] = str(val)[:100] if val else None
         rows.append(row)
     return {"database_id": db_id, "rows": rows, "total": len(rows)}
+
+
+# ── Shotstack Video Generation ─────────────────────────────────────────────────
+# Default base URLs — overridden by SHOTSTACK_ENV if set to a full URL.
+_SHOTSTACK_PROD_BASE = "https://api.shotstack.io/edit/v1"
+_SHOTSTACK_STAGE_BASE = "https://api.shotstack.io/edit/stage"
+
+
+def _shotstack_headers() -> dict:
+    import os
+    key = os.getenv("SHOTSTACK_API_KEY", "")
+    if not key:
+        raise RuntimeError("SHOTSTACK_API_KEY is not configured")
+    return {"x-api-key": key, "Content-Type": "application/json"}
+
+
+def _shotstack_render_url() -> str:
+    """Return the full POST render endpoint URL.
+
+    Handles three formats for SHOTSTACK_ENV:
+      - Full render URL  : https://api.shotstack.io/edit/stage/render  (what the user set)
+      - Base URL         : https://api.shotstack.io/edit/stage  -> appends /render
+      - Short label      : 'stage' or 'production'
+    """
+    import os
+    val = os.getenv("SHOTSTACK_ENV", "stage").strip()
+    if val.startswith("http"):
+        if val.endswith("/render"):
+            return val  # already the full render endpoint
+        return val.rstrip("/") + "/render"
+    if val == "production":
+        return _SHOTSTACK_PROD_BASE + "/render"
+    return _SHOTSTACK_STAGE_BASE + "/render"
+
+
+def _shotstack_status_url(render_id: str) -> str:
+    """Return the GET render status endpoint URL for a given render_id."""
+    import os
+    val = os.getenv("SHOTSTACK_ENV", "stage").strip()
+    if val.startswith("http"):
+        base = val.rstrip("/").split("/render")[0]
+        return f"{base}/render/{render_id}"
+    if val == "production":
+        return f"{_SHOTSTACK_PROD_BASE}/render/{render_id}"
+    return f"{_SHOTSTACK_STAGE_BASE}/render/{render_id}"
+
+
+@tool(
+    name="create_video",
+    description=(
+        "Create a short promotional video using Shotstack. "
+        "Assembles a video from a title, subtitle, background color or image URL, "
+        "optional product image URL, and a voiceover or background music track. "
+        "Returns a render_id — use get_video_status to poll until ready, then share the URL. "
+        "Best for: product promos, event announcements, sale countdowns, social media reels."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Main headline text shown on the video (e.g. 'Summer Sale — 30% Off')",
+            },
+            "subtitle": {
+                "type": "string",
+                "description": "Supporting text shown below the title (e.g. 'Shop now at zilocrm.com')",
+            },
+            "background_color": {
+                "type": "string",
+                "description": "Hex background color when no background image is used (e.g. '#1a1a2e'). Defaults to #000000.",
+            },
+            "background_image_url": {
+                "type": "string",
+                "description": "Optional URL of a full-bleed background image or product image to use as the video background.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Optional URL of a product image to overlay in the center of the video.",
+            },
+            "duration": {
+                "type": "number",
+                "description": "Video duration in seconds (5–30). Defaults to 10.",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ["square", "portrait", "landscape"],
+                "description": "Output format. square=1080x1080 (Instagram), portrait=1080x1920 (Reels/TikTok), landscape=1920x1080 (YouTube/Facebook). Defaults to square.",
+            },
+            "music_url": {
+                "type": "string",
+                "description": "Optional URL of a background music/audio track (.mp3). Leave empty for silent video.",
+            },
+            "title_color": {
+                "type": "string",
+                "description": "Hex color for the title text. Defaults to #ffffff.",
+            },
+            "voiceover_text": {
+                "type": "string",
+                "description": "Optional spoken voiceover script read aloud over the video using text-to-speech. E.g. 'Shop our summer sale — 30 percent off all items this weekend only.' Leave empty for no voiceover.",
+            },
+            "voiceover_voice": {
+                "type": "string",
+                "enum": ["male", "female"],
+                "description": "Voice gender for TTS voiceover. Defaults to female.",
+            },
+        },
+        "required": ["title"],
+    },
+)
+async def create_video(ctx: ToolContext, args: Dict[str, Any]):
+    import os
+    import httpx
+
+    title = (args.get("title") or "").strip()
+    subtitle = (args.get("subtitle") or "").strip()
+    bg_color = (args.get("background_color") or "#000000").strip()
+    bg_image = (args.get("background_image_url") or "").strip()
+    product_image = (args.get("product_image_url") or "").strip()
+    duration = float(args.get("duration") or 10)
+    duration = max(5.0, min(30.0, duration))
+    aspect = (args.get("aspect_ratio") or "square").lower()
+    music_url = (args.get("music_url") or "").strip()
+    title_color = (args.get("title_color") or "#ffffff").strip()
+    voiceover_text = (args.get("voiceover_text") or "").strip()
+    voiceover_voice = (args.get("voiceover_voice") or "female").strip().lower()
+
+    # Resolve dimensions
+    size_map = {
+        "square": {"width": 1080, "height": 1080},
+        "portrait": {"width": 1080, "height": 1920},
+        "landscape": {"width": 1920, "height": 1080},
+    }
+    size = size_map.get(aspect, size_map["square"])
+
+    # Build clips list
+    clips = []
+
+    # Background layer (color fill or image)
+    if bg_image:
+        clips.append({
+            "asset": {"type": "image", "src": bg_image},
+            "start": 0, "length": duration,
+            "fit": "cover", "scale": 1.0,
+            "position": "center",
+        })
+    else:
+        clips.append({
+            "asset": {"type": "html",
+                       "html": f"<div style='width:{size['width']}px;height:{size['height']}px;background:{bg_color}'></div>",
+                       "width": size["width"], "height": size["height"]},
+            "start": 0, "length": duration,
+            "position": "center",
+        })
+
+    # Optional product image overlay
+    if product_image:
+        clips.append({
+            "asset": {"type": "image", "src": product_image},
+            "start": 0.5, "length": duration - 1,
+            "fit": "contain", "scale": 0.55,
+            "position": "center",
+            "opacity": 0.95,
+        })
+
+    # Title text
+    clips.append({
+        "asset": {
+            "type": "title",
+            "text": title,
+            "style": "minimal",
+            "color": title_color,
+            "size": "large",
+        },
+        "start": 0.5,
+        "length": duration - 0.5,
+        "position": "center",
+        "transition": {"in": "fade", "out": "fade"},
+    })
+
+    # Subtitle text
+    if subtitle:
+        clips.append({
+            "asset": {
+                "type": "title",
+                "text": subtitle,
+                "style": "minimal",
+                "color": "#dddddd",
+                "size": "small",
+            },
+            "start": 1.5,
+            "length": duration - 1.5,
+            "position": "bottom",
+            "offset": {"y": 0.1},
+            "transition": {"in": "fade"},
+        })
+
+    track = {"clips": clips}
+
+    # Voiceover TTS track — only supported in Shotstack v1 (production), not stage/sandbox
+    import os as _os
+    _env_val = _os.getenv("SHOTSTACK_ENV", "stage").strip()
+    _is_production = _env_val == "production" or (
+        _env_val.startswith("http") and "/v1/" in _env_val
+    )
+    tracks = [track]
+    if voiceover_text and _is_production:
+        # Shotstack text-to-speech asset — voice IDs: Brian (male), Joanna (female)
+        tts_voice = "Brian" if voiceover_voice == "male" else "Joanna"
+        tts_clip: Dict[str, Any] = {
+            "asset": {
+                "type": "text-to-speech",
+                "text": voiceover_text[:300],
+                "voice": tts_voice,
+            },
+            "start": 0.3,
+            "length": "auto",
+        }
+        tracks.append({"clips": [tts_clip]})
+
+    timeline: Dict[str, Any] = {"tracks": tracks}
+
+    # Background music (lower volume when voiceover is present)
+    if music_url:
+        timeline["soundtrack"] = {
+            "src": music_url,
+            "effect": "fadeInFadeOut",
+            "volume": 0.25 if voiceover_text else 0.6,
+        }
+
+    payload = {
+        "timeline": timeline,
+        "output": {
+            "format": "mp4",
+            "resolution": "hd",
+            "size": size,
+            "fps": 25,
+        },
+    }
+
+    try:
+        headers = _shotstack_headers()
+        render_url = _shotstack_render_url()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(render_url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Video render request failed: {e}"}
+
+    render_id = (data.get("response") or {}).get("id") or data.get("id")
+    if not render_id:
+        return {"error": "Shotstack did not return a render ID", "raw": str(data)[:300]}
+
+    # Persist render record in DB for tracking
+    try:
+        await ctx.db.video_renders.insert_one({
+            "_id": render_id,
+            "business_id": ctx.business_id,
+            "title": title,
+            "aspect_ratio": aspect,
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+        })
+    except Exception:
+        pass
+
+    return {
+        "status": "queued",
+        "render_id": render_id,
+        "message": f"Video '{title}' is rendering. Use get_video_status('{render_id}') to check when it's ready.",
+        "estimated_wait": "15–45 seconds",
+        "aspect_ratio": aspect,
+        "dimensions": f"{size['width']}x{size['height']}",
+    }
+
+
+@tool(
+    name="get_video_status",
+    description=(
+        "Check the rendering status of a Shotstack video by its render_id. "
+        "Returns status (queued / rendering / done / failed) and the video URL when done. "
+        "Poll every 5–10 seconds until status is 'done' or 'failed'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "render_id": {
+                "type": "string",
+                "description": "The render ID returned by create_video.",
+            },
+        },
+        "required": ["render_id"],
+    },
+)
+async def get_video_status(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+
+    render_id = (args.get("render_id") or "").strip()
+    if not render_id:
+        return {"error": "render_id is required"}
+
+    try:
+        headers = _shotstack_headers()
+        status_url = _shotstack_status_url(render_id)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(status_url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Status check failed: {e}"}
+
+    r = data.get("response") or data
+    status = (r.get("status") or "unknown").lower()
+    url = r.get("url") or ""
+
+    # Update DB record
+    try:
+        update: Dict[str, Any] = {"status": status}
+        if url:
+            update["url"] = url
+        await ctx.db.video_renders.update_one(
+            {"_id": render_id},
+            {"$set": update},
+        )
+    except Exception:
+        pass
+
+    result: Dict[str, Any] = {"render_id": render_id, "status": status}
+    if status == "done" and url:
+        result["url"] = url
+        result["message"] = f"Your video is ready! [Watch / Download]({url})"
+    elif status == "failed":
+        result["message"] = "Render failed. Try create_video again with slightly different settings."
+        result["error_detail"] = r.get("error") or ""
+    else:
+        result["message"] = f"Still rendering ({status}). Check again in a few seconds."
+
+    return result
+
+
+@tool(
+    name="list_videos",
+    description=(
+        "List all videos previously created for this business, with their status and URLs. "
+        "Use this to show the owner their video history or find a specific render."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max number of videos to return (default 10, max 30).",
+            },
+        },
+        "required": [],
+    },
+)
+async def list_videos(ctx: ToolContext, args: Dict[str, Any]):
+    limit = min(int(args.get("limit") or 10), 30)
+    try:
+        rows = await ctx.db.video_renders.find(
+            {"business_id": ctx.business_id}
+        ).sort("created_at", -1).to_list(limit)
+    except Exception as e:
+        return {"error": f"Could not fetch video history: {e}"}
+
+    videos = []
+    for r in rows:
+        videos.append({
+            "render_id": str(r["_id"]),
+            "title": r.get("title", ""),
+            "status": r.get("status", "unknown"),
+            "aspect_ratio": r.get("aspect_ratio", ""),
+            "url": r.get("url", ""),
+            "created_at": r.get("created_at", "").isoformat() if hasattr(r.get("created_at", ""), "isoformat") else str(r.get("created_at", "")),
+        })
+
+    return {"videos": videos, "total": len(videos)}
+
+
+# ── Kling AI Video Generation ───────────────────────────────────────────────
+_KLING_API_BASE = "https://api.kie.ai/api/v1"
+
+
+def _kling_headers() -> dict:
+    import os
+    key = os.getenv("KLING_API_KEY", "")
+    if not key:
+        raise RuntimeError("KLING_API_KEY is not configured")
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+
+@tool(
+    name="create_kling_video",
+    description=(
+        "Generate a realistic AI video using Kling 2.6 — turns a text prompt (and optionally a "
+        "reference image URL) into a real video with cinematic motion. Use this when the user wants "
+        "a video with actual visual footage, product scenes, lifestyle shots, or animated scenes. "
+        "Returns a task_id — use get_kling_video_status to poll until ready."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "Detailed scene description. Be cinematic and specific: describe lighting, "
+                    "motion, camera angle, subject, mood. E.g. 'A sleek black smartphone rotating "
+                    "slowly on a white marble surface, dramatic studio lighting, product ad style, "
+                    "ultra HD.'"
+                ),
+            },
+            "image_url": {
+                "type": "string",
+                "description": "Optional reference image URL to use as the starting frame (image-to-video). Great for animating product photos.",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ["16:9", "9:16", "1:1"],
+                "description": "16:9 = landscape (YouTube/Facebook), 9:16 = portrait (Reels/TikTok), 1:1 = square (Instagram). Defaults to 9:16.",
+            },
+            "duration": {
+                "type": "string",
+                "enum": ["5", "10"],
+                "description": "Video duration in seconds. Defaults to 5.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["standard", "pro"],
+                "description": "standard = faster and cheaper, pro = higher quality. Defaults to standard.",
+            },
+            "sound": {
+                "type": "boolean",
+                "description": "Enable AI-generated ambient sound/audio that matches the video scene. Defaults to true.",
+            },
+        },
+        "required": ["prompt"],
+    },
+)
+async def create_kling_video(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+
+    prompt = (args.get("prompt") or "").strip()
+    if not prompt:
+        return {"error": "prompt is required"}
+
+    image_url = (args.get("image_url") or "").strip()
+    aspect_ratio = args.get("aspect_ratio") or "9:16"
+    duration = str(args.get("duration") or "5")
+    mode = args.get("mode") or "standard"
+    sound = args.get("sound", True)
+
+    # Use image-to-video model if a reference image is provided
+    model = "kling-2.6/image-to-video" if image_url else "kling-2.6/text-to-video"
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "input": {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
+            "mode": mode,
+            "sound": sound,
+        },
+    }
+    if image_url:
+        payload["input"]["image_url"] = image_url
+
+    try:
+        headers = _kling_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{_KLING_API_BASE}/jobs/createTask",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Kling API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Kling video request failed: {e}"}
+
+    task_id = (data.get("data") or {}).get("taskId") or data.get("taskId")
+    if not task_id:
+        return {"error": f"No task_id returned: {data}"}
+
+    # Persist to DB
+    try:
+        await ctx.db.kling_renders.insert_one({
+            "business_id": ctx.business_id,
+            "task_id": task_id,
+            "prompt": prompt,
+            "model": model,
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
+            "status": "queued",
+            "url": None,
+            "created_at": datetime.utcnow(),
+        })
+    except Exception:
+        pass
+
+    return {
+        "task_id": task_id,
+        "model": model,
+        "status": "queued",
+        "message": "Kling video is generating. Call get_kling_video_status to poll progress.",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SOCIAL MEDIA MONITORING TOOLS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="list_scheduled_posts",
+    description=(
+        "List social media posts for the current business. "
+        "Filter by status (draft/scheduled/published/failed) or channel (facebook/instagram/linkedin/x/tiktok). "
+        "Returns post titles, channels, status, scheduled time, and engagement metrics for published posts."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "Filter by post status: draft, scheduled, published, failed. Omit for all.",
+            },
+            "channel": {
+                "type": "string",
+                "description": "Filter by platform: facebook, instagram, linkedin, x, tiktok.",
+            },
+            "limit": {"type": "integer", "default": 30, "minimum": 1, "maximum": 100},
+        },
+    },
+)
+async def list_scheduled_posts(ctx: ToolContext, args: Dict[str, Any]):
+    q: Dict[str, Any] = {"user_id": ctx.business_id}
+    if st := (args.get("status") or "").strip().lower():
+        q["status"] = st
+    if ch := (args.get("channel") or "").strip().lower():
+        q["channels"] = {"$in": [ch]}
+    limit = min(int(args.get("limit") or 30), 100)
+    rows = await ctx.db.scheduled_posts.find(q).sort("scheduled_at", -1).to_list(limit)
+
+    def _fmt(r: Dict[str, Any]) -> Dict[str, Any]:
+        sa = r.get("scheduled_at")
+        return {
+            "id":           str(r["_id"]),
+            "title":        r.get("title") or "",
+            "channels":     r.get("channels") or [],
+            "status":       r.get("status") or "draft",
+            "scheduled_at": sa.isoformat() if hasattr(sa, "isoformat") else str(sa or ""),
+            "engagement":   r.get("engagement") or {},
+            "zernio_post_id": r.get("zernio_post_id"),
+            "engagement_synced_at": (
+                r["engagement_synced_at"].isoformat()
+                if hasattr(r.get("engagement_synced_at"), "isoformat")
+                else None
+            ),
+        }
+
+    return {"count": len(rows), "posts": [_fmt(r) for r in rows]}
+
+
+@tool(
+    name="get_social_post_analytics",
+    description=(
+        "Get a detailed engagement analytics summary across all published social posts. "
+        "Returns per-platform breakdowns, top-performing posts by likes/reach/clicks, "
+        "overall totals, and trend observations the monitoring agent can use to advise strategy."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "days": {
+                "type": "integer",
+                "default": 30,
+                "description": "Look-back window in days (default 30).",
+            },
+            "channel": {
+                "type": "string",
+                "description": "Narrow to a single platform: facebook, instagram, linkedin, x, tiktok.",
+            },
+        },
+    },
+)
+async def get_social_post_analytics(ctx: ToolContext, args: Dict[str, Any]):
+    days = int(args.get("days") or 30)
+    channel_filter = (args.get("channel") or "").strip().lower()
+    since = datetime.utcnow() - timedelta(days=days)
+
+    q: Dict[str, Any] = {
+        "user_id": ctx.business_id,
+        "status": "published",
+        "scheduled_at": {"$gte": since},
+    }
+    if channel_filter:
+        q["channels"] = {"$in": [channel_filter]}
+
+    posts = await ctx.db.scheduled_posts.find(q).sort("scheduled_at", -1).to_list(200)
+
+    totals = {"likes": 0, "comments": 0, "shares": 0, "reach": 0, "clicks": 0, "saves": 0}
+    by_channel: Dict[str, Dict[str, int]] = {}
+    post_summaries = []
+
+    for p in posts:
+        eng = p.get("engagement") or {}
+        likes    = int(eng.get("likes", 0))
+        comments = int(eng.get("comments", 0))
+        shares   = int(eng.get("shares", 0))
+        reach    = int(eng.get("reach", 0))
+        clicks   = int(eng.get("clicks", 0))
+        saves    = int(eng.get("saves", 0))
+
+        totals["likes"]    += likes
+        totals["comments"] += comments
+        totals["shares"]   += shares
+        totals["reach"]    += reach
+        totals["clicks"]   += clicks
+        totals["saves"]    += saves
+
+        for ch in (p.get("channels") or []):
+            bc = by_channel.setdefault(ch, {"likes": 0, "comments": 0, "shares": 0,
+                                            "reach": 0, "clicks": 0, "posts": 0})
+            bc["likes"]    += likes
+            bc["comments"] += comments
+            bc["shares"]   += shares
+            bc["reach"]    += reach
+            bc["clicks"]   += clicks
+            bc["posts"]    += 1
+
+        sa = p.get("scheduled_at")
+        post_summaries.append({
+            "id":       str(p["_id"]),
+            "title":    p.get("title") or "",
+            "channels": p.get("channels") or [],
+            "date":     sa.isoformat() if hasattr(sa, "isoformat") else str(sa or ""),
+            "likes": likes, "comments": comments, "shares": shares,
+            "reach": reach, "clicks": clicks, "saves": saves,
+            "engagement_score": likes + comments * 2 + shares * 3 + clicks,
+        })
+
+    # Top 5 posts by engagement score
+    top_posts = sorted(post_summaries, key=lambda x: x["engagement_score"], reverse=True)[:5]
+
+    # Posts with zero engagement (no metrics synced yet)
+    unsynced = sum(1 for p in posts if not p.get("engagement"))
+
+    return {
+        "period_days":       days,
+        "total_posts":       len(posts),
+        "unsynced_posts":    unsynced,
+        "totals":            totals,
+        "by_channel":        by_channel,
+        "top_posts":         top_posts,
+        "avg_reach_per_post": round(totals["reach"] / len(posts), 1) if posts else 0,
+        "avg_engagement_rate": (
+            round((totals["likes"] + totals["comments"] + totals["shares"]) / totals["reach"] * 100, 2)
+            if totals["reach"] > 0 else 0
+        ),
+    }
+
+
+@tool(
+    name="get_kling_video_status",
+    description=(
+        "Poll the status of a Kling AI video generation task. "
+        "Returns status ('generating', 'success', 'failed') and the video URL when done. "
+        "Keep polling every 8–10s until status is 'success' or 'failed' (max 10 attempts)."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "The task_id returned by create_kling_video.",
+            },
+        },
+    },
+)
+async def get_kling_video_status(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    import json as _json
+
+    task_id = (args.get("task_id") or "").strip()
+    if not task_id:
+        return {"error": "task_id is required"}
+
+    try:
+        headers = _kling_headers()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            # KIE uses recordInfo endpoint with taskId query param
+            resp = await client.get(
+                f"{_KLING_API_BASE}/jobs/recordInfo?taskId={task_id}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Kling API error: {e.response.status_code} — {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Status check failed: {e}"}
+
+    job = data.get("data") or {}
+    state = job.get("state", "unknown")
+
+    # Extract video URL — KIE returns it inside resultJson as a JSON string
+    url = ""
+    result_json_str = job.get("resultJson", "")
+    if result_json_str:
+        try:
+            result = _json.loads(result_json_str)
+            urls = result.get("resultUrls", [])
+            if urls:
+                url = urls[0]
+        except Exception:
+            pass
+
+    # Update DB record
+    if url and state == "success":
+        try:
+            await ctx.db.kling_renders.update_one(
+                {"task_id": task_id, "business_id": ctx.business_id},
+                {"$set": {"status": state, "url": url, "updated_at": datetime.utcnow()}},
+            )
+        except Exception:
+            pass
+
+    return {
+        "task_id": task_id,
+        "status": state,
+        "url": url,
+        "done": state in ("success", "failed"),
+    }
+
+
+# ── Shotstack Image & Voice Generation (complements Kling video) ─────────────────
+
+_SHOTSTACK_API_KEY = os.getenv("SHOTSTACK_API_KEY")
+_SHOTSTACK_API_URL = os.getenv("SHOTSTACK_API_URL", "https://api.shotstack.io/v1")
+
+
+def _shotstack_headers() -> dict:
+    if not _SHOTSTACK_API_KEY:
+        raise RuntimeError("SHOTSTACK_API_KEY is not configured")
+    return {"x-api-key": _SHOTSTACK_API_KEY, "content-type": "application/json"}
+
+
+@tool(
+    name="create_shotstack_image",
+    description=(
+        "Generate a high-quality image using Shotstack templates. "
+        "Perfect for creating posters, thumbnails, social media graphics, and marketing visuals. "
+        "Supports text overlays, backgrounds, and design assets. Returns a render_id to track progress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "template_name": {
+                "type": "string",
+                "description": "Name for this image template (e.g., 'Product Poster', 'Event Thumbnail')",
+            },
+            "text_content": {
+                "type": "string", 
+                "description": "Main text to display on the image",
+            },
+            "background": {
+                "type": "string",
+                "description": "Background color (hex) or image URL",
+                "default": "#1a1a1a",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["jpg", "png"],
+                "description": "Output format",
+                "default": "png",
+            },
+            "width": {
+                "type": "integer",
+                "description": "Image width in pixels",
+                "default": 1920,
+            },
+            "height": {
+                "type": "integer", 
+                "description": "Image height in pixels",
+                "default": 1080,
+            },
+        },
+        "required": ["template_name", "text_content"],
+    },
+)
+async def create_shotstack_image(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    
+    template_name = args["template_name"].strip()
+    text_content = args["text_content"].strip()
+    background = args.get("background", "#1a1a1a")
+    format = args.get("format", "png")
+    width = int(args.get("width", 1920))
+    height = int(args.get("height", 1080))
+    
+    # Build Shotstack timeline for image
+    timeline = {
+        "output": {
+            "format": format,
+            "resolution": {"width": width, "height": height},
+            "quality": "high"
+        },
+        "timeline": {
+            "tracks": [{
+                "clips": [{
+                    "asset": {
+                        "type": "title",
+                        "text": text_content,
+                        "style": {
+                            "fontSize": f"{max(48, min(120, width // 16))}px",
+                            "fontFamily": "Montserrat",
+                            "backgroundColor": "#00000000",
+                            "color": "#ffffff",
+                            "textAlign": "center",
+                            "fontWeight": "bold"
+                        }
+                    },
+                    "start": 0,
+                    "length": 5,
+                    "position": "center"
+                }]
+            }]
+        }
+    }
+    
+    # Add background
+    if background.startswith("#"):
+        timeline["timeline"]["tracks"][0]["clips"][0]["asset"]["type"] = "title"
+        timeline["timeline"]["tracks"][0]["clips"][0]["asset"]["style"]["backgroundColor"] = background
+    elif background.startswith(("http", "/")):
+        timeline["timeline"]["tracks"].insert(0, {
+            "clips": [{
+                "asset": {
+                    "type": "image",
+                    "src": background
+                },
+                "start": 0,
+                "length": 5,
+                "fit": "cover"
+            }]
+        })
+    
+    try:
+        headers = _shotstack_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{_SHOTSTACK_API_URL}/render",
+                headers=headers,
+                json=timeline
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Shotstack image request failed: {e}"}
+    
+    render_id = data.get("response", {}).get("id")
+    if not render_id:
+        return {"error": "Shotstack did not return a render ID"}
+    
+    # Store in database
+    try:
+        await ctx.db.shotstack_renders.insert_one({
+            "business_id": ctx.business_id,
+            "render_id": render_id,
+            "type": "image",
+            "template_name": template_name,
+            "text_content": text_content,
+            "background": background,
+            "format": format,
+            "dimensions": {"width": width, "height": height},
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+        })
+    except Exception as e:
+        logging.warning(f"[shotstack] Failed to save render record: {e}")
+    
+    return {
+        "render_id": render_id,
+        "type": "image",
+        "status": "queued",
+        "message": "Shotstack image is generating. Use get_shotstack_render_status to track progress.",
+    }
+
+
+@tool(
+    name="create_shotstack_voice",
+    description=(
+        "Generate high-quality voice audio using Shotstack text-to-speech. "
+        "Perfect for voiceovers, narration, and audio content. Supports multiple voices and languages. "
+        "Returns a render_id to track progress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Text to convert to speech",
+            },
+            "voice": {
+                "type": "string",
+                "description": "Voice name (samantha, matthew, joanna, joseph, lisa, brian, camila, penelope, chantal, hans, zoe)",
+                "default": "samantha",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["mp3", "wav"],
+                "description": "Audio format",
+                "default": "mp3",
+            },
+        },
+        "required": ["text"],
+    },
+)
+async def create_shotstack_voice(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    
+    text = args["text"].strip()
+    voice = args.get("voice", "samantha")
+    format = args.get("format", "mp3")
+    
+    # Build Shotstack timeline for voice
+    timeline = {
+        "output": {
+            "format": format,
+            "resolution": {"width": 1920, "height": 1080},  # Required even for audio
+            "quality": "medium"
+        },
+        "timeline": {
+            "soundtrack": {
+                "tracks": [{
+                    "clips": [{
+                        "asset": {
+                            "type": "audio",
+                            "src": f"tts:{voice}",
+                            "text": text,
+                            "effect": "volume:0.8"
+                        },
+                        "start": 0,
+                        "length": max(5, len(text) * 0.08)  # Estimate duration
+                    }]
+                }]
+            }
+        }
+    }
+    
+    try:
+        headers = _shotstack_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{_SHOTSTACK_API_URL}/render",
+                headers=headers,
+                json=timeline
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Shotstack voice request failed: {e}"}
+    
+    render_id = data.get("response", {}).get("id")
+    if not render_id:
+        return {"error": "Shotstack did not return a render ID"}
+    
+    # Store in database
+    try:
+        await ctx.db.shotstack_renders.insert_one({
+            "business_id": ctx.business_id,
+            "render_id": render_id,
+            "type": "voice",
+            "text": text,
+            "voice": voice,
+            "format": format,
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+        })
+    except Exception as e:
+        logging.warning(f"[shotstack] Failed to save render record: {e}")
+    
+    return {
+        "render_id": render_id,
+        "type": "voice",
+        "status": "queued",
+        "message": "Shotstack voice is generating. Use get_shotstack_render_status to track progress.",
+    }
+
+
+@tool(
+    name="get_shotstack_render_status",
+    description=(
+        "Check the status of a Shotstack render (image or voice). "
+        "Returns status ('queued', 'rendering', 'done', 'failed') and download URL when ready. "
+        "Keep polling every 5-8s until status is 'done' or 'failed'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "render_id": {
+                "type": "string",
+                "description": "The render_id returned by create_shotstack_image or create_shotstack_voice",
+            },
+        },
+        "required": ["render_id"],
+    },
+)
+async def get_shotstack_render_status(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    
+    render_id = args["render_id"].strip()
+    if not render_id:
+        return {"error": "render_id is required"}
+    
+    try:
+        headers = _shotstack_headers()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                f"{_SHOTSTACK_API_URL}/render/{render_id}",
+                headers=headers
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Status check failed: {e}"}
+    
+    response = data.get("response", {})
+    status = response.get("status", "unknown")
+    url = response.get("url")
+    expires_at = response.get("expires")
+    
+    # Update database record
+    try:
+        update_data = {"status": status, "updated_at": datetime.utcnow()}
+        if url:
+            update_data["url"] = url
+            update_data["expires_at"] = expires_at
+            
+        await ctx.db.shotstack_renders.update_one(
+            {"render_id": render_id, "business_id": ctx.business_id},
+            {"$set": update_data}
+        )
+    except Exception as e:
+        logging.warning(f"[shotstack] Failed to update render record: {e}")
+    
+    result = {
+        "render_id": render_id,
+        "status": status,
+        "url": url,
+        "expires_at": expires_at,
+    }
+    
+    if status == "done":
+        result["message"] = f"Shotstack render completed! Download URL: {url}"
+    elif status == "failed":
+        result["message"] = "Shotstack render failed. Please try again."
+    else:
+        result["message"] = f"Shotstack render is {status}. Keep polling..."
+    
+    return result
+
+
+# ── Ad Health & Alert Rules ───────────────────────────────────────────────────
+
+@tool(
+    name="get_ads_health_report",
+    description=(
+        "Get a health report for all live ad campaigns. Returns health scores (0-100), "
+        "zone (healthy/warning/critical), key issues, and recent auto-pause actions. "
+        "Use this when the user asks how their ads are performing, or to check ROI."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "days": {
+                "type": "integer",
+                "description": "Lookback window in days (default 7)",
+                "default": 7,
+            },
+            "zone_filter": {
+                "type": "string",
+                "enum": ["all", "healthy", "warning", "critical"],
+                "description": "Filter by health zone",
+                "default": "all",
+            },
+        },
+        "required": [],
+    },
+)
+async def get_ads_health_report(ctx: ToolContext, args: Dict[str, Any]):
+    from zernio_ads_service import list_campaigns
+    from ad_health_monitor import score_campaign, ensure_default_rules
+
+    days = int(args.get("days", 7))
+    zone_filter = args.get("zone_filter", "all")
+
+    await ensure_default_rules(ctx.db, ctx.user_id)
+
+    result = await list_campaigns(days=days)
+    campaigns = result.get("campaigns") or result.get("data") or []
+
+    if result.get("error") and not campaigns:
+        return {"error": result["error"], "campaigns": []}
+
+    scored = []
+    for c in campaigns:
+        metrics = c.get("metrics") or c.get("insights") or c
+        health_score, issues, zone = score_campaign(metrics)
+        if zone_filter != "all" and zone != zone_filter:
+            continue
+        scored.append({
+            "campaign_id":   str(c.get("id") or c.get("campaignId") or ""),
+            "name":          c.get("name") or c.get("campaignName") or "Unknown",
+            "status":        c.get("status", ""),
+            "platform":      c.get("platform", ""),
+            "health_score":  health_score,
+            "zone":          zone,
+            "issues":        issues[:4],
+            "spend":         float(metrics.get("spend", 0) or 0),
+            "impressions":   int(metrics.get("impressions", 0) or 0),
+            "clicks":        int(metrics.get("clicks", 0) or 0),
+            "ctr":           float(metrics.get("ctr", 0) or 0),
+            "roas":          float(metrics.get("roas", 0) or 0),
+        })
+
+    scored.sort(key=lambda x: x["health_score"])
+
+    # Recent auto-pause actions
+    from datetime import timedelta
+    recent_actions = await ctx.db.ad_alert_history.find(
+        {"user_id": ctx.user_id, "fired_at": {"$gte": datetime.utcnow() - timedelta(days=7)}}
+    ).sort("fired_at", -1).to_list(20)
+    actions = [{
+        "campaign_name": a.get("campaign_name"),
+        "rule_name":     a.get("rule_name"),
+        "action":        a.get("action"),
+        "health_score":  a.get("health_score"),
+        "zone":          a.get("zone"),
+        "fired_at":      a["fired_at"].isoformat() if hasattr(a.get("fired_at"), "isoformat") else str(a.get("fired_at", "")),
+    } for a in recent_actions]
+
+    critical = [c for c in scored if c["zone"] == "critical"]
+    warning  = [c for c in scored if c["zone"] == "warning"]
+    healthy  = [c for c in scored if c["zone"] == "healthy"]
+
+    return {
+        "total_campaigns": len(scored),
+        "summary": {
+            "critical": len(critical),
+            "warning":  len(warning),
+            "healthy":  len(healthy),
+        },
+        "campaigns":       scored,
+        "recent_actions":  actions,
+        "days":            days,
+    }
+
+
+@tool(
+    name="set_ad_alert_rule",
+    description=(
+        "Create or update an ad alert rule. Rules define when to auto-pause a campaign or send "
+        "an alert based on performance metrics (CTR, ROAS, CPC, health score, spend). "
+        "Use this when the user wants to configure performance thresholds or auto-pause rules."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Descriptive name for the rule, e.g. 'Pause if ROAS below 1.5'",
+            },
+            "condition": {
+                "type": "string",
+                "enum": ["health_score", "ctr", "roas", "cpc", "cpm", "spend", "clicks"],
+                "description": "Metric to evaluate",
+            },
+            "operator": {
+                "type": "string",
+                "enum": ["lt", "gt", "lte", "gte"],
+                "description": "Comparison operator: lt=less than, gt=greater than",
+            },
+            "value": {
+                "type": "number",
+                "description": "Threshold value (e.g. 1.5 for ROAS, 0.5 for CTR%)",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["auto_pause", "alert_only"],
+                "description": "auto_pause = pause the campaign automatically; alert_only = WhatsApp notification only",
+            },
+            "min_spend": {
+                "type": "number",
+                "description": "Minimum $ spend before rule fires (avoid false positives on new campaigns)",
+                "default": 5.0,
+            },
+            "min_impressions": {
+                "type": "integer",
+                "description": "Minimum impressions before rule fires",
+                "default": 300,
+            },
+            "notify_whatsapp": {
+                "type": "boolean",
+                "description": "Send WhatsApp alert to owner when rule fires",
+                "default": True,
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "Whether this rule is active",
+                "default": True,
+            },
+            "rule_id": {
+                "type": "string",
+                "description": "Existing rule ID to update (omit to create new)",
+            },
+        },
+        "required": ["name", "condition", "operator", "value", "action"],
+    },
+    destructive=False,
+)
+async def set_ad_alert_rule(ctx: ToolContext, args: Dict[str, Any]):
+    rule_id = (args.get("rule_id") or "").strip()
+
+    doc = {
+        "user_id":        ctx.user_id,
+        "name":           args["name"].strip(),
+        "condition":      args["condition"],
+        "operator":       args["operator"],
+        "value":          float(args["value"]),
+        "action":         args["action"],
+        "min_spend":      float(args.get("min_spend", 5.0)),
+        "min_impressions": int(args.get("min_impressions", 300)),
+        "notify_whatsapp": bool(args.get("notify_whatsapp", True)),
+        "enabled":        bool(args.get("enabled", True)),
+        "updated_at":     datetime.utcnow(),
+    }
+
+    if rule_id:
+        existing = await ctx.db.ad_alert_rules.find_one({"_id": rule_id, "user_id": ctx.user_id})
+        if not existing:
+            return {"error": "Rule not found"}
+        await ctx.db.ad_alert_rules.update_one({"_id": rule_id}, {"$set": doc})
+        doc["_id"] = rule_id
+        action_taken = "updated"
+    else:
+        import uuid as _uuid
+        doc["_id"] = str(_uuid.uuid4())
+        doc["created_at"] = datetime.utcnow()
+        await ctx.db.ad_alert_rules.insert_one(doc)
+        action_taken = "created"
+
+    operator_label = {"lt": "below", "lte": "≤", "gt": "above", "gte": "≥"}.get(doc["operator"], doc["operator"])
+    action_label = "auto-pause campaign" if doc["action"] == "auto_pause" else "send WhatsApp alert"
+
+    return {
+        "status": action_taken,
+        "rule_id": doc["_id"],
+        "name": doc["name"],
+        "description": f"When {doc['condition']} is {operator_label} {doc['value']} (with ≥${doc['min_spend']} spend): {action_label}",
+    }

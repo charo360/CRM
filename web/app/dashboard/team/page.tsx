@@ -3,14 +3,19 @@
 import { useEffect, useState } from "react";
 import { teamApi, TeamMember } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { Users, Plus, Trash2, Edit, Mail, Shield, User, Crown } from "lucide-react";
+import { Users, Plus, Trash2, Edit, Shield, User, Crown, Phone, Copy, Check, KeyRound } from "lucide-react";
 
 const ROLES = [
-  { value: "owner", label: "Owner", icon: Crown, color: "text-brand-dark" },
-  { value: "admin", label: "Admin", icon: Shield, color: "text-blue-600" },
-  { value: "manager", label: "Manager", icon: User, color: "text-green-600" },
-  { value: "staff", label: "Staff", icon: User, color: "text-slate-600" },
+  { value: "owner",    label: "Owner",    icon: Crown,  color: "text-brand-dark" },
+  { value: "manager",  label: "Manager",  icon: Shield, color: "text-blue-600" },
+  { value: "employee", label: "Employee", icon: User,   color: "text-green-600" },
 ];
+
+const STATUS_STYLES: Record<string, string> = {
+  active:    "bg-green-100 text-green-700",
+  invited:   "bg-amber-100 text-amber-700",
+  suspended: "bg-red-100   text-red-600",
+};
 
 const PERMISSIONS = [
   "view_customers", "edit_customers", "view_orders", "edit_orders",
@@ -24,10 +29,13 @@ export default function TeamPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [tempPasswordInfo, setTempPasswordInfo] = useState<{ name: string; email: string; password: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   const [form, setForm] = useState({
     name: "",
     email: "",
-    role: "staff",
+    phone_number: "",
+    role: "employee",
     permissions: [] as string[],
   });
 
@@ -52,13 +60,19 @@ export default function TeamPage() {
     try {
       if (editingId) {
         await teamApi.update(editingId, form);
+        setShowCreate(false);
+        setEditingId(null);
+        setForm({ name: "", email: "", phone_number: "", role: "employee", permissions: [] });
+        await loadMembers();
       } else {
-        await teamApi.create(form);
+        const created = await teamApi.create(form);
+        setShowCreate(false);
+        setForm({ name: "", email: "", phone_number: "", role: "employee", permissions: [] });
+        await loadMembers();
+        if (created?.temp_password) {
+          setTempPasswordInfo({ name: created.name, email: created.email, password: created.temp_password });
+        }
       }
-      setShowCreate(false);
-      setEditingId(null);
-      setForm({ name: "", email: "", role: "staff", permissions: [] });
-      await loadMembers();
     } catch (e) {
       console.error("Failed to save team member:", e);
       alert("Failed to save team member");
@@ -78,10 +92,18 @@ export default function TeamPage() {
     }
   }
 
+  function copyPassword() {
+    if (!tempPasswordInfo) return;
+    navigator.clipboard.writeText(tempPasswordInfo.password);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   function handleEdit(member: TeamMember) {
     setForm({
       name: member.name,
-      email: member.email,
+      email: member.email || "",
+      phone_number: member.phone_number || "",
       role: member.role,
       permissions: member.permissions || [],
     });
@@ -98,7 +120,7 @@ export default function TeamPage() {
     }));
   }
 
-  const roleConfig = ROLES.find(r => r.value === form.role) || ROLES[3];
+  const roleConfig = ROLES.find(r => r.value === form.role) || ROLES[2];
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -109,7 +131,7 @@ export default function TeamPage() {
         </div>
         <button
           onClick={() => {
-            setForm({ name: "", email: "", role: "staff", permissions: [] });
+            setForm({ name: "", email: "", phone_number: "", role: "employee", permissions: [] });
             setEditingId(null);
             setShowCreate(true);
           }}
@@ -120,7 +142,7 @@ export default function TeamPage() {
       </div>
 
       {/* Team Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {ROLES.map(({ value, label, icon: Icon, color }) => {
           const count = members.filter(m => m.role === value).length;
           return (
@@ -135,6 +157,15 @@ export default function TeamPage() {
             </div>
           );
         })}
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <div className="flex items-center gap-3">
+            <Users size={20} className="text-slate-400" />
+            <div>
+              <p className="text-2xl font-bold text-slate-900">{members.length}</p>
+              <p className="text-sm text-slate-500">Total</p>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Members List */}
@@ -143,7 +174,7 @@ export default function TeamPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50">
-                {["Member", "Role", "Permissions", "Joined", "Actions"].map((h) => (
+                {["Member", "Role", "Status", "Permissions", "Joined", "Actions"].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
                     {h}
                   </th>
@@ -175,7 +206,7 @@ export default function TeamPage() {
                             </div>
                             <div>
                               <p className="font-medium text-slate-800">{member.name}</p>
-                              <p className="text-xs text-slate-500">{member.email}</p>
+                              <p className="text-xs text-slate-500">{member.email || member.phone_number || "—"}</p>
                             </div>
                           </div>
                         </td>
@@ -186,15 +217,22 @@ export default function TeamPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3">
+                          <span className={`text-xs font-medium px-2.5 py-1 rounded-full capitalize ${
+                            STATUS_STYLES[member.status || "invited"] ?? "bg-slate-100 text-slate-600"
+                          }`}>
+                            {member.status || "invited"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1">
-                            {(member.permissions || []).slice(0, 3).map(perm => (
+                            {(member.permissions || []).slice(0, 2).map(perm => (
                               <span key={perm} className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
-                                {perm.replace("_", " ")}
+                                {perm.replace(/_/g, " ")}
                               </span>
                             ))}
-                            {(member.permissions || []).length > 3 && (
+                            {(member.permissions || []).length > 2 && (
                               <span className="text-xs text-slate-400">
-                                +{(member.permissions || []).length - 3} more
+                                +{(member.permissions || []).length - 2} more
                               </span>
                             )}
                           </div>
@@ -235,6 +273,57 @@ export default function TeamPage() {
         </div>
       </div>
 
+      {/* Temp Password Dialog */}
+      {tempPasswordInfo && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
+                <KeyRound size={20} className="text-green-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900">Member Added</h3>
+                <p className="text-sm text-slate-500">{tempPasswordInfo.name} can now log in</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-4 space-y-2">
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Share these login details</p>
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Email</span>
+                  <span className="font-medium text-slate-800">{tempPasswordInfo.email}</span>
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate-500">Temp password</span>
+                  <span className="font-mono font-bold text-slate-900 text-base tracking-widest">{tempPasswordInfo.password}</span>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+              This password is shown only once. Share it with {tempPasswordInfo.name} and ask them to log in at the web dashboard.
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                onClick={copyPassword}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                {copied ? <Check size={15} className="text-green-500" /> : <Copy size={15} />}
+                {copied ? "Copied!" : "Copy Password"}
+              </button>
+              <button
+                onClick={() => { setTempPasswordInfo(null); setCopied(false); }}
+                className="flex-1 py-2.5 bg-brand-dark text-white font-semibold rounded-xl text-sm hover:bg-brand transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Create/Edit Modal */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -260,22 +349,38 @@ export default function TeamPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Email *</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
                   <input
                     type="email"
                     value={form.email}
                     onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))}
                     placeholder="email@example.com"
-                    required
                     className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
                   />
                 </div>
               </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Phone Number <span className="text-slate-400 font-normal text-xs">(for mobile app login)</span>
+                </label>
+                <div className="relative">
+                  <Phone size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="tel"
+                    value={form.phone_number}
+                    onChange={(e) => setForm(f => ({ ...f, phone_number: e.target.value }))}
+                    placeholder="+1234567890"
+                    className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
+                  />
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Required if member will use the mobile app. Include country code.</p>
+              </div>
               
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">Role</label>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {ROLES.map(({ value, label, icon: Icon, color }) => (
+                <div className="grid grid-cols-2 gap-2">
+                  {ROLES.filter(r => r.value !== "owner").map(({ value, label, icon: Icon, color }) => (
                     <button
                       key={value}
                       type="button"

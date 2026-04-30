@@ -12,11 +12,62 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+# ── DeepSeek DSML tool-call parser ───────────────────────────────────────────
+# DeepSeek sometimes outputs tool calls in its native <｜DSML｜> format
+# inside the content field instead of the standard tool_calls JSON field.
+# This parser extracts them and converts to OpenAI-compatible format.
+
+_DSML_BLOCK_RE = re.compile(
+    r"<｜+DSML｜+tool_calls>(.*?)</｜+DSML｜+tool_calls>",
+    re.DOTALL,
+)
+_DSML_INVOKE_RE = re.compile(
+    r'<｜+DSML｜+invoke\s+name=["\']([^"\']+)["\']>(.*?)</｜+DSML｜+invoke>',
+    re.DOTALL,
+)
+_DSML_PARAM_RE = re.compile(
+    r'<｜+DSML｜+parameter\s+name=["\']([^"\']+)["\'][^>]*>(.*?)</｜+DSML｜+parameter>',
+    re.DOTALL,
+)
+
+
+def _parse_dsml_tool_calls(content: str) -> tuple[str, list]:
+    """Extract DSML tool calls from content. Returns (clean_content, tool_calls)."""
+    match = _DSML_BLOCK_RE.search(content)
+    if not match:
+        return content, []
+
+    tool_calls = []
+    block = match.group(1)
+    for invoke in _DSML_INVOKE_RE.finditer(block):
+        name = invoke.group(1).strip()
+        params_text = invoke.group(2)
+        args = {}
+        for param in _DSML_PARAM_RE.finditer(params_text):
+            args[param.group(1).strip()] = param.group(2).strip()
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "name": name,
+            "arguments": args,
+        })
+
+    # Remove the entire DSML block from content
+    clean = _DSML_BLOCK_RE.sub("", content).strip()
+    return clean, tool_calls
+
+
+def _strip_dsml(text: str) -> str:
+    """Strip any DSML markup from a text chunk (for streaming)."""
+    return _DSML_BLOCK_RE.sub("", text).strip()
 
 # ── Model registry ────────────────────────────────────────────────────────────
 # id ↔ provider + upstream model name. id is what the UI passes.
@@ -26,6 +77,7 @@ MODEL_REGISTRY: Dict[str, Dict[str, str]] = {
     "claude-sonnet-4.6":       {"provider": "anthropic", "model": "claude-sonnet-4-6",         "label": "Claude Sonnet 4.6"},
     "claude-3.5-sonnet":       {"provider": "anthropic", "model": "claude-3-5-sonnet-latest",  "label": "Claude 3.5 Sonnet"},
     "grok-4.20":               {"provider": "grok",      "model": "grok-4.20",                 "label": "Grok 4.20"},
+    "grok-4.20-reasoning":     {"provider": "grok",      "model": "grok-4.20-reasoning",       "label": "Grok 4.20 Reasoning"},
 }
 
 DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-v4-pro")
@@ -145,12 +197,21 @@ async def _call_openai_compatible(
             "arguments": args,
         })
 
+    # DeepSeek sometimes puts tool calls in DSML format inside content instead
+    # of the standard tool_calls field — parse and promote them.
+    raw_content = msg.get("content") or ""
+    if not tool_calls and "<｜" in raw_content and "DSML" in raw_content and "tool_calls" in raw_content:
+        raw_content, dsml_calls = _parse_dsml_tool_calls(raw_content)
+        if dsml_calls:
+            logger.debug("[models] promoted %d DSML tool call(s) from content", len(dsml_calls))
+            tool_calls = dsml_calls
+
     return {
-        "content": msg.get("content") or "",
+        "content": raw_content,
         "tool_calls": tool_calls,
         "finish_reason": choice.get("finish_reason", "stop"),
         "model": cfg["id"],
-        "raw_assistant_message": msg,  # kept so we can echo exact tool_calls back into history
+        "raw_assistant_message": msg,
     }
 
 
@@ -363,6 +424,11 @@ async def _stream_openai_compatible(
             json=payload,
         ) as resp:
             resp.raise_for_status()
+            # Buffer for DSML blocks that span multiple chunks.
+            # DSML blocks start with <｜ and end with </｜+DSML｜+tool_calls>.
+            # We accumulate from the first <｜ and only yield once the closing
+            # tag has arrived (or the buffer is suspiciously large).
+            _dsml_buf = ""
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):
                     continue
@@ -373,10 +439,45 @@ async def _stream_openai_compatible(
                     data = json.loads(data_str)
                     delta = data["choices"][0].get("delta", {})
                     text = delta.get("content") or ""
-                    if text:
-                        yield text
+                    if not text:
+                        continue
+
+                    _dsml_buf += text
+
+                    # Fast path: no DSML start character in buffer → yield all
+                    if "<｜" not in _dsml_buf:
+                        yield _dsml_buf
+                        _dsml_buf = ""
+                        continue
+
+                    # There's a <｜ in the buffer — could be DSML
+                    start = _dsml_buf.find("<｜")
+                    # Yield everything before the potential DSML start
+                    if start > 0:
+                        yield _dsml_buf[:start]
+                        _dsml_buf = _dsml_buf[start:]
+
+                    # Check if we have a complete DSML block
+                    if _DSML_BLOCK_RE.search(_dsml_buf):
+                        cleaned = _DSML_BLOCK_RE.sub("", _dsml_buf).strip()
+                        if cleaned:
+                            yield cleaned
+                        _dsml_buf = ""
+                    elif len(_dsml_buf) > 4000:
+                        # Safety: buffer too large, give up and emit stripped
+                        cleaned = _DSML_BLOCK_RE.sub("", _dsml_buf).strip()
+                        if cleaned:
+                            yield cleaned
+                        _dsml_buf = ""
+                    # else: keep accumulating — block not yet complete
                 except Exception:
                     continue
+
+            # Flush any remaining buffer (e.g. partial DSML or trailing text)
+            if _dsml_buf:
+                cleaned = _DSML_BLOCK_RE.sub("", _dsml_buf).strip()
+                if cleaned:
+                    yield cleaned
 
 
 async def _stream_anthropic(

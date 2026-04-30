@@ -23,6 +23,7 @@ const CHANNELS: { id: SocialChannel; label: string }[] = [
   { id: "instagram", label: "IG" },
   { id: "linkedin", label: "LI" },
   { id: "x", label: "X" },
+  { id: "tiktok", label: "TT" },
 ];
 
 const POST_KIND_OPTIONS: { id: PostKind | "auto"; label: string }[] = [

@@ -399,6 +399,78 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
             raise Exception(f"OpenAI API error: {str(e)}")
 
 
+    async def _call_llm(self, prompt: str, model_pref: str = "standard") -> str:
+        """Generic LLM call used by interactive_suggestions and other utilities."""
+        return await self._call_openai(prompt)
+
+    async def draft_social_post(
+        self,
+        prompt: str,
+        channels: List[str],
+        business_name: str = "",
+        model_pref: str = "standard",
+    ) -> Dict:
+        """Draft a social media post title and caption from a short brief.
+
+        Returns {"title": str, "body": str}.
+        Tries DeepSeek first (faster, cheaper), falls back to OpenAI.
+        """
+        import os as _os, httpx as _httpx, json as _json
+
+        channel_str = ", ".join(c.capitalize() for c in channels) if channels else "social media"
+        biz = business_name or "our business"
+
+        system = (
+            "You are a sharp social media copywriter. "
+            "Write punchy, engaging posts that stop the scroll. "
+            "No hashtag spam — 2-3 relevant ones max. "
+            "Return ONLY valid JSON: {\"title\": \"...\", \"body\": \"...\"}"
+        )
+        user_msg = (
+            f"Business: {biz}\n"
+            f"Platforms: {channel_str}\n"
+            f"Brief: {prompt}\n\n"
+            "Write a post title (max 60 chars) and caption body. "
+            "Match tone and length to the platform(s). "
+            "Return JSON only — no markdown fences."
+        )
+
+        # Try DeepSeek first
+        ds_key = _os.environ.get("DEEPSEEK_API_KEY", "")
+        if ds_key:
+            try:
+                async with _httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        "https://api.deepseek.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {ds_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "deepseek-chat",
+                            "messages": [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": user_msg},
+                            ],
+                            "temperature": 0.8,
+                            "max_tokens": 400,
+                            "response_format": {"type": "json_object"},
+                        },
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json()["choices"][0]["message"]["content"]
+                    return _json.loads(raw)
+            except Exception as e:
+                logger.warning("draft_social_post DeepSeek failed, falling back to OpenAI: %s", e)
+
+        # Fallback: OpenAI
+        full_prompt = f"{system}\n\n{user_msg}"
+        raw = await self._call_openai(full_prompt)
+        # Strip markdown fences if model added them
+        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        try:
+            return _json.loads(raw)
+        except Exception:
+            # Return raw text as body if JSON parse fails
+            return {"title": "New post", "body": raw}
+
     async def analyze_conversation_for_notes(
         self,
         messages: List[Dict]

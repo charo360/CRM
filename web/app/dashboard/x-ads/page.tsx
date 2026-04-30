@@ -348,11 +348,21 @@ function CampaignModal({
           <div>
             <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Targeting notes</label>
             <textarea
-              rows={3}
+              rows={2}
               className="mt-1 w-full resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm"
               placeholder="Geo, interests, keywords, follower lookalikes…"
               value={modal.targeting ?? ""}
               onChange={(e) => onChange({ ...modal, targeting: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Creative strategy</label>
+            <textarea
+              rows={2}
+              className="mt-1 w-full resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm"
+              placeholder="Creative angle, ad copy ideas, CTA…"
+              value={modal.strategy ?? ""}
+              onChange={(e) => onChange({ ...modal, strategy: e.target.value })}
             />
           </div>
           <div>
