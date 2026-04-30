@@ -134,7 +134,11 @@ def make_zernio_router(db, user_dep):
         """Return an OAuth URL so the user can connect a social platform."""
         try:
             profile_id = await _get_or_create_profile(user["_id"])
-            data = await _get(f"/connect/{platform}", {"profileId": profile_id})
+            frontend = os.getenv("FRONTEND_URL", "").rstrip("/")
+            params: Dict[str, Any] = {"profileId": profile_id}
+            if frontend:
+                params["redirectUrl"] = f"{frontend}/dashboard/integrations"
+            data = await _get(f"/connect/{platform}", params)
             auth_url = (
                 data.get("authUrl") or data.get("url") or
                 data.get("auth_url") or data.get("redirectUrl")
