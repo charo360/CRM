@@ -85,11 +85,11 @@ def make_zernio_router(db, user_dep):
 
         return profile_id
 
-    # ── key ping (debug) ──────────────────────────────────────────────────────
+    # ── key ping (public debug — no auth required) ────────────────────────────
 
     @router.get("/ping")
-    async def zernio_ping(user=user_dep):
-        """Test the API key — returns Zernio's raw response or the error."""
+    async def zernio_ping():
+        """Test the API key — no auth needed, safe to call from anywhere."""
         key = os.getenv("ZERNIO_API_KEY", "").strip()
         if not key:
             return {"ok": False, "error": "ZERNIO_API_KEY env var is not set on this server"}
