@@ -172,8 +172,6 @@ def make_design_templates_router(db, user_dep):
                 "carousel",
                 "email_header",
                 "presentation",
-                # Saved rows from assistant tools use these as `content_type`
-                "render_orshot_template",
                 "create_business_document",
                 "create_presentation",
                 "brand_logo",

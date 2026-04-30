@@ -74,7 +74,7 @@ function CloneModal({ doc, onClose, onCloned }: { doc: Document; onClose: () => 
       // Document was ingested — AI has the full content in context
       ? `I've attached my template "${cloned.name}" as a reference document. Please analyze its structure, sections, layout, and tone, then use the ${toolHint[cloned.asset_kind] ?? "create_business_document"} tool to generate a new ${kindLabel[cloned.asset_kind] ?? "document"} that follows the same format. Ask me what specific content to fill in.`
       // Fallback for PPTX or if ingest failed — pass the URL
-      : `I want to generate a new ${kindLabel[cloned.asset_kind] ?? "document"} using my saved template "${cloned.name}" as a style reference. This template is from my Documents library — do NOT search Orshot. The file is at: ${resolveMediaUrl(cloned.file_url)}. If you cannot read that file directly, tell me so and ask me to paste the section headings. DO NOT call ${toolHint[cloned.asset_kind] ?? "create_business_document"} yet — first identify or ask about the template's sections, then collect the content from me, then generate.`
+      : `I want to generate a new ${kindLabel[cloned.asset_kind] ?? "document"} using my saved template "${cloned.name}" as a style reference. This template is from my Documents library. The file is at: ${resolveMediaUrl(cloned.file_url)}. If you cannot read that file directly, tell me so and ask me to paste the section headings. DO NOT call ${toolHint[cloned.asset_kind] ?? "create_business_document"} yet — first identify or ask about the template's sections, then collect the content from me, then generate.`
     : "";
 
   return (

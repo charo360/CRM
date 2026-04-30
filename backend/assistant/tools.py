@@ -3459,7 +3459,6 @@ def _detect_fabricated_pixels(
     },
 )
 async def recreate_design_with_ai(ctx: ToolContext, args: Dict[str, Any]):
-    from orshot_service import get_studio_template
     from nano_banana_service import recreate_design_from_reference
     from .design_state import update_design_state
 
@@ -3500,14 +3499,8 @@ async def recreate_design_with_ai(ctx: ToolContext, args: Dict[str, Any]):
             "unmet": pre_unmet,
         }
 
-    # Fetch template thumbnail (free GET) for use as layout reference.
-    tpl = await get_studio_template(tid)
-    if tpl.get("error"):
-        return {"error": f"Could not load template preview: {tpl['error']}"}
-    reference_url = tpl.get("thumbnail_url") or ""
-    if not reference_url:
-        return {"error": "Template has no thumbnail/preview to use as a layout reference."}
-    template_name = tpl.get("name") or fact_pack.get("locked_template_name") or ""
+    reference_url = ""
+    template_name = fact_pack.get("locked_template_name") or ""
 
     prompt = _compose_recreate_prompt(
         fact_pack,

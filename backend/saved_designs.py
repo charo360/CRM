@@ -161,7 +161,7 @@ async def build_design_library_context_message(db, business_id: str) -> str:
     lines: List[str] = [
         "## Design library — brand assets",
         "The owner saved these under **Dashboard → Design library**. When you write copy, suggest layouts, or call "
-        "`render_orshot_template` / `create_business_document`, prefer these URLs for logos and imagery (only where "
+        "`create_social_graphic` / `create_business_document`, prefer these URLs for logos and imagery (only where "
         "they apply). Remote renderers need **https** or a public base URL — relative paths may not render off-site.",
         "",
     ]
