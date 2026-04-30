@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 ZERNIO_BASE = "https://zernio.com/api/v1"
 
 def _headers():
-    key = os.getenv("ZERNIO_API_KEY", "")
+    key = os.getenv("ZERNIO_API_KEY", "").strip()
     if not key:
         raise HTTPException(503, "ZERNIO_API_KEY not configured")
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -61,10 +61,17 @@ def make_zernio_router(db, user_dep):
             try:
                 data = await _post("/profiles", {"name": name, "description": "CRM Social Profile"})
                 profile = data.get("profile") or data
-                profile_id = profile.get("_id") or profile.get("id")
+                profile_id = (
+                    profile.get("_id") or profile.get("id") or
+                    profile.get("profileId") or profile.get("profile_id")
+                )
             except Exception as e:
                 logger.error(f"[zernio] Failed to create profile for {user_id}: {e}")
                 raise HTTPException(503, "Could not create Zernio profile")
+
+            if not profile_id:
+                logger.error(f"[zernio] Profile created but no ID in response: {data}")
+                raise HTTPException(503, "Zernio profile created but ID not found in response")
 
             await db.users.update_one(
                 {"_id": user_id},
@@ -83,17 +90,19 @@ def make_zernio_router(db, user_dep):
             user_id = user["_id"]
             profile_id = await _get_or_create_profile(user_id)
             accounts_data = await _get("/accounts", {"profileId": profile_id})
-            accounts = accounts_data.get("accounts", [])
+            accounts = accounts_data.get("accounts") or accounts_data.get("data") or []
             return {
                 "connected": True,
                 "profile_id": profile_id,
                 "accounts": accounts,
             }
-        except HTTPException:
-            raise
+        except HTTPException as e:
+            return {"connected": False, "error": e.detail}
         except httpx.HTTPStatusError as e:
-            return {"connected": False, "error": e.response.text}
+            logger.error(f"[zernio] status HTTP error {e.response.status_code}: {e.response.text[:200]}")
+            return {"connected": False, "error": f"Zernio API error {e.response.status_code}"}
         except Exception as e:
+            logger.error(f"[zernio] status error: {e}")
             return {"connected": False, "error": str(e)}
 
     # ── connect (OAuth flow) ───────────────────────────────────────────────────
@@ -104,10 +113,15 @@ def make_zernio_router(db, user_dep):
         try:
             profile_id = await _get_or_create_profile(user["_id"])
             data = await _get(f"/connect/{platform}", {"profileId": profile_id})
-            return {"authUrl": data.get("authUrl") or data.get("url"), "platform": platform}
+            auth_url = (
+                data.get("authUrl") or data.get("url") or
+                data.get("auth_url") or data.get("redirectUrl")
+            )
+            return {"authUrl": auth_url, "platform": platform}
         except HTTPException:
             raise
         except httpx.HTTPStatusError as e:
+            logger.error(f"[zernio] connect/{platform} HTTP error {e.response.status_code}: {e.response.text[:200]}")
             raise HTTPException(e.response.status_code, e.response.text)
 
     @router.delete("/accounts/{account_id}")
