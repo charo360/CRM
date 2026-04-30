@@ -24,7 +24,7 @@ _STARTUP_CONFIG_ERROR: str = ""  # Set if a critical env var is missing — surf
 def validate_startup_env():
     """Quick validation to catch common issues. Logs errors but does NOT exit —
     letting Uvicorn start ensures the /health endpoint is reachable so platforms
-    (Railway, Render, Docker) can show the config error rather than a crash loop."""
+    (Render, Docker) can show the config error rather than a crash loop."""
     global _STARTUP_CONFIG_ERROR
     ai_provider = os.environ.get('AI_PROVIDER', 'openai').strip().lower()
     if ai_provider == 'deepseek':
@@ -724,7 +724,7 @@ async def execute_broadcast_automations():
 
 @app.get("/health")
 async def health_check():
-    # Surface startup config errors so platforms (Railway/Render/Docker) show the
+    # Surface startup config errors so platforms (Render/Docker) show the
     # real problem instead of a generic "service unavailable" crash loop message.
     if _STARTUP_CONFIG_ERROR:
         from fastapi.responses import JSONResponse

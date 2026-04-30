@@ -373,7 +373,7 @@ async def _call_ai_with_retry(
             return data
 
         except _ValidationError as exc:
-            # Log the FULL raw response so it's visible in Railway logs
+            # Log the FULL raw response so it's visible in Render logs
             logger.error(
                 f"[AutoReplyV2] ❌ VALIDATION FAILED attempt {attempt + 1}/{MAX_RETRIES}\n"
                 f"Error: {exc}\n"
@@ -449,7 +449,7 @@ async def _call_openai_compat(client, model_name: str, system_prompt: str, messa
     response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
     choice = response.choices[0]
     content = choice.message.content
-    # Log refusals so they're visible in Railway logs
+    # Log refusals so they're visible in Render logs
     if content is None:
         refusal = getattr(choice.message, "refusal", None)
         finish = choice.finish_reason
