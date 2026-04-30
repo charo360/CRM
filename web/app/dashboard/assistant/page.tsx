@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import AssistantChat from "@/components/AssistantChat";
 import { assistantApi, type AssistantConversationSummary } from "@/lib/api";
@@ -94,7 +94,7 @@ function groupByDate(list: AssistantConversationSummary[]) {
   return groups.filter((g) => g.items.length > 0);
 }
 
-export default function AssistantPage() {
+function AssistantPageInner() {
   const searchParams = useSearchParams();
   const requestedConvId = searchParams.get("conversation_id");
   const templateMessage = searchParams.get("template_message");
@@ -352,5 +352,13 @@ export default function AssistantPage() {
       </main>
       </div>
     </div>
+  );
+}
+
+export default function AssistantPage() {
+  return (
+    <Suspense>
+      <AssistantPageInner />
+    </Suspense>
   );
 }
