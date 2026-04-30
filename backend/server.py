@@ -417,7 +417,13 @@ async def global_exception_handler(request: Request, exc: Exception):
         detail = err_msg
     else:
         detail = "Internal Server Error"
-    return JSONResponse(status_code=500, content={"detail": detail})
+    # Manually add CORS headers — @app.exception_handler bypasses CORSMiddleware
+    # so without these, the browser sees a CORS block instead of the real 500 error.
+    origin = request.headers.get("origin", "*")
+    response = JSONResponse(status_code=500, content={"detail": detail})
+    response.headers["Access-Control-Allow-Origin"] = origin or "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 @app.on_event("startup")
@@ -428,10 +434,15 @@ async def fix_team_members_index():
     except Exception:
         pass
     try:
+        await db.team_members.drop_index("business_id_1_phone_1")
+    except Exception:
+        pass
+    try:
+        # sparse=True so multiple null phone_numbers (email-only members) don't conflict
         await db.team_members.create_index(
-            [("business_id", 1), ("phone_number", 1)], unique=True, name="business_id_1_phone_1"
+            [("business_id", 1), ("phone_number", 1)], unique=True, sparse=True, name="business_id_phone_sparse"
         )
-        logging.info("Ensured team_members index: business_id_1_phone_1")
+        logging.info("Ensured team_members index: business_id_phone_sparse")
     except Exception:
         pass
     # Migrate existing records: auto_created=True → is_customer=False (contacts pool)
