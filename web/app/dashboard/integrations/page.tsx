@@ -397,22 +397,49 @@ function IntegrationsPageInner() {
   const [psConn, setPsConn] = useState<PaystackConnection>({ connected: false });
   const [phConn, setPhConn] = useState<PayheroConnection>({ connected: false });
   const [zernioAccounts, setZernioAccounts] = useState<ZernioAccount[]>([]);
+  const [zernioApiOk, setZernioApiOk] = useState<boolean | null>(null);
   const [zernioConnecting, setZernioConnecting] = useState<string | null>(null);
+  const [zernioDisconnecting, setZernioDisconnecting] = useState<string | null>(null);
 
   const refreshZernio = useCallback(async () => {
     try {
       const status = await zernioApi.status();
+      setZernioApiOk(status.connected === true);
       if (status.connected) setZernioAccounts((status.accounts as ZernioAccount[]) ?? []);
       else setZernioAccounts([]);
-    } catch { setZernioAccounts([]); }
+    } catch {
+      setZernioApiOk(false);
+      setZernioAccounts([]);
+    }
   }, []);
 
   async function zernioConnect(platformId: string) {
     setZernioConnecting(platformId);
     try {
       const { authUrl } = await zernioApi.connect(platformId);
-      if (authUrl) window.open(authUrl, "_blank", "noopener,noreferrer");
-    } catch { /* ignore */ } finally { setZernioConnecting(null); }
+      if (authUrl) {
+        window.open(authUrl, "_blank", "noopener,noreferrer");
+      } else {
+        setBanner({ type: "error", msg: "Could not get connection URL. Please try again." });
+      }
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect. Please try again." });
+    } finally {
+      setZernioConnecting(null);
+    }
+  }
+
+  async function zernioDisconnect(accountId: string, label: string) {
+    if (!confirm(`Disconnect ${label}?`)) return;
+    setZernioDisconnecting(accountId);
+    try {
+      await zernioApi.disconnect(accountId);
+      await refreshZernio();
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : `Failed to disconnect ${label}.` });
+    } finally {
+      setZernioDisconnecting(null);
+    }
   }
   const [nangoStatus, setNangoStatus] = useState<Record<NangoKey, boolean | null>>({
     slack: null, email: null, calendar: null, shopify: null,
@@ -469,7 +496,7 @@ function IntegrationsPageInner() {
     const error = searchParams.get("error");
     if (connected) {
       setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!` });
-      refreshTg(); void refreshNango();
+      refreshTg(); void refreshNango(); void refreshZernio();
       window.history.replaceState({}, "", window.location.pathname);
     } else if (error) {
       const msgs: Record<string, string> = {
@@ -574,17 +601,35 @@ function IntegrationsPageInner() {
                 icon={<div className="h-5 w-5">{p.logo}</div>}
               >
                 {isConnected ? (
-                  <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
-                    <CheckCircle2 size={12} /> Connected
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+                      <CheckCircle2 size={12} /> Connected
+                    </div>
+                    <button
+                      type="button"
+                      disabled={zernioDisconnecting === account!.id}
+                      onClick={() => void zernioDisconnect(account!.id, p.label)}
+                      className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      {zernioDisconnecting === account!.id ? <Loader2 size={11} className="animate-spin" /> : <><X size={11} /><span>Disconnect</span></>}
+                    </button>
                   </div>
+                ) : zernioApiOk === false ? (
+                  <p className="text-center text-[10px] leading-snug text-slate-400">
+                    Zernio API key<br />not configured
+                  </p>
                 ) : (
                   <button
                     type="button"
-                    disabled={zernioConnecting === p.id}
+                    disabled={zernioConnecting === p.id || zernioApiOk === null}
                     onClick={() => void zernioConnect(p.id)}
                     className="flex w-full items-center justify-center gap-1 rounded-lg bg-brand-dark px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-brand disabled:opacity-50"
                   >
-                    {zernioConnecting === p.id ? <Loader2 size={11} className="animate-spin" /> : <><span>Connect</span><ExternalLink size={9} /></>}
+                    {zernioConnecting === p.id
+                      ? <Loader2 size={11} className="animate-spin" />
+                      : zernioApiOk === null
+                        ? <Loader2 size={11} className="animate-spin" />
+                        : <><span>Connect</span><ExternalLink size={9} /></>}
                   </button>
                 )}
               </SmallTile>
