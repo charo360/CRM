@@ -614,22 +614,16 @@ function IntegrationsPageInner() {
                       {zernioDisconnecting === account!.id ? <Loader2 size={11} className="animate-spin" /> : <><X size={11} /><span>Disconnect</span></>}
                     </button>
                   </div>
-                ) : zernioApiOk === false ? (
-                  <p className="text-center text-[10px] leading-snug text-slate-400">
-                    Zernio API key<br />not configured
-                  </p>
                 ) : (
                   <button
                     type="button"
-                    disabled={zernioConnecting === p.id || zernioApiOk === null}
+                    disabled={zernioConnecting === p.id}
                     onClick={() => void zernioConnect(p.id)}
                     className="flex w-full items-center justify-center gap-1 rounded-lg bg-brand-dark px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-brand disabled:opacity-50"
                   >
                     {zernioConnecting === p.id
                       ? <Loader2 size={11} className="animate-spin" />
-                      : zernioApiOk === null
-                        ? <Loader2 size={11} className="animate-spin" />
-                        : <><span>Connect</span><ExternalLink size={9} /></>}
+                      : <><span>Connect</span><ExternalLink size={9} /></>}
                   </button>
                 )}
               </SmallTile>
