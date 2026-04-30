@@ -65,9 +65,13 @@ def make_zernio_router(db, user_dep):
                     profile.get("_id") or profile.get("id") or
                     profile.get("profileId") or profile.get("profile_id")
                 )
+            except httpx.HTTPStatusError as e:
+                body = e.response.text[:400]
+                logger.error(f"[zernio] Profile create failed HTTP {e.response.status_code}: {body}")
+                raise HTTPException(503, f"Zernio {e.response.status_code}: {body}")
             except Exception as e:
-                logger.error(f"[zernio] Failed to create profile for {user_id}: {e}")
-                raise HTTPException(503, "Could not create Zernio profile")
+                logger.error(f"[zernio] Profile create error: {e}")
+                raise HTTPException(503, f"Zernio connection error: {e}")
 
             if not profile_id:
                 logger.error(f"[zernio] Profile created but no ID in response: {data}")
