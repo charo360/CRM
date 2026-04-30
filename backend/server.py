@@ -2774,12 +2774,10 @@ async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str
         existing = await db.team_members.find_one({"business_id": business_id, "phone_number": phone})
         if existing:
             raise HTTPException(status_code=400, detail="This phone number is already on your team")
-    elif email:
+    if email:
         existing = await db.team_members.find_one({"business_id": business_id, "email": email})
         if existing:
             raise HTTPException(status_code=400, detail="This email is already on your team")
-    else:
-        raise HTTPException(status_code=400, detail="Either phone number or email is required")
 
     now = datetime.utcnow()
     member_id = str(uuid.uuid4())
