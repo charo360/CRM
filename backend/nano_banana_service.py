@@ -38,6 +38,8 @@ async def edit_product_image(
     scene_prompt: str,
     format: str = "square",
     quality: str = "fast",
+    logo_url: Optional[str] = None,
+    brand_color: str = "",
 ) -> Dict[str, Any]:
     """
     Use Gemini to EDIT an existing product photo — places the real product in a new
@@ -45,7 +47,8 @@ async def edit_product_image(
 
     product_image_url : publicly accessible URL of the product photo
     scene_prompt      : description of the desired scene, lighting, mood
-                        e.g. "on a marble table, golden-hour sunlight from the left, moody shadows"
+    logo_url          : optional brand logo — overlaid in a corner of the final design
+    brand_color       : optional hex color — used as accent in the scene
     """
     if not OPENROUTER_KEY:
         return {"error": "OPENROUTER_KEY not configured in .env"}
@@ -59,6 +62,16 @@ async def edit_product_image(
     model = NANO_BANANA_PRO if quality == "pro" else NANO_BANANA_2
     aspect_ratio = _ASPECT_MAP.get(format, "1:1")
 
+    color_note = f"\nBRAND ACCENT COLOUR: {brand_color} — use this as a subtle accent in the background, surface, or lighting." if brand_color else ""
+    logo_note = (
+        "\n\nBRAND LOGO PLACEMENT: The second image is the brand logo. You MUST include it in the final design.\n"
+        "- Analyse the finished composition first — identify which corner or edge has the most visual breathing room (least subject matter, least focal weight).\n"
+        "- Place the logo there. Size: ~12–16% of canvas width. Must be readable but not competing with the product.\n"
+        "- Match contrast to local background: light logo on dark areas, dark/coloured logo on light areas.\n"
+        "- It must look DESIGNED-IN, not pasted on top. Blend with the scene's lighting direction.\n"
+        "- Do NOT distort, recolour, rotate, or reshape the logo."
+    ) if logo_url else ""
+
     edit_instruction = (
         f"You are a world-class commercial photographer and creative director.\n\n"
         f"STEP 1 — ANALYZE: Study this product carefully. What is it? What are its key visual "
@@ -71,24 +84,33 @@ async def edit_product_image(
         f"- For clothing: worn on a model, folded editorial, or dramatic close-up of fabric?\n"
         f"- For electronics: in use, angled product shot, detail close-up, or lifestyle context?\n"
         f"Pick what makes THIS specific product look most irresistible to a buyer.\n\n"
-        f"STEP 3 — CREATE THE SCENE: {scene_prompt}\n\n"
+        f"STEP 3 — CREATE THE SCENE: {scene_prompt}{color_note}{logo_note}\n\n"
         f"ABSOLUTE RULES — violating any of these ruins the image:\n"
         f"1. The product itself must remain 100% identical to the original photo — same shape, every color, "
         f"all branding, every texture and detail. Do NOT redesign, stylize, or reimagine the product.\n"
         f"2. The final image must look like a REAL PHOTOGRAPH taken by a human photographer — "
         f"photorealistic, natural lighting, genuine depth of field. Not AI art, not CGI, not illustration.\n"
-        f"3. No text, no words, no letters, no watermarks anywhere in the image.\n"
+        f"3. No text, no words, no letters, no watermarks anywhere in the image — except the brand logo if provided.\n"
         f"4. No other products or competing objects in the scene.\n"
         f"5. The scene and background must feel real — real surfaces, real light, real environment."
     )
 
-    message_content = [
+    message_content: list = [
         {
             "type": "image_url",
             "image_url": {"url": f"data:{prod_mime};base64,{prod_b64}"},
         },
-        {"type": "text", "text": edit_instruction},
     ]
+    if logo_url:
+        try:
+            logo_b64, logo_mime = await _fetch_as_b64(logo_url)
+            message_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{logo_mime};base64,{logo_b64}"},
+            })
+        except Exception as logo_err:
+            logger.warning("[nano_banana] logo fetch failed (continuing without): %s", logo_err)
+    message_content.append({"type": "text", "text": edit_instruction})
 
     payload = {
         "model": model,
@@ -163,8 +185,8 @@ async def generate_creative_image(
     model = NANO_BANANA_PRO if quality == "pro" else NANO_BANANA_2
     aspect_ratio = _ASPECT_MAP.get(format, "1:1")
 
-    # Build multimodal content: if a logo is provided, include it as an image
-    # reference so Gemini can pick up brand colours / aesthetic.
+    # Build multimodal content: if a logo is provided, include it as a reference
+    # image with explicit composition-aware placement instructions.
     if logo_url:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -172,12 +194,22 @@ async def generate_creative_image(
                 logo_resp.raise_for_status()
                 logo_b64 = base64.b64encode(logo_resp.content).decode()
                 content_type = logo_resp.headers.get("content-type", "image/png").split(";")[0]
+                logo_instruction = (
+                    "\n\nBRAND LOGO PLACEMENT:\n"
+                    "The image above is the brand logo. You MUST place it in the final design.\n"
+                    "Rules:\n"
+                    "1. Find the corner or edge with the most visual breathing room — where there is no focal point, no subject, and the least visual weight.\n"
+                    "2. Size it at roughly 12–16% of the canvas width — large enough to read, small enough to not compete with the hero.\n"
+                    "3. If the background behind the logo area is dark, keep the logo light (white/transparent). If light, keep it dark or coloured. Never let it get lost.\n"
+                    "4. It must look DESIGNED-IN — not stamped on top. Integrate it with the composition.\n"
+                    "5. Do NOT distort, recolour, rotate, or crop the logo shape."
+                )
                 message_content = [
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:{content_type};base64,{logo_b64}"},
                     },
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": prompt + logo_instruction},
                 ]
         except Exception as e:
             logger.warning("[nano_banana] Logo fetch failed, falling back to text-only: %s", e)

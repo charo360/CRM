@@ -474,6 +474,22 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "post schedule", "when to post", "content plan",
         "social media plan", "weekly post", "content strategy",
     ],
+    "social_monitor": [
+        "social media performance", "social performance", "post performance",
+        "engagement rate", "engagement analytics", "social analytics",
+        "how are my posts doing", "post analytics", "social media analytics",
+        "which platform is performing", "best performing post",
+        "reach and engagement", "social media reach", "social media metrics",
+        "social media strategy", "social strategy", "what's working on",
+        "platform performance", "content performance", "post reach",
+        "monitor social", "social media monitor", "social media report",
+        "social report", "instagram performance", "facebook performance",
+        "linkedin performance", "tiktok performance", "x performance",
+        "how many likes", "how many views", "social media roi",
+        "which posts work", "top posts", "best posts",
+        "social media insights", "content insights", "posting strategy",
+        "advise on social", "social media advice",
+    ],
     "whatsapp": [
         "whatsapp setup", "whatsapp connection", "connect whatsapp",
         "whatsapp qr", "whatsapp scan", "whatsapp disconnected",
@@ -572,13 +588,14 @@ async def route_to_agent(
     # Creative is multi-turn and heavily stateful (product / platform / template /
     # copy / staged image / render). Bouncing out mid-flow loses all context.
     # Two signals trigger stickiness:
-    #   a) prev_agent is "creative" (or legacy "design"/"social_media")
+    #   a) prev_agent resolves to "creative" (handles legacy "design"/"social_media" aliases)
     #   b) design_flow_active == True (DB confirms flow_step is set and not done)
     # Only leave when the user EXPLICITLY asks.
-    _creative_agents = {"creative", "design", "social_media"}
+    _AGENT_ALIASES_LOCAL = {"design": "creative", "social_media": "creative"}
+    prev_agent_resolved = _AGENT_ALIASES_LOCAL.get(prev_agent or "", prev_agent or "")
     is_active_creative = (
         "creative" in agent_registry
-        and (prev_agent in _creative_agents or design_flow_active)
+        and (prev_agent_resolved == "creative" or design_flow_active)
     )
     if is_active_creative:
         # Never trap document/proposal requests inside a sticky creative flow.
@@ -599,7 +616,7 @@ async def route_to_agent(
     # ── 0a-2. Sticky routing for document agent ──────────────────────────────
     # Document sessions (e.g. template cloning) are multi-turn — don't bounce
     # the user to creative/general just because keywords like "template" match.
-    if prev_agent == "document" and "document" in agent_registry:
+    if prev_agent_resolved == "document" and "document" in agent_registry:
         if not _is_explicit_design_exit(msg_lower):
             logger.info(
                 "[IntentRouter] sticky → document (active document session; message: %r)",
@@ -609,9 +626,9 @@ async def route_to_agent(
         logger.info(f"[IntentRouter] leaving document (explicit exit: {message!r})")
 
     # ── 0b. Sticky routing — don't break mid-flow on ambiguous replies ────────
-    if prev_agent and prev_agent in agent_registry and _is_continuation_message(msg_lower):
-        logger.info(f"[IntentRouter] sticky → {prev_agent} (continuation: {message!r})")
-        return prev_agent
+    if prev_agent_resolved and prev_agent_resolved in agent_registry and _is_continuation_message(msg_lower):
+        logger.info(f"[IntentRouter] sticky → {prev_agent_resolved} (continuation: {message!r})")
+        return prev_agent_resolved
 
     # Text document intent → document agent (must check BEFORE creative override)
     if "document" in agent_registry and _is_text_document_intent(msg_lower):
@@ -635,40 +652,56 @@ async def route_to_agent(
             scores[agent_id] = score
 
     if scores:
+        sorted_scores = sorted(scores.values(), reverse=True)
         best = max(scores, key=lambda k: scores[k])
-        # Prefer CRM catalog agents when the user did not mention Shopify but is clearly
-        # doing catalog / stock work — avoids mis-routing to Shopify specialists.
-        if (
-            best in _SHOPIFY_AGENT_IDS
-            and not _explicit_shopify_intent(msg_lower)
-            and _crm_catalog_intent(msg_lower)
-        ):
-            for preferred in ("inventory", "shop", "sales"):
-                if preferred in scores:
-                    best = preferred
-                    logger.info(
-                        f"[IntentRouter] keyword → {best} (override: CRM catalog, not Shopify; was shopify-tied; scores={scores})"
-                    )
-                    return best
-            best = "inventory"
+        top_score = sorted_scores[0]
+        second_score = sorted_scores[1] if len(sorted_scores) > 1 else 0
+
+        # Confidence check: if top two agents are tied or within 1 word of each other,
+        # the keyword signal is ambiguous — fall through to the LLM for a better call.
+        # Exception: sticky/forced overrides already resolved above, so this only fires
+        # when no override applied and the message genuinely matches multiple domains.
+        _ambiguous = (top_score > 0) and (top_score - second_score <= 1) and (second_score > 0)
+        if _ambiguous:
             logger.info(
-                f"[IntentRouter] keyword → {best} (override: CRM catalog default; scores={scores})"
+                f"[IntentRouter] keyword ambiguous (scores={scores}) — deferring to LLM fallback"
             )
+            # Fall through to LLM section below (do not return here)
+        else:
+            # Prefer CRM catalog agents when the user did not mention Shopify but is clearly
+            # doing catalog / stock work — avoids mis-routing to Shopify specialists.
+            if (
+                best in _SHOPIFY_AGENT_IDS
+                and not _explicit_shopify_intent(msg_lower)
+                and _crm_catalog_intent(msg_lower)
+            ):
+                for preferred in ("inventory", "shop", "sales"):
+                    if preferred in scores:
+                        best = preferred
+                        logger.info(
+                            f"[IntentRouter] keyword → {best} (override: CRM catalog, not Shopify; was shopify-tied; scores={scores})"
+                        )
+                        return best
+                best = "inventory"
+                logger.info(
+                    f"[IntentRouter] keyword → {best} (override: CRM catalog default; scores={scores})"
+                )
+                return best
+            # Catalog/stock agents have no graphic/PDF/deck tools — do not answer design/PDF/PPT there.
+            if _design_or_creative_document_intent(msg_lower) and best in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
+                alt = _prefer_creative_agent(msg_lower, agent_registry)
+                logger.info(
+                    f"[IntentRouter] keyword → {alt} (override: creative/doc intent; was {best}; scores={scores})"
+                )
+                return alt
+            logger.info(f"[IntentRouter] keyword → {best} (confidence=high; scores={scores})")
             return best
-        # Catalog/stock agents have no graphic/PDF/deck tools — do not answer design/PDF/PPT there.
-        if _design_or_creative_document_intent(msg_lower) and best in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
-            alt = _prefer_creative_agent(msg_lower, agent_registry)
-            logger.info(
-                f"[IntentRouter] keyword → {alt} (override: creative/doc intent; was {best}; scores={scores})"
-            )
-            return alt
-        logger.info(f"[IntentRouter] keyword → {best} (scores={scores})")
-        return best
 
     # ── 2. LLM fallback ───────────────────────────────────────────────────────
+    # Uses chat_with_tools (respects AI_PROVIDER env var, normalized across all
+    # providers) instead of the private ai_service._call_openai method.
     try:
-        from ai_service import get_drafter
-        ai = get_drafter()
+        from .models import chat_with_tools as _chat_with_tools
 
         agent_menu = "\n".join(
             f"  {aid}: {cfg.get('description', '')}"
@@ -695,15 +728,24 @@ async def route_to_agent(
             f"Recent context:\n{recent}\n\n"
             f"User message: \"{message}\"\n\n"
             "Reply ONLY with valid JSON on one line: "
-            "{\"agent\": \"<agent_id>\", \"reason\": \"<one sentence>\"}\n"
+            "{\"agent\": \"<agent_id>\", \"confidence\": <0.0-1.0>, \"reason\": \"<one sentence>\"}\n"
+            "confidence: 1.0 = unambiguously clear, 0.5 = could go either way. "
             "Choose the most specific agent. Use 'general' only if nothing else fits."
         )
 
-        raw = await ai._call_openai(prompt)
+        resp = await _chat_with_tools(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            model_id=None,
+            temperature=0.0,
+            timeout=8.0,
+        )
+        raw = resp.get("content", "")
         match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
         if match:
             data = json.loads(match.group())
             chosen = data.get("agent", "general")
+            confidence = float(data.get("confidence", 1.0))
             # Override: visual/social intent must never land on catalog/stock agents
             if _design_or_creative_document_intent(msg_lower):
                 if chosen in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
@@ -712,7 +754,9 @@ async def route_to_agent(
                 elif chosen in {"social_media", "design"} and "creative" in agent_registry:
                     chosen = "creative"
             if chosen in agent_registry:
-                logger.info(f"[IntentRouter] LLM → {chosen}: {data.get('reason', '')}")
+                logger.info(
+                    f"[IntentRouter] LLM → {chosen} (confidence={confidence:.2f}): {data.get('reason', '')}"
+                )
                 return chosen
     except Exception as exc:
         logger.warning(f"[IntentRouter] LLM fallback failed: {exc}")

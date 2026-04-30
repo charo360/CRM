@@ -359,12 +359,16 @@ class S3Handler:
     @staticmethod
     def get_s3_client():
         import boto3
+        from botocore.config import Config
         try:
+            region = os.environ.get('AWS_REGION', 'us-east-1')
             return boto3.client(
                 's3',
                 aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                 aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-                region_name=os.environ.get('AWS_REGION', 'us-east-1')
+                region_name=region,
+                endpoint_url=f'https://s3.{region}.amazonaws.com',
+                config=Config(signature_version='s3v4'),
             )
         except Exception as e:
             logger.error(f"Failed to create S3 client: {e}")
@@ -425,7 +429,63 @@ class S3Handler:
             url = await loop.run_in_executor(None, _upload)
             logger.info(f"Uploaded to S3: {url}")
             return url
-            
+
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
             raise
+
+    @staticmethod
+    def parse_s3_source_to_bucket_key(url: str) -> tuple:
+        """Parse an S3 URL (virtual-hosted, path-style, or presigned) into (bucket, key).
+
+        Handles:
+          https://<bucket>.s3.amazonaws.com/<key>
+          https://<bucket>.s3.<region>.amazonaws.com/<key>
+          https://s3.<region>.amazonaws.com/<bucket>/<key>
+          https://s3.amazonaws.com/<bucket>/<key>
+        Presigned query parameters are stripped automatically.
+        Returns (bucket, key) or ("", "") if not parseable.
+        """
+        import re as _re
+        from urllib.parse import urlparse as _urlparse
+        if not url or "amazonaws.com" not in url:
+            return ("", "")
+        try:
+            p = _urlparse(url)
+            host = p.hostname or ""
+            # Strip presigned query string — path is all we need
+            path = p.path.lstrip("/")
+
+            # Virtual-hosted style: <bucket>.s3[.<region>].amazonaws.com/<key>
+            m = _re.match(r"^(.+?)\.s3(?:\.[^.]+)?\.amazonaws\.com$", host)
+            if m:
+                return (m.group(1), path)
+
+            # Path-style: s3[.<region>].amazonaws.com/<bucket>/<key>
+            m2 = _re.match(r"^s3(?:\.[^.]+)?\.amazonaws\.com$", host)
+            if m2 and "/" in path:
+                bucket_part, _, key_part = path.partition("/")
+                return (bucket_part, key_part)
+        except Exception:
+            pass
+        return ("", "")
+
+    @staticmethod
+    def generate_presigned_get_url(bucket: str, key: str, expires_in: int = 3600) -> str:
+        """Generate a pre-signed GET URL for an S3 object."""
+        s3 = S3Handler.get_s3_client()
+        return s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': key},
+            ExpiresIn=expires_in,
+        )
+
+    @staticmethod
+    async def async_generate_presigned_get_url(bucket: str, key: str, expires_in: int = 3600) -> str:
+        """Async wrapper around generate_presigned_get_url."""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: S3Handler.generate_presigned_get_url(bucket, key, expires_in),
+        )

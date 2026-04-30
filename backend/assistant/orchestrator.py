@@ -18,12 +18,13 @@ Returned shape:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from .agents import get_agent_config
 from .context_builder import build_context, format_context_block
@@ -288,11 +289,88 @@ Every reply must read like a polished document an executive would skim.
 - Tone: calm, precise, confident. No emoji. No exclamation marks. No "Sure!" / "Great question!" openers. Lead with the answer.
 """
 
-MAX_STEPS = 14
+MAX_STEPS = 28
 AFFIRMATIVE = {"yes", "y", "ok", "okay", "sure", "go", "do it", "send", "confirm", "confirmed", "yep", "yeah"}
 
 # Tool results go to the LLM and to Mongo on assistant messages — cap JSON size both places.
 _MAX_TOOL_RESULT_JSON_CHARS = 80_000
+
+# Per-turn token budget circuit breaker.
+# Stops the loop before we hit provider limits or run up huge costs on a runaway turn.
+_MAX_TOKENS_PER_TURN = int(os.getenv("MAX_TOKENS_PER_TURN", "120000"))
+
+# Sliding window history: when conversation exceeds this, compress the oldest block.
+_HISTORY_COMPRESS_THRESHOLD = 40
+_HISTORY_COMPRESS_KEEP = 20   # keep this many recent messages uncompressed
+_HISTORY_COMPRESS_CHUNK = 20  # summarize this many oldest messages
+
+
+async def _compress_history(
+    history: List[Dict[str, Any]],
+    model_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Compress the oldest _HISTORY_COMPRESS_CHUNK messages into a summary system message.
+
+    Returns a new history list: [summary_system_msg] + recent_messages.
+    Falls back to the original hard-cut if summarization fails.
+    """
+    if len(history) <= _HISTORY_COMPRESS_THRESHOLD:
+        return history
+
+    old_chunk = history[:_HISTORY_COMPRESS_CHUNK]
+    recent = history[_HISTORY_COMPRESS_CHUNK:]
+
+    # Build a compact transcript of the old chunk for the LLM to summarize.
+    transcript_lines = []
+    for m in old_chunk:
+        role = m.get("role", "")
+        if role not in ("user", "assistant"):
+            continue
+        content = m.get("content") or ""
+        if isinstance(content, list):  # Anthropic native blocks
+            content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+        transcript_lines.append(f"{role.upper()}: {str(content)[:400]}")
+
+    if not transcript_lines:
+        return history[-_HISTORY_COMPRESS_KEEP:]
+
+    transcript = "\n".join(transcript_lines)
+    prompt_msgs = [
+        {"role": "system", "content": (
+            "You are a conversation summarizer. "
+            "Produce a concise 3-8 bullet-point summary of the conversation below. "
+            "Preserve: decisions made, data looked up, products/customers mentioned, "
+            "actions taken or confirmed, any open questions. "
+            "Be specific — include names, numbers, and dates where present. "
+            "Output ONLY the bullet list, no preamble."
+        )},
+        {"role": "user", "content": transcript},
+    ]
+    try:
+        from .models import chat_with_tools as _chat
+        summary_resp = await _chat(
+            messages=prompt_msgs,
+            tools=[],
+            model_id=model_id,
+            temperature=0.1,
+            timeout=30.0,
+        )
+        summary_text = summary_resp.get("content", "").strip()
+        if summary_text:
+            summary_msg = {
+                "role": "system",
+                "content": f"[Earlier conversation summary — treat as ground truth]\n{summary_text}",
+            }
+            logger.info(
+                "[orchestrator] history compressed: %d messages → summary (%d chars) + %d recent",
+                len(old_chunk), len(summary_text), len(recent),
+            )
+            return [summary_msg] + recent
+    except Exception as exc:
+        logger.warning("[orchestrator] history compression failed, using hard cut: %s", exc)
+
+    # Fallback: hard cut to most recent messages
+    return history[-_HISTORY_COMPRESS_KEEP:]
 
 
 def _limit_tool_result_size(result: Any) -> Any:
@@ -308,6 +386,15 @@ def _limit_tool_result_size(result: Any) -> Any:
         "original_json_chars": len(s),
         "preview": s[:8000] + "…",
     }
+
+
+async def _flush_owner_prefs_bg(business_id: str, turns: list, agent_id: str) -> None:
+    """Fire-and-forget wrapper for owner preference flushing. Never raises."""
+    try:
+        from memory.owner_prefs import flush_owner_preferences
+        await flush_owner_preferences(business_id=business_id, turns=turns, agent_id=agent_id)
+    except Exception as _e:
+        logger.debug("[orchestrator] owner pref flush failed (non-critical): %s", _e)
 
 
 async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str, Any]:
@@ -327,6 +414,40 @@ async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str
         last = payload["messages_to_append"][-1]
         if last.get("role") == "assistant":
             last["suggestions"] = sugs
+
+    # ── Telemetry: fire-and-forget event log ──────────────────────────────────
+    # Persists lightweight per-turn analytics to assistant_agent_events.
+    # Never blocks the response — errors are swallowed silently.
+    _db = payload.get("_db")
+    if _db is not None:
+        import asyncio as _asyncio
+        import time as _time
+
+        async def _write_telemetry() -> None:
+            try:
+                steps = payload.get("steps") or []
+                tool_calls = [
+                    {
+                        "name": s.get("tool", ""),
+                        "error": s.get("result", {}).get("error") if isinstance(s.get("result"), dict) else None,
+                    }
+                    for s in steps
+                ]
+                await _db.assistant_agent_events.insert_one({
+                    "conversation_id": payload.get("_conversation_id"),
+                    "agent_id": ag,
+                    "routing_method": payload.get("_routing_method", "unknown"),
+                    "tool_calls": tool_calls,
+                    "turn_steps": len(steps),
+                    "tokens_used": payload.get("_tokens_used", 0),
+                    "model": payload.get("model", ""),
+                    "ts": _time.time(),
+                })
+            except Exception as _te:
+                logger.debug("[telemetry] write failed (non-critical): %s", _te)
+
+        _asyncio.create_task(_write_telemetry())
+
     return payload
 
 
@@ -342,6 +463,9 @@ async def run_turn(
     agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a single conversational turn."""
+    trace_id = str(uuid.uuid4())[:8]
+    _tlog = logging.LoggerAdapter(logger, {"trace_id": trace_id, "conv": conversation_id or "-"})
+    _tlog.info("[turn.start] agent=%s user=%s msg_len=%d", agent_id, user.get("_id", "-"), len(user_message))
     # Stash the conversation id on the user dict so tools (e.g. search_documents)
     # can scope their queries without an extra plumbing channel.
     user = {**user, "_active_conversation_id": conversation_id}
@@ -380,6 +504,13 @@ async def run_turn(
                     })
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_text}]
+
+    # Inject shared agent workspace context (set by routes.py when agents switch).
+    # This lets the incoming agent know what was decided in prior sessions
+    # (product chosen, campaign goal, approved copy, brand color, etc.)
+    _workspace_ctx = user.get("_workspace_context", "")
+    if _workspace_ctx:
+        messages.append({"role": "system", "content": _workspace_ctx})
 
     # Mirror AutoReply v2's mini-state pattern: when running the design agent,
     # inject a compact snapshot of locked template / platform / staged image so
@@ -447,8 +578,10 @@ async def run_turn(
     if _plan_hint:
         messages.append({"role": "system", "content": _plan_hint})
 
-    # Trim history to last 50 messages
-    messages.extend(history[-50:])
+    # Sliding window: compress old history into a summary when conversation is long.
+    history = await _compress_history(history, model_id)
+
+    messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
     steps: List[Dict[str, Any]] = []
@@ -461,8 +594,18 @@ async def run_turn(
 
     pending_confirmation: Optional[Dict[str, Any]] = None
     model_used = model_id or ""
+    _tokens_used = 0  # running total for circuit breaker
 
     for step_idx in range(MAX_STEPS):
+        # Circuit breaker: abort before the next LLM call if we've already spent
+        # too many tokens this turn (prevents runaway loops from being expensive).
+        if _tokens_used >= _MAX_TOKENS_PER_TURN:
+            _tlog.warning(
+                "[turn.circuit_breaker] token budget exceeded: %d >= %d — stopping loop",
+                _tokens_used, _MAX_TOKENS_PER_TURN,
+            )
+            break
+
         resp = await chat_with_tools(
             messages=messages,
             tools=tool_specs,
@@ -472,6 +615,9 @@ async def run_turn(
             attachments=native_attachments if step_idx == 0 else None,
         )
         model_used = resp.get("model", model_used)
+        # Accumulate token usage from the provider response.
+        _usage = resp.get("raw", {}).get("usage", {}) if isinstance(resp.get("raw"), dict) else {}
+        _tokens_used += (_usage.get("total_tokens") or _usage.get("input_tokens", 0) + _usage.get("output_tokens", 0))
 
         tool_calls = resp.get("tool_calls") or []
         # Echo the assistant message (with any tool_calls) back into the running
@@ -483,6 +629,7 @@ async def run_turn(
         messages.append(asst_msg)
 
         if not tool_calls:
+            _tlog.info("[turn.done] steps=%d tokens_used=%d", step_idx, _tokens_used)
             final = resp.get("content", "")
             # Critic: review the draft before returning. No-ops unless CRITIC_ENABLED=true.
             final = await critique(
@@ -495,14 +642,22 @@ async def run_turn(
             messages_to_append.append({"role": "assistant", "content": final})
             # Memory flush: every MEMORY_FLUSH_EVERY turns, summarize + embed async.
             _flush_every = int(os.getenv("MEMORY_FLUSH_EVERY", "10"))
+            _business_id = str(user.get("business_id") or user.get("_id", ""))
             if len(history) > 0 and (len(history) + 1) % _flush_every == 0:
-                import asyncio as _asyncio
                 from memory.flush import flush_to_long_term
-                _asyncio.create_task(flush_to_long_term(
+                asyncio.create_task(flush_to_long_term(
                     customer_id=str(user.get("_id", "")),
-                    business_id=str(user.get("business_id") or user.get("_id", "")),
+                    business_id=_business_id,
                     turns=history[-_flush_every:],
                 ))
+            # Owner preference flush: fires every turn on the last N messages
+            # (uses a smaller window — preferences surface faster than memories).
+            # Always fires, not just every 10 turns.
+            asyncio.create_task(_flush_owner_prefs_bg(
+                business_id=_business_id,
+                turns=messages_to_append,
+                agent_id=active_agent_id,
+            ))
             return await _finalize_turn(
                 {
                     "reply": final,
@@ -511,29 +666,39 @@ async def run_turn(
                     "model": model_used,
                     "needs_confirmation": pending_confirmation,
                     "active_agent": active_agent_id,
+                    "_db": db,
+                    "_conversation_id": conversation_id,
+                    "_routing_method": "orchestrator",
+                    "_tokens_used": _tokens_used,
                 },
                 user_message,
             )
 
-        # Execute tool calls (OpenAI may return multiple in one shot)
+        # ── Parallel tool execution ───────────────────────────────────────────
+        # Separate destructive tools (need sequential confirmation gate) from
+        # safe tools (can run concurrently). If ANY destructive tool is present
+        # and not yet approved, stop and ask for confirmation immediately.
+        _safe_tcs: List[Dict[str, Any]] = []
         for tc in tool_calls:
-            tc_id = tc.get("id") or str(uuid.uuid4())
             name = tc.get("name")
-            if not name:
-                logger.error("[orchestrator] tool_call missing name: %s", tc)
-                steps.append({"tool": "(invalid)", "arguments": tc, "result": {"error": "Model returned a tool call without a name — retry the message."}})
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": json.dumps({"error": "Malformed tool call (missing name)."}, default=str),
-                })
-                continue
             args = tc.get("arguments") or {}
             if isinstance(args, str):
                 try:
                     args = json.loads(args) if args.strip() else {}
                 except Exception:
                     args = {}
+            tc["arguments"] = args  # normalize in-place
+
+            if not name:
+                logger.error("[orchestrator] tool_call missing name: %s", tc)
+                steps.append({"tool": "(invalid)", "arguments": tc, "result": {"error": "Model returned a tool call without a name — retry the message."}})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id") or str(uuid.uuid4()),
+                    "content": json.dumps({"error": "Malformed tool call (missing name)."}, default=str),
+                })
+                continue
+
             spec = REGISTRY.get(name)
             if spec and spec.get("destructive") and not approved_destructive:
                 pending_confirmation = {
@@ -541,7 +706,6 @@ async def run_turn(
                     "arguments": args,
                     "reason": f"Destructive action `{name}` requires confirmation.",
                 }
-                # Don't run it — return the plan as assistant text instead.
                 preview_text = _describe_destructive(name, args)
                 messages_to_append.append({"role": "assistant", "content": preview_text})
                 return await _finalize_turn(
@@ -552,37 +716,51 @@ async def run_turn(
                         "model": model_used,
                         "needs_confirmation": pending_confirmation,
                         "active_agent": active_agent_id,
+                        "_db": db,
+                        "_conversation_id": conversation_id,
+                        "_routing_method": "orchestrator",
+                        "_tokens_used": _tokens_used,
                     },
                     user_message,
                 )
+            _safe_tcs.append(tc)
 
+        if not _safe_tcs:
+            continue
+
+        # Run all safe tool calls concurrently
+        async def _exec_one(tc: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
+            name = tc["name"]
+            args = tc["arguments"]
             result = await run_tool(name, ctx, args)
-            capped = _limit_tool_result_size(result)
-            steps.append({
-                "tool": name,
-                "arguments": args,
-                "result": capped,
-            })
+            return tc, result
 
-            # Structured ERROR logging — mirrors AutoReply v2's failure-trace pattern.
-            # When a tool returns an `error` field (or raises a swallowed exception
-            # surfaced as such), log the full context so we can diagnose silent drift
-            # (wrong template_id, missing field key, vendor 4xx, etc.) without grepping.
+        _tlog.info("[turn.tools] step=%d parallel=%d tools=%s", step_idx, len(_safe_tcs), [t["name"] for t in _safe_tcs])
+        results_pairs = await asyncio.gather(*[_exec_one(tc) for tc in _safe_tcs], return_exceptions=True)
+
+        _LLM_STRIP_FIELDS = {"html_preview", "content_md"}
+        for pair in results_pairs:
+            if isinstance(pair, BaseException):
+                logger.error("[orchestrator] tool coroutine raised: %s", pair)
+                continue
+            tc, result = pair
+            tc_id = tc.get("id") or str(uuid.uuid4())
+            name = tc["name"]
+            args = tc["arguments"]
+            spec = REGISTRY.get(name)
+            capped = _limit_tool_result_size(result)
+            steps.append({"tool": name, "arguments": args, "result": capped})
+
             if isinstance(result, dict) and result.get("error"):
                 try:
                     logger.error(
                         "[assistant.tool_error] tool=%s agent=%s conv=%s user=%s args=%s error=%r",
-                        name,
-                        active_agent_id,
-                        conversation_id,
-                        ctx.user_id,
-                        json.dumps(args, default=str)[:1500],
-                        result.get("error"),
+                        name, active_agent_id, conversation_id, ctx.user_id,
+                        json.dumps(args, default=str)[:1500], result.get("error"),
                     )
                 except Exception:
                     logger.exception("[assistant.tool_error] log emission failed (tool=%s)", name)
 
-            # Audit log for destructive actions
             if spec and spec.get("destructive"):
                 try:
                     await ctx.db.assistant_audit_log.insert_one({
@@ -597,12 +775,8 @@ async def run_turn(
                         "created_at": datetime.utcnow(),
                     })
                 except Exception as e:
-                    logger.warning(f"[assistant.audit] failed to write log: {e}")
+                    logger.warning("[assistant.audit] failed to write log: %s", e)
 
-            # Strip heavyweight fields (e.g. full HTML previews) from the LLM
-            # context message to avoid wasting tokens. They stay in `steps` so
-            # the frontend receives them for inline rendering.
-            _LLM_STRIP_FIELDS = {"html_preview", "content_md"}
             llm_result = (
                 {k: v for k, v in capped.items() if k not in _LLM_STRIP_FIELDS}
                 if isinstance(capped, dict) else capped
@@ -612,20 +786,17 @@ async def run_turn(
             except (TypeError, ValueError) as ser_err:
                 logger.exception("[orchestrator] tool result not JSON-serializable (tool=%s)", name)
                 tool_payload = json.dumps(
-                    {
-                        "error": "Tool output could not be serialized for the chat session",
-                        "tool": name,
-                        "detail": str(ser_err),
-                    },
+                    {"error": "Tool output could not be serialized", "tool": name, "detail": str(ser_err)},
                     default=str,
                 )
             messages.append({
                 "role": "tool",
-                "tool_call_id": tc.get("id") or tc_id,
+                "tool_call_id": tc_id,
                 "content": tool_payload,
             })
 
     # Hit step limit without a final answer
+    _tlog.warning("[turn.step_limit] hit MAX_STEPS=%d without final answer", MAX_STEPS)
     fallback = "I've gathered a lot of info but couldn't finish the task in one go. Ask me to narrow it down or try again."
     messages_to_append.append({"role": "assistant", "content": fallback})
     return await _finalize_turn(
@@ -636,6 +807,10 @@ async def run_turn(
             "model": model_used,
             "needs_confirmation": pending_confirmation,
             "active_agent": active_agent_id,
+            "_db": db,
+            "_conversation_id": conversation_id,
+            "_routing_method": "orchestrator",
+            "_tokens_used": _tokens_used,
         },
         user_message,
     )
@@ -691,6 +866,11 @@ async def run_turn_stream(
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_text}]
 
+    # Inject shared agent workspace context when agent switches
+    _workspace_ctx_s = user.get("_workspace_context", "")
+    if _workspace_ctx_s:
+        messages.append({"role": "system", "content": _workspace_ctx_s})
+
     if active_agent_id in ("design", "creative", "social_media") and conversation_id:
         try:
             from .design_state import load_design_state, format_design_state_for_prompt, update_design_state
@@ -733,7 +913,10 @@ async def run_turn_stream(
     if _plan_hint:
         messages.append({"role": "system", "content": _plan_hint})
 
-    messages.extend(history[-50:])
+    # Sliding window: compress old history into a summary when conversation is long.
+    history = await _compress_history(history, model_id)
+
+    messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
     steps: List[Dict[str, Any]] = []
@@ -742,8 +925,13 @@ async def run_turn_stream(
     approved_destructive = auto_approve_destructive or is_confirmation_reply
     pending_confirmation: Optional[Dict[str, Any]] = None
     model_used = model_id or ""
+    _tokens_used = 0  # running total for circuit breaker
 
     for step_idx in range(MAX_STEPS):
+        if _tokens_used >= _MAX_TOKENS_PER_TURN:
+            logger.warning("[run_turn_stream.circuit_breaker] token budget %d exceeded", _MAX_TOKENS_PER_TURN)
+            break
+
         resp = await chat_with_tools(
             messages=messages,
             tools=tool_specs,
@@ -751,15 +939,14 @@ async def run_turn_stream(
             attachments=native_attachments if step_idx == 0 else None,
         )
         model_used = resp.get("model", model_used)
+        _usage = resp.get("raw", {}).get("usage", {}) if isinstance(resp.get("raw"), dict) else {}
+        _tokens_used += (_usage.get("total_tokens") or _usage.get("input_tokens", 0) + _usage.get("output_tokens", 0))
         tool_calls = resp.get("tool_calls") or []
         asst_msg = resp.get("raw_assistant_message") or {"role": "assistant", "content": resp.get("content", "")}
         messages.append(asst_msg)
 
         if not tool_calls:
             # ── Final reply: stream tokens in real-time ──────────────────────
-            # Build the messages list for streaming (everything up to and including tool results)
-            stream_msgs = [m for m in messages if m.get("role") != "assistant" or not (m.get("tool_calls") or m.get("_anthropic_blocks"))]
-            # Simpler: just use the current messages list minus the last assistant placeholder
             stream_context = messages[:-1]  # drop the empty final assistant msg
             reply_text = ""
             try:
@@ -783,6 +970,13 @@ async def run_turn_stream(
             )
             messages_to_append.append({"role": "assistant", "content": final})
 
+            # Owner preference flush (stream path)
+            asyncio.create_task(_flush_owner_prefs_bg(
+                business_id=str(user.get("business_id") or user.get("_id", "")),
+                turns=messages_to_append,
+                agent_id=active_agent_id,
+            ))
+
             result = await _finalize_turn(
                 {
                     "reply": final,
@@ -791,25 +985,32 @@ async def run_turn_stream(
                     "model": model_used,
                     "needs_confirmation": pending_confirmation,
                     "active_agent": active_agent_id,
+                    "_db": db,
+                    "_conversation_id": conversation_id,
+                    "_routing_method": "orchestrator",
+                    "_tokens_used": _tokens_used,
                 },
                 user_message,
             )
             yield {"type": "done", **result}
             return
 
-        # Execute tool calls
+        # ── Parallel tool execution (stream) ─────────────────────────────────
+        # Normalize args and check for destructive tools first (sequential gate).
+        _safe_stream_tcs: List[Dict[str, Any]] = []
         for tc in tool_calls:
-            tc_id = tc.get("id") or str(uuid.uuid4())
             name = tc.get("name")
-            if not name:
-                messages.append({"role": "tool", "tool_call_id": tc_id, "content": json.dumps({"error": "Malformed tool call."}, default=str)})
-                continue
             args = tc.get("arguments") or {}
             if isinstance(args, str):
                 try:
                     args = json.loads(args) if args.strip() else {}
                 except Exception:
                     args = {}
+            tc["arguments"] = args
+
+            if not name:
+                messages.append({"role": "tool", "tool_call_id": tc.get("id") or str(uuid.uuid4()), "content": json.dumps({"error": "Malformed tool call."}, default=str)})
+                continue
 
             spec = REGISTRY.get(name)
             if spec and spec.get("destructive") and not approved_destructive:
@@ -818,15 +1019,39 @@ async def run_turn_stream(
                 messages_to_append.append({"role": "assistant", "content": preview_text})
                 result = await _finalize_turn(
                     {"reply": preview_text, "steps": steps, "messages_to_append": messages_to_append,
-                     "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id},
+                     "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id,
+                     "_db": db, "_conversation_id": conversation_id, "_routing_method": "orchestrator",
+                     "_tokens_used": _tokens_used},
                     user_message,
                 )
                 yield {"type": "token", "text": preview_text}
                 yield {"type": "done", **result}
                 return
+            _safe_stream_tcs.append(tc)
 
-            yield {"type": "tool_start", "tool": name}
-            result_data = await run_tool(name, ctx, args)
+        if not _safe_stream_tcs:
+            continue
+
+        # Emit tool_start events before launching (so UI shows spinners immediately)
+        for tc in _safe_stream_tcs:
+            yield {"type": "tool_start", "tool": tc["name"]}
+
+        # Run all safe tools concurrently
+        async def _exec_stream_one(tc: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
+            return tc, await run_tool(tc["name"], ctx, tc["arguments"])
+
+        stream_results = await asyncio.gather(*[_exec_stream_one(tc) for tc in _safe_stream_tcs], return_exceptions=True)
+
+        _LLM_STRIP_FIELDS = {"html_preview", "content_md"}
+        for pair in stream_results:
+            if isinstance(pair, BaseException):
+                logger.error("[run_turn_stream] tool coroutine raised: %s", pair)
+                continue
+            tc, result_data = pair
+            tc_id = tc.get("id") or str(uuid.uuid4())
+            name = tc["name"]
+            args = tc["arguments"]
+            spec = REGISTRY.get(name)
             capped = _limit_tool_result_size(result_data)
             steps.append({"tool": name, "arguments": args, "result": capped})
 
@@ -844,7 +1069,6 @@ async def run_turn_stream(
                 except Exception:
                     pass
 
-            _LLM_STRIP_FIELDS = {"html_preview", "content_md"}
             llm_result = (
                 {k: v for k, v in capped.items() if k not in _LLM_STRIP_FIELDS}
                 if isinstance(capped, dict) else capped
@@ -853,14 +1077,16 @@ async def run_turn_stream(
                 tool_payload = json.dumps(llm_result, default=str)
             except Exception:
                 tool_payload = json.dumps({"error": "Tool output could not be serialized."}, default=str)
-            messages.append({"role": "tool", "tool_call_id": tc.get("id") or tc_id, "content": tool_payload})
+            messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_payload})
 
     # Step limit fallback
     fallback = "I've gathered a lot of info but couldn't finish the task in one go. Ask me to narrow it down or try again."
     messages_to_append.append({"role": "assistant", "content": fallback})
     result = await _finalize_turn(
         {"reply": fallback, "steps": steps, "messages_to_append": messages_to_append,
-         "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id},
+         "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id,
+         "_db": db, "_conversation_id": conversation_id, "_routing_method": "orchestrator",
+         "_tokens_used": _tokens_used},
         user_message,
     )
     yield {"type": "token", "text": fallback}

@@ -44,12 +44,12 @@ export default function LoginPage() {
     };
   }, []);
 
-  function applyAuthResponse(res: { access_token?: string; token?: string; user?: Record<string, unknown> }) {
+  function applyAuthResponse(res: { access_token?: string; token?: string; must_change_password?: boolean; user?: Record<string, unknown> }) {
     const jwt = res.access_token || res.token;
     if (jwt && res.user) {
       setToken(jwt);
       setUser(normalizeUser(res.user));
-      router.push("/dashboard");
+      router.push(res.must_change_password ? "/change-password" : "/dashboard");
       return true;
     }
     return false;

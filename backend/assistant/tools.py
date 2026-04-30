@@ -784,36 +784,50 @@ async def create_product(ctx: ToolContext, args: Dict[str, Any]):
 
 @tool(
     name="update_product",
-    description="Update a product in the catalog (price, name, description, stock).",
+    description="Update a product in the catalog. Can update name, price, discount price, description, category, sub-category, stock status, and stock quantity.",
     parameters={
         "type": "object",
         "required": ["product_id"],
         "properties": {
-            "product_id": {"type": "string"},
+            "product_id": {"type": "string", "description": "Product ID from list_products"},
             "name": {"type": "string"},
             "price": {"type": "number"},
+            "discount_price": {"type": "number", "description": "Sale/discounted price (set to 0 to remove)"},
             "description": {"type": "string"},
+            "category": {"type": "string", "description": "Product category e.g. 'AI Design', 'Image Generation', 'AI Infrastructure'"},
+            "sub_category": {"type": "string"},
             "in_stock": {"type": "boolean"},
+            "stock_quantity": {"type": "integer", "description": "Inventory count (set to track stock levels)"},
         },
     },
     destructive=True,
 )
 async def update_product(ctx: ToolContext, args: Dict[str, Any]):
+    from bson import ObjectId
     pid = args["product_id"]
+    # Support both ObjectId and string _id
+    try:
+        oid = ObjectId(pid)
+        query = {"$or": [{"_id": oid}, {"_id": pid}], "user_id": ctx.business_id}
+    except Exception:
+        query = {"_id": pid, "user_id": ctx.business_id}
+
     updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
-    for k in ("name", "description"):
+    for k in ("name", "description", "category", "sub_category"):
         if k in args and args[k] is not None:
             updates[k] = args[k]
     if "price" in args and args["price"] is not None:
         updates["price"] = float(args["price"])
+    if "discount_price" in args and args["discount_price"] is not None:
+        updates["discount_price"] = float(args["discount_price"]) or None
     if "in_stock" in args and args["in_stock"] is not None:
         updates["in_stock"] = bool(args["in_stock"])
-    res = await ctx.db.products.update_one(
-        {"_id": pid, "user_id": ctx.business_id},
-        {"$set": updates},
-    )
+    if "stock_quantity" in args and args["stock_quantity"] is not None:
+        updates["stock_quantity"] = int(args["stock_quantity"])
+
+    res = await ctx.db.products.update_one(query, {"$set": updates})
     if res.matched_count == 0:
-        return {"error": "Product not found"}
+        return {"error": "Product not found — double-check the product_id from list_products"}
     return {"status": "updated", "product_id": pid, "changed": list(updates.keys())}
 
 
@@ -2633,9 +2647,15 @@ async def get_tiktok_ad_trends(ctx: ToolContext, args: Dict[str, Any]):
             "prompt": {
                 "type": "string",
                 "description": (
-                    "Detailed visual description of the image to generate. Be specific: lighting, mood, setting, "
-                    "subject, colours, style. E.g. 'A confident woman in her 30s holding a brown glass skincare serum bottle "
-                    "in a minimalist bathroom, golden hour light, soft shadows, editorial photography style, clean white background'."
+                    "Detailed visual description of the image. ALWAYS include: (1) camera angle — e.g. "
+                    "'3/4 angle from slightly below' or 'eye-level editorial shot' or 'low-angle hero shot'; "
+                    "(2) lighting — e.g. 'soft side-lit studio light with a subtle fill light'; "
+                    "(3) composition — e.g. 'subject at left Rule-of-Thirds intersection, 50% negative space right'; "
+                    "(4) style — e.g. 'clean editorial photography, Canva Pro aesthetic, minimal, premium'; "
+                    "(5) what NOT to include — e.g. 'no text overlays, no busy backgrounds, no watermarks'. "
+                    "Example: 'A premium dark glass perfume bottle at a 3/4 angle from slightly below, "
+                    "soft studio side-lighting with a gradient shadow, placed at left Rule-of-Thirds, "
+                    "deep navy background, 50% negative space, editorial photography, no text, no artifacts'."
                 )
             },
             "format": {
@@ -2736,6 +2756,16 @@ async def generate_creative_image(ctx: ToolContext, args: Dict[str, Any]):
                 "default": "pro",
                 "description": "pro = best quality (slower), fast = quick generation. Use pro by default for posts.",
             },
+            "trend_context": {
+                "type": "string",
+                "description": (
+                    "2-3 sentence summary of current design trends or high-performing ad styles "
+                    "researched via web_search BEFORE calling this tool. E.g. 'Bold typographic ads with "
+                    "minimal product shots are dominating AI tool promotions in 2025. Dark backgrounds "
+                    "with a single neon accent outperform light designs 3:1 in this category.' "
+                    "This context shapes the design to feel current and scroll-stopping."
+                ),
+            },
         },
     },
 )
@@ -2763,6 +2793,7 @@ async def generate_social_post(ctx: ToolContext, args: Dict[str, Any]):
         logo_url=logo_url or None,
         platform=args.get("platform", "instagram_post"),
         quality=args.get("quality", "pro"),
+        trend_context=args.get("trend_context", ""),
     )
 
     if result.get("error"):
@@ -2854,6 +2885,15 @@ async def generate_social_post(ctx: ToolContext, args: Dict[str, Any]):
                 "default": "pro",
                 "description": "pro = best quality, fast = quicker. Use pro for ads.",
             },
+            "trend_context": {
+                "type": "string",
+                "description": (
+                    "2-3 sentence summary of current ad design trends researched via web_search "
+                    "BEFORE calling this tool. Include what visual styles, hooks, or formats are "
+                    "performing in this product niche right now. This is injected into the design "
+                    "prompt to produce a current, scroll-stopping result."
+                ),
+            },
         },
     },
 )
@@ -2880,6 +2920,7 @@ async def generate_ad_creative(ctx: ToolContext, args: Dict[str, Any]):
         platform=args.get("platform", "facebook_ad"),
         urgency=args.get("urgency", ""),
         quality=args.get("quality", "pro"),
+        trend_context=args.get("trend_context", ""),
     )
 
     if result.get("error"):
@@ -3227,8 +3268,7 @@ def _compose_recreate_prompt(
     return (
         "You are recreating a marketing design. The FIRST image is the layout reference — "
         "reproduce its composition, proportions, and visual style EXACTLY. The SECOND image "
-        "(if present) is the real product to feature. The THIRD image (if present) is the "
-        "brand logo for context only.\n\n"
+        "(if present) is the real product to feature.\n\n"
         "STRICT RULES — read carefully, no exceptions:\n"
         "1. Reproduce the reference layout 100% as it is — same panels, same hierarchy, "
         "same shape and placement of headline, body text, image area, and call-to-action zone.\n"
@@ -3242,9 +3282,10 @@ def _compose_recreate_prompt(
         "5. Replace the reference's product imagery with the supplied product photo when "
         "present. Do not redraw or stylise the product — keep its real shape, colour, and "
         "branding intact.\n"
-        "6. Do not include any logo placeholder text like 'YOUR BRAND' or 'LOGO HERE' — the "
-        "real brand logo is composited onto the output afterwards, leave clear space in the "
-        "bottom-right corner for it.\n\n"
+        "6. Do NOT draw, invent, or place any logo, brand mark, icon, or watermark. "
+        "The real brand logo will be composited on top afterwards. "
+        "Leave a visually clean, uncluttered zone in the bottom-right corner "
+        "(roughly 15% of canvas width) — no text, no pattern, no dark imagery there.\n\n"
         "ALLOWED FACTS (the only text/data you may render):\n"
         f"{allowed_block}\n\n"
         + (f"ADDITIONAL DIRECTION:\n{extra_notes}\n\n" if extra_notes else "")
@@ -3478,7 +3519,7 @@ async def recreate_design_with_ai(ctx: ToolContext, args: Dict[str, Any]):
         reference_image_url=reference_url,
         prompt=prompt,
         product_image_url=product_image_url,
-        logo_url=fact_pack.get("default_logo_url") or None,
+        logo_url=None,  # don't send — Gemini redraws logos; PIL composites the real one below
         format=fmt,
         quality=quality,
     )
@@ -3489,7 +3530,7 @@ async def recreate_design_with_ai(ctx: ToolContext, args: Dict[str, Any]):
     if not image_url:
         return {"error": "Renderer returned no image URL."}
 
-    # Composite the real brand logo on top so it's pixel-identical to the file.
+    # PIL-composite the real pixel-perfect brand logo onto the finished design.
     logo = fact_pack.get("default_logo_url") or ""
     if logo:
         try:
@@ -3608,15 +3649,14 @@ async def _composite_logo_on_image(
     logo_url: str,
     *,
     position: str = "bottom-right",
-    width_pct: float = 0.10,
+    width_pct: float = 0.13,
     margin_pct: float = 0.04,
 ) -> Optional[str]:
     """Paste the brand logo onto a rendered design and upload the result.
 
-    Used as a deterministic fallback when the generated design has no
-    logo visible. Both inputs are
-    fetched over HTTP; the composite is re-uploaded to this deployment's S3
-    bucket via ``S3Handler.upload_file`` and the new presigned URL is returned.
+    Adds a smart background pill behind the logo so it stays readable on any
+    background colour. Both inputs are fetched over HTTP; the composite is
+    re-uploaded to S3 via ``S3Handler.upload_file``.
 
     Returns ``None`` on any failure so the caller can fall back to the
     un-composited render — this helper must never break the render path.
@@ -3628,7 +3668,7 @@ async def _composite_logo_on_image(
         import base64 as _b64
         import io as _io
         import httpx as _httpx
-        from PIL import Image as _Image
+        from PIL import Image as _Image, ImageDraw as _ImageDraw
         from image_handler import S3Handler
 
         async with _httpx.AsyncClient(timeout=30.0) as client:
@@ -3649,19 +3689,54 @@ async def _composite_logo_on_image(
             logo = logo.resize((target_w, target_h), _Image.LANCZOS)
 
             margin = max(8, int(base.width * margin_pct))
-            if position == "top-left":
-                xy = (margin, margin)
-            elif position == "top-right":
-                xy = (base.width - logo.width - margin, margin)
-            elif position == "bottom-left":
-                xy = (margin, base.height - logo.height - margin)
-            else:  # bottom-right (default)
-                xy = (
-                    base.width - logo.width - margin,
-                    base.height - logo.height - margin,
-                )
+            pad = max(6, int(base.width * 0.015))  # inner padding around logo
 
-            base.alpha_composite(logo, dest=xy)
+            if position == "top-left":
+                lx, ly = margin + pad, margin + pad
+            elif position == "top-right":
+                lx = base.width - logo.width - margin - pad
+                ly = margin + pad
+            elif position == "bottom-left":
+                lx = margin + pad
+                ly = base.height - logo.height - margin - pad
+            else:  # bottom-right (default)
+                lx = base.width - logo.width - margin - pad
+                ly = base.height - logo.height - margin - pad
+
+            # Sample the average brightness of the region where the logo will sit.
+            sample_box = (
+                max(0, lx - pad), max(0, ly - pad),
+                min(base.width,  lx + logo.width  + pad),
+                min(base.height, ly + logo.height + pad),
+            )
+            region = base.crop(sample_box).convert("RGB")
+            pixels = list(region.getdata())
+            avg_brightness = sum(0.299 * r + 0.587 * g + 0.114 * b for r, g, b in pixels) / max(1, len(pixels))
+
+            # Choose a contrasting pill background (semi-transparent)
+            if avg_brightness > 140:
+                pill_color = (0, 0, 0, 130)       # dark pill on light bg
+            else:
+                pill_color = (255, 255, 255, 130)  # light pill on dark bg
+
+            # Draw the rounded-rectangle background pill
+            pill_w = logo.width + pad * 2
+            pill_h = logo.height + pad * 2
+            pill_x = lx - pad
+            pill_y = ly - pad
+            radius = max(4, pad)
+
+            pill = _Image.new("RGBA", base.size, (0, 0, 0, 0))
+            draw = _ImageDraw.Draw(pill)
+            draw.rounded_rectangle(
+                [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
+                radius=radius,
+                fill=pill_color,
+            )
+            base = _Image.alpha_composite(base, pill)
+
+            # Composite logo on top of the pill
+            base.alpha_composite(logo, dest=(lx, ly))
 
             buf = _io.BytesIO()
             base.convert("RGB").save(buf, format="PNG", optimize=True)
@@ -3941,6 +4016,16 @@ def _detect_fabricated_facts(
 
 
 @tool(
+    name="_presign_s3_url",
+    description="Return a publicly accessible URL for a private S3 object.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "The S3 URL to presign"}
+        },
+        "required": ["url"],
+    },
+)
 async def _presign_s3_url(url: str) -> str:
     """Return a publicly accessible URL for a private S3 object.
 
@@ -4531,6 +4616,200 @@ async def list_meta_ads_campaign_drafts(ctx: ToolContext, args: Dict[str, Any]):
             for r in rows
         ],
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# META ADS — LIVE CAMPAIGN MANAGEMENT (Marketing API)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@tool(
+    name="list_meta_campaigns",
+    description=(
+        "List live Meta (Facebook/Instagram) ad campaigns in the connected ad account. "
+        "Returns id, name, status, objective, daily_budget, start/stop times. "
+        "Use status_filter=ACTIVE to see only running campaigns, PAUSED for paused ones, ALL for everything."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "status_filter": {
+                "type": "string",
+                "description": "ACTIVE | PAUSED | ARCHIVED | DELETED | ALL (default ALL)",
+            },
+            "limit": {"type": "integer", "description": "Max campaigns to return (default 50)"},
+        },
+    },
+)
+async def list_meta_campaigns(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import list_campaigns, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    campaigns = await list_campaigns(
+        status_filter=args.get("status_filter"),
+        limit=min(int(args.get("limit") or 50), 100),
+    )
+    return {"count": len(campaigns), "campaigns": campaigns}
+
+
+@tool(
+    name="get_meta_campaign_performance",
+    description=(
+        "Get real engagement and spend metrics for Meta ad campaigns from the Marketing API. "
+        "Returns spend, impressions, clicks, CTR, CPC, CPM, reach, and ROAS for each campaign. "
+        "Leave campaign_id empty to get performance across ALL campaigns in the account. "
+        "Use days=7 for last week, days=30 for last month."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "campaign_id": {
+                "type": "string",
+                "description": "Specific campaign ID to fetch. Leave empty for all campaigns.",
+            },
+            "days": {
+                "type": "integer",
+                "description": "Lookback window in days: 1, 3, 7, 14, 30, or 90. Default 7.",
+            },
+        },
+    },
+)
+async def get_meta_campaign_performance(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import get_campaign_insights, get_account_insights, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    days = int(args.get("days") or 7)
+    campaign_id = (args.get("campaign_id") or "").strip()
+    if campaign_id:
+        result = await get_campaign_insights(campaign_id, days=days)
+        if not result:
+            return {"error": f"No insights found for campaign {campaign_id} in the last {days} days."}
+        return result
+    else:
+        rows = await get_account_insights(days=days)
+        total_spend = sum(r["spend"] for r in rows)
+        total_clicks = sum(r["clicks"] for r in rows)
+        total_impressions = sum(r["impressions"] for r in rows)
+        avg_roas = round(
+            sum(r["roas"] * r["spend"] for r in rows) / total_spend, 2
+        ) if total_spend > 0 else 0.0
+        rows_sorted = sorted(rows, key=lambda x: x["spend"], reverse=True)
+        return {
+            "period_days": days,
+            "campaign_count": len(rows),
+            "totals": {
+                "spend": round(total_spend, 2),
+                "clicks": total_clicks,
+                "impressions": total_impressions,
+                "avg_roas": avg_roas,
+            },
+            "campaigns": rows_sorted,
+        }
+
+
+@tool(
+    name="update_meta_campaign_status",
+    description=(
+        "Pause, reactivate, or delete a Meta (Facebook/Instagram) ad campaign via the Marketing API. "
+        "Use status=PAUSED to stop a campaign that is underperforming or overspending. "
+        "Use status=ACTIVE to re-enable a paused campaign. "
+        "Use status=DELETED to permanently remove it (irreversible). "
+        "Always confirm the campaign name and reason before calling this. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "campaign_id": {"type": "string", "description": "The Meta campaign ID to update"},
+            "status": {
+                "type": "string",
+                "description": "New status: ACTIVE | PAUSED | DELETED",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief reason for the status change (for audit log)",
+            },
+        },
+        "required": ["campaign_id", "status"],
+    },
+    destructive=True,
+)
+async def update_meta_campaign_status(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import update_campaign_status, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    campaign_id = (args.get("campaign_id") or "").strip()
+    status = (args.get("status") or "").strip()
+    if not campaign_id or not status:
+        return {"error": "campaign_id and status are required"}
+
+    result = await update_campaign_status(campaign_id, status)
+
+    if result.get("success"):
+        await ctx.db.meta_ads_campaign_drafts.update_one(
+            {"user_id": ctx.business_id, "meta_campaign_id": campaign_id},
+            {"$set": {"status": status.lower(), "updated_at": datetime.utcnow()}},
+        )
+        logger.info(
+            "[meta_ads] Campaign %s set to %s by agent. Reason: %s",
+            campaign_id, status, args.get("reason", "not provided"),
+        )
+    return result
+
+
+@tool(
+    name="update_meta_campaign_budget",
+    description=(
+        "Update the daily budget of a live Meta (Facebook/Instagram) ad campaign. "
+        "Provide new_daily_budget as a dollar amount (e.g. 25.00 means $25/day). "
+        "Use this to scale up a well-performing campaign or reduce spend on a costly one. "
+        "Always state the reason and current performance before adjusting."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "campaign_id": {"type": "string", "description": "The Meta campaign ID to update"},
+            "new_daily_budget": {
+                "type": "number",
+                "description": "New daily budget in dollars (e.g. 25.00 = $25/day)",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief reason for the budget change (for audit log)",
+            },
+        },
+        "required": ["campaign_id", "new_daily_budget"],
+    },
+    destructive=True,
+)
+async def update_meta_campaign_budget(ctx: ToolContext, args: Dict[str, Any]):
+    from meta_ads_service import update_campaign_budget, _is_configured
+    if not _is_configured():
+        return {
+            "error": "Meta Ads not configured. Set META_ADS_ACCESS_TOKEN and META_ADS_ACCOUNT_ID env vars.",
+            "configured": False,
+        }
+    campaign_id = (args.get("campaign_id") or "").strip()
+    dollars = float(args.get("new_daily_budget") or 0)
+    if not campaign_id or dollars <= 0:
+        return {"error": "campaign_id and a positive new_daily_budget (dollars) are required"}
+
+    cents = int(dollars * 100)
+    result = await update_campaign_budget(campaign_id, cents)
+    if result.get("success"):
+        logger.info(
+            "[meta_ads] Campaign %s budget set to $%.2f by agent. Reason: %s",
+            campaign_id, dollars, args.get("reason", "not provided"),
+        )
+    return result
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5774,3 +6053,1295 @@ async def notion_query_database(ctx: ToolContext, args: Dict[str, Any]):
                 row[prop_name] = str(val)[:100] if val else None
         rows.append(row)
     return {"database_id": db_id, "rows": rows, "total": len(rows)}
+
+
+# ── Shotstack Video Generation ─────────────────────────────────────────────────
+# Default base URLs — overridden by SHOTSTACK_ENV if set to a full URL.
+_SHOTSTACK_PROD_BASE = "https://api.shotstack.io/edit/v1"
+_SHOTSTACK_STAGE_BASE = "https://api.shotstack.io/edit/stage"
+
+
+def _shotstack_headers() -> dict:
+    import os
+    key = os.getenv("SHOTSTACK_API_KEY", "")
+    if not key:
+        raise RuntimeError("SHOTSTACK_API_KEY is not configured")
+    return {"x-api-key": key, "Content-Type": "application/json"}
+
+
+def _shotstack_render_url() -> str:
+    """Return the full POST render endpoint URL.
+
+    Handles three formats for SHOTSTACK_ENV:
+      - Full render URL  : https://api.shotstack.io/edit/stage/render  (what the user set)
+      - Base URL         : https://api.shotstack.io/edit/stage  -> appends /render
+      - Short label      : 'stage' or 'production'
+    """
+    import os
+    val = os.getenv("SHOTSTACK_ENV", "stage").strip()
+    if val.startswith("http"):
+        if val.endswith("/render"):
+            return val  # already the full render endpoint
+        return val.rstrip("/") + "/render"
+    if val == "production":
+        return _SHOTSTACK_PROD_BASE + "/render"
+    return _SHOTSTACK_STAGE_BASE + "/render"
+
+
+def _shotstack_status_url(render_id: str) -> str:
+    """Return the GET render status endpoint URL for a given render_id."""
+    import os
+    val = os.getenv("SHOTSTACK_ENV", "stage").strip()
+    if val.startswith("http"):
+        base = val.rstrip("/").split("/render")[0]
+        return f"{base}/render/{render_id}"
+    if val == "production":
+        return f"{_SHOTSTACK_PROD_BASE}/render/{render_id}"
+    return f"{_SHOTSTACK_STAGE_BASE}/render/{render_id}"
+
+
+@tool(
+    name="create_video",
+    description=(
+        "Create a short promotional video using Shotstack. "
+        "Assembles a video from a title, subtitle, background color or image URL, "
+        "optional product image URL, and a voiceover or background music track. "
+        "Returns a render_id — use get_video_status to poll until ready, then share the URL. "
+        "Best for: product promos, event announcements, sale countdowns, social media reels."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Main headline text shown on the video (e.g. 'Summer Sale — 30% Off')",
+            },
+            "subtitle": {
+                "type": "string",
+                "description": "Supporting text shown below the title (e.g. 'Shop now at zilocrm.com')",
+            },
+            "background_color": {
+                "type": "string",
+                "description": "Hex background color when no background image is used (e.g. '#1a1a2e'). Defaults to #000000.",
+            },
+            "background_image_url": {
+                "type": "string",
+                "description": "Optional URL of a full-bleed background image or product image to use as the video background.",
+            },
+            "product_image_url": {
+                "type": "string",
+                "description": "Optional URL of a product image to overlay in the center of the video.",
+            },
+            "duration": {
+                "type": "number",
+                "description": "Video duration in seconds (5–30). Defaults to 10.",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ["square", "portrait", "landscape"],
+                "description": "Output format. square=1080x1080 (Instagram), portrait=1080x1920 (Reels/TikTok), landscape=1920x1080 (YouTube/Facebook). Defaults to square.",
+            },
+            "music_url": {
+                "type": "string",
+                "description": "Optional URL of a background music/audio track (.mp3). Leave empty for silent video.",
+            },
+            "title_color": {
+                "type": "string",
+                "description": "Hex color for the title text. Defaults to #ffffff.",
+            },
+            "voiceover_text": {
+                "type": "string",
+                "description": "Optional spoken voiceover script read aloud over the video using text-to-speech. E.g. 'Shop our summer sale — 30 percent off all items this weekend only.' Leave empty for no voiceover.",
+            },
+            "voiceover_voice": {
+                "type": "string",
+                "enum": ["male", "female"],
+                "description": "Voice gender for TTS voiceover. Defaults to female.",
+            },
+        },
+        "required": ["title"],
+    },
+)
+async def create_video(ctx: ToolContext, args: Dict[str, Any]):
+    import os
+    import httpx
+
+    title = (args.get("title") or "").strip()
+    subtitle = (args.get("subtitle") or "").strip()
+    bg_color = (args.get("background_color") or "#000000").strip()
+    bg_image = (args.get("background_image_url") or "").strip()
+    product_image = (args.get("product_image_url") or "").strip()
+    duration = float(args.get("duration") or 10)
+    duration = max(5.0, min(30.0, duration))
+    aspect = (args.get("aspect_ratio") or "square").lower()
+    music_url = (args.get("music_url") or "").strip()
+    title_color = (args.get("title_color") or "#ffffff").strip()
+    voiceover_text = (args.get("voiceover_text") or "").strip()
+    voiceover_voice = (args.get("voiceover_voice") or "female").strip().lower()
+
+    # Resolve dimensions
+    size_map = {
+        "square": {"width": 1080, "height": 1080},
+        "portrait": {"width": 1080, "height": 1920},
+        "landscape": {"width": 1920, "height": 1080},
+    }
+    size = size_map.get(aspect, size_map["square"])
+
+    # Build clips list
+    clips = []
+
+    # Background layer (color fill or image)
+    if bg_image:
+        clips.append({
+            "asset": {"type": "image", "src": bg_image},
+            "start": 0, "length": duration,
+            "fit": "cover", "scale": 1.0,
+            "position": "center",
+        })
+    else:
+        clips.append({
+            "asset": {"type": "html",
+                       "html": f"<div style='width:{size['width']}px;height:{size['height']}px;background:{bg_color}'></div>",
+                       "width": size["width"], "height": size["height"]},
+            "start": 0, "length": duration,
+            "position": "center",
+        })
+
+    # Optional product image overlay
+    if product_image:
+        clips.append({
+            "asset": {"type": "image", "src": product_image},
+            "start": 0.5, "length": duration - 1,
+            "fit": "contain", "scale": 0.55,
+            "position": "center",
+            "opacity": 0.95,
+        })
+
+    # Title text
+    clips.append({
+        "asset": {
+            "type": "title",
+            "text": title,
+            "style": "minimal",
+            "color": title_color,
+            "size": "large",
+        },
+        "start": 0.5,
+        "length": duration - 0.5,
+        "position": "center",
+        "transition": {"in": "fade", "out": "fade"},
+    })
+
+    # Subtitle text
+    if subtitle:
+        clips.append({
+            "asset": {
+                "type": "title",
+                "text": subtitle,
+                "style": "minimal",
+                "color": "#dddddd",
+                "size": "small",
+            },
+            "start": 1.5,
+            "length": duration - 1.5,
+            "position": "bottom",
+            "offset": {"y": 0.1},
+            "transition": {"in": "fade"},
+        })
+
+    track = {"clips": clips}
+
+    # Voiceover TTS track — only supported in Shotstack v1 (production), not stage/sandbox
+    import os as _os
+    _env_val = _os.getenv("SHOTSTACK_ENV", "stage").strip()
+    _is_production = _env_val == "production" or (
+        _env_val.startswith("http") and "/v1/" in _env_val
+    )
+    tracks = [track]
+    if voiceover_text and _is_production:
+        # Shotstack text-to-speech asset — voice IDs: Brian (male), Joanna (female)
+        tts_voice = "Brian" if voiceover_voice == "male" else "Joanna"
+        tts_clip: Dict[str, Any] = {
+            "asset": {
+                "type": "text-to-speech",
+                "text": voiceover_text[:300],
+                "voice": tts_voice,
+            },
+            "start": 0.3,
+            "length": "auto",
+        }
+        tracks.append({"clips": [tts_clip]})
+
+    timeline: Dict[str, Any] = {"tracks": tracks}
+
+    # Background music (lower volume when voiceover is present)
+    if music_url:
+        timeline["soundtrack"] = {
+            "src": music_url,
+            "effect": "fadeInFadeOut",
+            "volume": 0.25 if voiceover_text else 0.6,
+        }
+
+    payload = {
+        "timeline": timeline,
+        "output": {
+            "format": "mp4",
+            "resolution": "hd",
+            "size": size,
+            "fps": 25,
+        },
+    }
+
+    try:
+        headers = _shotstack_headers()
+        render_url = _shotstack_render_url()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(render_url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Video render request failed: {e}"}
+
+    render_id = (data.get("response") or {}).get("id") or data.get("id")
+    if not render_id:
+        return {"error": "Shotstack did not return a render ID", "raw": str(data)[:300]}
+
+    # Persist render record in DB for tracking
+    try:
+        await ctx.db.video_renders.insert_one({
+            "_id": render_id,
+            "business_id": ctx.business_id,
+            "title": title,
+            "aspect_ratio": aspect,
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+        })
+    except Exception:
+        pass
+
+    return {
+        "status": "queued",
+        "render_id": render_id,
+        "message": f"Video '{title}' is rendering. Use get_video_status('{render_id}') to check when it's ready.",
+        "estimated_wait": "15–45 seconds",
+        "aspect_ratio": aspect,
+        "dimensions": f"{size['width']}x{size['height']}",
+    }
+
+
+@tool(
+    name="get_video_status",
+    description=(
+        "Check the rendering status of a Shotstack video by its render_id. "
+        "Returns status (queued / rendering / done / failed) and the video URL when done. "
+        "Poll every 5–10 seconds until status is 'done' or 'failed'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "render_id": {
+                "type": "string",
+                "description": "The render ID returned by create_video.",
+            },
+        },
+        "required": ["render_id"],
+    },
+)
+async def get_video_status(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+
+    render_id = (args.get("render_id") or "").strip()
+    if not render_id:
+        return {"error": "render_id is required"}
+
+    try:
+        headers = _shotstack_headers()
+        status_url = _shotstack_status_url(render_id)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(status_url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Status check failed: {e}"}
+
+    r = data.get("response") or data
+    status = (r.get("status") or "unknown").lower()
+    url = r.get("url") or ""
+
+    # Update DB record
+    try:
+        update: Dict[str, Any] = {"status": status}
+        if url:
+            update["url"] = url
+        await ctx.db.video_renders.update_one(
+            {"_id": render_id},
+            {"$set": update},
+        )
+    except Exception:
+        pass
+
+    result: Dict[str, Any] = {"render_id": render_id, "status": status}
+    if status == "done" and url:
+        result["url"] = url
+        result["message"] = f"Your video is ready! [Watch / Download]({url})"
+    elif status == "failed":
+        result["message"] = "Render failed. Try create_video again with slightly different settings."
+        result["error_detail"] = r.get("error") or ""
+    else:
+        result["message"] = f"Still rendering ({status}). Check again in a few seconds."
+
+    return result
+
+
+@tool(
+    name="list_videos",
+    description=(
+        "List all videos previously created for this business, with their status and URLs. "
+        "Use this to show the owner their video history or find a specific render."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max number of videos to return (default 10, max 30).",
+            },
+        },
+        "required": [],
+    },
+)
+async def list_videos(ctx: ToolContext, args: Dict[str, Any]):
+    limit = min(int(args.get("limit") or 10), 30)
+    try:
+        rows = await ctx.db.video_renders.find(
+            {"business_id": ctx.business_id}
+        ).sort("created_at", -1).to_list(limit)
+    except Exception as e:
+        return {"error": f"Could not fetch video history: {e}"}
+
+    videos = []
+    for r in rows:
+        videos.append({
+            "render_id": str(r["_id"]),
+            "title": r.get("title", ""),
+            "status": r.get("status", "unknown"),
+            "aspect_ratio": r.get("aspect_ratio", ""),
+            "url": r.get("url", ""),
+            "created_at": r.get("created_at", "").isoformat() if hasattr(r.get("created_at", ""), "isoformat") else str(r.get("created_at", "")),
+        })
+
+    return {"videos": videos, "total": len(videos)}
+
+
+# ── Kling AI Video Generation ───────────────────────────────────────────────
+_KLING_API_BASE = "https://api.kie.ai/api/v1"
+
+
+def _kling_headers() -> dict:
+    import os
+    key = os.getenv("KLING_API_KEY", "")
+    if not key:
+        raise RuntimeError("KLING_API_KEY is not configured")
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+
+@tool(
+    name="create_kling_video",
+    description=(
+        "Generate a realistic AI video using Kling 2.6 — turns a text prompt (and optionally a "
+        "reference image URL) into a real video with cinematic motion. Use this when the user wants "
+        "a video with actual visual footage, product scenes, lifestyle shots, or animated scenes. "
+        "Returns a task_id — use get_kling_video_status to poll until ready."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "Detailed scene description. Be cinematic and specific: describe lighting, "
+                    "motion, camera angle, subject, mood. E.g. 'A sleek black smartphone rotating "
+                    "slowly on a white marble surface, dramatic studio lighting, product ad style, "
+                    "ultra HD.'"
+                ),
+            },
+            "image_url": {
+                "type": "string",
+                "description": "Optional reference image URL to use as the starting frame (image-to-video). Great for animating product photos.",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ["16:9", "9:16", "1:1"],
+                "description": "16:9 = landscape (YouTube/Facebook), 9:16 = portrait (Reels/TikTok), 1:1 = square (Instagram). Defaults to 9:16.",
+            },
+            "duration": {
+                "type": "string",
+                "enum": ["5", "10"],
+                "description": "Video duration in seconds. Defaults to 5.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["standard", "pro"],
+                "description": "standard = faster and cheaper, pro = higher quality. Defaults to standard.",
+            },
+            "sound": {
+                "type": "boolean",
+                "description": "Enable AI-generated ambient sound/audio that matches the video scene. Defaults to true.",
+            },
+        },
+        "required": ["prompt"],
+    },
+)
+async def create_kling_video(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+
+    prompt = (args.get("prompt") or "").strip()
+    if not prompt:
+        return {"error": "prompt is required"}
+
+    image_url = (args.get("image_url") or "").strip()
+    aspect_ratio = args.get("aspect_ratio") or "9:16"
+    duration = str(args.get("duration") or "5")
+    mode = args.get("mode") or "standard"
+    sound = args.get("sound", True)
+
+    # Use image-to-video model if a reference image is provided
+    model = "kling-2.6/image-to-video" if image_url else "kling-2.6/text-to-video"
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "input": {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
+            "mode": mode,
+            "sound": sound,
+        },
+    }
+    if image_url:
+        payload["input"]["image_url"] = image_url
+
+    try:
+        headers = _kling_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{_KLING_API_BASE}/jobs/createTask",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Kling API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Kling video request failed: {e}"}
+
+    task_id = (data.get("data") or {}).get("taskId") or data.get("taskId")
+    if not task_id:
+        return {"error": f"No task_id returned: {data}"}
+
+    # Persist to DB
+    try:
+        await ctx.db.kling_renders.insert_one({
+            "business_id": ctx.business_id,
+            "task_id": task_id,
+            "prompt": prompt,
+            "model": model,
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
+            "status": "queued",
+            "url": None,
+            "created_at": datetime.utcnow(),
+        })
+    except Exception:
+        pass
+
+    return {
+        "task_id": task_id,
+        "model": model,
+        "status": "queued",
+        "message": "Kling video is generating. Call get_kling_video_status to poll progress.",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SOCIAL MEDIA MONITORING TOOLS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="list_scheduled_posts",
+    description=(
+        "List social media posts for the current business. "
+        "Filter by status (draft/scheduled/published/failed) or channel (facebook/instagram/linkedin/x/tiktok). "
+        "Returns post titles, channels, status, scheduled time, and engagement metrics for published posts."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "Filter by post status: draft, scheduled, published, failed. Omit for all.",
+            },
+            "channel": {
+                "type": "string",
+                "description": "Filter by platform: facebook, instagram, linkedin, x, tiktok.",
+            },
+            "limit": {"type": "integer", "default": 30, "minimum": 1, "maximum": 100},
+        },
+    },
+)
+async def list_scheduled_posts(ctx: ToolContext, args: Dict[str, Any]):
+    q: Dict[str, Any] = {"user_id": ctx.business_id}
+    if st := (args.get("status") or "").strip().lower():
+        q["status"] = st
+    if ch := (args.get("channel") or "").strip().lower():
+        q["channels"] = {"$in": [ch]}
+    limit = min(int(args.get("limit") or 30), 100)
+    rows = await ctx.db.scheduled_posts.find(q).sort("scheduled_at", -1).to_list(limit)
+
+    def _fmt(r: Dict[str, Any]) -> Dict[str, Any]:
+        sa = r.get("scheduled_at")
+        return {
+            "id":           str(r["_id"]),
+            "title":        r.get("title") or "",
+            "channels":     r.get("channels") or [],
+            "status":       r.get("status") or "draft",
+            "scheduled_at": sa.isoformat() if hasattr(sa, "isoformat") else str(sa or ""),
+            "engagement":   r.get("engagement") or {},
+            "zernio_post_id": r.get("zernio_post_id"),
+            "engagement_synced_at": (
+                r["engagement_synced_at"].isoformat()
+                if hasattr(r.get("engagement_synced_at"), "isoformat")
+                else None
+            ),
+        }
+
+    return {"count": len(rows), "posts": [_fmt(r) for r in rows]}
+
+
+@tool(
+    name="get_social_post_analytics",
+    description=(
+        "Get a detailed engagement analytics summary across all published social posts. "
+        "Returns per-platform breakdowns, top-performing posts by likes/reach/clicks, "
+        "overall totals, and trend observations the monitoring agent can use to advise strategy."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "days": {
+                "type": "integer",
+                "default": 30,
+                "description": "Look-back window in days (default 30).",
+            },
+            "channel": {
+                "type": "string",
+                "description": "Narrow to a single platform: facebook, instagram, linkedin, x, tiktok.",
+            },
+        },
+    },
+)
+async def get_social_post_analytics(ctx: ToolContext, args: Dict[str, Any]):
+    days = int(args.get("days") or 30)
+    channel_filter = (args.get("channel") or "").strip().lower()
+    since = datetime.utcnow() - timedelta(days=days)
+
+    q: Dict[str, Any] = {
+        "user_id": ctx.business_id,
+        "status": "published",
+        "scheduled_at": {"$gte": since},
+    }
+    if channel_filter:
+        q["channels"] = {"$in": [channel_filter]}
+
+    posts = await ctx.db.scheduled_posts.find(q).sort("scheduled_at", -1).to_list(200)
+
+    totals = {"likes": 0, "comments": 0, "shares": 0, "reach": 0, "clicks": 0, "saves": 0}
+    by_channel: Dict[str, Dict[str, int]] = {}
+    post_summaries = []
+
+    for p in posts:
+        eng = p.get("engagement") or {}
+        likes    = int(eng.get("likes", 0))
+        comments = int(eng.get("comments", 0))
+        shares   = int(eng.get("shares", 0))
+        reach    = int(eng.get("reach", 0))
+        clicks   = int(eng.get("clicks", 0))
+        saves    = int(eng.get("saves", 0))
+
+        totals["likes"]    += likes
+        totals["comments"] += comments
+        totals["shares"]   += shares
+        totals["reach"]    += reach
+        totals["clicks"]   += clicks
+        totals["saves"]    += saves
+
+        for ch in (p.get("channels") or []):
+            bc = by_channel.setdefault(ch, {"likes": 0, "comments": 0, "shares": 0,
+                                            "reach": 0, "clicks": 0, "posts": 0})
+            bc["likes"]    += likes
+            bc["comments"] += comments
+            bc["shares"]   += shares
+            bc["reach"]    += reach
+            bc["clicks"]   += clicks
+            bc["posts"]    += 1
+
+        sa = p.get("scheduled_at")
+        post_summaries.append({
+            "id":       str(p["_id"]),
+            "title":    p.get("title") or "",
+            "channels": p.get("channels") or [],
+            "date":     sa.isoformat() if hasattr(sa, "isoformat") else str(sa or ""),
+            "likes": likes, "comments": comments, "shares": shares,
+            "reach": reach, "clicks": clicks, "saves": saves,
+            "engagement_score": likes + comments * 2 + shares * 3 + clicks,
+        })
+
+    # Top 5 posts by engagement score
+    top_posts = sorted(post_summaries, key=lambda x: x["engagement_score"], reverse=True)[:5]
+
+    # Posts with zero engagement (no metrics synced yet)
+    unsynced = sum(1 for p in posts if not p.get("engagement"))
+
+    return {
+        "period_days":       days,
+        "total_posts":       len(posts),
+        "unsynced_posts":    unsynced,
+        "totals":            totals,
+        "by_channel":        by_channel,
+        "top_posts":         top_posts,
+        "avg_reach_per_post": round(totals["reach"] / len(posts), 1) if posts else 0,
+        "avg_engagement_rate": (
+            round((totals["likes"] + totals["comments"] + totals["shares"]) / totals["reach"] * 100, 2)
+            if totals["reach"] > 0 else 0
+        ),
+    }
+
+
+@tool(
+    name="get_kling_video_status",
+    description=(
+        "Poll the status of a Kling AI video generation task. "
+        "Returns status ('generating', 'success', 'failed') and the video URL when done. "
+        "Keep polling every 8–10s until status is 'success' or 'failed' (max 10 attempts)."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "The task_id returned by create_kling_video.",
+            },
+        },
+    },
+)
+async def get_kling_video_status(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    import json as _json
+
+    task_id = (args.get("task_id") or "").strip()
+    if not task_id:
+        return {"error": "task_id is required"}
+
+    try:
+        headers = _kling_headers()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            # KIE uses recordInfo endpoint with taskId query param
+            resp = await client.get(
+                f"{_KLING_API_BASE}/jobs/recordInfo?taskId={task_id}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Kling API error: {e.response.status_code} — {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Status check failed: {e}"}
+
+    job = data.get("data") or {}
+    state = job.get("state", "unknown")
+
+    # Extract video URL — KIE returns it inside resultJson as a JSON string
+    url = ""
+    result_json_str = job.get("resultJson", "")
+    if result_json_str:
+        try:
+            result = _json.loads(result_json_str)
+            urls = result.get("resultUrls", [])
+            if urls:
+                url = urls[0]
+        except Exception:
+            pass
+
+    # Update DB record
+    if url and state == "success":
+        try:
+            await ctx.db.kling_renders.update_one(
+                {"task_id": task_id, "business_id": ctx.business_id},
+                {"$set": {"status": state, "url": url, "updated_at": datetime.utcnow()}},
+            )
+        except Exception:
+            pass
+
+    return {
+        "task_id": task_id,
+        "status": state,
+        "url": url,
+        "done": state in ("success", "failed"),
+    }
+
+
+# ── Shotstack Image & Voice Generation (complements Kling video) ─────────────────
+
+_SHOTSTACK_API_KEY = os.getenv("SHOTSTACK_API_KEY")
+_SHOTSTACK_API_URL = os.getenv("SHOTSTACK_API_URL", "https://api.shotstack.io/v1")
+
+
+def _shotstack_headers() -> dict:
+    if not _SHOTSTACK_API_KEY:
+        raise RuntimeError("SHOTSTACK_API_KEY is not configured")
+    return {"x-api-key": _SHOTSTACK_API_KEY, "content-type": "application/json"}
+
+
+@tool(
+    name="create_shotstack_image",
+    description=(
+        "Generate a high-quality image using Shotstack templates. "
+        "Perfect for creating posters, thumbnails, social media graphics, and marketing visuals. "
+        "Supports text overlays, backgrounds, and design assets. Returns a render_id to track progress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "template_name": {
+                "type": "string",
+                "description": "Name for this image template (e.g., 'Product Poster', 'Event Thumbnail')",
+            },
+            "text_content": {
+                "type": "string", 
+                "description": "Main text to display on the image",
+            },
+            "background": {
+                "type": "string",
+                "description": "Background color (hex) or image URL",
+                "default": "#1a1a1a",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["jpg", "png"],
+                "description": "Output format",
+                "default": "png",
+            },
+            "width": {
+                "type": "integer",
+                "description": "Image width in pixels",
+                "default": 1920,
+            },
+            "height": {
+                "type": "integer", 
+                "description": "Image height in pixels",
+                "default": 1080,
+            },
+        },
+        "required": ["template_name", "text_content"],
+    },
+)
+async def create_shotstack_image(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    
+    template_name = args["template_name"].strip()
+    text_content = args["text_content"].strip()
+    background = args.get("background", "#1a1a1a")
+    format = args.get("format", "png")
+    width = int(args.get("width", 1920))
+    height = int(args.get("height", 1080))
+    
+    # Build Shotstack timeline for image
+    timeline = {
+        "output": {
+            "format": format,
+            "resolution": {"width": width, "height": height},
+            "quality": "high"
+        },
+        "timeline": {
+            "tracks": [{
+                "clips": [{
+                    "asset": {
+                        "type": "title",
+                        "text": text_content,
+                        "style": {
+                            "fontSize": f"{max(48, min(120, width // 16))}px",
+                            "fontFamily": "Montserrat",
+                            "backgroundColor": "#00000000",
+                            "color": "#ffffff",
+                            "textAlign": "center",
+                            "fontWeight": "bold"
+                        }
+                    },
+                    "start": 0,
+                    "length": 5,
+                    "position": "center"
+                }]
+            }]
+        }
+    }
+    
+    # Add background
+    if background.startswith("#"):
+        timeline["timeline"]["tracks"][0]["clips"][0]["asset"]["type"] = "title"
+        timeline["timeline"]["tracks"][0]["clips"][0]["asset"]["style"]["backgroundColor"] = background
+    elif background.startswith(("http", "/")):
+        timeline["timeline"]["tracks"].insert(0, {
+            "clips": [{
+                "asset": {
+                    "type": "image",
+                    "src": background
+                },
+                "start": 0,
+                "length": 5,
+                "fit": "cover"
+            }]
+        })
+    
+    try:
+        headers = _shotstack_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{_SHOTSTACK_API_URL}/render",
+                headers=headers,
+                json=timeline
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Shotstack image request failed: {e}"}
+    
+    render_id = data.get("response", {}).get("id")
+    if not render_id:
+        return {"error": "Shotstack did not return a render ID"}
+    
+    # Store in database
+    try:
+        await ctx.db.shotstack_renders.insert_one({
+            "business_id": ctx.business_id,
+            "render_id": render_id,
+            "type": "image",
+            "template_name": template_name,
+            "text_content": text_content,
+            "background": background,
+            "format": format,
+            "dimensions": {"width": width, "height": height},
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+        })
+    except Exception as e:
+        logging.warning(f"[shotstack] Failed to save render record: {e}")
+    
+    return {
+        "render_id": render_id,
+        "type": "image",
+        "status": "queued",
+        "message": "Shotstack image is generating. Use get_shotstack_render_status to track progress.",
+    }
+
+
+@tool(
+    name="create_shotstack_voice",
+    description=(
+        "Generate high-quality voice audio using Shotstack text-to-speech. "
+        "Perfect for voiceovers, narration, and audio content. Supports multiple voices and languages. "
+        "Returns a render_id to track progress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Text to convert to speech",
+            },
+            "voice": {
+                "type": "string",
+                "description": "Voice name (samantha, matthew, joanna, joseph, lisa, brian, camila, penelope, chantal, hans, zoe)",
+                "default": "samantha",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["mp3", "wav"],
+                "description": "Audio format",
+                "default": "mp3",
+            },
+        },
+        "required": ["text"],
+    },
+)
+async def create_shotstack_voice(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    
+    text = args["text"].strip()
+    voice = args.get("voice", "samantha")
+    format = args.get("format", "mp3")
+    
+    # Build Shotstack timeline for voice
+    timeline = {
+        "output": {
+            "format": format,
+            "resolution": {"width": 1920, "height": 1080},  # Required even for audio
+            "quality": "medium"
+        },
+        "timeline": {
+            "soundtrack": {
+                "tracks": [{
+                    "clips": [{
+                        "asset": {
+                            "type": "audio",
+                            "src": f"tts:{voice}",
+                            "text": text,
+                            "effect": "volume:0.8"
+                        },
+                        "start": 0,
+                        "length": max(5, len(text) * 0.08)  # Estimate duration
+                    }]
+                }]
+            }
+        }
+    }
+    
+    try:
+        headers = _shotstack_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{_SHOTSTACK_API_URL}/render",
+                headers=headers,
+                json=timeline
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Shotstack voice request failed: {e}"}
+    
+    render_id = data.get("response", {}).get("id")
+    if not render_id:
+        return {"error": "Shotstack did not return a render ID"}
+    
+    # Store in database
+    try:
+        await ctx.db.shotstack_renders.insert_one({
+            "business_id": ctx.business_id,
+            "render_id": render_id,
+            "type": "voice",
+            "text": text,
+            "voice": voice,
+            "format": format,
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+        })
+    except Exception as e:
+        logging.warning(f"[shotstack] Failed to save render record: {e}")
+    
+    return {
+        "render_id": render_id,
+        "type": "voice",
+        "status": "queued",
+        "message": "Shotstack voice is generating. Use get_shotstack_render_status to track progress.",
+    }
+
+
+@tool(
+    name="get_shotstack_render_status",
+    description=(
+        "Check the status of a Shotstack render (image or voice). "
+        "Returns status ('queued', 'rendering', 'done', 'failed') and download URL when ready. "
+        "Keep polling every 5-8s until status is 'done' or 'failed'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "render_id": {
+                "type": "string",
+                "description": "The render_id returned by create_shotstack_image or create_shotstack_voice",
+            },
+        },
+        "required": ["render_id"],
+    },
+)
+async def get_shotstack_render_status(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx
+    
+    render_id = args["render_id"].strip()
+    if not render_id:
+        return {"error": "render_id is required"}
+    
+    try:
+        headers = _shotstack_headers()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                f"{_SHOTSTACK_API_URL}/render/{render_id}",
+                headers=headers
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Shotstack API error: {e.response.status_code} — {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"Status check failed: {e}"}
+    
+    response = data.get("response", {})
+    status = response.get("status", "unknown")
+    url = response.get("url")
+    expires_at = response.get("expires")
+    
+    # Update database record
+    try:
+        update_data = {"status": status, "updated_at": datetime.utcnow()}
+        if url:
+            update_data["url"] = url
+            update_data["expires_at"] = expires_at
+            
+        await ctx.db.shotstack_renders.update_one(
+            {"render_id": render_id, "business_id": ctx.business_id},
+            {"$set": update_data}
+        )
+    except Exception as e:
+        logging.warning(f"[shotstack] Failed to update render record: {e}")
+    
+    result = {
+        "render_id": render_id,
+        "status": status,
+        "url": url,
+        "expires_at": expires_at,
+    }
+    
+    if status == "done":
+        result["message"] = f"Shotstack render completed! Download URL: {url}"
+    elif status == "failed":
+        result["message"] = "Shotstack render failed. Please try again."
+    else:
+        result["message"] = f"Shotstack render is {status}. Keep polling..."
+    
+    return result
+
+
+# ── Ad Health & Alert Rules ───────────────────────────────────────────────────
+
+@tool(
+    name="get_ads_health_report",
+    description=(
+        "Get a health report for all live ad campaigns. Returns health scores (0-100), "
+        "zone (healthy/warning/critical), key issues, and recent auto-pause actions. "
+        "Use this when the user asks how their ads are performing, or to check ROI."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "days": {
+                "type": "integer",
+                "description": "Lookback window in days (default 7)",
+                "default": 7,
+            },
+            "zone_filter": {
+                "type": "string",
+                "enum": ["all", "healthy", "warning", "critical"],
+                "description": "Filter by health zone",
+                "default": "all",
+            },
+        },
+        "required": [],
+    },
+)
+async def get_ads_health_report(ctx: ToolContext, args: Dict[str, Any]):
+    from zernio_ads_service import list_campaigns
+    from ad_health_monitor import score_campaign, ensure_default_rules
+
+    days = int(args.get("days", 7))
+    zone_filter = args.get("zone_filter", "all")
+
+    await ensure_default_rules(ctx.db, ctx.user_id)
+
+    result = await list_campaigns(days=days)
+    campaigns = result.get("campaigns") or result.get("data") or []
+
+    if result.get("error") and not campaigns:
+        return {"error": result["error"], "campaigns": []}
+
+    scored = []
+    for c in campaigns:
+        metrics = c.get("metrics") or c.get("insights") or c
+        health_score, issues, zone = score_campaign(metrics)
+        if zone_filter != "all" and zone != zone_filter:
+            continue
+        scored.append({
+            "campaign_id":   str(c.get("id") or c.get("campaignId") or ""),
+            "name":          c.get("name") or c.get("campaignName") or "Unknown",
+            "status":        c.get("status", ""),
+            "platform":      c.get("platform", ""),
+            "health_score":  health_score,
+            "zone":          zone,
+            "issues":        issues[:4],
+            "spend":         float(metrics.get("spend", 0) or 0),
+            "impressions":   int(metrics.get("impressions", 0) or 0),
+            "clicks":        int(metrics.get("clicks", 0) or 0),
+            "ctr":           float(metrics.get("ctr", 0) or 0),
+            "roas":          float(metrics.get("roas", 0) or 0),
+        })
+
+    scored.sort(key=lambda x: x["health_score"])
+
+    # Recent auto-pause actions
+    from datetime import timedelta
+    recent_actions = await ctx.db.ad_alert_history.find(
+        {"user_id": ctx.user_id, "fired_at": {"$gte": datetime.utcnow() - timedelta(days=7)}}
+    ).sort("fired_at", -1).to_list(20)
+    actions = [{
+        "campaign_name": a.get("campaign_name"),
+        "rule_name":     a.get("rule_name"),
+        "action":        a.get("action"),
+        "health_score":  a.get("health_score"),
+        "zone":          a.get("zone"),
+        "fired_at":      a["fired_at"].isoformat() if hasattr(a.get("fired_at"), "isoformat") else str(a.get("fired_at", "")),
+    } for a in recent_actions]
+
+    critical = [c for c in scored if c["zone"] == "critical"]
+    warning  = [c for c in scored if c["zone"] == "warning"]
+    healthy  = [c for c in scored if c["zone"] == "healthy"]
+
+    return {
+        "total_campaigns": len(scored),
+        "summary": {
+            "critical": len(critical),
+            "warning":  len(warning),
+            "healthy":  len(healthy),
+        },
+        "campaigns":       scored,
+        "recent_actions":  actions,
+        "days":            days,
+    }
+
+
+@tool(
+    name="set_ad_alert_rule",
+    description=(
+        "Create or update an ad alert rule. Rules define when to auto-pause a campaign or send "
+        "an alert based on performance metrics (CTR, ROAS, CPC, health score, spend). "
+        "Use this when the user wants to configure performance thresholds or auto-pause rules."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Descriptive name for the rule, e.g. 'Pause if ROAS below 1.5'",
+            },
+            "condition": {
+                "type": "string",
+                "enum": ["health_score", "ctr", "roas", "cpc", "cpm", "spend", "clicks"],
+                "description": "Metric to evaluate",
+            },
+            "operator": {
+                "type": "string",
+                "enum": ["lt", "gt", "lte", "gte"],
+                "description": "Comparison operator: lt=less than, gt=greater than",
+            },
+            "value": {
+                "type": "number",
+                "description": "Threshold value (e.g. 1.5 for ROAS, 0.5 for CTR%)",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["auto_pause", "alert_only"],
+                "description": "auto_pause = pause the campaign automatically; alert_only = WhatsApp notification only",
+            },
+            "min_spend": {
+                "type": "number",
+                "description": "Minimum $ spend before rule fires (avoid false positives on new campaigns)",
+                "default": 5.0,
+            },
+            "min_impressions": {
+                "type": "integer",
+                "description": "Minimum impressions before rule fires",
+                "default": 300,
+            },
+            "notify_whatsapp": {
+                "type": "boolean",
+                "description": "Send WhatsApp alert to owner when rule fires",
+                "default": True,
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "Whether this rule is active",
+                "default": True,
+            },
+            "rule_id": {
+                "type": "string",
+                "description": "Existing rule ID to update (omit to create new)",
+            },
+        },
+        "required": ["name", "condition", "operator", "value", "action"],
+    },
+    destructive=False,
+)
+async def set_ad_alert_rule(ctx: ToolContext, args: Dict[str, Any]):
+    rule_id = (args.get("rule_id") or "").strip()
+
+    doc = {
+        "user_id":        ctx.user_id,
+        "name":           args["name"].strip(),
+        "condition":      args["condition"],
+        "operator":       args["operator"],
+        "value":          float(args["value"]),
+        "action":         args["action"],
+        "min_spend":      float(args.get("min_spend", 5.0)),
+        "min_impressions": int(args.get("min_impressions", 300)),
+        "notify_whatsapp": bool(args.get("notify_whatsapp", True)),
+        "enabled":        bool(args.get("enabled", True)),
+        "updated_at":     datetime.utcnow(),
+    }
+
+    if rule_id:
+        existing = await ctx.db.ad_alert_rules.find_one({"_id": rule_id, "user_id": ctx.user_id})
+        if not existing:
+            return {"error": "Rule not found"}
+        await ctx.db.ad_alert_rules.update_one({"_id": rule_id}, {"$set": doc})
+        doc["_id"] = rule_id
+        action_taken = "updated"
+    else:
+        import uuid as _uuid
+        doc["_id"] = str(_uuid.uuid4())
+        doc["created_at"] = datetime.utcnow()
+        await ctx.db.ad_alert_rules.insert_one(doc)
+        action_taken = "created"
+
+    operator_label = {"lt": "below", "lte": "≤", "gt": "above", "gte": "≥"}.get(doc["operator"], doc["operator"])
+    action_label = "auto-pause campaign" if doc["action"] == "auto_pause" else "send WhatsApp alert"
+
+    return {
+        "status": action_taken,
+        "rule_id": doc["_id"],
+        "name": doc["name"],
+        "description": f"When {doc['condition']} is {operator_label} {doc['value']} (with ≥${doc['min_spend']} spend): {action_label}",
+    }
