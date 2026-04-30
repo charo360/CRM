@@ -305,6 +305,24 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
   }
 
   if (apiConnected === false) {
+    // Compact version for integrations page (already inside a card)
+    if (hideBranding) {
+      return (
+        <div className="space-y-3 py-1">
+          <p className="text-center text-xs text-slate-400">
+            Not yet activated — all {PLATFORMS.length} platforms will be available once enabled.
+          </p>
+          <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 gap-1.5">
+            {PLATFORMS.map((p) => (
+              <div key={p.id} className="flex flex-col items-center gap-1 rounded-lg p-2 border border-slate-200 bg-slate-50 opacity-50 grayscale">
+                {p.logo}
+                <span className="text-[9px] font-medium text-slate-500 text-center leading-tight truncate w-full text-center">{p.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
     return (
       <section className="rounded-xl border border-slate-200 bg-white overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
@@ -321,18 +339,11 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
           </span>
         </div>
         <div className="p-5 space-y-4">
-          <div className="text-center py-4 space-y-2">
-            <ZiloLogo size={48} className="mx-auto shrink-0 opacity-95" />
-            <p className="text-sm font-semibold text-slate-700">Social channels not yet activated</p>
-            <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
-              Your social media integrations are being set up. All {PLATFORMS.length} platforms will be available here once enabled.
-            </p>
-          </div>
-          <div className="flex flex-wrap justify-center gap-1.5">
+          <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 gap-1.5">
             {PLATFORMS.map((p) => (
-              <div key={p.id} className="flex items-center gap-1 rounded-lg px-2 py-1 border border-slate-200 bg-slate-50 opacity-50 grayscale">
+              <div key={p.id} className="flex flex-col items-center gap-1 rounded-lg p-2 border border-slate-200 bg-slate-50 opacity-50 grayscale">
                 {p.logo}
-                <span className="text-[10px] font-medium text-slate-500">{p.label}</span>
+                <span className="text-[9px] font-medium text-slate-500 text-center leading-tight truncate w-full text-center">{p.label}</span>
               </div>
             ))}
           </div>

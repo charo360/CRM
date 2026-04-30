@@ -536,17 +536,14 @@ function IntegrationsPageInner() {
 
       {/* ── Section 2: Social Channels (Zernio) ─────────────────────────── */}
       <section id="integrations-social" className="scroll-mt-24 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 bg-gradient-to-r from-brand/10 via-white to-brand-light/15 px-4 py-3 sm:px-5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center justify-between border-b border-slate-100 bg-gradient-to-r from-brand/10 via-white to-brand-light/15 px-4 py-2.5 sm:px-5">
+          <div>
             <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-700">Social Channels</h2>
-            <span className="w-fit rounded-full bg-white/90 px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-brand-dark ring-1 ring-brand/25 shadow-sm">
-              via Zernio · Paid
-            </span>
+            <p className="mt-0.5 text-[10px] text-slate-500">Facebook, Instagram, TikTok, YouTube, LinkedIn &amp; 10 more</p>
           </div>
-          <p className="mt-2 text-[10px] leading-relaxed text-slate-600">
-            Includes Facebook Page &amp; Messenger, Instagram, WhatsApp Business API, Telegram, X (Twitter), LinkedIn,
-            TikTok, YouTube, Pinterest, Reddit, Bluesky, Threads, Google Business, Snapchat, Discord, and more.
-          </p>
+          <span className="w-fit rounded-full bg-white/90 px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-brand-dark ring-1 ring-brand/25 shadow-sm">
+            via Zernio · Paid
+          </span>
         </div>
         <div className="p-3 sm:p-4">
           <ZernioSocialPanel hideBranding />
