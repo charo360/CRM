@@ -110,7 +110,7 @@ type SmallTileProps = {
 
 function SmallTile({ icon, title, subtitle, borderClass, badge, children }: SmallTileProps) {
   return (
-    <div className={`flex h-full flex-col rounded-lg border p-3 shadow-sm ${borderClass}`}>
+    <div className={`flex h-full min-h-[130px] flex-col rounded-lg border p-3 shadow-sm ${borderClass}`}>
       <div className="flex items-start gap-2">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/90 shadow-sm">
           {icon}
@@ -536,7 +536,7 @@ function IntegrationsPageInner() {
       {/* ── Section 1: Messaging (Free) ──────────────────────────────────── */}
       <section id="integrations-messaging" className="scroll-mt-24">
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Messaging</h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <SmallTile
             title="WhatsApp" subtitle="QR-link · messages &amp; automations"
             borderClass="border-[#25D366]/30 bg-[#25D366]/10" badge={FREE_BADGE}
@@ -596,7 +596,7 @@ function IntegrationsPageInner() {
       {/* ── Section 3: Payments ──────────────────────────────────────────── */}
       <section>
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Payments</h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <SmallTile
             title="Stripe" subtitle="International payments &amp; subscriptions"
             borderClass="border-[#635BFF]/20 bg-[#635BFF]/5"
@@ -631,7 +631,7 @@ function IntegrationsPageInner() {
       {/* ── Section 4: Email Marketing ───────────────────────────────────── */}
       <section>
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Email Marketing</h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <SmallTile
             title="Klaviyo" subtitle="Best for e-commerce &amp; Shopify stores"
             borderClass="border-[#00A500]/20 bg-[#00A500]/5"
@@ -676,7 +676,7 @@ function IntegrationsPageInner() {
       {/* ── Section 5: Productivity ──────────────────────────────────────── */}
       <section id="integrations-productivity" className="scroll-mt-24">
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Productivity</h2>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <div id="integrations-slack" className="min-w-0">
             <SmallTile
               title="Slack" subtitle="Workspace notifications"
@@ -785,7 +785,7 @@ function IntegrationsPageInner() {
       {/* ── Section 6: E-commerce ────────────────────────────────────────── */}
       <section>
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">E-commerce</h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <SmallTile
             title="Shopify" subtitle="Sync orders, customers &amp; products"
             borderClass="border-[#96BF48]/30 bg-[#96BF48]/10"
