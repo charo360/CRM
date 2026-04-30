@@ -362,7 +362,7 @@ export default function TeamPage() {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Phone Number <span className="text-slate-400 font-normal text-xs">(for mobile app login)</span>
+                  Phone Number <span className="text-slate-400 font-normal text-xs">(optional)</span>
                 </label>
                 <div className="relative">
                   <Phone size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -374,7 +374,7 @@ export default function TeamPage() {
                     className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
                   />
                 </div>
-                <p className="text-xs text-slate-400 mt-1">Required if member will use the mobile app. Include country code.</p>
+                <p className="text-xs text-slate-400 mt-1">Only needed for mobile app login. Include country code if provided.</p>
               </div>
               
               <div>
