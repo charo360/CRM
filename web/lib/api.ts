@@ -1074,6 +1074,41 @@ export const shotstackApi = {
     api.get<{ results: unknown[] }>(`/shotstack/stock?query=${encodeURIComponent(query)}&type=${type}${limit ? `&limit=${limit}` : ""}`),
 };
 
+// ── Orshot (design templates — schema + render for assistant chat manual edit) ─
+
+export interface OrshotTemplateField {
+  key?: string | null;
+  type?: string | null;
+  help_text?: string | null;
+  example?: string | null;
+  page_number?: number;
+  page_id?: string | null;
+}
+
+export interface OrshotTemplateSchemaResponse {
+  success: boolean;
+  template_id?: number;
+  name?: string;
+  description?: string;
+  canvas_width?: number;
+  canvas_height?: number;
+  thumbnail_url?: string;
+  pages?: unknown[];
+  fields: OrshotTemplateField[];
+}
+
+export const orshotApi = {
+  getTemplate: (templateId: number) =>
+    api.get<OrshotTemplateSchemaResponse>(`/orshot/templates/${templateId}`),
+  render: (body: {
+    template_id: number;
+    modifications: Record<string, unknown>;
+    response_type?: "url" | "base64" | "binary";
+    response_format?: "png" | "jpg" | "jpeg" | "webp" | "pdf";
+  }) =>
+    api.post<{ success: boolean; image_url?: string; image_urls?: string[] }>("/orshot/render", body),
+};
+
 /** Meta Ads campaign drafts — Mongo-backed, shared with the Meta Ads assistant agent. */
 export interface MetaAdsCampaignDraft {
   id: string;
