@@ -18,7 +18,7 @@ interface PlatformDef {
   logo: React.ReactNode;
 }
 
-const PLATFORMS: PlatformDef[] = [
+export const SOCIAL_PLATFORMS: PlatformDef[] = [
   {
     id: "facebook",
     label: "Facebook",
@@ -288,7 +288,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
   useEffect(() => { void load(); }, [load]);
 
   const connectedPlatforms = new Set(accounts.map((a) => a.platform.toLowerCase()));
-  const connectedCount = PLATFORMS.filter((p) => connectedPlatforms.has(p.id)).length;
+  const connectedCount = SOCIAL_PLATFORMS.filter((p) => connectedPlatforms.has(p.id)).length;
 
   const contextLabel =
     context === "google"
@@ -310,10 +310,10 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
       return (
         <div className="space-y-3 py-1">
           <p className="text-center text-xs text-slate-400">
-            Not yet activated — all {PLATFORMS.length} platforms will be available once enabled.
+            Not yet activated — all {SOCIAL_PLATFORMS.length} platforms will be available once enabled.
           </p>
           <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 gap-1.5">
-            {PLATFORMS.map((p) => (
+            {SOCIAL_PLATFORMS.map((p) => (
               <div key={p.id} className="flex flex-col items-center gap-1 rounded-lg p-2 border border-slate-200 bg-slate-50 opacity-50 grayscale">
                 {p.logo}
                 <span className="text-[9px] font-medium text-slate-500 text-center leading-tight truncate w-full text-center">{p.label}</span>
@@ -340,7 +340,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
         </div>
         <div className="p-5 space-y-4">
           <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 gap-1.5">
-            {PLATFORMS.map((p) => (
+            {SOCIAL_PLATFORMS.map((p) => (
               <div key={p.id} className="flex flex-col items-center gap-1 rounded-lg p-2 border border-slate-200 bg-slate-50 opacity-50 grayscale">
                 {p.logo}
                 <span className="text-[9px] font-medium text-slate-500 text-center leading-tight truncate w-full text-center">{p.label}</span>
@@ -362,7 +362,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
               apiConnected ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200"
             }`}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${apiConnected ? "bg-emerald-500" : "bg-slate-400"}`} />
-              {apiConnected ? `${connectedCount} / ${PLATFORMS.length} connected` : "0 / " + PLATFORMS.length + " connected"}
+              {apiConnected ? `${connectedCount} / ${SOCIAL_PLATFORMS.length} connected` : "0 / " + SOCIAL_PLATFORMS.length + " connected"}
             </span>
           )}
           <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
@@ -377,7 +377,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
         </div>
         {/* Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {PLATFORMS.map((p) => {
+          {SOCIAL_PLATFORMS.map((p) => {
             const isConnected = connectedPlatforms.has(p.id);
             const account = accounts.find((a) => a.platform.toLowerCase() === p.id);
             return (
@@ -430,7 +430,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
               apiConnected ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${apiConnected ? "bg-emerald-500" : "bg-slate-400"}`} />
-              {apiConnected ? `${connectedCount} / ${PLATFORMS.length} connected` : "API key needed"}
+              {apiConnected ? `${connectedCount} / ${SOCIAL_PLATFORMS.length} connected` : "API key needed"}
             </span>
           )}
           <button type="button" onClick={() => void load(true)} disabled={refreshing}
@@ -443,7 +443,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
       {/* Platform grid */}
       <div className="p-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {PLATFORMS.map((p) => {
+          {SOCIAL_PLATFORMS.map((p) => {
             const isConnected = connectedPlatforms.has(p.id);
             const account = accounts.find((a) => a.platform.toLowerCase() === p.id);
 
