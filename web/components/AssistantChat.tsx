@@ -32,7 +32,6 @@ import {
   PencilLine,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
-import { OrshotDesignEditModal } from "@/components/OrshotDesignEditModal";
 import { getBusinessId, getUser } from "@/lib/auth";
 import { downloadAsset } from "@/lib/utils";
 import Link from "next/link";
@@ -1181,35 +1180,6 @@ function extractInlineOptionList(content: string):
   return { before, after, options: parsed, multiSelect };
 }
 
-/** Last successful `render_orshot_template` in this message — drives manual “Edit design”. */
-function extractOrshotRenderContext(steps: AssistantStep[] | undefined): {
-  templateId: number;
-  modifications: Record<string, string>;
-} | null {
-  if (!steps?.length) return null;
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const s = steps[i];
-    if (s.tool !== "render_orshot_template") continue;
-    const res = s.result as Record<string, unknown> | undefined;
-    if (!res || res.success !== true) continue;
-    const args = (s.arguments || {}) as Record<string, unknown>;
-    const mods = args.modifications;
-    if (typeof mods !== "object" || mods === null || Array.isArray(mods)) continue;
-    const tidRaw =
-      (typeof res.template_id_used === "string" && res.template_id_used) ||
-      (typeof args.template_id === "string" && args.template_id) ||
-      (typeof args.template_id === "number" && String(args.template_id));
-    const tid = tidRaw != null ? String(tidRaw).trim() : "";
-    if (!tid || !/^\d+$/.test(tid)) continue;
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(mods as Record<string, unknown>)) {
-      if (v === undefined || v === null) continue;
-      out[k] = String(v);
-    }
-    return { templateId: parseInt(tid, 10), modifications: out };
-  }
-  return null;
-}
 
 // ── Inline form ──────────────────────────────────────────────────────────────
 // The AI embeds a fenced JSON block: :::form\n{...}\n:::
@@ -1340,12 +1310,9 @@ function MessageBubble({
 }) {
   const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
   const [showWaPicker, setShowWaPicker] = useState(false);
-  const [orshotEditOpen, setOrshotEditOpen] = useState(false);
   const [editingUserPrompt, setEditingUserPrompt] = useState(false);
   const [editedUserPrompt, setEditedUserPrompt] = useState(msg.content ?? "");
   const [checkedOptions, setCheckedOptions] = useState<Set<string>>(new Set());
-  const stepsKey = JSON.stringify(msg.steps ?? []);
-  const orshotCtx = useMemo(() => extractOrshotRenderContext(msg.steps), [stepsKey]);
 
   // Inline form — takes priority over chip options when detected
   const inlineForm = useMemo(() => {
@@ -1444,18 +1411,6 @@ function MessageBubble({
           <ZiloLogo size={28} className="mt-1 shrink-0 self-start" />
           <div className="min-w-0 flex-1 space-y-1.5">
             {msg.steps && msg.steps.length > 0 && <StepsTrail steps={msg.steps} />}
-            {orshotCtx && onSuggestionSend && (
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setOrshotEditOpen(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
-                >
-                  <PencilLine size={12} />
-                  Edit design (manual)
-                </button>
-              </div>
-            )}
             <div className="text-[14px] leading-relaxed text-slate-800">
               {msg.content ? (
                 inlineForm && onSuggestionSend ? (
@@ -1610,18 +1565,6 @@ function MessageBubble({
               <WhatsAppPickerModal
                 content={msg.content}
                 onClose={() => setShowWaPicker(false)}
-              />
-            )}
-            {orshotCtx && onSuggestionSend && (
-              <OrshotDesignEditModal
-                open={orshotEditOpen}
-                onClose={() => setOrshotEditOpen(false)}
-                templateId={orshotCtx.templateId}
-                initialModifications={orshotCtx.modifications}
-                onSendToChat={(markdown) => {
-                  onSuggestionSend(markdown);
-                  setOrshotEditOpen(false);
-                }}
               />
             )}
           </div>
