@@ -85,6 +85,24 @@ def make_zernio_router(db, user_dep):
 
         return profile_id
 
+    # ── key ping (debug) ──────────────────────────────────────────────────────
+
+    @router.get("/ping")
+    async def zernio_ping(user=user_dep):
+        """Test the API key — returns Zernio's raw response or the error."""
+        key = os.getenv("ZERNIO_API_KEY", "").strip()
+        if not key:
+            return {"ok": False, "error": "ZERNIO_API_KEY env var is not set on this server"}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f"{ZERNIO_BASE}/profiles",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                )
+            return {"ok": r.status_code < 300, "status": r.status_code, "body": r.json()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ── status & profile ───────────────────────────────────────────────────────
 
     @router.get("/status")
@@ -122,11 +140,15 @@ def make_zernio_router(db, user_dep):
                 data.get("auth_url") or data.get("redirectUrl")
             )
             return {"authUrl": auth_url, "platform": platform}
-        except HTTPException:
-            raise
+        except HTTPException as e:
+            raise HTTPException(e.status_code, detail=e.detail)
         except httpx.HTTPStatusError as e:
-            logger.error(f"[zernio] connect/{platform} HTTP error {e.response.status_code}: {e.response.text[:200]}")
-            raise HTTPException(e.response.status_code, e.response.text)
+            body = e.response.text[:400]
+            logger.error(f"[zernio] connect/{platform} HTTP {e.response.status_code}: {body}")
+            raise HTTPException(502, detail=f"Zernio returned {e.response.status_code}: {body}")
+        except Exception as e:
+            logger.error(f"[zernio] connect/{platform} error: {e}")
+            raise HTTPException(502, detail=str(e))
 
     @router.delete("/accounts/{account_id}")
     async def disconnect_account(account_id: str, user=user_dep):
