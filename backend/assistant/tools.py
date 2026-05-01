@@ -952,6 +952,42 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         for r in meta_rows
     ]
 
+    # ── Social channels (Zernio-backed accounts) ─────────────────────────────
+    social_accounts: list[Dict[str, Any]] = []
+    try:
+        import httpx
+        user_doc = await ctx.db.users.find_one(
+            {"_id": ctx.business_id},
+            {"zernio_profile_id": 1},
+        )
+        zernio_profile_id = (user_doc or {}).get("zernio_profile_id")
+        zernio_api_key = (os.getenv("ZERNIO_API_KEY") or "").strip()
+        zernio_api_base = (os.getenv("ZERNIO_API_BASE") or "https://zernio.com/api/v1").rstrip("/")
+        if zernio_profile_id and zernio_api_key:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(
+                    f"{zernio_api_base}/accounts",
+                    params={"profileId": zernio_profile_id},
+                    headers={"Authorization": f"Bearer {zernio_api_key}"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    rows = data.get("accounts") or data.get("data") or []
+                    if isinstance(rows, list):
+                        social_accounts = [
+                            {
+                                "id": str((a or {}).get("id") or (a or {}).get("_id") or (a or {}).get("accountId") or ""),
+                                "platform": str((a or {}).get("platform") or "").lower(),
+                                "username": (a or {}).get("username"),
+                                "connected": True,
+                            }
+                            for a in rows
+                            if isinstance(a, dict)
+                        ]
+    except Exception as e:
+        logger.warning(f"[integrations_status] Zernio social lookup failed: {e}")
+    out["social"] = social_accounts
+
     # ── Nango-connected apps ──────────────────────────────────────────────────
     # Maps human-readable key → Nango provider_config_key
     _NANGO_INTEGRATIONS = {
@@ -1000,6 +1036,8 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
             k for k, v in {
                 "WhatsApp": out["whatsapp"]["connected"],
                 "Telegram": out["telegram"]["connected"],
+                "Facebook": any(a.get("platform") == "facebook" and a.get("connected") for a in social_accounts),
+                "Instagram": any(a.get("platform") == "instagram" and a.get("connected") for a in social_accounts),
                 **{k.replace("_", " ").title(): v for k, v in nango_status.items()},
             }.items()
             if v
