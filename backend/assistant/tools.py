@@ -931,24 +931,6 @@ async def list_team(ctx: ToolContext, args: Dict[str, Any]):
 async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
     import os
     out: Dict[str, Any] = {}
-    now = datetime.utcnow()
-    cutoff_30d = now - timedelta(days=30)
-
-    def _parse_dt(value: Any) -> Optional[datetime]:
-        if not value or not isinstance(value, str):
-            return None
-        txt = value.strip()
-        if not txt:
-            return None
-        try:
-            if txt.endswith("Z"):
-                txt = txt[:-1] + "+00:00"
-            dt = datetime.fromisoformat(txt)
-            if dt.tzinfo is not None:
-                return dt.replace(tzinfo=None)
-            return dt
-        except Exception:
-            return None
 
     # ── WhatsApp ──────────────────────────────────────────────────────────────
     try:
@@ -976,14 +958,23 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "accounts_count": 0,
         "platforms": [],
         "accounts_by_platform": {},
-        "window_days": 30,
+        "window_days": None,
         "recent_inbox_conversations": 0,
         "recent_posts": 0,
         "recent_unread_conversations": 0,
         "total_inbox_conversations_fetched": 0,
         "total_posts_fetched": 0,
-        "inbox_by_platform_30d": {},
-        "posts_by_platform_30d": {},
+        "inbox_by_platform_recent": {},
+        "posts_by_platform_recent": {},
+        "latest_messages_sample": [],
+        "latest_messages_by_conversation": {},
+        "brand_voice_signals": {
+            "outgoing_messages_analyzed": 0,
+            "avg_outgoing_length": 0,
+            "uses_emoji_ratio": 0.0,
+            "uses_question_ratio": 0.0,
+            "common_openers": [],
+        },
         "performance_totals": {
             "likes": 0,
             "comments": 0,
@@ -1051,22 +1042,7 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                         conversations = conv_data.get("conversations") or conv_data.get("data") or []
                         if isinstance(conversations, list):
                             social_activity["total_inbox_conversations_fetched"] = len(conversations)
-                            recent_conversations = []
-                            for c in conversations:
-                                if not isinstance(c, dict):
-                                    continue
-                                dt = _parse_dt(
-                                    c.get("updatedAt")
-                                    or c.get("updated_at")
-                                    or c.get("lastMessageAt")
-                                    or c.get("last_message_at")
-                                    or c.get("createdAt")
-                                    or c.get("created_at")
-                                )
-                                if dt and dt < cutoff_30d:
-                                    continue
-                                recent_conversations.append(c)
-
+                            recent_conversations = [c for c in conversations if isinstance(c, dict)]
                             social_activity["recent_inbox_conversations"] = len(recent_conversations)
                             social_activity["recent_unread_conversations"] = sum(
                                 1
@@ -1080,7 +1056,7 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                             for c in recent_conversations:
                                 platform = str((c or {}).get("platform") or "").lower() or "unknown"
                                 inbox_by_platform[platform] = inbox_by_platform.get(platform, 0) + 1
-                            social_activity["inbox_by_platform_30d"] = inbox_by_platform
+                            social_activity["inbox_by_platform_recent"] = inbox_by_platform
                             social_activity["latest_conversations"] = [
                                 {
                                     "platform": str((c or {}).get("platform") or "").lower(),
@@ -1094,6 +1070,87 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                 if isinstance(c, dict)
                             ]
 
+                            # Pull recent message samples for style learning (latest 50 total).
+                            collected_messages: list[Dict[str, Any]] = []
+                            for c in recent_conversations[:10]:
+                                conv_id = (c or {}).get("id") or (c or {}).get("_id") or (c or {}).get("conversationId")
+                                if not conv_id:
+                                    continue
+                                try:
+                                    conv_detail_resp = await client.get(
+                                        f"{zernio_api_base}/conversations/{conv_id}",
+                                        headers={"Authorization": f"Bearer {zernio_api_key}"},
+                                    )
+                                    if conv_detail_resp.status_code != 200:
+                                        continue
+                                    conv_detail = conv_detail_resp.json()
+                                    msgs = conv_detail.get("messages") or conv_detail.get("data") or []
+                                    if not isinstance(msgs, list):
+                                        continue
+                                    convo_bucket: list[Dict[str, Any]] = []
+                                    for m in msgs[-10:]:
+                                        if not isinstance(m, dict):
+                                            continue
+                                        text = (
+                                            (m.get("message") if isinstance(m.get("message"), str) else None)
+                                            or (m.get("text") if isinstance(m.get("text"), str) else None)
+                                            or (m.get("content") if isinstance(m.get("content"), str) else None)
+                                            or ""
+                                        ).strip()
+                                        if not text:
+                                            continue
+                                        direction = str(
+                                            m.get("direction")
+                                            or m.get("type")
+                                            or ("outgoing" if m.get("fromMe") else "incoming")
+                                        ).lower()
+                                        row = {
+                                            "conversation_id": str(conv_id),
+                                            "platform": str((c or {}).get("platform") or "").lower(),
+                                            "username": (c or {}).get("username") or (c or {}).get("senderName"),
+                                            "direction": direction,
+                                            "text": text[:280],
+                                            "created_at": m.get("createdAt") or m.get("created_at") or m.get("timestamp"),
+                                        }
+                                        convo_bucket.append(row)
+                                        collected_messages.append(row)
+                                    if convo_bucket:
+                                        social_activity["latest_messages_by_conversation"][str(conv_id)] = convo_bucket[-10:]
+                                except Exception:
+                                    continue
+                                if len(collected_messages) >= 50:
+                                    break
+
+                            social_activity["latest_messages_sample"] = collected_messages[-50:]
+
+                            outgoing = [
+                                m for m in social_activity["latest_messages_sample"]
+                                if isinstance(m, dict) and "out" in str(m.get("direction") or "").lower()
+                            ]
+                            if outgoing:
+                                total_len = sum(len(str(m.get("text") or "")) for m in outgoing)
+                                emoji_hits = sum(
+                                    1 for m in outgoing
+                                    if any(ord(ch) > 10000 for ch in str(m.get("text") or ""))
+                                )
+                                question_hits = sum(
+                                    1 for m in outgoing if "?" in str(m.get("text") or "")
+                                )
+                                openers: Dict[str, int] = {}
+                                for m in outgoing:
+                                    txt = str(m.get("text") or "").strip().lower()
+                                    first = txt.split(" ")[0] if txt else ""
+                                    if first:
+                                        openers[first] = openers.get(first, 0) + 1
+                                top_openers = [k for k, _ in sorted(openers.items(), key=lambda kv: kv[1], reverse=True)[:5]]
+                                social_activity["brand_voice_signals"] = {
+                                    "outgoing_messages_analyzed": len(outgoing),
+                                    "avg_outgoing_length": int(round(total_len / max(len(outgoing), 1))),
+                                    "uses_emoji_ratio": round(emoji_hits / max(len(outgoing), 1), 3),
+                                    "uses_question_ratio": round(question_hits / max(len(outgoing), 1), 3),
+                                    "common_openers": top_openers,
+                                }
+
                     post_resp = await client.get(
                         f"{zernio_api_base}/posts",
                         params={"profileId": zernio_profile_id, "limit": 50},
@@ -1104,30 +1161,13 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                         posts = post_data.get("posts") or post_data.get("data") or []
                         if isinstance(posts, list):
                             social_activity["total_posts_fetched"] = len(posts)
-                            recent_posts = []
-                            for p in posts:
-                                if not isinstance(p, dict):
-                                    continue
-                                dt = _parse_dt(
-                                    p.get("publishedAt")
-                                    or p.get("published_at")
-                                    or p.get("scheduledAt")
-                                    or p.get("scheduled_at")
-                                    or p.get("updatedAt")
-                                    or p.get("updated_at")
-                                    or p.get("createdAt")
-                                    or p.get("created_at")
-                                )
-                                if dt and dt < cutoff_30d:
-                                    continue
-                                recent_posts.append(p)
-
-                            social_activity["recent_posts"] = len(recent_posts)
+                            latest_posts = [p for p in posts if isinstance(p, dict)]
+                            social_activity["recent_posts"] = len(latest_posts)
                             posts_by_platform: Dict[str, int] = {}
-                            for p in recent_posts:
+                            for p in latest_posts:
                                 platform = str((p or {}).get("platform") or "").lower() or "unknown"
                                 posts_by_platform[platform] = posts_by_platform.get(platform, 0) + 1
-                            social_activity["posts_by_platform_30d"] = posts_by_platform
+                            social_activity["posts_by_platform_recent"] = posts_by_platform
                             top_score = -1
                             social_activity["latest_posts"] = [
                                 {
@@ -1138,10 +1178,10 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                     "scheduled_at": (p or {}).get("scheduledAt") or (p or {}).get("scheduled_at"),
                                     "published_at": (p or {}).get("publishedAt") or (p or {}).get("published_at"),
                                 }
-                                for p in recent_posts[:10]
+                                for p in latest_posts[:20]
                                 if isinstance(p, dict)
                             ]
-                            for p in recent_posts:
+                            for p in latest_posts:
                                 if not isinstance(p, dict):
                                     continue
                                 metrics = p.get("metrics") if isinstance(p.get("metrics"), dict) else {}
