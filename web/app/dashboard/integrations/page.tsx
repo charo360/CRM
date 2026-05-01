@@ -719,11 +719,11 @@ function IntegrationsPageInner() {
         </div>
       </section>
 
-      {/* ── Section 2: Social Channels (Zernio) ─────────────────────────── */}
+      {/* ── Section 2: Social Channels ───────────────────────────────────── */}
       <section id="integrations-social" className="scroll-mt-24">
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Social Channels</h2>
-          <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-brand-dark ring-1 ring-brand/20">via Zernio · Paid</span>
+          <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-brand-dark ring-1 ring-brand/20">Advanced · Paid</span>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {SOCIAL_PLATFORMS.map((p) => {
@@ -733,7 +733,7 @@ function IntegrationsPageInner() {
               <SmallTile
                 key={p.id}
                 title={p.label}
-                subtitle={isConnected ? (account.username ? `@${account.username}` : account.name ?? "Connected") : "via Zernio"}
+                subtitle={isConnected ? (account.username ? `@${account.username}` : account.name ?? "Connected") : "Ready to connect"}
                 borderClass={isConnected ? `${p.border} ${p.bg}` : "border-slate-200"}
                 icon={<div className="h-5 w-5">{p.logo}</div>}
               >
@@ -767,6 +767,9 @@ function IntegrationsPageInner() {
             );
           })}
         </div>
+        <p className="mt-2 text-[10px] text-slate-400">
+          Powered by third-party social connection infrastructure.
+        </p>
       </section>
 
       {/* ── Section 3: Payments ──────────────────────────────────────────── */}
