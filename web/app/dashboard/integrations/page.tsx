@@ -393,6 +393,17 @@ type NangoKey = keyof typeof NANGO_IDS;
 interface ZernioAccount { id: string; platform: string; name?: string; username?: string; }
 interface FacebookHeadlessPage { id: string; name?: string; username?: string; category?: string; }
 
+function toFacebookHeadlessPage(input: Record<string, unknown>): FacebookHeadlessPage | null {
+  const rawId = input.id;
+  if (typeof rawId !== "string" || !rawId.trim()) return null;
+  return {
+    id: rawId,
+    name: typeof input.name === "string" ? input.name : undefined,
+    username: typeof input.username === "string" ? input.username : undefined,
+    category: typeof input.category === "string" ? input.category : undefined,
+  };
+}
+
 function IntegrationsPageInner() {
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
   const [psConn, setPsConn] = useState<PaystackConnection>({ connected: false });
@@ -567,7 +578,9 @@ function IntegrationsPageInner() {
       zernioApi
         .facebookHeadlessPages({ temp_token: tempToken, connect_token: connectToken })
         .then((res) => {
-          const pages = (res.pages || []) as FacebookHeadlessPage[];
+          const pages = (res.pages || [])
+            .map((p) => toFacebookHeadlessPage(p))
+            .filter((p): p is FacebookHeadlessPage => p !== null);
           setFbHeadlessPages(pages);
           if (!pages.length) {
             setBanner({ type: "error", msg: "No Facebook pages were returned for this account." });
