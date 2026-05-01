@@ -985,6 +985,9 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "top_post": None,
         "latest_conversations": [],
         "latest_posts": [],
+        "last_message_at": None,
+        "last_post_at": None,
+        "checked_at": datetime.utcnow().isoformat(),
     }
     try:
         import httpx
@@ -1069,6 +1072,13 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                 for c in recent_conversations[:10]
                                 if isinstance(c, dict)
                             ]
+                            conv_times = [
+                                str(item.get("updated_at"))
+                                for item in social_activity["latest_conversations"]
+                                if item.get("updated_at")
+                            ]
+                            if conv_times:
+                                social_activity["last_message_at"] = conv_times[0]
 
                             # Pull recent message samples for style learning (latest 50 total).
                             collected_messages: list[Dict[str, Any]] = []
@@ -1181,6 +1191,13 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                 for p in latest_posts[:20]
                                 if isinstance(p, dict)
                             ]
+                            post_times = [
+                                str(item.get("published_at") or item.get("scheduled_at"))
+                                for item in social_activity["latest_posts"]
+                                if item.get("published_at") or item.get("scheduled_at")
+                            ]
+                            if post_times:
+                                social_activity["last_post_at"] = post_times[0]
                             for p in latest_posts:
                                 if not isinstance(p, dict):
                                     continue
@@ -1272,6 +1289,25 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         elif platform:
             social_labels.append(platform)
     out["social_overview"] = social_labels
+    social_gaps: list[str] = []
+    social_actions: list[str] = []
+    if social_activity["accounts_count"] > 0 and social_activity["recent_inbox_conversations"] == 0:
+        social_gaps.append("No recent inbox conversations returned for connected social accounts.")
+        social_actions.append("Verify messaging permissions/scopes for connected accounts and test by sending a new DM.")
+    if social_activity["accounts_count"] > 0 and social_activity["recent_posts"] == 0:
+        social_gaps.append("No recent posts returned for connected social accounts.")
+        social_actions.append("Confirm posting history exists on connected pages and that post-read scopes are granted.")
+    if social_activity["accounts_count"] == 0:
+        social_gaps.append("No connected social accounts were found.")
+        social_actions.append("Connect at least one social account in Integrations to unlock social insights.")
+    out["social_diagnostics"] = {
+        "status": "healthy" if not social_gaps else "attention_needed",
+        "gaps": social_gaps,
+        "recommended_actions": social_actions,
+        "checked_at": social_activity.get("checked_at"),
+        "last_message_at": social_activity.get("last_message_at"),
+        "last_post_at": social_activity.get("last_post_at"),
+    }
 
     # Flat convenience summary for the agent
     out["summary"] = (
@@ -1305,6 +1341,8 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                 f"{int(perf.get('reach') or 0)} reach, "
                 f"{int(perf.get('clicks') or 0)} clicks"
             )
+    if social_gaps:
+        out["summary"] += f" | Social diagnostics: {social_gaps[0]}"
     return out
 
 
@@ -1538,6 +1576,28 @@ async def get_social_conversation_insights(ctx: ToolContext, args: Dict[str, Any
         "top_topics": top_topics,
         "top_contacts": top_contacts,
         "message_snippets": snippets,
+    }
+
+
+@tool(
+    name="audit_social_integrations",
+    description=(
+        "Run a health audit for connected social integrations and report data freshness, gaps, and fixes."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def audit_social_integrations(ctx: ToolContext, args: Dict[str, Any]):
+    status = await integrations_status(ctx, {})
+    diagnostics = status.get("social_diagnostics") if isinstance(status, dict) else None
+    activity = status.get("social_activity") if isinstance(status, dict) else None
+    overview = status.get("social_overview") if isinstance(status, dict) else None
+    return {
+        "status": (diagnostics or {}).get("status", "unknown"),
+        "connected_pages": overview or [],
+        "activity": activity or {},
+        "gaps": (diagnostics or {}).get("gaps", []),
+        "recommended_actions": (diagnostics or {}).get("recommended_actions", []),
+        "checked_at": (diagnostics or {}).get("checked_at"),
     }
 
 

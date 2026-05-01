@@ -223,7 +223,7 @@ NPS_TOOLS: FrozenSet[str] = frozenset({
 SOCIAL_INBOX_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "get_analytics_summary",
     "list_customers", "get_customer",
-    "get_social_conversation_history", "get_social_conversation_insights",
+    "get_social_conversation_history", "get_social_conversation_insights", "audit_social_integrations",
 })
 SOCIAL_MONITOR_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status",
@@ -307,7 +307,7 @@ GENERAL_TOOLS: FrozenSet[str] = (
         # WhatsApp
         "send_whatsapp_message",
         # Integrations & team
-        "integrations_status", "get_social_conversation_history", "get_social_conversation_insights", "list_team",
+        "integrations_status", "get_social_conversation_history", "get_social_conversation_insights", "audit_social_integrations", "list_team",
         # Design library (read-only — for referencing brand assets in docs)
         "list_design_library_assets", "get_product_images",
         # Bookings & automations
