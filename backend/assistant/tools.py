@@ -1308,6 +1308,135 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
     return out
 
 
+@tool(
+    name="get_social_conversation_history",
+    description=(
+        "Fetch recent social inbox conversations and message snippets from connected channels. "
+        "Use this to answer who the business talked to and what they discussed."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "platform": {
+                "type": "string",
+                "description": "Optional platform filter (facebook, instagram, twitter, etc).",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional keyword/person search in username or message text.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "How many conversations to return (default 20, max 50).",
+            },
+        },
+    },
+)
+async def get_social_conversation_history(ctx: ToolContext, args: Dict[str, Any]):
+    import os
+    import httpx
+
+    platform_filter = str(args.get("platform") or "").strip().lower()
+    query = str(args.get("query") or "").strip().lower()
+    limit = max(1, min(int(args.get("limit") or 20), 50))
+
+    user_doc = await ctx.db.users.find_one({"_id": ctx.business_id}, {"zernio_profile_id": 1})
+    zernio_profile_id = (user_doc or {}).get("zernio_profile_id")
+    if not zernio_profile_id:
+        return {"error": "No social profile linked yet. Connect a social account first."}
+
+    zernio_api_key = (os.getenv("ZERNIO_API_KEY") or "").strip()
+    zernio_api_base = (os.getenv("ZERNIO_API_BASE") or "https://zernio.com/api/v1").rstrip("/")
+    if not zernio_api_key:
+        return {"error": "ZERNIO_API_KEY is not configured on the server."}
+
+    headers = {"Authorization": f"Bearer {zernio_api_key}"}
+    conversations: list[Dict[str, Any]] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            params: Dict[str, Any] = {"profileId": zernio_profile_id, "limit": 50}
+            if platform_filter:
+                params["platform"] = platform_filter
+            conv_resp = await client.get(f"{zernio_api_base}/conversations", params=params, headers=headers)
+            conv_resp.raise_for_status()
+            conv_data = conv_resp.json()
+            rows = conv_data.get("conversations") or conv_data.get("data") or []
+            if not isinstance(rows, list):
+                rows = []
+
+            for c in rows:
+                if not isinstance(c, dict):
+                    continue
+                conv_id = c.get("id") or c.get("_id") or c.get("conversationId")
+                if not conv_id:
+                    continue
+                platform = str(c.get("platform") or "").lower()
+                username = c.get("username") or c.get("senderName") or c.get("name")
+                try:
+                    detail_resp = await client.get(f"{zernio_api_base}/conversations/{conv_id}", headers=headers)
+                    if detail_resp.status_code != 200:
+                        continue
+                    detail = detail_resp.json()
+                    msgs = detail.get("messages") or detail.get("data") or []
+                    if not isinstance(msgs, list):
+                        msgs = []
+                    parsed_msgs: list[Dict[str, Any]] = []
+                    for m in msgs[-12:]:
+                        if not isinstance(m, dict):
+                            continue
+                        text = (
+                            (m.get("message") if isinstance(m.get("message"), str) else None)
+                            or (m.get("text") if isinstance(m.get("text"), str) else None)
+                            or (m.get("content") if isinstance(m.get("content"), str) else None)
+                            or ""
+                        ).strip()
+                        if not text:
+                            continue
+                        parsed_msgs.append({
+                            "direction": str(
+                                m.get("direction")
+                                or m.get("type")
+                                or ("outgoing" if m.get("fromMe") else "incoming")
+                            ).lower(),
+                            "text": text[:320],
+                            "created_at": m.get("createdAt") or m.get("created_at") or m.get("timestamp"),
+                        })
+
+                    if query:
+                        hay = " ".join([
+                            str(username or "").lower(),
+                            str((c.get("lastMessage") or c.get("last_message") or "")).lower(),
+                            " ".join(str(m.get("text") or "").lower() for m in parsed_msgs),
+                        ])
+                        if query not in hay:
+                            continue
+
+                    conversations.append({
+                        "conversation_id": str(conv_id),
+                        "platform": platform,
+                        "username": username,
+                        "unread_count": c.get("unreadCount") or c.get("unread_count") or (1 if c.get("unread") else 0),
+                        "updated_at": c.get("updatedAt") or c.get("updated_at"),
+                        "last_message": c.get("lastMessage") or c.get("last_message"),
+                        "messages": parsed_msgs,
+                    })
+                except Exception:
+                    continue
+
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Social inbox API error: {e.response.status_code}"}
+    except Exception as e:
+        return {"error": f"Failed to fetch social history: {e}"}
+
+    return {
+        "count": len(conversations[:limit]),
+        "platform_filter": platform_filter or None,
+        "query": query or None,
+        "conversations": conversations[:limit],
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SHOPIFY TOOLS (via Nango proxy)
 # ═════════════════════════════════════════════════════════════════════════════
