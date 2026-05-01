@@ -307,7 +307,7 @@ GENERAL_TOOLS: FrozenSet[str] = (
         # WhatsApp
         "send_whatsapp_message",
         # Integrations & team
-        "integrations_status", "get_social_conversation_history", "get_social_conversation_insights", "audit_social_integrations", "list_team",
+        "integrations_status", "get_social_conversation_history", "get_social_conversation_insights", "audit_social_integrations", "run_brand_audit", "list_team",
         # Design library (read-only — for referencing brand assets in docs)
         "list_design_library_assets", "get_product_images",
         # Bookings & automations

@@ -1601,6 +1601,121 @@ async def audit_social_integrations(ctx: ToolContext, args: Dict[str, Any]):
     }
 
 
+@tool(
+    name="run_brand_audit",
+    description=(
+        "Run a practical brand and growth audit using CRM profile + social signals. "
+        "Returns messaging scorecard, About Us rewrites, and prioritized 30-day actions."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def run_brand_audit(ctx: ToolContext, args: Dict[str, Any]):
+    owner = await get_owner_info(ctx, {})
+    integrations = await integrations_status(ctx, {})
+    insights = await get_social_conversation_insights(ctx, {"limit": 30})
+
+    business_name = str(owner.get("business_name") or "Your business").strip()
+    business_type = str(owner.get("business_type") or "").strip() or "general business"
+    country = str(owner.get("country") or "").strip()
+    owner_name = str(owner.get("owner_name") or "").strip()
+    products = owner.get("products_preview") or []
+    social_pages = integrations.get("social_overview") or []
+    social_diag = integrations.get("social_diagnostics") or {}
+    social_activity = integrations.get("social_activity") or {}
+    top_topics = insights.get("top_topics") or []
+
+    has_social = bool(social_pages)
+    has_inbox = int(social_activity.get("recent_inbox_conversations") or 0) > 0
+    has_posts = int(social_activity.get("recent_posts") or 0) > 0
+    products_count = len(products) if isinstance(products, list) else 0
+
+    # Simple actionable scorecard
+    scorecard = {
+        "positioning_clarity": 80 if business_type and products_count > 0 else 55,
+        "social_proof_signals": 75 if has_social and has_posts else 45,
+        "customer_voice_signal": 80 if has_inbox else 50,
+        "offer_specificity": 78 if products_count >= 3 else 58,
+        "overall_readiness": 0,
+    }
+    scorecard["overall_readiness"] = int(round(
+        (scorecard["positioning_clarity"]
+         + scorecard["social_proof_signals"]
+         + scorecard["customer_voice_signal"]
+         + scorecard["offer_specificity"]) / 4
+    ))
+
+    # Topic-derived hooks
+    topic_labels = [str(t.get("topic") or "") for t in top_topics if isinstance(t, dict)]
+    primary_topic = topic_labels[0] if topic_labels else "customer outcomes"
+    secondary_topic = topic_labels[1] if len(topic_labels) > 1 else "service reliability"
+
+    about_us_base = (
+        f"{business_name} helps customers with {business_type.lower()} solutions"
+        + (f" in {country}" if country else "")
+        + "."
+    )
+    about_us_rewrites = {
+        "formal": (
+            f"{about_us_base} We focus on consistent quality, transparent communication, and measurable results. "
+            f"Our team{f', led by {owner_name},' if owner_name else ''} prioritizes {primary_topic.replace('_', ' ')} "
+            f"and long-term client trust."
+        ),
+        "warm": (
+            f"At {business_name}, we keep things simple: we listen, we respond fast, and we deliver real value. "
+            f"Our customers choose us for dependable support, honest guidance, and better outcomes around {primary_topic.replace('_', ' ')}."
+        ),
+        "premium": (
+            f"{business_name} is a premium {business_type.lower()} brand built around precision, responsiveness, and trust. "
+            f"We combine proven execution with clear communication so clients see results in {primary_topic.replace('_', ' ')} and {secondary_topic.replace('_', ' ')}."
+        ),
+    }
+
+    actions_30d = [
+        {
+            "priority": 1,
+            "action": "Update About Us across website + social bios",
+            "why": "Current brand story is not consistently reinforced across channels.",
+            "expected_impact": "Higher trust and better conversion from profile visits.",
+        },
+        {
+            "priority": 2,
+            "action": "Publish 3 authority posts focused on top customer topics",
+            "why": f"Recent conversations indicate interest in {primary_topic.replace('_', ' ')}.",
+            "expected_impact": "Improved engagement quality and more qualified inquiries.",
+        },
+        {
+            "priority": 3,
+            "action": "Standardize first-response script for inbox leads",
+            "why": "Consistent response style improves close rate and brand perception.",
+            "expected_impact": "Faster response times and stronger lead conversion.",
+        },
+        {
+            "priority": 4,
+            "action": "Create one clear signature offer with CTA",
+            "why": "Offer specificity is a key conversion lever.",
+            "expected_impact": "More direct inquiries and fewer low-intent chats.",
+        },
+    ]
+
+    return {
+        "business": {
+            "name": business_name,
+            "type": business_type,
+            "country": country or None,
+            "connected_social_pages": social_pages,
+        },
+        "scorecard": scorecard,
+        "social_health": {
+            "status": social_diag.get("status"),
+            "gaps": social_diag.get("gaps") or [],
+            "checked_at": social_diag.get("checked_at"),
+        },
+        "top_customer_topics": top_topics,
+        "about_us_rewrites": about_us_rewrites,
+        "recommended_30_day_actions": actions_30d,
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SHOPIFY TOOLS (via Nango proxy)
 # ═════════════════════════════════════════════════════════════════════════════
