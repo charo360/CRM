@@ -979,6 +979,8 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                 "id": str((a or {}).get("id") or (a or {}).get("_id") or (a or {}).get("accountId") or ""),
                                 "platform": str((a or {}).get("platform") or "").lower(),
                                 "username": (a or {}).get("username"),
+                                "name": (a or {}).get("name") or (a or {}).get("displayName") or (a or {}).get("pageName"),
+                                "page_name": (a or {}).get("pageName") or (a or {}).get("name") or (a or {}).get("displayName"),
                                 "connected": True,
                             }
                             for a in rows
@@ -1029,6 +1031,24 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
 
     out["nango"] = {k: {"connected": v} for k, v in nango_status.items()}
 
+    # Human-friendly social account labels so the assistant can reference exact pages.
+    social_labels: list[str] = []
+    for acc in social_accounts:
+        if not acc.get("connected"):
+            continue
+        platform = str(acc.get("platform") or "").title()
+        page = (acc.get("page_name") or acc.get("name") or "").strip() if isinstance(acc.get("page_name") or acc.get("name"), str) else ""
+        username = (acc.get("username") or "").strip() if isinstance(acc.get("username"), str) else ""
+        if page and username:
+            social_labels.append(f"{platform} ({page} / @{username})")
+        elif page:
+            social_labels.append(f"{platform} ({page})")
+        elif username:
+            social_labels.append(f"{platform} (@{username})")
+        elif platform:
+            social_labels.append(platform)
+    out["social_overview"] = social_labels
+
     # Flat convenience summary for the agent
     out["summary"] = (
         "Connected: "
@@ -1044,6 +1064,8 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         )
         or "none"
     )
+    if social_labels:
+        out["summary"] += f" | Social pages: {', '.join(social_labels)}"
     return out
 
 
