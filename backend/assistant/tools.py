@@ -1716,6 +1716,107 @@ async def run_brand_audit(ctx: ToolContext, args: Dict[str, Any]):
     }
 
 
+@tool(
+    name="run_competitor_benchmark",
+    description=(
+        "Benchmark competitors using web search + business context. "
+        "Returns a focused competitor list, positioning gaps, and concrete actions."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def run_competitor_benchmark(ctx: ToolContext, args: Dict[str, Any]):
+    from urllib.parse import urlparse
+
+    owner = await get_owner_info(ctx, {})
+    business_name = str(owner.get("business_name") or "Your business").strip()
+    business_type = str(owner.get("business_type") or "").strip() or "business"
+    country = str(owner.get("country") or "").strip()
+    products = owner.get("products_preview") or []
+
+    product_hints = ", ".join(str(p.get("name") or "") for p in (products[:3] if isinstance(products, list) else []))
+    market_hint = f"{business_type} in {country}" if country else business_type
+    query_seed = (
+        f"Top {market_hint} competitors pricing features customer reviews "
+        f"{product_hints}".strip()
+    )
+
+    # Multiple targeted pulls for better quality than one broad search.
+    search_a = await web_search(ctx, {"query": query_seed, "max_results": 8})
+    search_b = await web_search(ctx, {"query": f"{market_hint} alternatives to {business_name}", "max_results": 8})
+    search_c = await web_search(ctx, {"query": f"{market_hint} best companies comparison", "max_results": 8})
+
+    merged: list[Dict[str, Any]] = []
+    for pack in (search_a, search_b, search_c):
+        rows = pack.get("results") if isinstance(pack, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for r in rows:
+            if isinstance(r, dict):
+                merged.append(r)
+
+    # Dedupe by domain and keep top unique results.
+    seen_domains: set[str] = set()
+    competitors: list[Dict[str, Any]] = []
+    for r in merged:
+        url = str(r.get("url") or "").strip()
+        title = str(r.get("title") or "").strip()
+        snippet = str(r.get("snippet") or "").strip()
+        if not url:
+            continue
+        try:
+            domain = (urlparse(url).netloc or "").lower().replace("www.", "")
+        except Exception:
+            domain = ""
+        if not domain or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        if business_name.lower().replace(" ", "") in domain.replace("-", ""):
+            continue
+        competitors.append({
+            "company": title[:100] or domain,
+            "website": url,
+            "notes": snippet[:240],
+        })
+        if len(competitors) >= 8:
+            break
+
+    # Heuristic opportunities based on search snippets.
+    snippets_blob = " ".join(c.get("notes", "").lower() for c in competitors)
+    opportunities: list[str] = []
+    if "price" in snippets_blob or "afford" in snippets_blob:
+        opportunities.append("Clarify pricing tiers and value outcomes on your About/offer pages.")
+    if "delivery" in snippets_blob or "support" in snippets_blob:
+        opportunities.append("Prominently position response speed, delivery reliability, and support quality.")
+    if "review" in snippets_blob or "testimonial" in snippets_blob:
+        opportunities.append("Add stronger social proof (testimonials/case outcomes) to trust surfaces.")
+    if "free" in snippets_blob or "trial" in snippets_blob:
+        opportunities.append("Test a low-friction entry offer (trial, starter package, or free consult).")
+    if not opportunities:
+        opportunities = [
+            "Sharpen homepage/About positioning around a single clear value promise.",
+            "Publish weekly authority content answering the top customer buying questions.",
+            "Create one signature offer with a direct CTA and expected outcome."
+        ]
+
+    actions = [
+        {"priority": 1, "action": "Differentiate core offer messaging", "detail": opportunities[0]},
+        {"priority": 2, "action": "Strengthen trust and proof elements", "detail": opportunities[1] if len(opportunities) > 1 else opportunities[0]},
+        {"priority": 3, "action": "Run 14-day competitor-informed campaign test", "detail": opportunities[2] if len(opportunities) > 2 else opportunities[-1]},
+    ]
+
+    return {
+        "business": {
+            "name": business_name,
+            "type": business_type,
+            "country": country or None,
+        },
+        "query_seed": query_seed,
+        "competitors": competitors,
+        "opportunities": opportunities,
+        "recommended_actions": actions,
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SHOPIFY TOOLS (via Nango proxy)
 # ═════════════════════════════════════════════════════════════════════════════

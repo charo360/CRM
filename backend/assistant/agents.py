@@ -307,7 +307,7 @@ GENERAL_TOOLS: FrozenSet[str] = (
         # WhatsApp
         "send_whatsapp_message",
         # Integrations & team
-        "integrations_status", "get_social_conversation_history", "get_social_conversation_insights", "audit_social_integrations", "run_brand_audit", "list_team",
+        "integrations_status", "get_social_conversation_history", "get_social_conversation_insights", "audit_social_integrations", "run_brand_audit", "run_competitor_benchmark", "list_team",
         # Design library (read-only — for referencing brand assets in docs)
         "list_design_library_assets", "get_product_images",
         # Bookings & automations
@@ -2063,7 +2063,10 @@ When the user's request clearly fits a specialist domain, **answer their questio
   1) call `run_brand_audit`
   2) call `audit_social_integrations`
   3) call `get_social_conversation_insights`
-  4) then produce a single prioritized plan grounded in those results.
+  4) call `run_competitor_benchmark`
+  5) then produce a single prioritized plan grounded in those results.
+- Operate as a true co-pilot with the owner: clearly separate what Zilo can do now (analysis, drafts, plans, automations) vs what the owner must decide/approve.
+- If team members exist, call `list_team` and propose a responsibility split by role (owner, sales, ops, marketing) with concrete next actions.
 
 ## Style
 Calm, precise, confident. No filler openers. Lead with the answer or the data. Human-friendly formatting — tables for lists, bold for key numbers, readable dates.
