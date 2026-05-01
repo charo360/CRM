@@ -957,8 +957,10 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
     social_activity: Dict[str, Any] = {
         "accounts_count": 0,
         "platforms": [],
+        "accounts_by_platform": {},
         "recent_inbox_conversations": 0,
         "recent_posts": 0,
+        "recent_unread_conversations": 0,
         "latest_conversations": [],
         "latest_posts": [],
     }
@@ -995,11 +997,16 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                             if isinstance(a, dict)
                         ]
                         social_activity["accounts_count"] = len(social_accounts)
-                        social_activity["platforms"] = sorted({
+                        platforms = {
                             str(a.get("platform") or "").lower()
                             for a in social_accounts
                             if a.get("platform")
-                        })
+                        }
+                        social_activity["platforms"] = sorted(platforms)
+                        social_activity["accounts_by_platform"] = {
+                            p: sum(1 for a in social_accounts if str(a.get("platform") or "").lower() == p)
+                            for p in sorted(platforms)
+                        }
 
                     # Pull lightweight inbox + posts snapshots so the assistant has
                     # immediate context about what is happening on connected pages.
@@ -1013,13 +1020,24 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                         conversations = conv_data.get("conversations") or conv_data.get("data") or []
                         if isinstance(conversations, list):
                             social_activity["recent_inbox_conversations"] = len(conversations)
+                            social_activity["recent_unread_conversations"] = sum(
+                                1
+                                for c in conversations
+                                if isinstance(c, dict) and bool(
+                                    (c.get("unread") is True)
+                                    or ((c.get("unreadCount") or c.get("unread_count") or 0) > 0)
+                                )
+                            )
                             social_activity["latest_conversations"] = [
                                 {
                                     "platform": str((c or {}).get("platform") or "").lower(),
+                                    "conversation_id": (c or {}).get("id") or (c or {}).get("_id") or (c or {}).get("conversationId"),
                                     "username": (c or {}).get("username") or (c or {}).get("senderName"),
                                     "last_message": (c or {}).get("lastMessage") or (c or {}).get("last_message"),
+                                    "unread_count": (c or {}).get("unreadCount") or (c or {}).get("unread_count") or (1 if (c or {}).get("unread") else 0),
+                                    "updated_at": (c or {}).get("updatedAt") or (c or {}).get("updated_at"),
                                 }
-                                for c in conversations[:5]
+                                for c in conversations[:10]
                                 if isinstance(c, dict)
                             ]
 
@@ -1036,10 +1054,13 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                             social_activity["latest_posts"] = [
                                 {
                                     "platform": str((p or {}).get("platform") or "").lower(),
+                                    "post_id": (p or {}).get("id") or (p or {}).get("_id"),
                                     "status": (p or {}).get("status"),
                                     "title": (p or {}).get("title") or (p or {}).get("caption"),
+                                    "scheduled_at": (p or {}).get("scheduledAt") or (p or {}).get("scheduled_at"),
+                                    "published_at": (p or {}).get("publishedAt") or (p or {}).get("published_at"),
                                 }
-                                for p in posts[:5]
+                                for p in posts[:10]
                                 if isinstance(p, dict)
                             ]
     except Exception as e:
@@ -1125,7 +1146,8 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         out["summary"] += f" | Social pages: {', '.join(social_labels)}"
     if social_activity["accounts_count"]:
         out["summary"] += (
-            f" | Social activity: {social_activity['recent_inbox_conversations']} recent inbox threads, "
+            f" | Social activity: {social_activity['recent_inbox_conversations']} inbox threads "
+            f"({social_activity['recent_unread_conversations']} unread), "
             f"{social_activity['recent_posts']} recent posts"
         )
     return out
