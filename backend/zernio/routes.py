@@ -35,6 +35,19 @@ def _extract_profile_id(profile: Dict[str, Any]) -> Optional[str]:
     )
     return str(pid) if pid else None
 
+
+def _normalize_account(acc: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(acc, dict):
+        return {}
+    out = dict(acc)
+    raw_id = out.get("id") or out.get("_id") or out.get("accountId") or out.get("account_id")
+    if raw_id:
+        out["id"] = str(raw_id)
+    platform = out.get("platform")
+    if isinstance(platform, str):
+        out["platform"] = platform.lower()
+    return out
+
 def _headers():
     key = os.getenv("ZERNIO_API_KEY", "").strip()
     if not key:
@@ -190,7 +203,8 @@ def make_zernio_router(db, user_dep):
             user_id = user["_id"]
             profile_id = await _get_or_create_profile(user_id)
             accounts_data = await _get("/accounts", {"profileId": profile_id})
-            accounts = accounts_data.get("accounts") or accounts_data.get("data") or []
+            raw_accounts = accounts_data.get("accounts") or accounts_data.get("data") or []
+            accounts = [_normalize_account(a) for a in raw_accounts if isinstance(a, dict)]
             return {
                 "connected": True,
                 "profile_id": profile_id,
@@ -308,6 +322,8 @@ def make_zernio_router(db, user_dep):
     @router.delete("/accounts/{account_id}")
     async def disconnect_account(account_id: str, user=user_dep):
         """Disconnect a social account."""
+        if not account_id or account_id in ("undefined", "null"):
+            raise HTTPException(400, "Invalid account id")
         try:
             data = await _delete(f"/accounts/{account_id}")
             return data
@@ -322,7 +338,9 @@ def make_zernio_router(db, user_dep):
         try:
             profile_id = await _get_or_create_profile(user["_id"])
             data = await _get("/accounts", {"profileId": profile_id})
-            return data
+            raw_accounts = data.get("accounts") or data.get("data") or []
+            accounts = [_normalize_account(a) for a in raw_accounts if isinstance(a, dict)]
+            return {"accounts": accounts}
         except HTTPException:
             raise
         except httpx.HTTPStatusError as e:
