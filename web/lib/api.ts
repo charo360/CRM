@@ -1449,7 +1449,10 @@ export const feedbackApi = {
 export const zernioApi = {
   status: () => api.get<{ connected: boolean; profile_id?: string; accounts?: unknown[] }>("/zernio/status"),
   accounts: () => api.get<{ accounts: unknown[] }>("/zernio/accounts"),
-  connect: (platform: string) => api.get<{ authUrl: string; platform: string }>(`/zernio/connect/${platform}`),
+  connect: (platform: string, redirectUrl?: string) =>
+    api.get<{ authUrl: string; platform: string }>(
+      `/zernio/connect/${platform}${redirectUrl ? `?redirect_url=${encodeURIComponent(redirectUrl)}` : ""}`
+    ),
   disconnect: (accountId: string) => api.delete<Record<string, unknown>>(`/zernio/accounts/${accountId}`),
   inbox: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/inbox${platform ? `?platform=${platform}` : ""}`),
   conversation: (id: string) => api.get<Record<string, unknown>>(`/zernio/inbox/${id}`),

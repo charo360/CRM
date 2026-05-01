@@ -189,14 +189,19 @@ def make_zernio_router(db, user_dep):
     # ── connect (OAuth flow) ───────────────────────────────────────────────────
 
     @router.get("/connect/{platform}")
-    async def get_connect_url(platform: str, user=user_dep):
+    async def get_connect_url(platform: str, redirect_url: Optional[str] = None, user=user_dep):
         """Return an OAuth URL so the user can connect a social platform."""
         try:
             profile_id = await _get_or_create_profile(user["_id"])
             frontend = os.getenv("FRONTEND_URL", "").rstrip("/")
             params: Dict[str, Any] = {"profileId": profile_id}
-            if frontend:
-                params["redirectUrl"] = f"{frontend}/dashboard/integrations"
+            target_redirect = (redirect_url or "").strip()
+            if not target_redirect and frontend:
+                target_redirect = f"{frontend}/dashboard/integrations?connected={platform}"
+            if target_redirect:
+                # Zernio docs use redirect_url. Keep redirectUrl too for backward compatibility.
+                params["redirect_url"] = target_redirect
+                params["redirectUrl"] = target_redirect
             data = await _get(f"/connect/{platform}", params)
             auth_url = (
                 data.get("authUrl") or data.get("url") or

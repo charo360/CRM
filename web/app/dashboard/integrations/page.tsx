@@ -416,9 +416,26 @@ function IntegrationsPageInner() {
   async function zernioConnect(platformId: string) {
     setZernioConnecting(platformId);
     try {
-      const { authUrl } = await zernioApi.connect(platformId);
+      const redirectUrl = `${window.location.origin}/dashboard/integrations?connected=${encodeURIComponent(platformId)}`;
+      const { authUrl } = await zernioApi.connect(platformId, redirectUrl);
       if (authUrl) {
-        window.open(authUrl, "_blank", "noopener,noreferrer");
+        const popup = window.open(authUrl, "zernio-connect", "width=980,height=760,noopener,noreferrer");
+        if (!popup) {
+          // Popup blocked: continue in same tab so OAuth can still complete.
+          window.location.href = authUrl;
+          return;
+        }
+        setBanner({
+          type: "success",
+          msg: `Finish ${platformId} connection in the popup, then return here.`,
+        });
+        const poll = window.setInterval(() => {
+          void refreshZernio();
+          if (popup.closed) {
+            window.clearInterval(poll);
+            setTimeout(() => void refreshZernio(), 1200);
+          }
+        }, 3000);
       } else {
         setBanner({ type: "error", msg: "Could not get connection URL. Please try again." });
       }
