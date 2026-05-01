@@ -1449,10 +1449,24 @@ export const feedbackApi = {
 export const zernioApi = {
   status: () => api.get<{ connected: boolean; profile_id?: string; accounts?: unknown[] }>("/zernio/status"),
   accounts: () => api.get<{ accounts: unknown[] }>("/zernio/accounts"),
-  connect: (platform: string, redirectUrl?: string) =>
-    api.get<{ authUrl: string; platform: string }>(
-      `/zernio/connect/${platform}${redirectUrl ? `?redirect_url=${encodeURIComponent(redirectUrl)}` : ""}`
-    ),
+  connect: (platform: string, redirectUrl?: string, headless?: boolean) => {
+    const q = [
+      redirectUrl ? `redirect_url=${encodeURIComponent(redirectUrl)}` : "",
+      headless ? "headless=true" : "",
+    ].filter(Boolean).join("&");
+    return api.get<{ authUrl: string; platform: string }>(
+      `/zernio/connect/${platform}${q ? `?${q}` : ""}`
+    );
+  },
+  facebookHeadlessPages: (body: { temp_token: string; connect_token: string }) =>
+    api.post<{ pages: Array<Record<string, unknown>> }>("/zernio/connect/facebook/headless/pages", body),
+  facebookHeadlessComplete: (body: {
+    temp_token: string;
+    connect_token: string;
+    page_id: string;
+    user_profile: Record<string, unknown>;
+    redirect_url?: string;
+  }) => api.post<{ connected: boolean; account?: Record<string, unknown> }>("/zernio/connect/facebook/headless/complete", body),
   disconnect: (accountId: string) => api.delete<Record<string, unknown>>(`/zernio/accounts/${accountId}`),
   inbox: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/inbox${platform ? `?platform=${platform}` : ""}`),
   conversation: (id: string) => api.get<Record<string, unknown>>(`/zernio/inbox/${id}`),

@@ -41,15 +41,21 @@ def _headers():
         raise HTTPException(503, "ZERNIO_API_KEY not configured")
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-async def _get(path: str, params: dict = None):
+async def _get(path: str, params: dict = None, extra_headers: Optional[Dict[str, str]] = None):
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{ZERNIO_BASE}{path}", headers=_headers(), params=params or {})
+        hdrs = _headers()
+        if extra_headers:
+            hdrs.update(extra_headers)
+        r = await client.get(f"{ZERNIO_BASE}{path}", headers=hdrs, params=params or {})
         r.raise_for_status()
         return r.json()
 
-async def _post(path: str, body: dict):
+async def _post(path: str, body: dict, extra_headers: Optional[Dict[str, str]] = None):
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(f"{ZERNIO_BASE}{path}", headers=_headers(), json=body)
+        hdrs = _headers()
+        if extra_headers:
+            hdrs.update(extra_headers)
+        r = await client.post(f"{ZERNIO_BASE}{path}", headers=hdrs, json=body)
         r.raise_for_status()
         return r.json()
 
@@ -69,6 +75,19 @@ class CreateConversationBody(BaseModel):
     platform: str
     recipient: str
     message: str
+
+
+class FacebookHeadlessListBody(BaseModel):
+    temp_token: str
+    connect_token: str
+
+
+class FacebookHeadlessCompleteBody(BaseModel):
+    temp_token: str
+    connect_token: str
+    page_id: str
+    user_profile: Dict[str, Any]
+    redirect_url: Optional[str] = None
 
 
 def make_zernio_router(db, user_dep):
@@ -189,7 +208,12 @@ def make_zernio_router(db, user_dep):
     # ── connect (OAuth flow) ───────────────────────────────────────────────────
 
     @router.get("/connect/{platform}")
-    async def get_connect_url(platform: str, redirect_url: Optional[str] = None, user=user_dep):
+    async def get_connect_url(
+        platform: str,
+        redirect_url: Optional[str] = None,
+        headless: bool = False,
+        user=user_dep
+    ):
         """Return an OAuth URL so the user can connect a social platform."""
         try:
             profile_id = await _get_or_create_profile(user["_id"])
@@ -202,6 +226,8 @@ def make_zernio_router(db, user_dep):
                 # Zernio docs use redirect_url. Keep redirectUrl too for backward compatibility.
                 params["redirect_url"] = target_redirect
                 params["redirectUrl"] = target_redirect
+            if headless:
+                params["headless"] = "true"
             data = await _get(f"/connect/{platform}", params)
             auth_url = (
                 data.get("authUrl") or data.get("url") or
@@ -216,6 +242,67 @@ def make_zernio_router(db, user_dep):
             raise HTTPException(502, detail=f"Zernio returned {e.response.status_code}: {body}")
         except Exception as e:
             logger.error(f"[zernio] connect/{platform} error: {e}")
+            raise HTTPException(502, detail=str(e))
+
+    @router.post("/connect/facebook/headless/pages")
+    async def list_facebook_headless_pages(payload: FacebookHeadlessListBody, user=user_dep):
+        """List Facebook pages for headless OAuth flow using connect token."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            data = await _get(
+                "/connect/facebook/select-page",
+                {"profileId": profile_id, "tempToken": payload.temp_token},
+                extra_headers={"X-Connect-Token": payload.connect_token},
+            )
+            pages = data.get("pages") or data.get("data") or []
+            return {"pages": pages}
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:400]
+            logger.error(f"[zernio] facebook headless pages HTTP {e.response.status_code}: {body}")
+            raise HTTPException(e.response.status_code, detail=body)
+        except Exception as e:
+            logger.error(f"[zernio] facebook headless pages error: {e}")
+            raise HTTPException(502, detail=str(e))
+
+    @router.post("/connect/facebook/headless/complete")
+    async def complete_facebook_headless_connect(payload: FacebookHeadlessCompleteBody, user=user_dep):
+        """Complete Facebook headless OAuth selection and save selected page."""
+        try:
+            profile_id = await _get_or_create_profile(user["_id"])
+            frontend = os.getenv("FRONTEND_URL", "").rstrip("/")
+            final_redirect = (
+                (payload.redirect_url or "").strip()
+                or (f"{frontend}/dashboard/integrations?connected=facebook" if frontend else None)
+            )
+            body: Dict[str, Any] = {
+                "profileId": profile_id,
+                "pageId": payload.page_id,
+                "tempToken": payload.temp_token,
+                "userProfile": payload.user_profile,
+            }
+            if final_redirect:
+                body["redirect_url"] = final_redirect
+            data = await _post(
+                "/connect/facebook/select-page",
+                body,
+                extra_headers={"X-Connect-Token": payload.connect_token},
+            )
+            account = data.get("account") or {}
+            return {
+                "connected": True,
+                "account": account,
+                "redirect_url": data.get("redirect_url"),
+            }
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:500]
+            logger.error(f"[zernio] facebook headless complete HTTP {e.response.status_code}: {body}")
+            raise HTTPException(e.response.status_code, detail=body)
+        except Exception as e:
+            logger.error(f"[zernio] facebook headless complete error: {e}")
             raise HTTPException(502, detail=str(e))
 
     @router.delete("/accounts/{account_id}")

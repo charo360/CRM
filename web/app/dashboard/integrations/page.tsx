@@ -391,6 +391,7 @@ const NANGO_IDS = {
 type NangoKey = keyof typeof NANGO_IDS;
 
 interface ZernioAccount { id: string; platform: string; name?: string; username?: string; }
+interface FacebookHeadlessPage { id: string; name?: string; username?: string; category?: string; }
 
 function IntegrationsPageInner() {
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
@@ -400,6 +401,14 @@ function IntegrationsPageInner() {
   const [zernioApiOk, setZernioApiOk] = useState<boolean | null>(null);
   const [zernioConnecting, setZernioConnecting] = useState<string | null>(null);
   const [zernioDisconnecting, setZernioDisconnecting] = useState<string | null>(null);
+  const [fbHeadlessPages, setFbHeadlessPages] = useState<FacebookHeadlessPage[]>([]);
+  const [fbHeadlessParams, setFbHeadlessParams] = useState<{
+    tempToken: string;
+    connectToken: string;
+    userProfile: Record<string, unknown>;
+  } | null>(null);
+  const [fbLoadingPages, setFbLoadingPages] = useState(false);
+  const [fbCompletingPageId, setFbCompletingPageId] = useState<string | null>(null);
 
   const refreshZernio = useCallback(async () => {
     try {
@@ -417,8 +426,14 @@ function IntegrationsPageInner() {
     setZernioConnecting(platformId);
     try {
       const redirectUrl = `${window.location.origin}/dashboard/integrations?connected=${encodeURIComponent(platformId)}`;
-      const { authUrl } = await zernioApi.connect(platformId, redirectUrl);
+      const isHeadlessFacebook = platformId === "facebook";
+      const { authUrl } = await zernioApi.connect(platformId, redirectUrl, isHeadlessFacebook);
       if (authUrl) {
+        if (isHeadlessFacebook) {
+          // Headless flow must remain in same tab to receive callback params here.
+          window.location.href = authUrl;
+          return;
+        }
         const popup = window.open(authUrl, "zernio-connect", "width=980,height=760,noopener,noreferrer");
         if (!popup) {
           // Popup blocked: continue in same tab so OAuth can still complete.
@@ -456,6 +471,29 @@ function IntegrationsPageInner() {
       setBanner({ type: "error", msg: e instanceof Error ? e.message : `Failed to disconnect ${label}.` });
     } finally {
       setZernioDisconnecting(null);
+    }
+  }
+
+  async function completeFacebookHeadlessConnect(page: FacebookHeadlessPage) {
+    if (!fbHeadlessParams) return;
+    setFbCompletingPageId(page.id);
+    try {
+      await zernioApi.facebookHeadlessComplete({
+        temp_token: fbHeadlessParams.tempToken,
+        connect_token: fbHeadlessParams.connectToken,
+        page_id: page.id,
+        user_profile: fbHeadlessParams.userProfile,
+        redirect_url: `${window.location.origin}/dashboard/integrations?connected=facebook`,
+      });
+      setBanner({ type: "success", msg: `${page.name || "Facebook page"} connected successfully.` });
+      setFbHeadlessPages([]);
+      setFbHeadlessParams(null);
+      await refreshZernio();
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to complete Facebook connection." });
+    } finally {
+      setFbCompletingPageId(null);
     }
   }
   const [nangoStatus, setNangoStatus] = useState<Record<NangoKey, boolean | null>>({
@@ -509,6 +547,41 @@ function IntegrationsPageInner() {
   useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio]);
 
   useEffect(() => {
+    const platform = searchParams.get("platform");
+    const step = searchParams.get("step");
+    const tempToken = searchParams.get("tempToken");
+    const connectToken = searchParams.get("connect_token");
+    const userProfileRaw = searchParams.get("userProfile");
+
+    if (platform === "facebook" && step === "select_page" && tempToken && connectToken && userProfileRaw) {
+      const parseUserProfile = () => {
+        try {
+          return JSON.parse(userProfileRaw) as Record<string, unknown>;
+        } catch {
+          return JSON.parse(decodeURIComponent(userProfileRaw)) as Record<string, unknown>;
+        }
+      };
+      const userProfile = parseUserProfile();
+      setFbHeadlessParams({ tempToken, connectToken, userProfile });
+      setFbLoadingPages(true);
+      zernioApi
+        .facebookHeadlessPages({ temp_token: tempToken, connect_token: connectToken })
+        .then((res) => {
+          const pages = (res.pages || []) as FacebookHeadlessPage[];
+          setFbHeadlessPages(pages);
+          if (!pages.length) {
+            setBanner({ type: "error", msg: "No Facebook pages were returned for this account." });
+          } else {
+            setBanner({ type: "success", msg: "Select a Facebook Page below to finish connecting." });
+          }
+        })
+        .catch((e) => {
+          setBanner({ type: "error", msg: e instanceof Error ? e.message : "Could not load Facebook pages." });
+        })
+        .finally(() => setFbLoadingPages(false));
+      return;
+    }
+
     const connected = searchParams.get("connected");
     const error = searchParams.get("error");
     if (connected) {
@@ -525,7 +598,7 @@ function IntegrationsPageInner() {
       setBanner({ type: "error", msg: msgs[error] || "Connection failed. Please try again." });
       window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [searchParams, refreshTg, refreshNango]);
+  }, [searchParams, refreshTg, refreshNango, refreshZernio]);
 
   async function nangoConnect(key: NangoKey) {
     await openNangoConnect([NANGO_IDS[key]]);
@@ -575,6 +648,40 @@ function IntegrationsPageInner() {
           <span>{banner.msg}</span>
           <button onClick={() => setBanner(null)} className="ml-auto opacity-50 hover:opacity-100">✕</button>
         </div>
+      )}
+
+      {fbHeadlessParams && (
+        <section className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3">
+          <div className="mb-2">
+            <h3 className="text-xs font-semibold text-blue-900">Finish Facebook Connection</h3>
+            <p className="text-[11px] text-blue-800">Choose which Facebook Page to connect to your CRM.</p>
+          </div>
+          {fbLoadingPages ? (
+            <div className="flex items-center gap-1.5 text-[11px] text-blue-800">
+              <Loader2 size={12} className="animate-spin" /> Loading your pages...
+            </div>
+          ) : fbHeadlessPages.length ? (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {fbHeadlessPages.map((page) => (
+                <button
+                  key={page.id}
+                  type="button"
+                  onClick={() => void completeFacebookHeadlessConnect(page)}
+                  disabled={fbCompletingPageId === page.id}
+                  className="flex items-center justify-between rounded-lg border border-blue-200 bg-white px-3 py-2 text-left text-xs hover:bg-blue-100 disabled:opacity-60"
+                >
+                  <div>
+                    <p className="font-semibold text-slate-900">{page.name || "Untitled Page"}</p>
+                    <p className="text-[10px] text-slate-500">{page.username ? `@${page.username}` : page.category || "Facebook Page"}</p>
+                  </div>
+                  {fbCompletingPageId === page.id ? <Loader2 size={12} className="animate-spin text-blue-700" /> : <span className="text-blue-700 font-semibold">Connect</span>}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-blue-900">No pages found. Try reconnecting Facebook.</p>
+          )}
+        </section>
       )}
 
       {/* ── Section 1: Messaging (Free) ──────────────────────────────────── */}
