@@ -1,5 +1,6 @@
 """Zernio — unified social inbox: per-user profiles, OAuth connect, posts, DMs."""
 from __future__ import annotations
+import json
 import logging, os
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -9,6 +10,30 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 ZERNIO_BASE = "https://zernio.com/api/v1"
+
+
+def _extract_error_message(body_text: str) -> str:
+    try:
+        payload = json.loads(body_text) if body_text else {}
+    except Exception:
+        payload = {}
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, str) and err.strip():
+            return err.strip()
+    return body_text.strip()
+
+
+def _extract_profile_id(profile: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(profile, dict):
+        return None
+    pid = (
+        profile.get("_id")
+        or profile.get("id")
+        or profile.get("profileId")
+        or profile.get("profile_id")
+    )
+    return str(pid) if pid else None
 
 def _headers():
     key = os.getenv("ZERNIO_API_KEY", "").strip()
@@ -68,7 +93,41 @@ def make_zernio_router(db, user_dep):
             except httpx.HTTPStatusError as e:
                 body = e.response.text[:400]
                 logger.error(f"[zernio] Profile create failed HTTP {e.response.status_code}: {body}")
-                raise HTTPException(503, f"Zernio {e.response.status_code}: {body}")
+                status_code = e.response.status_code
+                message = _extract_error_message(body)
+                if status_code == 403 and "profile limit reached" in message.lower():
+                    # Free plans can hit profile caps. Reuse an existing profile so the
+                    # integration still works instead of hard-failing connect/status.
+                    try:
+                        existing_profiles_data = await _get("/profiles")
+                        existing_profiles = (
+                            existing_profiles_data.get("profiles")
+                            or existing_profiles_data.get("data")
+                            or []
+                        )
+                        reusable_profile_id = None
+                        if isinstance(existing_profiles, list):
+                            for profile in existing_profiles:
+                                reusable_profile_id = _extract_profile_id(profile)
+                                if reusable_profile_id:
+                                    break
+                        if reusable_profile_id:
+                            await db.users.update_one(
+                                {"_id": user_id},
+                                {"$set": {"zernio_profile_id": reusable_profile_id}},
+                            )
+                            logger.info(
+                                f"[zernio] Reused existing profile {reusable_profile_id} for user {user_id} after limit reached"
+                            )
+                            return reusable_profile_id
+                    except Exception as reuse_error:
+                        logger.error(f"[zernio] Could not reuse existing profile after limit reached: {reuse_error}")
+
+                    message = (
+                        "Zernio profile limit reached and no reusable profile was found. "
+                        "Upgrade the Zernio plan or remove an existing profile, then try again."
+                    )
+                raise HTTPException(status_code, f"Zernio {status_code}: {message}")
             except Exception as e:
                 logger.error(f"[zernio] Profile create error: {e}")
                 raise HTTPException(503, f"Zernio connection error: {e}")
