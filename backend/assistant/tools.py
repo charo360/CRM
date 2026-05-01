@@ -954,6 +954,14 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
 
     # ── Social channels (Zernio-backed accounts) ─────────────────────────────
     social_accounts: list[Dict[str, Any]] = []
+    social_activity: Dict[str, Any] = {
+        "accounts_count": 0,
+        "platforms": [],
+        "recent_inbox_conversations": 0,
+        "recent_posts": 0,
+        "latest_conversations": [],
+        "latest_posts": [],
+    }
     try:
         import httpx
         user_doc = await ctx.db.users.find_one(
@@ -986,9 +994,58 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                             for a in rows
                             if isinstance(a, dict)
                         ]
+                        social_activity["accounts_count"] = len(social_accounts)
+                        social_activity["platforms"] = sorted({
+                            str(a.get("platform") or "").lower()
+                            for a in social_accounts
+                            if a.get("platform")
+                        })
+
+                    # Pull lightweight inbox + posts snapshots so the assistant has
+                    # immediate context about what is happening on connected pages.
+                    conv_resp = await client.get(
+                        f"{zernio_api_base}/conversations",
+                        params={"profileId": zernio_profile_id, "limit": 5},
+                        headers={"Authorization": f"Bearer {zernio_api_key}"},
+                    )
+                    if conv_resp.status_code == 200:
+                        conv_data = conv_resp.json()
+                        conversations = conv_data.get("conversations") or conv_data.get("data") or []
+                        if isinstance(conversations, list):
+                            social_activity["recent_inbox_conversations"] = len(conversations)
+                            social_activity["latest_conversations"] = [
+                                {
+                                    "platform": str((c or {}).get("platform") or "").lower(),
+                                    "username": (c or {}).get("username") or (c or {}).get("senderName"),
+                                    "last_message": (c or {}).get("lastMessage") or (c or {}).get("last_message"),
+                                }
+                                for c in conversations[:5]
+                                if isinstance(c, dict)
+                            ]
+
+                    post_resp = await client.get(
+                        f"{zernio_api_base}/posts",
+                        params={"profileId": zernio_profile_id, "limit": 5},
+                        headers={"Authorization": f"Bearer {zernio_api_key}"},
+                    )
+                    if post_resp.status_code == 200:
+                        post_data = post_resp.json()
+                        posts = post_data.get("posts") or post_data.get("data") or []
+                        if isinstance(posts, list):
+                            social_activity["recent_posts"] = len(posts)
+                            social_activity["latest_posts"] = [
+                                {
+                                    "platform": str((p or {}).get("platform") or "").lower(),
+                                    "status": (p or {}).get("status"),
+                                    "title": (p or {}).get("title") or (p or {}).get("caption"),
+                                }
+                                for p in posts[:5]
+                                if isinstance(p, dict)
+                            ]
     except Exception as e:
         logger.warning(f"[integrations_status] Zernio social lookup failed: {e}")
     out["social"] = social_accounts
+    out["social_activity"] = social_activity
 
     # ── Nango-connected apps ──────────────────────────────────────────────────
     # Maps human-readable key → Nango provider_config_key
@@ -1066,6 +1123,11 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
     )
     if social_labels:
         out["summary"] += f" | Social pages: {', '.join(social_labels)}"
+    if social_activity["accounts_count"]:
+        out["summary"] += (
+            f" | Social activity: {social_activity['recent_inbox_conversations']} recent inbox threads, "
+            f"{social_activity['recent_posts']} recent posts"
+        )
     return out
 
 
