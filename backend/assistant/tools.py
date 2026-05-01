@@ -961,6 +961,14 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "recent_inbox_conversations": 0,
         "recent_posts": 0,
         "recent_unread_conversations": 0,
+        "performance_totals": {
+            "likes": 0,
+            "comments": 0,
+            "shares": 0,
+            "reach": 0,
+            "clicks": 0,
+        },
+        "top_post": None,
         "latest_conversations": [],
         "latest_posts": [],
     }
@@ -1051,6 +1059,7 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                         posts = post_data.get("posts") or post_data.get("data") or []
                         if isinstance(posts, list):
                             social_activity["recent_posts"] = len(posts)
+                            top_score = -1
                             social_activity["latest_posts"] = [
                                 {
                                     "platform": str((p or {}).get("platform") or "").lower(),
@@ -1063,6 +1072,34 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                 for p in posts[:10]
                                 if isinstance(p, dict)
                             ]
+                            for p in posts:
+                                if not isinstance(p, dict):
+                                    continue
+                                metrics = p.get("metrics") if isinstance(p.get("metrics"), dict) else {}
+                                likes = int(metrics.get("likes") or p.get("likes") or 0)
+                                comments = int(metrics.get("comments") or p.get("comments") or 0)
+                                shares = int(metrics.get("shares") or p.get("share_count") or 0)
+                                reach = int(metrics.get("reach") or p.get("impressions") or 0)
+                                clicks = int(metrics.get("clicks") or p.get("link_clicks") or 0)
+                                social_activity["performance_totals"]["likes"] += likes
+                                social_activity["performance_totals"]["comments"] += comments
+                                social_activity["performance_totals"]["shares"] += shares
+                                social_activity["performance_totals"]["reach"] += reach
+                                social_activity["performance_totals"]["clicks"] += clicks
+                                score = likes + comments * 2 + shares * 3 + clicks
+                                if score > top_score:
+                                    top_score = score
+                                    social_activity["top_post"] = {
+                                        "post_id": p.get("id") or p.get("_id"),
+                                        "platform": str(p.get("platform") or "").lower(),
+                                        "title": p.get("title") or p.get("caption"),
+                                        "likes": likes,
+                                        "comments": comments,
+                                        "shares": shares,
+                                        "reach": reach,
+                                        "clicks": clicks,
+                                        "engagement_score": score,
+                                    }
     except Exception as e:
         logger.warning(f"[integrations_status] Zernio social lookup failed: {e}")
     out["social"] = social_accounts
@@ -1150,6 +1187,15 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
             f"({social_activity['recent_unread_conversations']} unread), "
             f"{social_activity['recent_posts']} recent posts"
         )
+        perf = social_activity.get("performance_totals") or {}
+        if any(int(perf.get(k) or 0) > 0 for k in ("likes", "comments", "shares", "reach", "clicks")):
+            out["summary"] += (
+                f" | Social performance: {int(perf.get('likes') or 0)} likes, "
+                f"{int(perf.get('comments') or 0)} comments, "
+                f"{int(perf.get('shares') or 0)} shares, "
+                f"{int(perf.get('reach') or 0)} reach, "
+                f"{int(perf.get('clicks') or 0)} clicks"
+            )
     return out
 
 
