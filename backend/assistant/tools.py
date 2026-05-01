@@ -1437,6 +1437,110 @@ async def get_social_conversation_history(ctx: ToolContext, args: Dict[str, Any]
     }
 
 
+@tool(
+    name="get_social_conversation_insights",
+    description=(
+        "Analyze recent social conversations to summarize who contacted the business and what they talked about. "
+        "Returns top topics/intents, frequent contacts, and representative message snippets."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "platform": {
+                "type": "string",
+                "description": "Optional platform filter (facebook, instagram, twitter, etc).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "How many conversations to analyze (default 30, max 50).",
+            },
+        },
+    },
+)
+async def get_social_conversation_insights(ctx: ToolContext, args: Dict[str, Any]):
+    limit = max(1, min(int(args.get("limit") or 30), 50))
+    platform = str(args.get("platform") or "").strip().lower()
+
+    history = await get_social_conversation_history(
+        ctx,
+        {"limit": limit, "platform": platform or None},
+    )
+    if history.get("error"):
+        return history
+
+    conversations = history.get("conversations") or []
+    if not isinstance(conversations, list) or not conversations:
+        return {
+            "count": 0,
+            "platform_filter": platform or None,
+            "top_topics": [],
+            "top_contacts": [],
+            "message_snippets": [],
+        }
+
+    topic_rules = {
+        "pricing": ("price", "pricing", "cost", "how much", "quote", "rate"),
+        "availability": ("available", "stock", "in stock", "out of stock", "when can"),
+        "delivery": ("deliver", "shipping", "pickup", "drop off", "dispatch"),
+        "payment": ("pay", "payment", "invoice", "mpesa", "card", "bank"),
+        "order_status": ("order", "tracking", "status", "eta", "received"),
+        "support_issue": ("issue", "problem", "error", "not working", "failed"),
+        "complaint": ("bad", "late", "angry", "refund", "disappointed", "complain"),
+        "greeting_or_general": ("hello", "hi", "hey", "thanks", "thank you"),
+    }
+
+    topic_counts: Dict[str, int] = {k: 0 for k in topic_rules}
+    contact_counts: Dict[str, int] = {}
+    snippets: list[Dict[str, Any]] = []
+
+    for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
+        uname = str(conv.get("username") or "unknown")
+        contact_counts[uname] = contact_counts.get(uname, 0) + 1
+        msgs = conv.get("messages") or []
+        if not isinstance(msgs, list):
+            continue
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            # Weight customer-side messages slightly more for intent discovery.
+            direction = str(m.get("direction") or "").lower()
+            text = str(m.get("text") or "").strip().lower()
+            if not text:
+                continue
+            weight = 2 if "in" in direction else 1
+            for topic, needles in topic_rules.items():
+                if any(n in text for n in needles):
+                    topic_counts[topic] += weight
+            if len(snippets) < 20:
+                snippets.append({
+                    "platform": conv.get("platform"),
+                    "username": conv.get("username"),
+                    "direction": direction,
+                    "text": str(m.get("text") or "")[:200],
+                    "created_at": m.get("created_at"),
+                })
+
+    top_topics = [
+        {"topic": t, "count": c}
+        for t, c in sorted(topic_counts.items(), key=lambda kv: kv[1], reverse=True)
+        if c > 0
+    ][:6]
+    top_contacts = [
+        {"username": u, "conversation_count": c}
+        for u, c in sorted(contact_counts.items(), key=lambda kv: kv[1], reverse=True)
+    ][:10]
+
+    return {
+        "count": len(conversations),
+        "platform_filter": platform or None,
+        "top_topics": top_topics,
+        "top_contacts": top_contacts,
+        "message_snippets": snippets,
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SHOPIFY TOOLS (via Nango proxy)
 # ═════════════════════════════════════════════════════════════════════════════
