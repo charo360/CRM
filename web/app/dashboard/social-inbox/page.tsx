@@ -132,6 +132,24 @@ function pickList<T = Record<string, unknown>>(
   return [];
 }
 
+/** Limits concurrent outbound requests (Zernio rate limit ~120/min burst-sensitive). */
+async function mapInBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  delayMs: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    out.push(...(await Promise.all(batch.map(fn))));
+    if (i + batchSize < items.length && delayMs > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return out;
+}
+
 function normalizeConversation(input: Conversation): Conversation {
   const raw = input as Conversation & Record<string, unknown>;
   return {
@@ -330,6 +348,21 @@ function numberFromAny(...values: unknown[]): number {
       const n = Number(v);
       if (Number.isFinite(n)) return n;
     }
+    // Facebook Graph API returns several engagement fields as objects with a
+    // nested numeric count, e.g. shares: { count: 5 }, reactions: { total_count: 12 }.
+    // Without this branch those values were silently dropped (returned 0), which
+    // is why posts that had real shares were displayed as "0 shares".
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const obj = v as Record<string, unknown>;
+      const candidates = [obj.count, obj.total_count, obj.totalCount, obj.total, obj.value];
+      for (const c of candidates) {
+        if (typeof c === "number" && Number.isFinite(c)) return c;
+        if (typeof c === "string" && c.trim()) {
+          const n = Number(c);
+          if (Number.isFinite(n)) return n;
+        }
+      }
+    }
   }
   return 0;
 }
@@ -377,23 +410,53 @@ function normalizeCommentedPost(input: CommentedPost): CommentedPost {
     firstPA.reactions_count,
   );
   const shares = numberFromAny(
+    // Facebook returns `shares` as {count: N}; numberFromAny now unwraps that automatically.
     raw.shares,
+    raw.share,
     raw.shareCount,
     raw.share_count,
     raw.sharesCount,
+    (raw as Record<string, unknown>).reshares,
+    (raw as Record<string, unknown>).reshareCount,
+    (raw as Record<string, unknown>).reshare_count,
+    (raw as Record<string, unknown>).reposts,
+    (raw as Record<string, unknown>).repostCount,
+    (raw as Record<string, unknown>).repost_count,
+    (raw as Record<string, unknown>).forwards,
+    (raw as Record<string, unknown>).forwardCount,
+    (raw as Record<string, unknown>).forward_count,
     metrics.shares,
+    metrics.share,
     metrics.share_count,
     metrics.shares_count,
+    metrics.reshares,
+    metrics.reshare_count,
+    metrics.reposts,
+    metrics.repost_count,
+    metrics.forwards,
+    metrics.forward_count,
     insights.shares,
+    insights.reshares,
     engagement.shares,
+    engagement.reshares,
     analytics.shares,
+    analytics.share,
     analytics.shareCount,
     analytics.share_count,
     analytics.shares_count,
+    analytics.reshares,
+    analytics.reshare_count,
+    analytics.reposts,
+    analytics.repost_count,
     firstPA.shares,
+    firstPA.share,
     firstPA.shareCount,
     firstPA.share_count,
     firstPA.shares_count,
+    firstPA.reshares,
+    firstPA.reshare_count,
+    firstPA.reposts,
+    firstPA.repost_count,
   );
   const comments = numberFromAny(
     raw.commentCount,
@@ -842,9 +905,12 @@ export default function SocialInboxPage() {
           });
         });
 
-        // Final fallback: query analytics per post directly using postId+accountId.
-        const perPostAnalytics = await Promise.all(
-          mergedCommented.slice(0, 30).map(async (post) => {
+        // Final fallback: per-post analytics (batched — avoids Zernio 429 bursts).
+        const perPostAnalytics = await mapInBatches(
+          mergedCommented.slice(0, 20),
+          3,
+          400,
+          async (post) => {
             const accountId = String(post.accountId || post.account_id || "").trim();
             const ids = postAnalyticsIds(post);
             if (!accountId) {
@@ -929,7 +995,7 @@ export default function SocialInboxPage() {
                 message: "No analytics row returned for tried IDs",
               },
             };
-          })
+          }
         );
 
         const metricsByPostId = new Map<string, { likes: number; shares: number; comments: number; saves: number; clicks: number }>();
@@ -969,13 +1035,28 @@ export default function SocialInboxPage() {
         const withDirectAnalytics = mergedCommented.map((p) => {
           const m = metricsByPostId.get(p.id);
           if (!m) return p;
+          // For likes/saves/clicks, analytics-by-post is the most accurate source.
+          //
+          // For comments AND shares, however, Instagram's analytics endpoint often returns
+          // 0 even when the post has activity (the metric scope used for likes/reach does
+          // not include comments, and shares are not exposed for organic Instagram at all).
+          // Facebook returns shares as a nested {count: N} object on the post itself, which
+          // /analytics may not surface. To avoid clobbering a real count with the analytics
+          // 0, take the max of analytics and the post-object value.
+          const inboxCommentCount = numberFromAny(p.commentCount, p.comments_count);
+          const analyticsCommentCount = numberFromAny(m.comments);
+          const mergedComments = Math.max(inboxCommentCount, analyticsCommentCount);
+          const postShareCount = numberFromAny(p.shares, p.shareCount, p.share_count);
+          const analyticsShareCount = numberFromAny(m.shares);
+          const mergedShares = Math.max(postShareCount, analyticsShareCount);
           return normalizeCommentedPost({
             ...p,
-            // Per-post analytics lookup is the most accurate source; prefer it.
             likes: numberFromAny(m.likes, p.likes, p.likeCount, p.like_count),
-            shares: numberFromAny(m.shares, p.shares, p.shareCount, p.share_count),
-            commentCount: numberFromAny(m.comments, p.commentCount, p.comments_count),
-            comments_count: numberFromAny(m.comments, p.comments_count, p.commentCount),
+            shares: mergedShares,
+            shareCount: mergedShares,
+            share_count: mergedShares,
+            commentCount: mergedComments,
+            comments_count: mergedComments,
             saves: numberFromAny(m.saves, p.saves, p.saveCount, p.save_count),
             clicks: numberFromAny(m.clicks, p.clicks, p.clickCount, p.click_count),
           });
@@ -1064,6 +1145,25 @@ export default function SocialInboxPage() {
       });
       const normalized = pickList<PostComment>(data, ["comments"]).map(normalizePostComment);
       setPostComments(normalized);
+      // Self-correcting count: when we successfully fetch the comment list, the
+      // returned length is the ground truth. Sync it back into the post card so
+      // platforms whose analytics endpoint returns 0 comments (notably Instagram)
+      // show the correct badge after the user opens the thread.
+      const actualCount = normalized.length;
+      if (actualCount > 0) {
+        setCommentedPosts((prev) =>
+          prev.map((p) =>
+            p.id === post.id
+              ? { ...p, commentCount: Math.max(p.commentCount || 0, actualCount), comments_count: Math.max(p.comments_count || 0, actualCount) }
+              : p,
+          ),
+        );
+        setSelectedPost((prev) =>
+          prev && prev.id === post.id
+            ? { ...prev, commentCount: Math.max(prev.commentCount || 0, actualCount), comments_count: Math.max(prev.comments_count || 0, actualCount) }
+            : prev,
+        );
+      }
     } finally {
       setLoadingComments(false);
     }
@@ -1104,7 +1204,18 @@ export default function SocialInboxPage() {
     }
   }
 
-  const platforms = [...new Set(conversations.map(c => c.platform).filter(Boolean))];
+  // Derive the platform list from connected accounts (not from conversations) so
+  // a freshly-connected platform like TikTok/Twitter/YouTube/LinkedIn shows up
+  // in the filter even before any DM has arrived from it. Fall back to the
+  // platforms seen in conversations + commentedPosts so anything routed in but
+  // missing from /accounts (rare) is still selectable.
+  const platforms = [
+    ...new Set([
+      ...accounts.map((a) => String(a.platform || "").toLowerCase()).filter(Boolean),
+      ...conversations.map((c) => String(c.platform || "").toLowerCase()).filter(Boolean),
+      ...commentedPosts.map((p) => String(p.platform || "").toLowerCase()).filter(Boolean),
+    ]),
+  ];
 
   const filteredConvs = conversations
     .filter((c) => (platformFilter ? c.platform === platformFilter : true))
@@ -1333,7 +1444,7 @@ export default function SocialInboxPage() {
             <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2 p-4 text-center">
               <Inbox size={36} className="opacity-30" />
               <p className="text-sm">No conversations yet.</p>
-              <p className="text-xs">Connect your social accounts in Zernio and messages will appear here.</p>
+              <p className="text-xs">Connect your social accounts and messages will appear here.</p>
             </div>
           ) : viewMode === "messages" ? (
             filteredConvs.map(conv => (
@@ -1377,7 +1488,14 @@ export default function SocialInboxPage() {
               const score = postEngagementScore(p);
               const title = postDisplayTitle(p);
               const ts = p.createdTime || p.createdAt || p.created_at;
-              const media = postMediaUrl(p);
+              // Facebook's Graph API does NOT include share counts in the
+              // standard /insights endpoint that Zernio uses (shares live on the
+              // post object as `shares.count`, which Zernio doesn't surface).
+              // Instagram does not expose organic share counts at all. Mark a
+              // 0-share badge as "may be undercounted" so the owner doesn't
+              // assume the post wasn't shared.
+              const platformLower = String(p.platform || "").toLowerCase();
+              const sharesUnreliable = (platformLower === "facebook" || platformLower === "instagram") && shares === 0;
               return (
                 <button
                   key={p.id}
@@ -1389,7 +1507,22 @@ export default function SocialInboxPage() {
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-slate-800 truncate">{title}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        {likes} likes · {shares} shares · {count} comments · score {score} · #{shortPostId(p.id)}
+                        {likes} likes ·{" "}
+                        {sharesUnreliable ? (
+                          <span
+                            className="underline decoration-dotted decoration-slate-400 cursor-help"
+                            title={
+                              platformLower === "facebook"
+                                ? "Facebook share counts are not surfaced through our analytics sync (the Page insights endpoint doesn't include shares). Open the post on Facebook to see the real share count."
+                                : "Instagram does not expose organic share counts via the API. Boosted posts and Reels may still show shares."
+                            }
+                          >
+                            {shares} shares*
+                          </span>
+                        ) : (
+                          <>{shares} shares</>
+                        )}{" "}
+                        · {count} comments · score {score} · #{shortPostId(p.id)}
                       </p>
                       {p.platform ? <div className="mt-1"><PlatformBadge platform={p.platform} /></div> : null}
                     </div>

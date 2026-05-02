@@ -148,7 +148,7 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_google_ads", label: "Google Ads", description: "Search & Performance Max planning" },
       { key: "nav_x_ads", label: "X Ads", description: "Promoted posts & campaigns on X (Twitter)" },
       { key: "nav_google_business", label: "Google Business Profile", description: "Maps & local presence via Integrations" },
-      { key: "nav_social_inbox", label: "Social Inbox", description: "Unified DMs from all social platforms via Zernio" },
+      { key: "nav_social_inbox", label: "Social Inbox", description: "Unified DMs from all your connected social platforms" },
       { key: "nav_seo", label: "SEO & Blog", description: "Site audit, AI keyword research, blog writer, and auto-publish" },
     ],
   },

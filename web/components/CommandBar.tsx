@@ -57,7 +57,7 @@ function saveRecent(query: string) {
 
 // ─── Tool narration map ───────────────────────────────────────────────────────
 const TOOL_LABELS: Record<string, string> = {
-  get_live_social_posts: "Fetching live posts from Zernio…",
+  get_live_social_posts: "Fetching live social posts…",
   get_social_post_analytics: "Pulling post analytics…",
   get_analytics_summary: "Analysing performance data…",
   list_customers: "Checking customers…",

@@ -3,13 +3,13 @@ import { getToken } from "./auth";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
 
 function formatErrorBody(res: Response, rawText: string): string {
-  let err: { detail?: unknown } = {};
+  let err: { detail?: unknown; error?: unknown; message?: unknown; details?: unknown } = {};
   try {
-    err = rawText ? (JSON.parse(rawText) as { detail?: unknown }) : {};
+    err = rawText ? (JSON.parse(rawText) as typeof err) : {};
   } catch {
     err = { detail: rawText || res.statusText };
   }
-  const d = err.detail as unknown;
+  const d = (err.detail ?? err.error ?? err.message) as unknown;
   const msg =
     typeof d === "string"
       ? d
@@ -23,21 +23,61 @@ function formatErrorBody(res: Response, rawText: string): string {
   return msg ? `${res.status}: ${msg}` : `${res.status}: Request failed`;
 }
 
+/** Zernio / some gateways return 429 with { details: { retryAfterSeconds } }. */
+function parseRetryAfterMs429(rawText: string): number {
+  try {
+    const j = JSON.parse(rawText) as {
+      details?: { retryAfterSeconds?: number };
+      retry_after?: number;
+      retryAfter?: number;
+    };
+    const sec = j?.details?.retryAfterSeconds ?? j?.retry_after ?? j?.retryAfter;
+    if (typeof sec === "number" && Number.isFinite(sec) && sec >= 0) {
+      return Math.min(120_000, Math.max(500, (sec + 0.25) * 1000));
+    }
+  } catch {
+    /* ignore */
+  }
+  return 2000;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  if (!res.ok) {
+  const maxAttempts = 5;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {}),
+      },
+    });
+
+    if (res.ok) {
+      return res.json() as Promise<T>;
+    }
+
     const rawText = await res.text();
+
+    if (res.status === 429 && attempt < maxAttempts) {
+      const ra = res.headers.get("Retry-After");
+      let waitMs = parseRetryAfterMs429(rawText);
+      if (ra) {
+        const n = parseInt(ra, 10);
+        if (!Number.isNaN(n) && n > 0) {
+          waitMs = Math.min(120_000, n * 1000);
+        }
+      }
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+
     throw new Error(formatErrorBody(res, rawText));
   }
-  return res.json();
+
+  throw new Error("429: Too many retries");
 }
 
 export const api = {
