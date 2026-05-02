@@ -660,14 +660,57 @@ def make_zernio_router(db, user_dep):
 
     @router.get("/posts")
     async def list_posts(platform: Optional[str] = None, limit: int = 20, user=user_dep):
-        """List scheduled/published posts for this user's profile."""
+        """List published posts. Falls back to per-account fetch when bulk endpoint returns empty."""
         await _need(user, platform, "read")
         try:
+            import asyncio as _asyncio
             profile_id = await _get_or_create_profile(user["_id"])
             params: Dict[str, Any] = {"profileId": profile_id, "limit": limit}
             if platform:
                 params["platform"] = platform
-            return await _get("/posts", params)
+            data = await _get("/posts", params)
+
+            posts = data.get("posts") or data.get("data") or []
+
+            # Bulk endpoint returns empty for some profiles — fall back to per-account fetch
+            if not posts:
+                accounts_data = await _get("/accounts", {"profileId": profile_id})
+                accounts = accounts_data.get("accounts") or accounts_data.get("data") or []
+                tasks = []
+                metas = []
+                for acc in accounts:
+                    if not isinstance(acc, dict):
+                        continue
+                    plat = str(acc.get("platform") or "").lower()
+                    if platform and plat != platform.lower():
+                        continue
+                    aid = str(acc.get("_id") or acc.get("id") or "")
+                    if not aid:
+                        continue
+                    tasks.append(_get(f"/accounts/{aid}/posts", {}))
+                    metas.append({"platform": plat, "account_id": aid,
+                                  "displayName": acc.get("displayName") or acc.get("username") or ""})
+
+                if tasks:
+                    results = await _asyncio.gather(*tasks, return_exceptions=True)
+                    merged: List[Dict[str, Any]] = []
+                    seen: set = set()
+                    for meta, res in zip(metas, results):
+                        if isinstance(res, Exception) or not isinstance(res, dict):
+                            continue
+                        for post in (res.get("posts") or res.get("data") or []):
+                            if not isinstance(post, dict):
+                                continue
+                            post.setdefault("platform", meta["platform"])
+                            post.setdefault("accountId", meta["account_id"])
+                            pid = str(post.get("id") or post.get("_id") or "")
+                            if pid and pid not in seen:
+                                seen.add(pid)
+                                merged.append(post)
+                    if merged:
+                        return {"posts": merged[:limit], "pagination": {"total": len(merged)}}
+
+            return data
         except HTTPException:
             raise
         except httpx.HTTPStatusError as e:
