@@ -956,6 +956,13 @@ export const assistantApi = {
   agents: () => api.get<{ agents: AssistantAgent[] }>("/assistant/agents"),
   suggestions: () =>
     api.get<{ suggestions: string[]; personalized: boolean }>("/assistant/suggestions"),
+  businessContext: () =>
+    api.get<{
+      new_customers?: number;
+      orders?: number;
+      top_product?: string;
+      total_revenue_window?: number;
+    }>("/assistant/context"),
   listConversations: () => api.get<AssistantConversationSummary[]>("/assistant/conversations"),
   getConversation: (id: string) => api.get<AssistantConversation>(`/assistant/conversations/${id}`),
   deleteConversation: (id: string) =>
