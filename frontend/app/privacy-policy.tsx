@@ -159,7 +159,7 @@ export default function PrivacyPolicyScreen() {
 
         <Section title="12. Contact Us">
           <View style={styles.contactBox}>
-            <Text style={styles.contactName}>{APP_NAME} (Charo360)</Text>
+            <Text style={styles.contactName}>{APP_NAME}</Text>
             <TouchableOpacity onPress={() => Linking.openURL(`mailto:${CONTACT_EMAIL}`)}>
               <Text style={styles.link}>Email: {CONTACT_EMAIL}</Text>
             </TouchableOpacity>

@@ -9,7 +9,7 @@ export default function PrivacyPolicyPage() {
   const lastUpdated = "May 2, 2026";
   const contactEmail = "privacy@zilo.pro";
   const appName = "Zilo";
-  const website = "https://charo360.com";
+  const website = "https://zilo.pro";
 
   return (
     <main className="min-h-screen bg-white px-4 py-16">
@@ -231,7 +231,7 @@ export default function PrivacyPolicyPage() {
               contact us:
             </p>
             <div className="mt-3 rounded-lg bg-gray-50 p-4 text-sm">
-              <p className="font-medium text-gray-900">{appName} (Charo360)</p>
+              <p className="font-medium text-gray-900">{appName}</p>
               <p className="mt-1">
                 Email:{" "}
                 <a href={`mailto:${contactEmail}`} className="text-blue-600 underline">
