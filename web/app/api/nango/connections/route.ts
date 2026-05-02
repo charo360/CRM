@@ -44,38 +44,19 @@ export async function GET(req: NextRequest) {
     if (!meRes.ok) {
       return NextResponse.json({ error: "Invalid session" }, { status: 401 });
     }
-    let me: { id?: string };
+    let me: { id?: string; business_id?: string };
     try {
-      me = (await meRes.json()) as { id?: string };
+      me = (await meRes.json()) as { id?: string; business_id?: string };
     } catch {
       return NextResponse.json({ error: "Invalid session" }, { status: 401 });
     }
-    const endUserId = me?.id != null ? String(me.id) : "";
-    if (!endUserId) {
+    const tenantIdRaw = me.business_id ?? me.id;
+    const tenantId = tenantIdRaw != null ? String(tenantIdRaw) : "";
+    if (!tenantId) {
       return NextResponse.json({ error: "Invalid session" }, { status: 401 });
     }
 
-    const nangoUrl = new URL(`${NANGO_API}/connection`);
-    nangoUrl.searchParams.set("end_user_id", endUserId);
-
-    const nangoRes = await fetch(nangoUrl.toString(), {
-      headers: { Authorization: `Bearer ${secret}` },
-    });
-
-    if (!nangoRes.ok) {
-      return NextResponse.json({ connected: allFalse(integrations) });
-    }
-
-    let data: { connections?: Array<{ provider_config_key: string }> };
-    try {
-      data = (await nangoRes.json()) as { connections?: Array<{ provider_config_key: string }> };
-    } catch {
-      return NextResponse.json({ connected: allFalse(integrations) });
-    }
-
-    const connectedSet = new Set(
-      (data.connections ?? []).map((c) => c.provider_config_key)
-    );
+    const connectedSet = await mergeConnectionProviderKeys(secret, me);
 
     const connected: Record<string, boolean> = {};
     for (const id of integrations) {
@@ -87,6 +68,49 @@ export async function GET(req: NextRequest) {
     console.error("[api/nango/connections]", e);
     return NextResponse.json({ connected: allFalse(integrations) });
   }
+}
+
+async function nangoConnectionsForTag(
+  secret: string,
+  endUserTag: string
+): Promise<Array<{ provider_config_key: string; id?: unknown; connection_id?: string }>> {
+  const nangoUrl = new URL(`${NANGO_API}/connections`);
+  nangoUrl.searchParams.set("tags[end_user_id]", endUserTag);
+  const nangoRes = await fetch(nangoUrl.toString(), {
+    headers: { Authorization: `Bearer ${secret}` },
+  });
+  if (!nangoRes.ok) {
+    return [];
+  }
+  try {
+    const data = (await nangoRes.json()) as {
+      connections?: Array<{ provider_config_key: string; id?: unknown; connection_id?: string }>;
+    };
+    return data.connections ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Tenant tag + legacy per-user tag (same as connect-session historically used user id). */
+async function mergeConnectionProviderKeys(
+  secret: string,
+  me: { id?: string; business_id?: string }
+): Promise<Set<string>> {
+  const tenantTag = String(me.business_id ?? me.id ?? "").trim();
+  const userTag = String(me?.id ?? "").trim();
+  const keys = new Set<string>();
+  if (tenantTag) {
+    for (const c of await nangoConnectionsForTag(secret, tenantTag)) {
+      keys.add(c.provider_config_key);
+    }
+  }
+  if (userTag && userTag !== tenantTag) {
+    for (const c of await nangoConnectionsForTag(secret, userTag)) {
+      keys.add(c.provider_config_key);
+    }
+  }
+  return keys;
 }
 
 /**
@@ -106,19 +130,22 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "Nango not configured" }, { status: 503 });
   }
 
+  const apiSecret: string = secret;
+
   const meUrl = buildServerCrmApiUrl(req, "/auth/me");
   const meRes = await fetch(meUrl, { headers: { Authorization: auth } });
   if (!meRes.ok) {
     return NextResponse.json({ error: "Invalid session" }, { status: 401 });
   }
-  let me: { id?: string };
+  let me: { id?: string; business_id?: string };
   try {
-    me = (await meRes.json()) as { id?: string };
+    me = (await meRes.json()) as { id?: string; business_id?: string };
   } catch {
     return NextResponse.json({ error: "Invalid session" }, { status: 401 });
   }
-  const endUserId = me?.id != null ? String(me.id) : "";
-  if (!endUserId) {
+  const tenantId = String(me.business_id ?? me.id ?? "").trim();
+  const userId = String(me?.id ?? "").trim();
+  if (!tenantId && !userId) {
     return NextResponse.json({ error: "Invalid session" }, { status: 401 });
   }
 
@@ -134,33 +161,32 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "integration_id is required" }, { status: 400 });
   }
 
-  // Find the connection ID for this user + integration
-  const listUrl = new URL(`${NANGO_API}/connection`);
-  listUrl.searchParams.set("end_user_id", endUserId);
-  listUrl.searchParams.set("provider_config_key", integrationId);
-
-  const listRes = await fetch(listUrl.toString(), {
-    headers: { Authorization: `Bearer ${secret}` },
-  });
-
-  if (!listRes.ok) {
-    return NextResponse.json({ error: "Could not look up connection" }, { status: 502 });
+  /** Walk tenant + legacy user-tag lists for this integration */
+  async function findConnectionPathId(): Promise<string | undefined> {
+    const tagsOrdered = [...new Set([tenantId, userId].filter((t): t is string => t.length > 0))];
+    for (const tag of tagsOrdered) {
+      const list = await nangoConnectionsForTag(apiSecret, tag);
+      const match = list.find((c) => c.provider_config_key === integrationId);
+      if (match != null) {
+        const pathIdRaw = match.connection_id ?? match.id;
+        if (pathIdRaw === undefined || pathIdRaw === null) continue;
+        return String(pathIdRaw);
+      }
+    }
+    return undefined;
   }
 
-  const listData = (await listRes.json()) as {
-    connections?: Array<{ id: string }>;
-  };
-
-  const connectionId = body.connection_id ?? listData.connections?.[0]?.id;
-  if (!connectionId) {
+  const pathIdFromBody = body.connection_id?.trim();
+  const pathId = pathIdFromBody || (await findConnectionPathId());
+  if (!pathId) {
     return NextResponse.json({ error: "No connection found" }, { status: 404 });
   }
 
   const delRes = await fetch(
-    `${NANGO_API}/connection/${connectionId}?provider_config_key=${encodeURIComponent(integrationId)}`,
+    `${NANGO_API}/connections/${encodeURIComponent(pathId)}?provider_config_key=${encodeURIComponent(integrationId)}`,
     {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${secret}` },
+      headers: { Authorization: `Bearer ${apiSecret}` },
     }
   );
 

@@ -52,7 +52,8 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({
       allowed_integrations: allowed,
       tags: {
-        end_user_id: String(me.id!),
+        // Tenant id (business_id) aligns with integrations_status / nango_proxy; falls back to user id.
+        end_user_id: String(me.business_id ?? me.id!),
         organization_id: String(me.business_id ?? ""),
       },
     }),

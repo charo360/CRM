@@ -614,8 +614,7 @@ function IntegrationsPageInner() {
   }, [searchParams, refreshTg, refreshNango, refreshZernio]);
 
   async function nangoConnect(key: NangoKey) {
-    await openNangoConnect([NANGO_IDS[key]]);
-    setTimeout(() => void refreshNango(), 1500);
+    await openNangoConnect([NANGO_IDS[key]], { onAfterConnect: refreshNango });
   }
 
   async function nangoDisconnect(key: NangoKey) {

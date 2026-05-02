@@ -1507,8 +1507,8 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
             import httpx
             async with httpx.AsyncClient(timeout=6.0) as client:
                 resp = await client.get(
-                    f"{nango_api}/connection",
-                    params={"end_user_id": ctx.business_id},
+                    f"{nango_api}/connections",
+                    params={"tags[end_user_id]": ctx.business_id},
                     headers={"Authorization": f"Bearer {nango_secret}"},
                 )
                 if resp.status_code == 200:
@@ -6349,6 +6349,14 @@ from email.mime.text import MIMEText
 
 _GMAIL_KEY     = _os.getenv("NEXT_PUBLIC_NANGO_ID_EMAIL",     "google-mail")
 _MICROSOFT_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_MICROSOFT", "microsoft")
+_SLACK_KEY     = _os.getenv("NEXT_PUBLIC_NANGO_ID_SLACK",     "slack")
+
+
+def _slack_api_error(data: Dict[str, Any]) -> Optional[str]:
+    """Slack returns HTTP 200 with {\"ok\": false, \"error\": \"...\"} on failures."""
+    if data.get("ok") is True:
+        return None
+    return str(data.get("error") or "slack_api_error")
 
 
 def _gmail_header(headers: list, name: str) -> str:
@@ -6632,6 +6640,167 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     except RuntimeError as e:
         return {"error": str(e)}
     return {"status": "draft_saved", "draft_id": result.get("id")}
+
+
+# ── Slack tools (Nango OAuth → Slack Web API proxy) ──────────────────────────
+
+
+@tool(
+    name="slack_workspace_info",
+    description=(
+        "Verify the Slack connection and show workspace identity. Calls auth.test — "
+        "returns team name, team_id, workspace URL, and the authenticated bot/user. "
+        "Use this before posting to confirm Slack is linked."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+    },
+)
+async def slack_workspace_info(ctx: ToolContext, args: Dict[str, Any]):
+    from .nango import nango_proxy
+    try:
+        data = await nango_proxy(
+            ctx.business_id, _SLACK_KEY, "POST", "auth.test", json={}, timeout=12.0,
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+    err = _slack_api_error(data)
+    if err:
+        return {"error": err, "slack_response": data}
+    return {
+        "ok": True,
+        "team": data.get("team"),
+        "team_id": data.get("team_id"),
+        "url": data.get("url"),
+        "user": data.get("user"),
+        "user_id": data.get("user_id"),
+        "bot_id": data.get("bot_id"),
+    }
+
+
+@tool(
+    name="slack_list_channels",
+    description=(
+        "List Slack channels the token can see (public and, if permitted, private). "
+        "Returns id, name, is_private, is_archived, num_members. Use channel `id` "
+        "with slack_post_message (e.g. C123…). Paginates automatically up to ~2000 rows."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "include_private": {
+                "type": "boolean",
+                "description": "Include private channels (default true). Set false for public only.",
+            },
+            "include_archived": {
+                "type": "boolean",
+                "description": "Include archived channels (default false).",
+            },
+            "page_limit": {
+                "type": "integer",
+                "description": "Max Slack API pages to fetch (1–15, default 10). Each page up to 200 channels.",
+            },
+        },
+    },
+)
+async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
+    from .nango import nango_proxy
+    include_private = args.get("include_private", True)
+    include_archived = bool(args.get("include_archived", False))
+    max_pages = min(max(int(args.get("page_limit") or 10), 1), 15)
+    types = "public_channel,private_channel" if include_private else "public_channel"
+
+    channels: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    for _ in range(max_pages):
+        payload: Dict[str, Any] = {
+            "types": types,
+            "limit": 200,
+            "exclude_archived": not include_archived,
+        }
+        if cursor:
+            payload["cursor"] = cursor
+        try:
+            data = await nango_proxy(
+                ctx.business_id, _SLACK_KEY, "POST", "conversations.list",
+                json=payload, timeout=20.0,
+            )
+        except RuntimeError as e:
+            return {"error": str(e), "channels_partial": channels}
+        err = _slack_api_error(data)
+        if err:
+            return {"error": err, "slack_response": data, "channels_partial": channels}
+        for ch in data.get("channels") or []:
+            if not isinstance(ch, dict):
+                continue
+            channels.append({
+                "id": ch.get("id"),
+                "name": ch.get("name"),
+                "is_private": ch.get("is_private"),
+                "is_archived": ch.get("is_archived"),
+                "num_members": ch.get("num_members"),
+            })
+        cursor = (data.get("response_metadata") or {}).get("next_cursor") or None
+        if not cursor:
+            break
+    return {"channels": channels, "total": len(channels)}
+
+
+@tool(
+    name="slack_post_message",
+    description=(
+        "Post a message to a Slack channel or DM. `channel` must be a channel ID "
+        "(from slack_list_channels, e.g. C…) or a user/DM id the app can message. "
+        "Requires the Slack app to be invited to the channel for public channels. "
+        "Use thread_ts to reply in a thread."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": "Channel ID (e.g. C1234567890) or conversation ID for DMs.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Message text (Slack mrkdwn supported for simple formatting).",
+            },
+            "thread_ts": {
+                "type": "string",
+                "description": "Optional: parent message ts to reply in thread (e.g. 1234567890.123456).",
+            },
+        },
+        "required": ["channel", "text"],
+    },
+    destructive=True,
+)
+async def slack_post_message(ctx: ToolContext, args: Dict[str, Any]):
+    from .nango import nango_proxy
+    channel = (args.get("channel") or "").strip()
+    text = (args.get("text") or "").strip()
+    if not channel or not text:
+        return {"error": "channel and text are required"}
+    payload: Dict[str, Any] = {"channel": channel, "text": text}
+    ts = (args.get("thread_ts") or "").strip()
+    if ts:
+        payload["thread_ts"] = ts
+    try:
+        data = await nango_proxy(
+            ctx.business_id, _SLACK_KEY, "POST", "chat.postMessage",
+            json=payload, timeout=15.0,
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+    err = _slack_api_error(data)
+    if err:
+        return {"error": err, "slack_response": data}
+    return {
+        "ok": True,
+        "channel": data.get("channel"),
+        "ts": data.get("ts"),
+        "message_ts": (data.get("message") or {}).get("ts") if isinstance(data.get("message"), dict) else data.get("ts"),
+    }
 
 
 # ── Outlook / Microsoft 365 tools ─────────────────────────────────────────────

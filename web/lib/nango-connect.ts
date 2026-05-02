@@ -2,7 +2,15 @@ import { getToken } from "@/lib/auth";
 import { NANGO_PUBLIC_API_URL, NANGO_PUBLIC_CONNECT_UI_URL } from "@/lib/nango-config";
 import { toast } from "sonner";
 
-export async function openNangoConnect(allowedIntegrations: string[]): Promise<void> {
+export type OpenNangoConnectOptions = {
+  /** Called when Nango reports success; polled a few times so UI catches slightly delayed indexing. */
+  onAfterConnect?: () => void;
+};
+
+export async function openNangoConnect(
+  allowedIntegrations: string[],
+  opts?: OpenNangoConnectOptions
+): Promise<void> {
   const token = getToken();
   if (!token) {
     toast.error("Sign in required");
@@ -39,6 +47,13 @@ export async function openNangoConnect(allowedIntegrations: string[]): Promise<v
       if (event.type === "connect") {
         toast.success("Connected");
         ui.close();
+        const fn = opts?.onAfterConnect;
+        if (fn) {
+          const delaysMs = [0, 700, 2000, 4500];
+          for (const ms of delaysMs) {
+            window.setTimeout(fn, ms);
+          }
+        }
       }
       if (event.type === "error") {
         toast.error(event.payload.errorMessage || "Connection failed");

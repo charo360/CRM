@@ -28,22 +28,27 @@ async def _get_connection_id(
 ) -> Optional[str]:
     """Return the first Nango connection ID for this user + integration, or None."""
     import httpx
-    url = f"{_NANGO_API}/connection"
+    url = f"{_NANGO_API}/connections"
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.get(
                 url,
-                params={"end_user_id": business_id, "provider_config_key": integration_key},
+                params={"tags[end_user_id]": business_id},
                 headers={"Authorization": f"Bearer {secret}"},
             )
             if resp.status_code != 200:
                 logger.warning(f"[Nango] connection lookup {integration_key}: HTTP {resp.status_code}")
                 return None
             data = resp.json()
-            conns = data.get("connections") or []
+            conns = [
+                c for c in (data.get("connections") or [])
+                if str(c.get("provider_config_key") or "") == str(integration_key)
+            ]
             if not conns:
                 return None
-            return conns[0].get("id") or conns[0].get("connection_id")
+            # Proxy header accepts internal id or oauth connection id depending on deployment
+            row = conns[0]
+            return row.get("id") or row.get("connection_id")
     except Exception as e:
         logger.warning(f"[Nango] connection lookup error {integration_key}: {e}")
         return None

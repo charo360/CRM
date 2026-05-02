@@ -191,7 +191,7 @@ const INTEGRATION_PROMPTS: Record<string, string[]> = {
   klaviyo: ["What Klaviyo flows should I set up first?", "Help me build a Klaviyo win-back sequence"],
   mailchimp: ["Draft a Mailchimp newsletter for this week", "Which Mailchimp campaigns performed best?"],
   brevo: ["Set up a Brevo welcome email + SMS sequence", "How do I improve Brevo deliverability?"],
-  slack: ["What workspace events should I route to Slack?", "Set up Slack alerts for new orders"],
+  slack: ["List my Slack channels and show IDs", "Post today's order summary to my #sales channel"],
   gmail: ["Draft a follow-up email to my top customers", "Help me write a customer outreach template"],
   microsoft: ["Sync my overdue follow-ups to Outlook Calendar", "Set up Microsoft Teams alerts for Zilo"],
   google_calendar: ["Convert my overdue follow-ups to calendar events", "Schedule a customer check-in for this week"],
