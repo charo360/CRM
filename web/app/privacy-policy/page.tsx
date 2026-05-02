@@ -7,7 +7,7 @@ export const metadata: Metadata = {
 
 export default function PrivacyPolicyPage() {
   const lastUpdated = "May 2, 2026";
-  const contactEmail = "privacy@charo360.com";
+  const contactEmail = "privacy@zilo.pro";
   const appName = "Zilo";
   const website = "https://charo360.com";
 

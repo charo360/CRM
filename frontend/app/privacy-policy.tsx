@@ -4,7 +4,7 @@ import { Stack } from 'expo-router';
 
 const APP_NAME = 'Zilo';
 const WEBSITE = 'https://zilo.pro';
-const CONTACT_EMAIL = 'privacy@charo360.com';
+const CONTACT_EMAIL = 'privacy@zilo.pro';
 const LAST_UPDATED = 'May 2, 2026';
 
 export default function PrivacyPolicyScreen() {
