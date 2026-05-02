@@ -84,7 +84,7 @@ const NATIVE_CHANNELS: NativeChannelDef[] = [
     id: "instagram",
     name: "Instagram",
     description:
-      "Connect your Instagram Business account for DMs. For ads-scale publishing, also use Social Channels (Zernio) in Integrations.",
+      "Connect your Instagram Business account for DMs. For ads-scale publishing, also use Social Channels in Integrations.",
     icon: <InstagramIcon size={26} className="text-[#E1306C]" />,
     accentBorder: "border-[#E1306C]/40",
     accentBg: "bg-[#E1306C]/5",
@@ -110,7 +110,7 @@ const INTEGRATION_CHANNELS: IntegrationChannelDef[] = [
     id: "facebook_messenger",
     name: "Facebook & Messenger",
     description:
-      "Connect your Facebook Page to manage Page inbox and Messenger conversations alongside other social networks (via Zernio).",
+      "Connect your Facebook Page to manage Page inbox and Messenger conversations alongside other social networks.",
     href: "/dashboard/integrations#integrations-social",
     icon: <FacebookGlyph className="h-[26px] w-[26px] text-[#1877F2]" />,
     accentBorder: "border-[#1877F2]/40",
@@ -284,7 +284,7 @@ export default function ChannelsPage() {
               <Inbox size={20} className="text-[#009B3A]" aria-hidden />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-900">More social networks (Zernio)</h3>
+              <h3 className="text-sm font-semibold text-slate-900">More social networks</h3>
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
                 X (Twitter), LinkedIn, TikTok, YouTube, Pinterest, Reddit, Bluesky, Threads, Google Business, Snapchat,
                 Discord, and more — connect once in{" "}

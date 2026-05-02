@@ -1063,7 +1063,7 @@ function HealthTab() {
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
               <ShieldAlert size={32} className="mx-auto mb-3 text-slate-300" />
               <p className="text-sm font-medium text-slate-500">No live campaigns found</p>
-              <p className="text-xs text-slate-400 mt-1">Create campaigns in your Zernio account to see health scores here.</p>
+              <p className="text-xs text-slate-400 mt-1">Create ad campaigns on your connected ad accounts to see health scores here.</p>
             </div>
           ) : (
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -1340,7 +1340,7 @@ function ReportingTab({ rows }: { rows: MetaAdsCampaignDraft[] }) {
       {insightsError && !loadingInsights && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           {insightsError.includes("not configured")
-            ? "Zernio Ads API key not configured on the server."
+            ? "Ads analytics service is not configured on the server. Please contact support."
             : insightsError}
         </div>
       )}
@@ -1372,7 +1372,7 @@ function ReportingTab({ rows }: { rows: MetaAdsCampaignDraft[] }) {
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
             <p className="text-sm font-semibold text-slate-700">Live campaigns ({insights.total_campaigns})</p>
-            <span className="text-[11px] text-slate-400">via Zernio Ads API · {days}d window</span>
+            <span className="text-[11px] text-slate-400">live ad metrics · {days}d window</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[700px] text-sm">
@@ -1472,7 +1472,7 @@ function ReportingTab({ rows }: { rows: MetaAdsCampaignDraft[] }) {
           <BarChart3 className="mx-auto mb-2 h-8 w-8 text-slate-300" />
           <p className="font-medium">No live campaigns found</p>
           <p className="text-xs mt-1 text-slate-400">
-            Create ads on Facebook, Instagram, or other platforms via your Zernio account to see metrics here.
+            Create ads on Facebook, Instagram, or other connected ad accounts to see metrics here.
           </p>
         </div>
       )}
@@ -1720,9 +1720,9 @@ export default function MetaAdsPage() {
       <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-xs text-slate-600 space-y-1">
         <p className="font-semibold text-slate-800 mb-2">Integration status</p>
         <p>✅ Campaign drafts saved to MongoDB (shared with Zilo Chat agent)</p>
-        <p>✅ Live metrics via Zernio Ads API (Facebook, Instagram, Google, TikTok, LinkedIn)</p>
+        <p>✅ Live metrics across Facebook, Instagram, Google, TikTok, and LinkedIn</p>
         <p>✅ Pause / Activate campaigns directly from Reporting tab</p>
-        <p>✅ Post boosting and Click-to-WhatsApp ads via Zernio</p>
+        <p>✅ Post boosting and Click-to-WhatsApp ads supported</p>
       </section>
 
       {modal && (

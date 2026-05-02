@@ -571,7 +571,7 @@ export default function CollaborationPage() {
 
           <p className="text-xs text-slate-500">
             Support email routing uses the same rules when those messages are connected to the CRM; today this applies to
-            WhatsApp (Evolution) and Zernio webhook traffic. Extend keywords for billing, shipping, or VIP customers.
+            WhatsApp and social-channel webhook traffic. Extend keywords for billing, shipping, or VIP customers.
           </p>
         </div>
       )}

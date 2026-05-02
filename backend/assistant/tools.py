@@ -1012,13 +1012,23 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         configured_base = (os.getenv("ZERNIO_API_BASE") or "https://zernio.com/api/v1").rstrip("/")
         zernio_api_bases = list(dict.fromkeys([configured_base, "https://zernio.com/api/v1"]))
         if zernio_profile_id and zernio_api_key:
-            async with httpx.AsyncClient(timeout=6.0) as client:
+            # Bumped timeout (was 6s) — the social block makes ~10 sequential message-detail
+            # fetches per conversation; with a 6s per-request budget, a slow Zernio response
+            # in the middle of the loop would cause the subsequent /posts or /analytics call
+            # to time out, leaving recent_posts=0 and performance_totals all zero. The AI then
+            # incorrectly tells the owner they "have only one post" or no likes/shares data.
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 async def _get_first_ok(paths: list[str], *, params: Optional[Dict[str, Any]] = None) -> tuple[Optional[httpx.Response], Optional[str]]:
                     last_resp: Optional[httpx.Response] = None
                     for base in zernio_api_bases:
                         for path in paths:
                             url = f"{base}{path}"
-                            r = await client.get(url, params=params, headers={"Authorization": f"Bearer {zernio_api_key}"})
+                            try:
+                                r = await client.get(url, params=params, headers={"Authorization": f"Bearer {zernio_api_key}"})
+                            except Exception:
+                                # Network/timeout on one base+path shouldn't kill the whole social block.
+                                # Try the next candidate; if all fail, return whatever last_resp we have (may be None).
+                                continue
                             last_resp = r
                             if r.status_code == 200:
                                 return r, path
@@ -1066,6 +1076,10 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                     if conv_resp is None:
                         conv_resp = resp
                     social_activity["fetch_diagnostics"]["inbox"]["status_code"] = conv_resp.status_code
+                    # Defaults so the deferred message-detail loop below is always safe to reference,
+                    # even when the inbox call returns no usable payload.
+                    recent_conversations_for_messages: list[Dict[str, Any]] = []
+                    inbox_message_loop_pending = False
                     if conv_resp.status_code == 200:
                         social_activity["fetch_diagnostics"]["inbox"]["ok"] = True
                         conv_data = conv_resp.json()
@@ -1107,102 +1121,15 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                             if conv_times:
                                 social_activity["last_message_at"] = conv_times[0]
 
-                            # Pull recent message samples for style learning (latest 50 total).
-                            collected_messages: list[Dict[str, Any]] = []
-                            for c in recent_conversations[:10]:
-                                conv_id = (c or {}).get("id") or (c or {}).get("_id") or (c or {}).get("conversationId")
-                                if not conv_id:
-                                    continue
-                                try:
-                                    account_id = (c or {}).get("accountId") or (c or {}).get("account_id")
-                                    detail_params = {
-                                        "limit": 50,
-                                        "sortOrder": "asc",
-                                        **({"accountId": account_id} if account_id else {}),
-                                    }
-                                    detail_paths = [f"/inbox/conversations/{conv_id}/messages", f"/conversations/{conv_id}"]
-                                    if conv_path == "/conversations":
-                                        detail_paths = [f"/conversations/{conv_id}", f"/inbox/conversations/{conv_id}/messages"]
-                                    conv_detail_resp, _ = await _get_first_ok(detail_paths, params=detail_params)
-                                    if conv_detail_resp is None:
-                                        continue
-                                    if conv_detail_resp.status_code != 200:
-                                        # Backward-compat fallback for connectors that still expose conversation detail.
-                                        conv_detail_resp, _ = await _get_first_ok(
-                                            [f"/inbox/conversations/{conv_id}", f"/conversations/{conv_id}"],
-                                            params=None,
-                                        )
-                                        if conv_detail_resp is None:
-                                            continue
-                                        if conv_detail_resp.status_code != 200:
-                                            continue
-                                    conv_detail = conv_detail_resp.json()
-                                    msgs = conv_detail.get("messages") or conv_detail.get("data") or []
-                                    if not isinstance(msgs, list):
-                                        continue
-                                    convo_bucket: list[Dict[str, Any]] = []
-                                    for m in msgs[-10:]:
-                                        if not isinstance(m, dict):
-                                            continue
-                                        text = (
-                                            (m.get("message") if isinstance(m.get("message"), str) else None)
-                                            or (m.get("text") if isinstance(m.get("text"), str) else None)
-                                            or (m.get("content") if isinstance(m.get("content"), str) else None)
-                                            or ""
-                                        ).strip()
-                                        if not text:
-                                            continue
-                                        direction = str(
-                                            m.get("direction")
-                                            or m.get("type")
-                                            or ("outgoing" if m.get("fromMe") else "incoming")
-                                        ).lower()
-                                        row = {
-                                            "conversation_id": str(conv_id),
-                                            "platform": str((c or {}).get("platform") or "").lower(),
-                                            "username": (c or {}).get("username") or (c or {}).get("senderName"),
-                                            "direction": direction,
-                                            "text": text[:280],
-                                            "created_at": m.get("createdAt") or m.get("created_at") or m.get("timestamp"),
-                                        }
-                                        convo_bucket.append(row)
-                                        collected_messages.append(row)
-                                    if convo_bucket:
-                                        social_activity["latest_messages_by_conversation"][str(conv_id)] = convo_bucket[-10:]
-                                except Exception:
-                                    continue
-                                if len(collected_messages) >= 50:
-                                    break
-
-                            social_activity["latest_messages_sample"] = collected_messages[-50:]
-
-                            outgoing = [
-                                m for m in social_activity["latest_messages_sample"]
-                                if isinstance(m, dict) and "out" in str(m.get("direction") or "").lower()
-                            ]
-                            if outgoing:
-                                total_len = sum(len(str(m.get("text") or "")) for m in outgoing)
-                                emoji_hits = sum(
-                                    1 for m in outgoing
-                                    if any(ord(ch) > 10000 for ch in str(m.get("text") or ""))
-                                )
-                                question_hits = sum(
-                                    1 for m in outgoing if "?" in str(m.get("text") or "")
-                                )
-                                openers: Dict[str, int] = {}
-                                for m in outgoing:
-                                    txt = str(m.get("text") or "").strip().lower()
-                                    first = txt.split(" ")[0] if txt else ""
-                                    if first:
-                                        openers[first] = openers.get(first, 0) + 1
-                                top_openers = [k for k, _ in sorted(openers.items(), key=lambda kv: kv[1], reverse=True)[:5]]
-                                social_activity["brand_voice_signals"] = {
-                                    "outgoing_messages_analyzed": len(outgoing),
-                                    "avg_outgoing_length": int(round(total_len / max(len(outgoing), 1))),
-                                    "uses_emoji_ratio": round(emoji_hits / max(len(outgoing), 1), 3),
-                                    "uses_question_ratio": round(question_hits / max(len(outgoing), 1), 3),
-                                    "common_openers": top_openers,
-                                }
+                            # NOTE: Per-conversation message-detail fetching (for brand-voice signals)
+                            # used to live here — but it is the slowest part of the social block
+                            # (10 sequential requests). Running it before /posts and /analytics caused
+                            # those later fetches to time out, so the assistant ended up reporting
+                            # "0 posts" and "no likes/shares". The loop has been moved to run AFTER
+                            # the posts/comments/analytics snapshots so high-value engagement data is
+                            # always populated even if message sampling later degrades.
+                            recent_conversations_for_messages = recent_conversations
+                            inbox_message_loop_pending = True
 
                     elif conv_resp.status_code >= 400:
                         social_activity["fetch_diagnostics"]["inbox"]["error"] = conv_resp.text[:300]
@@ -1444,6 +1371,111 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                             ]
                             if post_times:
                                 social_activity["last_post_at"] = post_times[0]
+
+                    # Deferred message-detail sampling for brand-voice signals. Runs LAST and is
+                    # wrapped so any timeout/network hiccup here cannot wipe the post / analytics
+                    # data we already populated above. Previously this loop ran before the
+                    # /posts and /analytics fetches, and a slow run here used to time out the
+                    # subsequent calls — leaving recent_posts=0 and performance_totals all zero.
+                    if inbox_message_loop_pending and recent_conversations_for_messages:
+                        try:
+                            collected_messages: list[Dict[str, Any]] = []
+                            for c in recent_conversations_for_messages[:10]:
+                                conv_id = (c or {}).get("id") or (c or {}).get("_id") or (c or {}).get("conversationId")
+                                if not conv_id:
+                                    continue
+                                try:
+                                    account_id = (c or {}).get("accountId") or (c or {}).get("account_id")
+                                    detail_params = {
+                                        "limit": 50,
+                                        "sortOrder": "asc",
+                                        **({"accountId": account_id} if account_id else {}),
+                                    }
+                                    detail_paths = [f"/inbox/conversations/{conv_id}/messages", f"/conversations/{conv_id}"]
+                                    if conv_path == "/conversations":
+                                        detail_paths = [f"/conversations/{conv_id}", f"/inbox/conversations/{conv_id}/messages"]
+                                    conv_detail_resp, _ = await _get_first_ok(detail_paths, params=detail_params)
+                                    if conv_detail_resp is None:
+                                        continue
+                                    if conv_detail_resp.status_code != 200:
+                                        # Backward-compat fallback for connectors that still expose conversation detail.
+                                        conv_detail_resp, _ = await _get_first_ok(
+                                            [f"/inbox/conversations/{conv_id}", f"/conversations/{conv_id}"],
+                                            params=None,
+                                        )
+                                        if conv_detail_resp is None:
+                                            continue
+                                        if conv_detail_resp.status_code != 200:
+                                            continue
+                                    conv_detail = conv_detail_resp.json()
+                                    msgs = conv_detail.get("messages") or conv_detail.get("data") or []
+                                    if not isinstance(msgs, list):
+                                        continue
+                                    convo_bucket: list[Dict[str, Any]] = []
+                                    for m in msgs[-10:]:
+                                        if not isinstance(m, dict):
+                                            continue
+                                        text = (
+                                            (m.get("message") if isinstance(m.get("message"), str) else None)
+                                            or (m.get("text") if isinstance(m.get("text"), str) else None)
+                                            or (m.get("content") if isinstance(m.get("content"), str) else None)
+                                            or ""
+                                        ).strip()
+                                        if not text:
+                                            continue
+                                        direction = str(
+                                            m.get("direction")
+                                            or m.get("type")
+                                            or ("outgoing" if m.get("fromMe") else "incoming")
+                                        ).lower()
+                                        row = {
+                                            "conversation_id": str(conv_id),
+                                            "platform": str((c or {}).get("platform") or "").lower(),
+                                            "username": (c or {}).get("username") or (c or {}).get("senderName"),
+                                            "direction": direction,
+                                            "text": text[:280],
+                                            "created_at": m.get("createdAt") or m.get("created_at") or m.get("timestamp"),
+                                        }
+                                        convo_bucket.append(row)
+                                        collected_messages.append(row)
+                                    if convo_bucket:
+                                        social_activity["latest_messages_by_conversation"][str(conv_id)] = convo_bucket[-10:]
+                                except Exception:
+                                    continue
+                                if len(collected_messages) >= 50:
+                                    break
+
+                            social_activity["latest_messages_sample"] = collected_messages[-50:]
+
+                            outgoing = [
+                                m for m in social_activity["latest_messages_sample"]
+                                if isinstance(m, dict) and "out" in str(m.get("direction") or "").lower()
+                            ]
+                            if outgoing:
+                                total_len = sum(len(str(m.get("text") or "")) for m in outgoing)
+                                emoji_hits = sum(
+                                    1 for m in outgoing
+                                    if any(ord(ch) > 10000 for ch in str(m.get("text") or ""))
+                                )
+                                question_hits = sum(
+                                    1 for m in outgoing if "?" in str(m.get("text") or "")
+                                )
+                                openers: Dict[str, int] = {}
+                                for m in outgoing:
+                                    txt = str(m.get("text") or "").strip().lower()
+                                    first = txt.split(" ")[0] if txt else ""
+                                    if first:
+                                        openers[first] = openers.get(first, 0) + 1
+                                top_openers = [k for k, _ in sorted(openers.items(), key=lambda kv: kv[1], reverse=True)[:5]]
+                                social_activity["brand_voice_signals"] = {
+                                    "outgoing_messages_analyzed": len(outgoing),
+                                    "avg_outgoing_length": int(round(total_len / max(len(outgoing), 1))),
+                                    "uses_emoji_ratio": round(emoji_hits / max(len(outgoing), 1), 3),
+                                    "uses_question_ratio": round(question_hits / max(len(outgoing), 1), 3),
+                                    "common_openers": top_openers,
+                                }
+                        except Exception as e:
+                            logger.warning(f"[integrations_status] message-detail sampling failed (non-fatal): {e}")
                 elif resp.status_code >= 400:
                     social_activity["fetch_diagnostics"]["accounts"]["error"] = resp.text[:300]
     except Exception as e:
@@ -1569,15 +1601,33 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "last_post_at": social_activity.get("last_post_at"),
     }
 
-    # Flat convenience summary for the agent
+    # Flat convenience summary for the agent — list every connected social
+    # platform (not just FB/IG), so newly-added platforms like TikTok/Twitter/
+    # YouTube/LinkedIn show up in the agent's view.
+    connected_social_platforms: Dict[str, bool] = {}
+    for acc in social_accounts:
+        if not isinstance(acc, dict) or not acc.get("connected"):
+            continue
+        plat_raw = str(acc.get("platform") or "").strip().lower()
+        if not plat_raw:
+            continue
+        # Map platform ids to display names (twitter → "Twitter / X", googlebusiness → "Google Business")
+        display = {
+            "facebook": "Facebook", "instagram": "Instagram", "linkedin": "LinkedIn",
+            "twitter": "Twitter / X", "x": "Twitter / X", "tiktok": "TikTok",
+            "youtube": "YouTube", "pinterest": "Pinterest", "reddit": "Reddit",
+            "bluesky": "Bluesky", "threads": "Threads", "snapchat": "Snapchat",
+            "discord": "Discord", "googlebusiness": "Google Business",
+        }.get(plat_raw, plat_raw.title())
+        connected_social_platforms[display] = True
+
     out["summary"] = (
         "Connected: "
         + ", ".join(
             k for k, v in {
                 "WhatsApp": out["whatsapp"]["connected"],
                 "Telegram": out["telegram"]["connected"],
-                "Facebook": any(a.get("platform") == "facebook" and a.get("connected") for a in social_accounts),
-                "Instagram": any(a.get("platform") == "instagram" and a.get("connected") for a in social_accounts),
+                **connected_social_platforms,
                 **{k.replace("_", " ").title(): v for k, v in nango_status.items()},
             }.items()
             if v
@@ -8024,7 +8074,7 @@ async def list_scheduled_posts(ctx: ToolContext, args: Dict[str, Any]):
             },
             "channel": {
                 "type": "string",
-                "description": "Narrow to a single platform: facebook, instagram, linkedin, x, tiktok.",
+                "description": "Narrow to a single platform: facebook, instagram, linkedin, x/twitter, tiktok, youtube.",
             },
         },
     },
@@ -8110,23 +8160,42 @@ async def get_social_post_analytics(ctx: ToolContext, args: Dict[str, Any]):
     name="get_live_social_posts",
     description=(
         "Fetch live posts and real-time engagement metrics (likes, comments, shares, reach, clicks) "
-        "directly from connected social media accounts via Zernio. "
+        "directly from connected social media accounts. "
         "Unlike get_social_post_analytics (which only shows CRM-scheduled posts), this returns ALL posts "
         "from connected accounts — including posts published directly on Facebook, Instagram, etc. "
         "Use this whenever the user asks about their latest posts, current engagement, or says they "
-        "can't see a post. Also returns posts that have received comments in the social inbox."
+        "can't see a post. Also returns posts that have received comments in the social inbox.\n\n"
+        "IMPORTANT — read `metric_coverage` and `low_coverage_metrics` before quoting any total. "
+        "Each metric total is summed only across posts where the platform returned that metric, so "
+        "`totals.reach: 19` with `metric_coverage.reach: 1` means only 1 post out of `total_posts` "
+        "reported reach. In that case, do NOT quote the total bare — qualify it (e.g. \"reach data is "
+        "only available for 1 of your 50 posts; the rest are organic Instagram/older Facebook posts "
+        "that don't expose reach via the Graph API\"). Also surface any strings in `metric_notes`.\n\n"
+        "Returns pre-computed strategy signals in `derived_insights` (engagement rate per platform, "
+        "best publish hour & day from the owner's own posts, media-type performance, posting cadence, "
+        "top 3 posts, and recommended actions) and audience-size context in `accounts_summary` + "
+        "`total_followers_by_platform`. `follower_growth_by_platform` accumulates daily snapshots so "
+        "growth deltas (`delta_7d`, `delta_30d`) become available after a few days of usage.\n\n"
+        "CONNECTION HEALTH: every account in `accounts_summary` carries a `sync_status` "
+        "(synced / sync_in_progress / pending_first_sync / no_posts_published) and a plain-English "
+        "`sync_message`. `platform_diagnostics` aggregates this per platform. Use these to honestly "
+        "explain why a freshly-connected platform (e.g. LinkedIn just added) shows 0 posts — that "
+        "typically means our first sync hasn't completed yet (takes 30–60 min), NOT that the "
+        "integration failed. The follower count is real even when post-level data is still pending.\n\n"
+        "Audience demographics (age, gender, geography, peak audience hours) are NOT exposed by the "
+        "API and intentionally absent — say so plainly if asked."
     ),
     parameters={
         "type": "object",
         "properties": {
             "platform": {
                 "type": "string",
-                "description": "Filter by platform: facebook, instagram, twitter, linkedin. Omit for all.",
+                "description": "Filter by platform: facebook, instagram, twitter, linkedin, tiktok, youtube. Omit for all.",
             },
             "limit": {
                 "type": "integer",
-                "default": 20,
-                "description": "Max number of posts to return (1–50).",
+                "default": 50,
+                "description": "Max number of posts to return (1–100). Request more when the user wants every post.",
             },
         },
     },
@@ -8139,10 +8208,12 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
 
     api_key = os.environ.get("ZERNIO_API_KEY", "").strip()
     if not api_key:
-        return {"error": "Zernio is not connected. ZERNIO_API_KEY is not configured."}
+        return {"error": "Social sync service is not configured. Please contact support."}
 
     platform_filter = (args.get("platform") or "").strip().lower()
-    limit = max(1, min(int(args.get("limit") or 20), 50))
+    limit = max(1, min(int(args.get("limit") or 50), 100))
+    # Fetch wide from Zernio; return only `limit` rows after merge/sort (matches Social Inbox behaviour).
+    posts_inbox_fetch_limit = 100
 
     hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -8162,31 +8233,133 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
                     continue
         return None
 
-    # ── 1. Resolve profile ID from DB ─────────────────────────────────────────
+    async def _zernio_accounts_count(pid: str) -> int:
+        data = await _zernio_get("/accounts", {"profileId": pid})
+        if not isinstance(data, dict):
+            return 0
+        acc_list = data.get("accounts") or data.get("data") or []
+        return len(acc_list) if isinstance(acc_list, list) else 0
+
+    async def _zernio_first_profile_id_with_accounts() -> str:
+        """Scan Zernio profiles under this API key — same idea as zernio.routes._pick_profile_with_accounts."""
+        pdata = await _zernio_get("/profiles", {})
+        if not isinstance(pdata, dict):
+            return ""
+        profiles = pdata.get("profiles") or pdata.get("data") or []
+        if not isinstance(profiles, list):
+            return ""
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            raw_pid = (
+                profile.get("_id") or profile.get("id")
+                or profile.get("profileId") or profile.get("profile_id")
+            )
+            cand = str(raw_pid).strip() if raw_pid else ""
+            if cand and await _zernio_accounts_count(cand) > 0:
+                return cand
+        return ""
+
+    # ── 1. Resolve profile ID from DB + heal stale profile (matches Social Inbox) ─
+    # Web `/zernio/*` calls _get_or_create_profile(), which updates MongoDB when the stored
+    # profile has zero connected accounts but another profile on the key has pages.
+    # Without this, the assistant keeps querying an empty/stale profile while the UI shows data.
     user_doc = await ctx.db.users.find_one(
         {"_id": ctx.business_id}, {"zernio_profile_id": 1}
     )
     profile_id = str((user_doc or {}).get("zernio_profile_id") or "").strip()
     if not profile_id:
         return {
-            "error": "No Zernio profile found for this account. Connect a social account first.",
+            "error": "No social profile found for this account. Connect a social account first.",
             "posts": [],
         }
 
-    params_base: Dict[str, Any] = {"profileId": profile_id, "limit": limit}
+    profile_healed = False
+    if await _zernio_accounts_count(profile_id) == 0:
+        healed = await _zernio_first_profile_id_with_accounts()
+        if healed and healed != profile_id:
+            await ctx.db.users.update_one(
+                {"_id": ctx.business_id},
+                {"$set": {"zernio_profile_id": healed}},
+            )
+            profile_id = healed
+            profile_healed = True
+
+    params_base: Dict[str, Any] = {"profileId": profile_id, "limit": posts_inbox_fetch_limit}
     if platform_filter:
         params_base["platform"] = platform_filter
 
+    METRICS = "likes,comments,shares,reach,clicks,saves,impressions"
+    ANALYTICS_PAGE_SIZE = 100
+    MAX_ANALYTICS_PAGES = 10
+    PER_POST_FALLBACK_CAP = 40
+
     # ── helpers (defined early so they can be used in async fetch steps) ────────
     def _all_ids(row: Dict[str, Any]) -> List[str]:
-        candidates = [
+        candidates: List[Any] = [
             row.get("id"), row.get("_id"), row.get("postId"), row.get("post_id"),
             row.get("platformPostId"), row.get("externalPostId"),
+            row.get("latePostId"), row.get("late_post_id"),
+            row.get("zernio_post_id"), row.get("external_post_id"), row.get("cid"),
         ]
-        return [str(c).strip() for c in candidates if c and str(c).strip()]
+        pa = row.get("platformAnalytics")
+        if isinstance(pa, list) and pa and isinstance(pa[0], dict):
+            p0 = pa[0]
+            candidates.extend([
+                p0.get("platformPostId"), p0.get("postId"), p0.get("post_id"), p0.get("id"),
+            ])
+        analytics_obj = row.get("analytics")
+        if isinstance(analytics_obj, dict):
+            candidates.extend([
+                analytics_obj.get("postId"), analytics_obj.get("post_id"),
+            ])
+        out: List[str] = []
+        for c in candidates:
+            if c and str(c).strip():
+                s = str(c).strip()
+                if s not in out:
+                    out.append(s)
+        return out
+
+    def _extract_analytics_row_list(data: Any) -> List[Dict[str, Any]]:
+        """Same shapes as Social Inbox `pickAnalyticsRows`."""
+        if isinstance(data, list):
+            return [r for r in data if isinstance(r, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("data", "posts", "results"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                return [r for r in candidate if isinstance(r, dict)]
+        nested = data.get("data")
+        if isinstance(nested, dict):
+            for key in ("posts", "data"):
+                c2 = nested.get(key)
+                if isinstance(c2, list):
+                    return [r for r in c2 if isinstance(r, dict)]
+            if nested.get("postId") or nested.get("latePostId") or nested.get("analytics"):
+                return [nested]
+        if data.get("postId") or data.get("latePostId") or data.get("analytics"):
+            return [data]
+        return []
 
     def _extract_int(*values) -> int:
         for v in values:
+            # Facebook Graph API returns several engagement fields as nested objects:
+            # shares -> {"count": 5}, reactions -> {"total_count": 12}. Without
+            # unwrapping these, posts that were actually shared were reported as 0.
+            if isinstance(v, dict):
+                for key in ("count", "total_count", "totalCount", "total", "value"):
+                    inner = v.get(key)
+                    if inner is None:
+                        continue
+                    try:
+                        n = int(inner)
+                        if n >= 0:
+                            return n
+                    except (TypeError, ValueError):
+                        continue
+                continue
             try:
                 n = int(v)
                 if n >= 0:
@@ -8202,28 +8375,79 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
                 return str(v).strip()
         return ""
 
-    # ── 2. Fetch live posts + accounts in parallel ─────────────────────────────
+    # ── 2. Fetch live posts + accounts (mirror Social Inbox `page.tsx` loading) ──
     import asyncio as _asyncio
 
-    posts_data, accounts_data, comments_data = await _asyncio.gather(
-        _zernio_get("/posts", params_base),
+    def _rows_from_zernio_list_payload(payload: Any) -> List[Dict[str, Any]]:
+        if isinstance(payload, dict):
+            for key in ("posts", "data", "results"):
+                candidate = payload.get(key)
+                if isinstance(candidate, list):
+                    return [r for r in candidate if isinstance(r, dict)]
+        if isinstance(payload, list):
+            return [r for r in payload if isinstance(r, dict)]
+        return []
+
+    def _merge_unique_post_dicts(row_lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        seen_alias: set = set()
+        out: List[Dict[str, Any]] = []
+        for rows in row_lists:
+            for row in rows:
+                ids = _all_ids(row)
+                if ids and any(i in seen_alias for i in ids):
+                    continue
+                if ids:
+                    for i in ids:
+                        seen_alias.add(i)
+                out.append(row)
+        return out
+
+    # UI: `commentedPosts` omits min_comments; analytics uses `platform: filter || "facebook"`.
+    # Zernio often returns a sparse list without `platform=facebook` — merge explicit FB-scoped fetches.
+    comments_params_ui = dict(params_base)
+    posts_params_ui = dict(params_base)
+
+    fetch_tasks: List[Any] = [
+        _zernio_get("/posts", posts_params_ui),
         _zernio_get("/accounts", {"profileId": profile_id}),
-        _zernio_get("/inbox/comments", {**params_base, "minComments": 1}),
-        return_exceptions=True,
-    )
+        _zernio_get("/inbox/comments", comments_params_ui),
+        # Account-level snapshot: returns each account's followersCount and a global
+        # overview block. Useful as cross-platform context (e.g. "1010 FB followers,
+        # 124 IG followers") even when per-post share/reach data is unavailable.
+        _zernio_get("/analytics", {"profileId": profile_id, "period": "30d"}),
+    ]
+    if not platform_filter:
+        fetch_tasks.append(_zernio_get("/posts", {**params_base, "platform": "facebook"}))
+        fetch_tasks.append(_zernio_get("/inbox/comments", {**params_base, "platform": "facebook"}))
 
-    raw_posts: List[Dict[str, Any]] = []
-    if isinstance(posts_data, dict):
-        for key in ("posts", "data", "results"):
-            candidate = posts_data.get(key)
-            if isinstance(candidate, list):
-                raw_posts = candidate
-                break
-        if not raw_posts and isinstance(posts_data, list):
-            raw_posts = posts_data
+    fetch_results = await _asyncio.gather(*fetch_tasks, return_exceptions=True)
 
-    # Collect all account IDs as fallback when a post doesn't carry its own
+    posts_data = fetch_results[0]
+    accounts_data = fetch_results[1]
+    comments_data = fetch_results[2]
+    account_snapshot_data = fetch_results[3]
+    posts_fb_data = fetch_results[4] if len(fetch_results) > 4 else None
+    comments_fb_data = fetch_results[5] if len(fetch_results) > 5 else None
+
+    post_row_lists: List[List[Dict[str, Any]]] = []
+    if not isinstance(posts_data, Exception):
+        post_row_lists.append(_rows_from_zernio_list_payload(posts_data))
+    if posts_fb_data is not None and not isinstance(posts_fb_data, Exception):
+        post_row_lists.append(_rows_from_zernio_list_payload(posts_fb_data))
+    raw_posts = _merge_unique_post_dicts(post_row_lists)
+
+    comment_row_lists: List[List[Dict[str, Any]]] = []
+    if not isinstance(comments_data, Exception):
+        comment_row_lists.append(_rows_from_zernio_list_payload(comments_data))
+    if comments_fb_data is not None and not isinstance(comments_fb_data, Exception):
+        comment_row_lists.append(_rows_from_zernio_list_payload(comments_fb_data))
+    commented_posts = _merge_unique_post_dicts(comment_row_lists)
+
+    # Collect all account IDs as fallback when a post doesn't carry its own.
+    # Also remember the platform per account so per-account post fetches can tag
+    # the rows correctly (LinkedIn /accounts/{id}/posts doesn't include `platform`).
     fallback_account_ids: List[str] = []
+    account_platform_by_id: Dict[str, str] = {}
     if isinstance(accounts_data, dict):
         acc_list = accounts_data.get("accounts") or accounts_data.get("data") or []
         if isinstance(acc_list, list):
@@ -8232,117 +8456,126 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
                     aid = _get_account_id(acc)
                     if aid:
                         fallback_account_ids.append(aid)
+                        plat = str(acc.get("platform") or "").strip().lower()
+                        if plat:
+                            account_platform_by_id[aid] = plat
 
-    commented_posts: List[Dict[str, Any]] = []
-    if isinstance(comments_data, dict):
-        for key in ("posts", "data", "results"):
-            candidate = comments_data.get(key)
-            if isinstance(candidate, list):
-                commented_posts = candidate
-                break
-
-    # ── 3. Per-post analytics with accountId (the only way Zernio returns likes/shares) ──
-    METRICS = "likes,comments,shares,reach,clicks,saves,impressions"
-
-    async def _fetch_post_engagement(post: Dict[str, Any]) -> Optional[Dict[str, int]]:
-        """Fetch engagement for one post using postId + accountId."""
-        post_ids = _all_ids(post)
-        if not post_ids:
-            return None
-        account_id = _get_account_id(post) or (fallback_account_ids[0] if fallback_account_ids else "")
-        plat = str(post.get("platform") or platform_filter or "").lower()
-
-        params: Dict[str, Any] = {
-            "profileId": profile_id,
-            "metrics": METRICS,
-            "postId": post_ids[0],
-        }
-        if account_id:
-            params["accountId"] = account_id
-        if plat:
-            params["platform"] = plat
-
-        data = await _zernio_get("/analytics", params)
-        if not data:
-            return None
-
-        # Zernio may return: {data: [...]} or {analytics: {...}} or the row directly
-        row: Optional[Dict[str, Any]] = None
-        for key in ("data", "posts", "analytics", "results"):
-            candidate = data.get(key)
-            if isinstance(candidate, list) and candidate:
-                row = candidate[0]
-                break
-            if isinstance(candidate, dict):
-                row = candidate
-                break
-        if row is None:
-            # The response itself might be the metrics object
-            if any(k in data for k in ("likes", "like_count", "reactions", "shares", "share_count")):
-                row = data
-
-        return row  # caller will run through _extract_engagement
-
-    # Combine raw_posts + commented_posts so analytics run even when /posts returns empty
-    _seen_for_analytics: set = set()
-    _posts_for_analytics: List[Dict[str, Any]] = []
-    for _p in raw_posts + commented_posts:
-        if not isinstance(_p, dict):
+    # ── Per-account /accounts/{id}/posts fallback ─────────────────────────────
+    # Zernio's bulk /posts and /analytics endpoints often miss LinkedIn and other
+    # newer-integration platforms (the bulk endpoints favour Facebook/Instagram).
+    # /accounts/{id}/posts is the canonical per-account list and includes
+    # platforms that the bulk endpoints silently drop. Run it for any connected
+    # account whose platform isn't already represented in raw_posts.
+    represented_platforms: Set[str] = {
+        str(p.get("platform") or "").lower() for p in raw_posts if isinstance(p, dict)
+    }
+    represented_platforms.discard("")
+    per_account_post_tasks: List[Any] = []
+    per_account_post_meta: List[Dict[str, str]] = []
+    for aid, plat in account_platform_by_id.items():
+        if platform_filter and plat != platform_filter.strip().lower():
             continue
-        _ids = _all_ids(_p)
-        _canon = _ids[0] if _ids else None
-        if _canon and _canon not in _seen_for_analytics:
-            _posts_for_analytics.append(_p)
-            _seen_for_analytics.add(_canon)
+        if plat in represented_platforms:
+            continue  # bulk endpoints already have this platform covered
+        per_account_post_tasks.append(_zernio_get(f"/accounts/{aid}/posts", {}))
+        per_account_post_meta.append({"account_id": aid, "platform": plat})
 
-    # Limit per-post calls to first 25 posts to keep latency reasonable
-    per_post_results = await _asyncio.gather(
-        *[_fetch_post_engagement(p) for p in _posts_for_analytics[:25]],
-        return_exceptions=True,
-    )
-    # Keep alignment: per_post_results[i] corresponds to _posts_for_analytics[i]
-    _analytics_source = _posts_for_analytics
-
-    # ── 4. Build engagement lookup keyed by post id ───────────────────────────
-    analytics_rows: List[Dict[str, Any]] = [
-        r for r in per_post_results
-        if isinstance(r, dict)
-    ]
+    if per_account_post_tasks:
+        per_account_results = await _asyncio.gather(*per_account_post_tasks, return_exceptions=True)
+        for meta, res in zip(per_account_post_meta, per_account_results):
+            if isinstance(res, Exception) or not isinstance(res, dict):
+                continue
+            extra_rows = _rows_from_zernio_list_payload(res)
+            if not extra_rows:
+                continue
+            # Stamp platform/account so downstream merging treats them correctly
+            for row in extra_rows:
+                if isinstance(row, dict):
+                    row.setdefault("platform", meta["platform"])
+                    row.setdefault("accountId", meta["account_id"])
+            raw_posts = _merge_unique_post_dicts([raw_posts, extra_rows])
 
     def _extract_engagement(row: Dict[str, Any]) -> Dict[str, int]:
         # Zernio nests engagement under several possible keys depending on endpoint
         a = row.get("analytics") or row.get("metrics") or row.get("insights") or row.get("engagement") or {}
         if not isinstance(a, dict):
             a = {}
-        # platformAnalytics is an array; take first element
         pa_list = row.get("platformAnalytics") or []
         pa = (pa_list[0] if isinstance(pa_list, list) and pa_list and isinstance(pa_list[0], dict) else {})
 
         def _best(*sources) -> int:
             return _extract_int(*sources)
 
+        def _reactions_total(obj: Any) -> int:
+            if isinstance(obj, dict):
+                return _extract_int(obj.get("total"), obj.get("total_count"), obj.get("like_count"))
+            return _extract_int(obj)
+
         likes = _best(
             row.get("likes"), row.get("likeCount"), row.get("like_count"),
             row.get("reactions"), row.get("reactionCount"), row.get("reaction_count"),
+            _reactions_total(row.get("reactions")),
             a.get("likes"), a.get("likeCount"), a.get("like_count"),
             a.get("reactions"), a.get("reactionCount"), a.get("reaction_count"), a.get("reactions_count"),
+            _reactions_total(a.get("reactions")),
             pa.get("likes"), pa.get("likeCount"), pa.get("like_count"),
             pa.get("reactions"), pa.get("reactionCount"), pa.get("reaction_count"),
+            _reactions_total(pa.get("reactions")),
         )
+        # Shares come in many shapes:
+        #   - Facebook /posts:        shares: {"count": N}   (handled by _extract_int unwrap)
+        #   - Facebook /analytics:    shareCount / share_count
+        #   - Instagram Reels:        reshares / reshare_count
+        #   - Threads/X-style:        repost_count / repostCount
+        #   - Story shares:           forwards / forward_count
+        # Without this expanded list, posts that were actually shared show as 0.
         shares = _best(
-            row.get("shares"), row.get("shareCount"), row.get("share_count"), row.get("sharesCount"),
-            a.get("shares"), a.get("shareCount"), a.get("share_count"), a.get("sharesCount"), a.get("shares_count"),
-            pa.get("shares"), pa.get("shareCount"), pa.get("share_count"), pa.get("sharesCount"),
+            row.get("shares"), row.get("share"),
+            row.get("shareCount"), row.get("share_count"), row.get("sharesCount"),
+            row.get("reshares"), row.get("reshareCount"), row.get("reshare_count"),
+            row.get("reposts"), row.get("repostCount"), row.get("repost_count"),
+            row.get("forwards"), row.get("forwardCount"), row.get("forward_count"),
+            a.get("shares"), a.get("share"),
+            a.get("shareCount"), a.get("share_count"), a.get("sharesCount"), a.get("shares_count"),
+            a.get("reshares"), a.get("reshareCount"), a.get("reshare_count"),
+            a.get("reposts"), a.get("repostCount"), a.get("repost_count"),
+            a.get("forwards"), a.get("forwardCount"), a.get("forward_count"),
+            pa.get("shares"), pa.get("share"),
+            pa.get("shareCount"), pa.get("share_count"), pa.get("sharesCount"),
+            pa.get("reshares"), pa.get("reshareCount"), pa.get("reshare_count"),
+            pa.get("reposts"), pa.get("repostCount"), pa.get("repost_count"),
         )
         comments = _best(
             row.get("commentCount"), row.get("comments_count"), row.get("comments"), row.get("total_comments"),
             a.get("comments"), a.get("commentCount"), a.get("comment_count"), a.get("comments_count"),
             pa.get("comments"), pa.get("commentCount"), pa.get("comment_count"),
         )
+        # Reach has many platform-specific names: Instagram organic insights expose
+        # `reach`/`impressions`; Reels expose `plays`/`video_views`; Facebook video
+        # posts expose `viewCount`/`views`; some Zernio bulk rows nest under
+        # `unique_impressions` or `total_impressions`. Without this expanded list,
+        # most posts return reach=0 and the assistant reports an implausibly low
+        # total (e.g. 19 reach against 134 likes).
         reach = _best(
             row.get("reach"), row.get("impressions"),
+            row.get("uniqueImpressions"), row.get("unique_impressions"),
+            row.get("totalImpressions"), row.get("total_impressions"),
+            row.get("views"), row.get("viewCount"), row.get("view_count"),
+            row.get("videoViews"), row.get("video_views"), row.get("videoViewCount"),
+            row.get("plays"), row.get("playCount"), row.get("play_count"),
+            row.get("uniqueViews"), row.get("unique_views"),
             a.get("reach"), a.get("impressions"),
+            a.get("uniqueImpressions"), a.get("unique_impressions"),
+            a.get("totalImpressions"), a.get("total_impressions"),
+            a.get("views"), a.get("viewCount"), a.get("view_count"),
+            a.get("videoViews"), a.get("video_views"),
+            a.get("plays"), a.get("playCount"), a.get("play_count"),
+            a.get("uniqueViews"), a.get("unique_views"),
             pa.get("reach"), pa.get("impressions"),
+            pa.get("uniqueImpressions"), pa.get("unique_impressions"),
+            pa.get("views"), pa.get("viewCount"),
+            pa.get("videoViews"), pa.get("video_views"),
+            pa.get("plays"), pa.get("playCount"),
         )
         clicks = _best(
             row.get("clicks"), row.get("clickCount"), row.get("click_count"),
@@ -8361,22 +8594,189 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
             "reach": reach, "clicks": clicks, "saves": saves,
         }
 
-    # Key by original post IDs — per_post_results is index-aligned with _analytics_source[:25]
+    # ── 3. Bulk analytics (paginated) — must include accountId per Page (Facebook insights). ──
+    async def _fetch_bulk_analytics_pages(extra: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows_acc: List[Dict[str, Any]] = []
+        for page in range(1, MAX_ANALYTICS_PAGES + 1):
+            bulk_params: Dict[str, Any] = {
+                "profileId": profile_id,
+                "metrics": METRICS,
+                "limit": ANALYTICS_PAGE_SIZE,
+                "page": page,
+                **extra,
+            }
+            page_data = await _zernio_get("/analytics", bulk_params)
+            chunk = _extract_analytics_row_list(page_data)
+            if not chunk:
+                break
+            rows_acc.extend(chunk)
+            if len(chunk) < ANALYTICS_PAGE_SIZE:
+                break
+        return rows_acc
+
+    acc_list_full: List[Dict[str, Any]] = []
+    if isinstance(accounts_data, dict):
+        raw_acc = accounts_data.get("accounts") or accounts_data.get("data") or []
+        if isinstance(raw_acc, list):
+            acc_list_full = [a for a in raw_acc if isinstance(a, dict)]
+
+    def _accounts_for_bulk() -> List[Dict[str, Any]]:
+        if not acc_list_full:
+            return []
+        if platform_filter:
+            pf = platform_filter.strip().lower()
+            return [a for a in acc_list_full if str(a.get("platform") or "").strip().lower() == pf]
+        return acc_list_full
+
+    bulk_rows: List[Dict[str, Any]] = []
+    for acc in _accounts_for_bulk():
+        aid = _get_account_id(acc)
+        if not aid:
+            continue
+        plat = str(acc.get("platform") or "").strip().lower()
+        extra_acc: Dict[str, Any] = {"accountId": aid}
+        if plat:
+            extra_acc["platform"] = plat
+        elif platform_filter:
+            extra_acc["platform"] = platform_filter
+        bulk_rows.extend(await _fetch_bulk_analytics_pages(extra_acc))
+
+    if not bulk_rows:
+        extra_fb: Dict[str, Any] = {}
+        if platform_filter:
+            extra_fb["platform"] = platform_filter
+        else:
+            # Same default as Social Inbox analytics when no platform filter is selected.
+            extra_fb["platform"] = "facebook"
+        bulk_rows = await _fetch_bulk_analytics_pages(extra_fb)
+
+    engagement_keys = ("likes", "comments", "shares", "reach", "clicks", "saves")
+
+    def _merge_eng(a: Dict[str, int], b: Dict[str, int]) -> Dict[str, int]:
+        return {k: max(a.get(k, 0), b.get(k, 0)) for k in engagement_keys}
+
     engagement_by_id: Dict[str, Dict[str, int]] = {}
+    for brow in bulk_rows:
+        eng_b = _extract_engagement(brow)
+        for pid in _all_ids(brow):
+            if pid in engagement_by_id:
+                engagement_by_id[pid] = _merge_eng(engagement_by_id[pid], eng_b)
+            else:
+                engagement_by_id[pid] = dict(eng_b)
+
+    async def _fetch_post_engagement(post: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Fetch engagement for one post; try every connected Page until insights non-empty."""
+        post_ids = _all_ids(post)
+        if not post_ids:
+            return None
+        plat = str(post.get("platform") or platform_filter or "").lower()
+        account_candidates: List[str] = []
+        pa = _get_account_id(post)
+        if pa:
+            account_candidates.append(pa)
+        for x in fallback_account_ids:
+            if x and x not in account_candidates:
+                account_candidates.append(x)
+        if not account_candidates:
+            account_candidates = [""]
+
+        best_row: Optional[Dict[str, Any]] = None
+        best_score = -1
+
+        for account_id in account_candidates:
+            params: Dict[str, Any] = {
+                "profileId": profile_id,
+                "metrics": METRICS,
+                "postId": post_ids[0],
+            }
+            if account_id:
+                params["accountId"] = account_id
+            if plat:
+                params["platform"] = plat
+
+            data = await _zernio_get("/analytics", params)
+            if not data:
+                continue
+
+            row: Optional[Dict[str, Any]] = None
+            for key in ("data", "posts", "analytics", "results"):
+                candidate = data.get(key)
+                if isinstance(candidate, list) and candidate:
+                    row = candidate[0]
+                    break
+                if isinstance(candidate, dict):
+                    row = candidate
+                    break
+            if row is None:
+                if any(k in data for k in ("likes", "like_count", "reactions", "shares", "share_count")):
+                    row = data
+            if not isinstance(row, dict):
+                continue
+
+            eng_try = _extract_engagement(row)
+            score = sum(eng_try.values())
+            if score > best_score:
+                best_score = score
+                best_row = row
+
+        return best_row
+
+    # Combine raw_posts + commented_posts; per-post Zernio calls only when bulk analytics has no row for that id.
+    _seen_for_analytics: set = set()
+    _posts_for_analytics: List[Dict[str, Any]] = []
+    for _p in raw_posts + commented_posts:
+        if not isinstance(_p, dict):
+            continue
+        _ids = _all_ids(_p)
+        _canon = _ids[0] if _ids else None
+        if _canon and _canon not in _seen_for_analytics:
+            _posts_for_analytics.append(_p)
+            _seen_for_analytics.add(_canon)
+
+    def _needs_per_post_fetch(post: Dict[str, Any]) -> bool:
+        """Bulk rows often carry comment counts but omit likes/reach without accountId-scoped insights.
+
+        Also re-fetch when reach is missing specifically: Instagram organic posts and
+        Facebook posts older than ~28 days routinely return likes from the bulk endpoint
+        but no reach, which silently skews engagement-rate calculations toward zero.
+        """
+        eng: Dict[str, int] = {}
+        for pid in _all_ids(post):
+            if pid in engagement_by_id:
+                eng = engagement_by_id[pid]
+                break
+        if not eng:
+            return True
+        insight_sum = (
+            eng.get("likes", 0) + eng.get("shares", 0) + eng.get("reach", 0)
+            + eng.get("clicks", 0) + eng.get("saves", 0)
+        )
+        if insight_sum == 0:
+            return True
+        # Reach is the most commonly-missing metric; if the bulk row had likes but
+        # zero reach, give the per-post endpoint a chance to fill it in.
+        return eng.get("likes", 0) > 0 and eng.get("reach", 0) == 0
+
+    posts_needing_per_post: List[Dict[str, Any]] = [
+        p for p in _posts_for_analytics if _needs_per_post_fetch(p)
+    ][:PER_POST_FALLBACK_CAP]
+
+    per_post_results = await _asyncio.gather(
+        *[_fetch_post_engagement(p) for p in posts_needing_per_post],
+        return_exceptions=True,
+    )
+
     for i, result in enumerate(per_post_results):
         if not isinstance(result, dict):
             continue
-        original_post = _analytics_source[i] if i < len(_analytics_source) else None
+        original_post = posts_needing_per_post[i] if i < len(posts_needing_per_post) else None
         if not original_post:
             continue
-        eng = _extract_engagement(result)
-        # Store under all known IDs of the original post so merging always hits
+        eng_pp = _extract_engagement(result)
         for pid in _all_ids(original_post):
-            engagement_by_id[pid] = eng
-        # Also try IDs from the analytics row itself (some endpoints do echo them)
+            engagement_by_id[pid] = eng_pp
         for pid in _all_ids(result):
-            if pid not in engagement_by_id:
-                engagement_by_id[pid] = eng
+            engagement_by_id.setdefault(pid, eng_pp)
 
     comment_count_by_id: Dict[str, int] = {}
     for row in commented_posts:
@@ -8394,6 +8794,44 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
                 return v.strip()[:300]
         return "(no caption)"
 
+    def _post_media_type(row: Dict[str, Any]) -> str:
+        """Normalise Zernio media-type variants into image/video/carousel/text."""
+        raw_mt = (row.get("mediaType") or row.get("media_type") or row.get("type") or "").strip().lower()
+        if raw_mt in ("image", "photo"):
+            return "image"
+        if raw_mt in ("video", "reel", "reels"):
+            return "video"
+        if raw_mt in ("carousel", "carousel_album", "album"):
+            return "carousel"
+        # Fall back to inspecting media items list
+        items = row.get("mediaItems") or row.get("media") or []
+        if isinstance(items, list) and items:
+            if len(items) > 1:
+                return "carousel"
+            first = items[0] if isinstance(items[0], dict) else {}
+            t = str(first.get("type") or "").lower()
+            if t in ("video", "reel"):
+                return "video"
+            if t in ("image", "photo"):
+                return "image"
+        # Has thumbnail/picture but no other signal → assume image
+        if row.get("thumbnailUrl") or row.get("picture") or row.get("imageUrl"):
+            return "image"
+        return "text"
+
+    def _build_post(row: Dict[str, Any], canonical: str, eng: Dict[str, int]) -> Dict[str, Any]:
+        created = row.get("createdTime") or row.get("created_at") or row.get("createdAt") or row.get("publishedAt") or ""
+        return {
+            "id":        canonical,
+            "platform":  str(row.get("platform") or platform_filter or "unknown").lower(),
+            "text":      _post_text(row),
+            "permalink": row.get("permalink") or row.get("url") or row.get("platformPostUrl") or "",
+            "created_at": created,
+            "media_type": _post_media_type(row),
+            "engagement": eng,
+            "engagement_score": eng.get("likes", 0) + eng.get("comments", 0) * 2 + eng.get("shares", 0) * 3 + eng.get("clicks", 0),
+        }
+
     seen_ids: set = set()
     result_posts: List[Dict[str, Any]] = []
 
@@ -8402,11 +8840,11 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
             continue
         ids = _all_ids(row)
         canonical = ids[0] if ids else None
-        if not canonical or canonical in seen_ids:
+        if not canonical or any(i in seen_ids for i in ids):
             continue
-        seen_ids.add(canonical)
+        for i in ids:
+            seen_ids.add(i)
 
-        # Find best engagement match
         eng: Dict[str, int] = {}
         for pid in ids:
             if pid in engagement_by_id:
@@ -8415,22 +8853,12 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
         if not eng:
             eng = _extract_engagement(row)
 
-        # Prefer comment count from inbox (more accurate)
         for pid in ids:
             if pid in comment_count_by_id:
                 eng["comments"] = max(eng.get("comments", 0), comment_count_by_id[pid])
                 break
 
-        created = row.get("createdTime") or row.get("created_at") or row.get("createdAt") or ""
-        result_posts.append({
-            "id":        canonical,
-            "platform":  str(row.get("platform") or platform_filter or "unknown").lower(),
-            "text":      _post_text(row),
-            "permalink": row.get("permalink") or row.get("url") or "",
-            "created_at": created,
-            "engagement": eng,
-            "engagement_score": eng.get("likes", 0) + eng.get("comments", 0) * 2 + eng.get("shares", 0) * 3 + eng.get("clicks", 0),
-        })
+        result_posts.append(_build_post(row, canonical, eng))
 
     # Also surface commented posts not already in the list
     for row in commented_posts:
@@ -8438,10 +8866,10 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
             continue
         ids = _all_ids(row)
         canonical = ids[0] if ids else None
-        if not canonical or canonical in seen_ids:
+        if not canonical or any(i in seen_ids for i in ids):
             continue
-        seen_ids.add(canonical)
-        # Use analytics-fetched engagement first, fall back to inbox-level data
+        for i in ids:
+            seen_ids.add(i)
         eng: Dict[str, int] = {}
         for pid in ids:
             if pid in engagement_by_id:
@@ -8454,31 +8882,592 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
             *[comment_count_by_id.get(pid, 0) for pid in ids],
         )
         eng["comments"] = cnt
-        created = row.get("createdTime") or row.get("created_at") or row.get("createdAt") or ""
-        result_posts.append({
-            "id":        canonical,
-            "platform":  str(row.get("platform") or platform_filter or "unknown").lower(),
-            "text":      _post_text(row),
-            "permalink": row.get("permalink") or row.get("url") or "",
-            "created_at": created,
-            "engagement": eng,
-            "engagement_score": eng.get("likes", 0) + eng.get("comments", 0) * 2 + eng.get("shares", 0) * 3 + eng.get("clicks", 0),
-        })
+        result_posts.append(_build_post(row, canonical, eng))
+
+    # Posts that appear in bulk analytics but not in /posts or inbox/comments.
+    for row in bulk_rows:
+        if not isinstance(row, dict):
+            continue
+        ids = _all_ids(row)
+        canonical = ids[0] if ids else None
+        if not canonical or any(i in seen_ids for i in ids):
+            continue
+        for i in ids:
+            seen_ids.add(i)
+        eng = {}
+        for pid in ids:
+            if pid in engagement_by_id:
+                eng = dict(engagement_by_id[pid])
+                break
+        if not eng:
+            eng = _extract_engagement(row)
+        cnt = max(
+            eng.get("comments", 0),
+            *[comment_count_by_id.get(pid, 0) for pid in ids],
+        )
+        eng["comments"] = cnt
+        result_posts.append(_build_post(row, canonical, eng))
 
     result_posts.sort(key=lambda x: x["engagement_score"], reverse=True)
 
     totals = {"likes": 0, "comments": 0, "shares": 0, "reach": 0, "clicks": 0, "saves": 0}
+    # Per-metric coverage: how many posts contributed a non-zero value to each total.
+    # The assistant uses this to avoid quoting misleading sums (e.g. "19 reach across
+    # 50 posts" when really only 1 post returned a reach number).
+    metric_coverage = {"likes": 0, "comments": 0, "shares": 0, "reach": 0, "clicks": 0, "saves": 0}
     for p in result_posts:
         for k in totals:
-            totals[k] += p["engagement"].get(k, 0)
+            v = p["engagement"].get(k, 0) or 0
+            totals[k] += v
+            if v > 0:
+                metric_coverage[k] += 1
+
+    total_posts = len(result_posts)
+
+    def _coverage_pct(metric: str) -> float:
+        return round((metric_coverage[metric] / total_posts) * 100, 1) if total_posts else 0.0
+
+    coverage_pct = {k: _coverage_pct(k) for k in metric_coverage}
+    # Flag metrics where fewer than 30% of posts reported a value — these totals are
+    # not representative of the full post set and should be qualified, not quoted bare.
+    low_coverage_metrics = [k for k, pct in coverage_pct.items() if pct < 30.0 and total_posts > 0]
+    metric_notes: List[str] = []
+    if "reach" in low_coverage_metrics:
+        metric_notes.append(
+            f"reach data only available for {metric_coverage['reach']}/{total_posts} posts "
+            f"({coverage_pct['reach']}%) — Instagram organic posts and older Facebook posts often "
+            "do not return reach via the Graph API. Do not quote total reach as a complete number."
+        )
+    if "clicks" in low_coverage_metrics:
+        metric_notes.append(
+            f"clicks data only available for {metric_coverage['clicks']}/{total_posts} posts — "
+            "click-through is typically only tracked for posts with link attachments or boosted posts."
+        )
+    if "shares" in low_coverage_metrics and metric_coverage["shares"] > 0:
+        metric_notes.append(
+            f"shares data only available for {metric_coverage['shares']}/{total_posts} posts."
+        )
+    # Special case: Facebook + Instagram organic share counts are essentially never
+    # available via Zernio. Facebook's Graph API exposes shares as `shares.count` on the
+    # post object, but Zernio's analytics sync only pulls /insights metrics (which omit
+    # shares), so almost every Facebook post returns shares=0 even when the post was
+    # actually shared. Instagram doesn't expose organic share counts at all. Always
+    # warn about this when there are Facebook or Instagram posts with no shares.
+    fb_ig_post_count = sum(
+        1 for p in result_posts if str(p.get("platform") or "").lower() in ("facebook", "instagram")
+    )
+    if fb_ig_post_count > 0 and metric_coverage["shares"] == 0:
+        metric_notes.append(
+            "share counts for Facebook and Instagram posts are NOT reliably reported by the social "
+            "API: Facebook's Graph insights endpoint omits shares (you'd need to query the post's "
+            "shares.count field directly), and Instagram does not expose organic shares at all. "
+            "If a Facebook post shows 0 shares here but you can see it was shared on Facebook, "
+            "trust Facebook — direct the owner to the post's permalink to see the real share count."
+        )
+
+    # ── Upstream sync health (from /analytics overview) ──────────────────────
+    # The upstream response carries `overview.dataStaleness.syncTriggered` and
+    # `overview.lastSync`. We surface them so the AI can explain "we are
+    # actively syncing right now" vs "no sync queued, data is the latest"
+    # without having to guess.
+    sync_health: Dict[str, Any] = {}
+    if isinstance(account_snapshot_data, dict):
+        overview = account_snapshot_data.get("overview") or {}
+        if isinstance(overview, dict):
+            stale = overview.get("dataStaleness") or {}
+            sync_health = {
+                "last_sync_at": overview.get("lastSync"),
+                "sync_triggered": bool(stale.get("syncTriggered")) if isinstance(stale, dict) else None,
+                "stale_account_count": stale.get("staleAccountCount") if isinstance(stale, dict) else None,
+                "has_analytics_access": account_snapshot_data.get("hasAnalyticsAccess"),
+            }
+
+    # ── Account-level snapshot (followers etc.) from /analytics?period=30d ────
+    # This complements per-post engagement with audience-size context the AI can use
+    # to triangulate ("18 reach against 1010 FB followers = 1.8% reach rate").
+    accounts_summary: List[Dict[str, Any]] = []
+    total_followers_by_platform: Dict[str, int] = {}
+
+    # Cross-reference: how many posts did the merged result include per platform?
+    posts_per_platform_count: Dict[str, int] = {}
+    for p in result_posts:
+        pp = str(p.get("platform") or "").lower()
+        if pp:
+            posts_per_platform_count[pp] = posts_per_platform_count.get(pp, 0) + 1
+
+    # Pull external_post_count + lastSyncedAt straight from the /accounts payload
+    # (the sync_state we stored earlier). Lets us derive a meaningful sync_status.
+    accounts_meta_by_id: Dict[str, Dict[str, Any]] = {}
+    if isinstance(accounts_data, dict):
+        for a in (accounts_data.get("accounts") or accounts_data.get("data") or []):
+            if isinstance(a, dict):
+                aid = _get_account_id(a)
+                if aid:
+                    accounts_meta_by_id[aid] = a
+
+    if isinstance(account_snapshot_data, dict):
+        snapshot_accounts = account_snapshot_data.get("accounts") or []
+        if isinstance(snapshot_accounts, list):
+            for acc in snapshot_accounts:
+                if not isinstance(acc, dict):
+                    continue
+                plat = str(acc.get("platform") or "").lower()
+                aid = acc.get("_id") or acc.get("id")
+                followers = _extract_int(
+                    acc.get("followersCount"),
+                    acc.get("followers_count"),
+                    acc.get("followers"),
+                    acc.get("fan_count"),
+                    acc.get("fanCount"),
+                )
+
+                # Pull sync state from the /accounts payload (richer than /analytics)
+                meta = accounts_meta_by_id.get(str(aid) if aid else "", {}) or {}
+                external_post_count = _extract_int(
+                    meta.get("externalPostCount"),
+                    meta.get("external_post_count"),
+                    acc.get("externalPostCount"),
+                )
+                last_synced_at = (
+                    meta.get("lastSyncedAt")
+                    or meta.get("last_synced_at")
+                    or meta.get("analyticsLastSyncedAt")
+                    or acc.get("lastSyncedAt")
+                )
+                merged_post_count = posts_per_platform_count.get(plat, 0)
+
+                # Derive a status the AI can act on without doing the math itself.
+                if merged_post_count > 0:
+                    sync_status = "synced"
+                    sync_message = None
+                elif external_post_count > 0:
+                    # Posts exist on the platform but they haven't arrived in
+                    # /posts/analytics yet — sync is still in progress.
+                    sync_status = "sync_in_progress"
+                    sync_message = (
+                        f"We can see {external_post_count} {plat} posts on this account but "
+                        "they haven't fully synced yet. Try again in 30–60 minutes."
+                    )
+                elif not last_synced_at:
+                    # Fresh connection, sync hasn't run yet at all.
+                    sync_status = "pending_first_sync"
+                    sync_message = (
+                        f"{plat.title()} account connected, but the first post sync hasn't completed yet. "
+                        "Initial sync usually finishes within 30–60 minutes of connecting."
+                    )
+                else:
+                    # Synced but the platform genuinely has no posts published.
+                    sync_status = "no_posts_published"
+                    sync_message = (
+                        f"{plat.title()} account is synced, but no posts have been published from it."
+                    )
+
+                accounts_summary.append({
+                    "account_id": aid,
+                    "platform": plat,
+                    "username": acc.get("username"),
+                    "display_name": acc.get("displayName") or acc.get("name"),
+                    "followers": followers,
+                    "followers_last_updated": acc.get("followersLastUpdated") or acc.get("followers_last_updated"),
+                    "external_post_count": external_post_count,
+                    "last_synced_at": last_synced_at,
+                    "merged_post_count": merged_post_count,
+                    "sync_status": sync_status,
+                    "sync_message": sync_message,
+                })
+                if plat:
+                    total_followers_by_platform[plat] = total_followers_by_platform.get(plat, 0) + followers
+
+    # Surface a top-level diagnostics block so the AI doesn't have to scan the
+    # accounts_summary list to figure out which platforms are healthy.
+    platform_diagnostics: Dict[str, Dict[str, Any]] = {}
+    for acc in accounts_summary:
+        plat = acc.get("platform")
+        if not plat:
+            continue
+        entry = platform_diagnostics.setdefault(plat, {
+            "accounts_connected": 0,
+            "total_posts_in_response": 0,
+            "total_external_post_count": 0,
+            "sync_statuses": [],
+            "messages": [],
+        })
+        entry["accounts_connected"] += 1
+        entry["total_posts_in_response"] += acc.get("merged_post_count") or 0
+        entry["total_external_post_count"] += acc.get("external_post_count") or 0
+        entry["sync_statuses"].append(acc.get("sync_status"))
+        if acc.get("sync_message"):
+            entry["messages"].append(acc["sync_message"])
+
+    # ── Persist + read follower history for growth tracking ──────────────────
+    # We snapshot once per UTC day per account, so calling this tool repeatedly
+    # in a single day is cheap. After ≥2 days of data, the assistant can quote
+    # "+X followers since last week" — without that history the answer is just
+    # "we don't have a comparison point yet, ask again tomorrow".
+    follower_growth_by_platform = await _record_and_read_follower_history(
+        ctx, accounts_summary
+    )
+
+    # ── Derived insights ──────────────────────────────────────────────────────
+    # Everything below is computed locally from data we already have, so the
+    # assistant gets concrete strategy signals without needing data Zernio
+    # doesn't expose (audience demographics, etc.). Each block carries a
+    # `sample_size` so the LLM can decide whether the signal is trustworthy.
+    derived_insights = _compute_derived_insights(result_posts, total_followers_by_platform)
 
     return {
-        "source": "zernio_live",
-        "note": "This data is fetched live from Zernio and includes ALL posts from connected accounts, not just CRM-scheduled ones.",
-        "total_posts": len(result_posts),
+        "source": "social_live",
+        "note": (
+            "Paginated bulk analytics per connected Page (accountId), same as Social Inbox; "
+            "per-post analytics fills missing likes/reach when bulk only had comment counts. "
+            "`accounts_summary` carries audience-size context (followers per Page) so totals can be "
+            "interpreted against the actual audience reached. `derived_insights` carries computed "
+            "strategy signals (engagement rate, best publish hour/day, media-type performance, "
+            "posting cadence, top posts) — the assistant should prefer these over re-deriving them."
+        ),
+        "total_posts": total_posts,
         "totals": totals,
+        # ↓ The assistant should ALWAYS check `metric_coverage` before quoting a total.
+        "metric_coverage": metric_coverage,
+        "metric_coverage_pct": coverage_pct,
+        "low_coverage_metrics": low_coverage_metrics,
+        "metric_notes": metric_notes,
+        "accounts_summary": accounts_summary,
+        "platform_diagnostics": platform_diagnostics,
+        "sync_health": sync_health,
+        "total_followers_by_platform": total_followers_by_platform,
+        "follower_growth_by_platform": follower_growth_by_platform,
+        "derived_insights": derived_insights,
         "posts": result_posts[:limit],
+        "bulk_analytics_rows_loaded": len(bulk_rows),
+        "profile_auto_repaired": profile_healed,
+        "diagnostics": {
+            "connected_accounts": len(fallback_account_ids),
+            "posts_from_posts_endpoint": len(raw_posts),
+            "posts_from_inbox_comments": len(commented_posts),
+            "analytics_rows_merged": len(bulk_rows),
+            "posts_after_merge": total_posts,
+        },
     }
+
+
+# ── Derived-insights helper (used by get_live_social_posts) ──────────────────
+def _compute_derived_insights(
+    posts: List[Dict[str, Any]],
+    followers_by_platform: Dict[str, int],
+) -> Dict[str, Any]:
+    """Compute strategy signals from the owner's own post history.
+
+    All numbers come from data we already have on hand. Each section carries a
+    `sample_size` (or `posts_considered`) so the assistant can refuse to make
+    sweeping claims off a tiny sample.
+    """
+    DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    MIN_SAMPLE_FOR_PATTERN = 5  # need at least this many posts before we trust a "best hour" claim
+
+    def _parse_dt(s: Any) -> Optional[datetime]:
+        if not s or not isinstance(s, str):
+            return None
+        try:
+            # Zernio returns ISO 8601 with trailing Z
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+
+    # Group posts by platform
+    by_platform: Dict[str, List[Dict[str, Any]]] = {}
+    for p in posts:
+        plat = (p.get("platform") or "unknown").lower()
+        by_platform.setdefault(plat, []).append(p)
+
+    # 1) Engagement rate per platform = (likes + comments + shares) / followers × 100.
+    #    This is the most-cited cross-platform health metric and only requires
+    #    follower counts (which we now pull via /analytics?period=30d).
+    engagement_rate_by_platform: Dict[str, Dict[str, Any]] = {}
+    for plat, plist in by_platform.items():
+        followers = followers_by_platform.get(plat, 0) or 0
+        if followers <= 0:
+            continue
+        # Per-post rates so we can also report a representative average rather
+        # than just total-engagement / followers (which conflates frequency).
+        per_post_rates: List[float] = []
+        for p in plist:
+            eng = p.get("engagement", {}) or {}
+            interactions = (eng.get("likes", 0) or 0) + (eng.get("comments", 0) or 0) + (eng.get("shares", 0) or 0)
+            per_post_rates.append((interactions / followers) * 100)
+        if not per_post_rates:
+            continue
+        engagement_rate_by_platform[plat] = {
+            "avg_engagement_rate_pct": round(sum(per_post_rates) / len(per_post_rates), 3),
+            "best_post_engagement_rate_pct": round(max(per_post_rates), 3),
+            "followers": followers,
+            "sample_size": len(per_post_rates),
+            "formula": "(likes + comments + shares) / followers × 100, averaged across posts",
+        }
+
+    # 2) Best publish hour per platform — group posts into hour-of-day buckets
+    #    and pick the one with the highest mean engagement_score.
+    def _best_bucket(plist: List[Dict[str, Any]], key_fn) -> Optional[Dict[str, Any]]:
+        buckets: Dict[Any, List[float]] = {}
+        for p in plist:
+            dt = _parse_dt(p.get("created_at"))
+            if dt is None:
+                continue
+            k = key_fn(dt)
+            buckets.setdefault(k, []).append(float(p.get("engagement_score", 0) or 0))
+        if not buckets:
+            return None
+        ranked = sorted(
+            ((k, sum(v) / len(v), len(v)) for k, v in buckets.items()),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        best_k, best_avg, best_n = ranked[0]
+        return {
+            "bucket": best_k,
+            "avg_engagement_score": round(best_avg, 2),
+            "posts_in_bucket": best_n,
+            "all_buckets": [
+                {"bucket": k, "avg_engagement_score": round(avg, 2), "posts": n}
+                for k, avg, n in ranked
+            ],
+        }
+
+    best_publish_hour_by_platform: Dict[str, Dict[str, Any]] = {}
+    best_publish_day_by_platform: Dict[str, Dict[str, Any]] = {}
+    for plat, plist in by_platform.items():
+        if len(plist) < MIN_SAMPLE_FOR_PATTERN:
+            continue
+        hour = _best_bucket(plist, lambda d: d.hour)
+        if hour:
+            best_publish_hour_by_platform[plat] = {
+                "hour_utc": hour["bucket"],
+                "avg_engagement_score": hour["avg_engagement_score"],
+                "posts_in_bucket": hour["posts_in_bucket"],
+                "sample_size": len(plist),
+                "note": "Hour is in UTC. Times derived from the owner's own posts on this platform.",
+            }
+        day = _best_bucket(plist, lambda d: d.weekday())
+        if day:
+            best_publish_day_by_platform[plat] = {
+                "day_of_week": DAY_NAMES[day["bucket"]] if 0 <= day["bucket"] < 7 else str(day["bucket"]),
+                "avg_engagement_score": day["avg_engagement_score"],
+                "posts_in_bucket": day["posts_in_bucket"],
+                "sample_size": len(plist),
+            }
+
+    # 3) Media-type performance — image vs video vs carousel vs text.
+    media_type_performance: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for plat, plist in by_platform.items():
+        type_groups: Dict[str, List[float]] = {}
+        for p in plist:
+            mt = p.get("media_type") or "unknown"
+            type_groups.setdefault(mt, []).append(float(p.get("engagement_score", 0) or 0))
+        if not type_groups:
+            continue
+        media_type_performance[plat] = {
+            mt: {
+                "avg_engagement_score": round(sum(scores) / len(scores), 2),
+                "post_count": len(scores),
+            }
+            for mt, scores in type_groups.items()
+        }
+
+    # 4) Posting cadence — posts/week, longest gap, days since last post.
+    posting_cadence: Dict[str, Dict[str, Any]] = {}
+    now = datetime.utcnow().replace(tzinfo=None)
+    for plat, plist in by_platform.items():
+        dts = sorted(
+            [d for d in (_parse_dt(p.get("created_at")) for p in plist) if d is not None]
+        )
+        if not dts:
+            continue
+        # Strip tz to keep arithmetic simple (treat all as UTC)
+        dts = [d.replace(tzinfo=None) for d in dts]
+        gaps = [(dts[i + 1] - dts[i]).total_seconds() / 86400 for i in range(len(dts) - 1)]
+        span_days = (dts[-1] - dts[0]).total_seconds() / 86400 if len(dts) > 1 else 0
+        days_since_last = (now - dts[-1]).total_seconds() / 86400
+        posting_cadence[plat] = {
+            "posts_per_week": round((len(dts) / span_days) * 7, 2) if span_days > 0 else None,
+            "longest_gap_days": round(max(gaps), 1) if gaps else None,
+            "avg_gap_days": round(sum(gaps) / len(gaps), 1) if gaps else None,
+            "days_since_last_post": round(days_since_last, 1),
+            "first_post_at": dts[0].isoformat(),
+            "last_post_at": dts[-1].isoformat(),
+            "post_count": len(dts),
+        }
+
+    # 5) Top 3 posts overall (already sorted by engagement_score upstream).
+    top_3_posts = [
+        {
+            "id": p["id"],
+            "platform": p["platform"],
+            "permalink": p.get("permalink"),
+            "media_type": p.get("media_type"),
+            "engagement": p.get("engagement"),
+            "engagement_score": p.get("engagement_score"),
+            "text_preview": (p.get("text") or "")[:140],
+        }
+        for p in posts[:3]
+    ]
+
+    # 6) Heuristic recommended actions — turn the above into 1–3 plain-English nudges.
+    recommended_actions: List[str] = []
+    for plat, cad in posting_cadence.items():
+        if cad.get("days_since_last_post") and cad["days_since_last_post"] > 7:
+            recommended_actions.append(
+                f"You haven't posted on {plat} in {cad['days_since_last_post']:.0f} days — "
+                "your posting cadence has dropped, consider scheduling something this week."
+            )
+    for plat, perf in media_type_performance.items():
+        if len(perf) < 2:
+            continue
+        ranked = sorted(perf.items(), key=lambda x: x[1]["avg_engagement_score"], reverse=True)
+        top_type, top_data = ranked[0]
+        bottom_type, bottom_data = ranked[-1]
+        if top_data["post_count"] >= 2 and top_data["avg_engagement_score"] > bottom_data["avg_engagement_score"] * 1.5:
+            recommended_actions.append(
+                f"On {plat}, your {top_type} posts average "
+                f"{top_data['avg_engagement_score']:.0f} engagement vs {bottom_data['avg_engagement_score']:.0f} "
+                f"for {bottom_type} — lean into more {top_type} content."
+            )
+    for plat, hr in best_publish_hour_by_platform.items():
+        recommended_actions.append(
+            f"On {plat}, posts published around {hr['hour_utc']:02d}:00 UTC perform best "
+            f"(avg engagement {hr['avg_engagement_score']:.0f} across {hr['posts_in_bucket']} posts)."
+        )
+
+    return {
+        "engagement_rate_by_platform": engagement_rate_by_platform,
+        "best_publish_hour_by_platform": best_publish_hour_by_platform,
+        "best_publish_day_by_platform": best_publish_day_by_platform,
+        "media_type_performance": media_type_performance,
+        "posting_cadence": posting_cadence,
+        "top_3_posts": top_3_posts,
+        "recommended_actions": recommended_actions[:5],
+        "methodology_note": (
+            "All signals derived locally from the owner's own posts. "
+            f"Patterns require ≥{MIN_SAMPLE_FOR_PATTERN} posts on a platform to be reported. "
+            "Hours are UTC. Audience demographic data (age, gender, geography) is not available "
+            "from the current API and is intentionally excluded."
+        ),
+    }
+
+
+async def _record_and_read_follower_history(
+    ctx: ToolContext,
+    accounts_summary: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Snapshot today's follower counts (idempotent per UTC day) and read history.
+
+    Stores rows in `social_follower_snapshots` with a unique key on
+    (business_id, account_id, date) so calling the parent tool repeatedly in
+    a single day overwrites the same row instead of bloating the collection.
+
+    Returns a per-platform growth payload the assistant can quote directly:
+        {
+          "facebook": {
+            "current": 1010,
+            "delta_7d": 12,
+            "delta_30d": 47,
+            "history_start": "2026-04-15T00:00:00Z",
+            "history_points": 17
+          },
+          ...
+        }
+    """
+    if not accounts_summary:
+        return {}
+
+    coll = ctx.db.social_follower_snapshots
+    today_utc = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    now_utc = datetime.utcnow()
+
+    # ── Persist today's snapshot per account (upsert keyed on the UTC date) ──
+    for acc in accounts_summary:
+        if not acc.get("account_id") or not acc.get("followers"):
+            continue
+        try:
+            await coll.update_one(
+                {
+                    "business_id": ctx.business_id,
+                    "account_id": str(acc["account_id"]),
+                    "date": today_utc,
+                },
+                {
+                    "$set": {
+                        "business_id": ctx.business_id,
+                        "account_id": str(acc["account_id"]),
+                        "platform": acc.get("platform"),
+                        "username": acc.get("username"),
+                        "followers": int(acc["followers"]),
+                        "date": today_utc,
+                        "updated_at": now_utc,
+                    },
+                    "$setOnInsert": {"created_at": now_utc},
+                },
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.warning("follower-snapshot upsert failed for account %s: %s", acc.get("account_id"), exc)
+
+    # ── Read back history for each platform we just snapshotted ──────────────
+    platforms_today: Set[str] = {
+        str(a.get("platform")) for a in accounts_summary if a.get("platform")
+    }
+    growth: Dict[str, Any] = {}
+
+    for plat in platforms_today:
+        try:
+            cursor = coll.find(
+                {"business_id": ctx.business_id, "platform": plat},
+                {"date": 1, "followers": 1, "account_id": 1, "_id": 0},
+            ).sort("date", 1)
+            rows = await cursor.to_list(length=400)
+        except Exception as exc:
+            logger.warning("follower-snapshot read failed for platform %s: %s", plat, exc)
+            continue
+
+        if not rows:
+            continue
+
+        # Sum across accounts within the same UTC day (a business can have multiple
+        # Pages on the same platform).
+        by_date: Dict[datetime, int] = {}
+        for r in rows:
+            d = r.get("date")
+            if not isinstance(d, datetime):
+                continue
+            by_date[d] = by_date.get(d, 0) + int(r.get("followers") or 0)
+
+        if not by_date:
+            continue
+
+        sorted_dates = sorted(by_date.keys())
+        latest = sorted_dates[-1]
+        current = by_date[latest]
+
+        def _delta_for(days: int) -> Optional[int]:
+            cutoff = latest - timedelta(days=days)
+            past = [by_date[d] for d in sorted_dates if d <= cutoff]
+            if not past:
+                return None
+            return current - past[-1]
+
+        growth[plat] = {
+            "current": current,
+            "delta_7d": _delta_for(7),
+            "delta_30d": _delta_for(30),
+            "history_start": sorted_dates[0].isoformat() + "Z",
+            "history_points": len(sorted_dates),
+            "note": (
+                "Tracking starts the first time this tool runs. Deltas require enough "
+                "history to span the requested window — `null` means we don't yet have a "
+                "data point that far back."
+            ),
+        }
+
+    return growth
 
 
 @tool(
@@ -8594,7 +9583,7 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
     # ── 4. Social engagement summary ─────────────────────────────────────────────
     # Reuse existing tools for consistency
     from . import get_live_social_posts, get_social_post_analytics
-    social_live = await get_live_social_posts(ctx, {"platform": None, "limit": 10})
+    social_live = await get_live_social_posts(ctx, {"platform": None, "limit": 50})
     social_analytics = await get_social_post_analytics(ctx, {"days": days})
 
     # ── 5. Business quick stats ───────────────────────────────────────────────────
@@ -8616,7 +9605,7 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
         "followups": followups,
         "broadcasts": broadcasts,
         "top_products": top_products,
-        "social_live": social_live.get("posts", [])[:5],
+        "social_live": social_live.get("posts", [])[:25],
         "social_analytics": social_analytics,
         "quick_stats": quick_stats,
         "window_days": days,

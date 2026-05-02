@@ -16,7 +16,7 @@ export default function GoogleBusinessPage() {
         <p className="mt-1 text-sm text-slate-600">
           Manage how you show up on Google Search and Maps — reviews, posts, and messages in one flow. Connect your
           profile through{" "}
-          <strong className="text-slate-800">Integrations → Social Channels</strong> (Zernio supports Google Business
+          <strong className="text-slate-800">Integrations → Social Channels</strong> (Google Business is supported
           alongside Meta and other networks).
         </p>
       </div>
@@ -58,7 +58,7 @@ export default function GoogleBusinessPage() {
         <div>
           <p className="text-sm font-semibold text-slate-900">Connect Google Business</p>
           <p className="mt-1 text-xs text-slate-600">
-            Open Social Channels and authorize Google Business with your Zernio workspace.
+            Open Social Channels and authorize Google Business to start receiving reviews and messages.
           </p>
         </div>
         <Link

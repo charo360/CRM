@@ -247,7 +247,7 @@ interface Props {
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Props) {
+export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Props) {
   const [accounts, setAccounts] = useState<ZernioAccount[]>([]);
   const [apiConnected, setApiConnected] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
@@ -299,7 +299,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = false }: Pr
     return (
       <section className="rounded-xl border border-slate-200 bg-white p-6 flex items-center justify-center gap-3 text-slate-500">
         <Loader2 size={16} className="animate-spin" />
-        <span className="text-sm">Loading Zernio social accounts…</span>
+        <span className="text-sm">Loading social accounts…</span>
       </section>
     );
   }
