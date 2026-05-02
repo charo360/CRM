@@ -122,7 +122,7 @@ async def edit_product_image(
     headers = {
         "Authorization": f"Bearer {OPENROUTER_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": os.getenv("FRONTEND_URL", "https://charo360.com"),
+        "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",
     }
 
@@ -234,7 +234,7 @@ async def generate_creative_image(
     headers = {
         "Authorization": f"Bearer {OPENROUTER_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": os.getenv("FRONTEND_URL", "https://charo360.com"),
+        "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",
     }
 
@@ -353,7 +353,7 @@ async def recreate_design_from_reference(
     headers = {
         "Authorization": f"Bearer {OPENROUTER_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": os.getenv("FRONTEND_URL", "https://charo360.com"),
+        "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",
     }
 

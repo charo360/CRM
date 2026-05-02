@@ -11947,6 +11947,20 @@ async def disconnect_meta(channel: str, user=Depends(get_current_user)):
     return {"status": "disconnected", "channel": channel}
 
 
+@api_router.get("/social/audience-insights")
+async def get_social_audience_insights(
+    refresh: bool = False,
+    user=Depends(get_current_user),
+):
+    """Return audience demographics (age, gender, location) for connected social pages."""
+    from audience_insights_service import get_audience_insights_for_user
+    user_id = user.get("business_id", user["_id"])
+    if refresh:
+        await db.audience_insights_cache.delete_one({"user_id": user_id})
+    data = await get_audience_insights_for_user(db, user_id)
+    return {"insights": data, "has_data": bool(data)}
+
+
 def _operator_provision_secret() -> str:
     """Single secret for operator-only provisioning (Bird, Telegram bot, etc.)."""
     return (os.environ.get("OPERATOR_PROVISION_SECRET") or os.environ.get("BIRD_PROVISION_SECRET") or "").strip()

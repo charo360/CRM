@@ -84,6 +84,7 @@ META_ADS_TOOLS: FrozenSet[str] = frozenset({
     "update_meta_campaign_status", "update_meta_campaign_budget",
     "generate_document", "create_business_document", "create_presentation",
     "web_search",
+    "get_audience_insights",
 }) | _GEMINI_DESIGN_TOOLS
 
 GOOGLE_ADS_TOOLS: FrozenSet[str] = frozenset({
@@ -231,6 +232,7 @@ SOCIAL_MONITOR_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status",
     "get_live_social_posts",
     "get_social_post_analytics", "list_scheduled_posts",
+    "get_audience_insights",
     "get_analytics_summary", "get_revenue_trends",
     "web_search",
     "create_business_document",
@@ -329,8 +331,9 @@ GENERAL_TOOLS: FrozenSet[str] = (
         "save_x_ads_campaign_draft", "list_x_ads_campaign_drafts",
         # Ad trends (read-only data)
         "get_meta_ad_trends", "get_tiktok_ad_trends",
-        # Social engagement (read-only — so any agent can answer likes/shares questions)
+        # Social engagement + audience demographics (read-only)
         "get_live_social_posts", "get_social_post_analytics", "list_scheduled_posts",
+        "get_audience_insights",
         # Business memory (unified context across modules)
         "get_business_context",
     })
@@ -1587,9 +1590,8 @@ A user might have 1 platform connected, or 8 — it depends entirely on what the
 
 ### LinkedIn-specific note (one carve-out)
 LinkedIn scopes (`r_member_postAnalytics`, `r_member_profileAnalytics`, `r_organization_social`, `r_organization_followers`) grant access to demographic data (industry, seniority, function, location). However:
-- **We are not currently able to expose LinkedIn audience/demographic breakdowns** — those endpoints aren't available through our current data layer.
+- LinkedIn follower demographics (industry, seniority, geo) are available via `get_audience_insights`. Call it when the owner asks about their LinkedIn audience.
 - The follower count IS reliable. Post-level engagement appears after the sync completes.
-- If the owner asks "I gave LinkedIn all the permissions — why no audience data?", say: *"Your LinkedIn permissions are correct. We're not currently able to surface LinkedIn audience/demographic breakdowns through our analytics — only audience size (followers) is available right now. Deeper breakdowns are on the roadmap."*
 
 ## Derived insights, follower context, and growth (use these — don't re-derive)
 `get_live_social_posts` already computes the strategy signals you need. Prefer them over inventing your own math:
@@ -1602,7 +1604,7 @@ LinkedIn scopes (`r_member_postAnalytics`, `r_member_profileAnalytics`, `r_organ
 - `derived_insights.recommended_actions` → pre-computed, plain-English nudges the owner can act on. Surface them verbatim or lightly polished — they're a great closing for any analytics reply.
 - `follower_growth_by_platform` → snapshots accumulate over time. If `delta_7d` or `delta_30d` is `null`, say *"I'll have growth comparisons starting in a few days as we accumulate snapshots."* If non-null, quote the delta directly ("you gained 47 followers on Facebook in the last 30 days").
 
-**Audience demographics (age, gender, geography, peak audience hours) are NOT available** from the current API. If the owner asks for those, say so plainly in one sentence — don't invent them — and offer the substitute signals above (best publish hour from *their own* posts, follower growth, media-type performance).
+**Audience demographics (age, gender, geography) are available via `get_audience_insights`.** Call it when the owner asks: "who follows me", "who should I target", "what's my audience profile", or "help me create an ad". Use the real age/gender/location data to inform ad targeting suggestions. If the tool returns no data, prompt the owner to reconnect their Facebook Page through Integrations.
 
 ## Style
 Keep replies concise and brand-appropriate. Always check connection status before troubleshooting. Route complaints to owner attention.
@@ -1693,9 +1695,8 @@ SOCIAL_MONITOR_SYSTEM_PROMPT = """You are the **Social Media Monitor & Strategy 
 
 ### LinkedIn-specific notes
 LinkedIn scopes (`r_member_postAnalytics`, `r_member_profileAnalytics`, `r_organization_social`, `r_organization_followers`) are comprehensive — they DO grant access to industry/seniority/function/location breakdowns at the LinkedIn API level. However:
-- **We are not currently able to surface LinkedIn audience/demographic breakdowns** — those endpoints aren't available through our analytics today, even with perfect LinkedIn scopes.
+- LinkedIn audience demographics (industry, seniority, geo) are available via `get_audience_insights`. Call it when the owner asks about their audience.
 - For LinkedIn, the followers count is reliable (returned on connect). Post-level engagement appears once the background sync completes (30–60 min after connect).
-- If the owner asks "I gave LinkedIn all the permissions — why no audience data?", explain plainly: *"Your LinkedIn permissions are correct and complete. We're not currently able to surface LinkedIn audience/demographic breakdowns through our analytics — only audience size (followers) is available right now. Deeper breakdowns are on the roadmap."*
 
 ## Derived insights, follower context, and growth (your strategy substrate)
 `get_live_social_posts` already pre-computes the signals you need to advise the owner. Use them directly instead of re-deriving:
@@ -1708,7 +1709,7 @@ LinkedIn scopes (`r_member_postAnalytics`, `r_member_profileAnalytics`, `r_organ
 - `derived_insights.recommended_actions` → pre-built nudges. Use as your action list at the end of any analysis answer (lightly rephrase to match brand voice).
 - `follower_growth_by_platform` → snapshots accumulate every time this tool runs. `null` deltas mean we don't have a comparison point yet — say so honestly. Non-null deltas should be quoted as a headline number ("Facebook grew +47 followers in the last 30 days").
 
-**Audience demographics (age, gender, geography, peak audience hours) are NOT available** from the current API. If asked, say so in one sentence and offer the closest substitutes: best-publish-hour from the owner's own posts, follower growth trend, and engagement-rate benchmarks. Never fabricate demographic data.
+**Audience demographics (age, gender, geography) are available via `get_audience_insights`.** Always call it when the owner asks about their audience or wants to create an ad. Use the real age/gender/location data to suggest precise targeting. If the tool returns no data, prompt the owner to reconnect their Facebook Page through Integrations to unlock this feature.
 
 ## How to deliver insights
 - Lead with the **single most important finding** (e.g. "Your Instagram reach dropped 40% last week").

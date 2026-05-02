@@ -8369,6 +8369,50 @@ async def get_social_post_analytics(ctx: ToolContext, args: Dict[str, Any]):
         },
     },
 )
+@tool(
+    name="get_audience_insights",
+    description=(
+        "Fetch real audience demographics for connected social pages — age ranges, gender split, "
+        "top countries, and top cities. Use this when the user asks: who follows me, who engages "
+        "with my content, who should I target for ads, what's my audience profile. "
+        "Returns structured data per platform (facebook, linkedin)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "refresh": {
+                "type": "boolean",
+                "description": "Pass true to bypass the 24-hour cache and fetch fresh data.",
+                "default": False,
+            },
+        },
+    },
+)
+async def get_audience_insights(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx as _httpx
+    base_url = _os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+    refresh = bool(args.get("refresh", False))
+    try:
+        async with _httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{base_url}/api/social/audience-insights",
+                params={"refresh": "true" if refresh else "false"},
+                headers={"Authorization": f"Bearer {ctx.token}"},
+            )
+        if resp.status_code != 200:
+            return {"error": f"Could not fetch audience insights ({resp.status_code})"}
+        data = resp.json()
+        insights = data.get("insights") or {}
+        if not insights:
+            return {
+                "has_data": False,
+                "message": "No audience demographics available yet. Reconnect your Facebook Page through Integrations to enable this feature.",
+            }
+        return {"has_data": True, "insights": insights}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
     import httpx as _httpx
 

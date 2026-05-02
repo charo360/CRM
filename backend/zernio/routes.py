@@ -153,6 +153,63 @@ class FacebookHeadlessCompleteBody(BaseModel):
     redirect_url: Optional[str] = None
 
 
+META_APP_ID     = os.getenv("META_APP_ID", "")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+GRAPH_BASE      = "https://graph.facebook.com/v19.0"
+
+
+async def _capture_facebook_page_token(db, user_id: str, page_id: str, user_access_token: str) -> None:
+    """Exchange the short-lived user token for a long-lived page token and persist it."""
+    if not META_APP_ID or not META_APP_SECRET or not user_access_token:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Exchange short-lived → long-lived user token
+            ll_resp = await client.get(
+                f"{GRAPH_BASE}/oauth/access_token",
+                params={
+                    "grant_type": "fb_exchange_token",
+                    "client_id": META_APP_ID,
+                    "client_secret": META_APP_SECRET,
+                    "fb_exchange_token": user_access_token,
+                },
+            )
+            ll_data = ll_resp.json() if ll_resp.status_code == 200 else {}
+            ll_token = ll_data.get("access_token") or user_access_token
+
+            # Get page access token using the long-lived user token
+            page_resp = await client.get(
+                f"{GRAPH_BASE}/{page_id}",
+                params={"fields": "access_token,instagram_business_account", "access_token": ll_token},
+            )
+            if page_resp.status_code != 200:
+                logger.warning(f"[zernio] Could not fetch page token for {page_id}: {page_resp.text[:200]}")
+                return
+            page_data = page_resp.json()
+            page_token = page_data.get("access_token")
+            ig_id = (page_data.get("instagram_business_account") or {}).get("id", "")
+            if not page_token:
+                return
+
+        from datetime import datetime
+        now = datetime.utcnow()
+        await db.meta_connections.update_one(
+            {"user_id": user_id, "channel": "messenger"},
+            {"$set": {
+                "user_id": user_id,
+                "page_id": page_id,
+                "instagram_id": ig_id or page_id,
+                "page_access_token": page_token,
+                "channel": "messenger",
+                "updated_at": now,
+            }, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+        logger.info(f"[zernio] Captured page token for user {user_id} page {page_id}")
+    except Exception as exc:
+        logger.warning(f"[zernio] _capture_facebook_page_token failed: {exc}")
+
+
 def make_zernio_router(db, user_dep):
     router = APIRouter(prefix="/zernio", tags=["zernio"])
 
@@ -408,6 +465,19 @@ def make_zernio_router(db, user_dep):
                 extra_headers={"X-Connect-Token": payload.connect_token},
             )
             account = data.get("account") or {}
+
+            # Capture page access token for direct Graph API calls (audience insights, etc.)
+            # Run in background — don't block the connect response if this fails.
+            import asyncio as _asyncio
+            _asyncio.ensure_future(
+                _capture_facebook_page_token(
+                    db=db,
+                    user_id=user.get("business_id", user["_id"]),
+                    page_id=payload.page_id,
+                    user_access_token=payload.temp_token,
+                )
+            )
+
             return {
                 "connected": True,
                 "account": account,
