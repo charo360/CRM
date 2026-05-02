@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   assistantApi,
+  teamApi,
   customersApi,
   messagesApi,
   type AssistantConversation,
@@ -12,6 +13,7 @@ import {
   type AssistantStep,
   type AssistantChatResponse,
   type Customer,
+  type TeamMember,
 } from "@/lib/api";
 import {
   Loader2,
@@ -30,6 +32,7 @@ import {
   CheckCheck,
   Bot,
   PencilLine,
+  UserPlus,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { getBusinessId, getUser } from "@/lib/auth";
@@ -301,6 +304,11 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     null | { tool: string; arguments: Record<string, unknown>; reason: string }
   >(null);
   const [convId, setConvId] = useState<string | null>(conversationId ?? null);
+  const [convVisibility, setConvVisibility] = useState<"team" | "private">("team");
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareMembers, setShareMembers] = useState<TeamMember[]>([]);
+  const [sharePick, setSharePick] = useState<string[]>([]);
+  const [shareBusy, setShareBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [documents, setDocuments] = useState<AssistantDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -381,6 +389,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       const conv: AssistantConversation = await assistantApi.getConversation(id);
       const msgs = conv.messages || [];
       setMessages(msgs);
+      setConvVisibility(conv.visibility === "private" ? "private" : "team");
       // Model choice persists via localStorage; do not override with conv.model when switching threads.
       // Restore active agent from the last assistant message
       const lastAsst = [...msgs].reverse().find((m) => m.role === "assistant" && m.agent);
@@ -399,6 +408,34 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       setLoadingConv(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!shareOpen) return;
+    const u = getUser();
+    const myId = u?._id as string | undefined;
+    teamApi
+      .list()
+      .then((list) => {
+        const withLogin = (list || []).filter((m) => m.user_id && m.user_id !== myId);
+        setShareMembers(withLogin);
+      })
+      .catch(() => setShareMembers([]));
+  }, [shareOpen]);
+
+  async function submitShare() {
+    if (!convId || !sharePick.length) return;
+    setShareBusy(true);
+    try {
+      await assistantApi.shareConversation(convId, sharePick);
+      setConvVisibility("private");
+      setShareOpen(false);
+      setSharePick([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Share failed");
+    } finally {
+      setShareBusy(false);
+    }
+  }
 
   async function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -595,6 +632,28 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <Bot size={10} />
             {activeAgentLabel}
           </span>
+          {convId ? (
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                convVisibility === "private"
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-slate-100 text-slate-600"
+              }`}
+              title={convVisibility === "private" ? "Only invited teammates see this thread" : "Visible to everyone on your business account"}
+            >
+              {convVisibility === "private" ? "Private" : "Team"}
+            </span>
+          ) : null}
+          {convId ? (
+            <button
+              type="button"
+              onClick={() => setShareOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              title="Invite teammates to this chat"
+            >
+              <UserPlus size={11} /> Share
+            </button>
+          ) : null}
           {!compact && (
             <Link
               href="/dashboard/assistant/audit"
@@ -623,6 +682,66 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           </select>
         </div>
       </div>
+
+      {shareOpen ? (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Share chat"
+        >
+          <div className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+            <h3 className="text-sm font-semibold text-slate-900">Share this Zilo chat</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Selected teammates can open this thread. The chat becomes private to you and invited people.
+            </p>
+            <div className="mt-4 max-h-48 space-y-2 overflow-y-auto">
+              {shareMembers.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  No teammates with a web login yet. Add people under Team, then share again.
+                </p>
+              ) : (
+                shareMembers.map((m) => (
+                  <label key={m.id} className="flex cursor-pointer items-center gap-2 text-sm text-slate-800">
+                    <input
+                      type="checkbox"
+                      className="rounded border-slate-300"
+                      checked={sharePick.includes(m.user_id!)}
+                      onChange={(e) => {
+                        const id = m.user_id!;
+                        if (e.target.checked) setSharePick((p) => [...p, id]);
+                        else setSharePick((p) => p.filter((x) => x !== id));
+                      }}
+                    />
+                    <span>{m.name}</span>
+                    <span className="text-xs text-slate-400">({m.role})</span>
+                  </label>
+                ))
+              )}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                onClick={() => {
+                  setShareOpen(false);
+                  setSharePick([]);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={shareBusy || !sharePick.length}
+                className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-dark disabled:opacity-40"
+                onClick={() => void submitShare()}
+              >
+                {shareBusy ? "Sharing…" : "Share"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Messages — centered ChatGPT/Claude column */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">

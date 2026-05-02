@@ -7677,6 +7677,28 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
 
 # ============ EVOLUTION API WEBHOOK ============
 
+async def _apply_inbound_routing_bg(
+    business_user_id: str,
+    customer_id: str,
+    text: str,
+    subject: Optional[str],
+    channel: str,
+) -> None:
+    try:
+        from collaboration.routing import apply_inbound_routing
+
+        await apply_inbound_routing(
+            db,
+            business_user_id=business_user_id,
+            customer_id=customer_id,
+            text=text or "",
+            subject=subject,
+            channel=channel,
+        )
+    except Exception as _routing_exc:
+        logging.debug("[inbound_routing] %s", _routing_exc)
+
+
 # Webhook secret for verifying Evolution API callbacks
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', os.environ.get('EVOLUTION_API_KEY', ''))
 _webhook_log_throttle: dict = {}  # throttle noisy connection.update log lines
@@ -8126,6 +8148,17 @@ async def evolution_webhook(request: Request):
                         except Exception as e:
                             logging.debug(f"Real-time analysis failed for {cid}: {e}")
                     asyncio.create_task(_realtime_analyze(user["_id"], customer_id))
+
+                if not from_me and customer_id and body:
+                    asyncio.create_task(
+                        _apply_inbound_routing_bg(
+                            user["_id"],
+                            customer_id,
+                            body,
+                            None,
+                            "whatsapp",
+                        )
+                    )
 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
@@ -12328,6 +12361,14 @@ try:
 except Exception as _e:
     logging.error(f"[zernio] failed to mount routes: {_e}")
 
+try:
+    from collaboration.routes import make_collaboration_router as _mk_collab_router
+
+    api_router.include_router(_mk_collab_router(db, get_current_user, check_permission))
+    logging.info("[collaboration] routes mounted at /api/business/collaboration/*")
+except Exception as _e:
+    logging.error(f"[collaboration] failed to mount routes: {_e}")
+
 # ── Design templates (optional catalog for marketing UI) ──
 try:
     from design_templates_routes import make_design_templates_router as _mk_dt_router
@@ -12339,7 +12380,7 @@ except Exception as _e:
 # ── Shotstack (video/image/voice generation — unified) ────────────────────────
 try:
     from shotstack_routes import make_shotstack_router as _mk_shotstack_router
-    api_router.include_router(_mk_shotstack_router(Depends(get_current_user)))
+    api_router.include_router(_mk_shotstack_router(get_current_user))
     logging.info("[shotstack] routes mounted at /api/shotstack/*")
 except Exception as _e:
     logging.error(f"[shotstack] failed to mount routes: {_e}")
@@ -12968,6 +13009,201 @@ async def _process_zernio_message(
             "Sorry, I'm having trouble right now. Please try again! 🙏",
         )
 
+def _zernio_get(payload: dict, *keys, default=""):
+    for key in keys:
+        if not key:
+            continue
+        cur = payload
+        ok = True
+        for part in key.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur.get(part)
+            else:
+                ok = False
+                break
+        if ok and cur not in (None, ""):
+            return cur
+    return default
+
+def _extract_zernio_comment_event(payload: dict) -> Optional[dict]:
+    event_name = str(
+        _zernio_get(payload, "event", "type", "action", "data.event", "payload.event", default="")
+    ).lower()
+    post_id = str(
+        _zernio_get(payload, "postId", "post_id", "data.postId", "data.post_id", "comment.postId", "comment.post_id", default="")
+    ).strip()
+    comment_id = str(
+        _zernio_get(payload, "commentId", "comment_id", "data.commentId", "data.comment_id", "comment.id", "id", default="")
+    ).strip()
+    comment_text = str(
+        _zernio_get(payload, "text", "message", "comment", "data.text", "data.message", "data.comment", "comment.message", default="")
+    ).strip()
+    account_id = str(
+        _zernio_get(payload, "accountId", "account_id", "data.accountId", "data.account_id", default="")
+    ).strip()
+
+    looks_like_comment = ("comment" in event_name) or bool(post_id and comment_id)
+    if not looks_like_comment:
+        return None
+    if not (post_id and comment_id and comment_text and account_id):
+        return None
+
+    reply_count_raw = _zernio_get(payload, "replyCount", "reply_count", "data.replyCount", "data.reply_count", default=0)
+    try:
+        reply_count = int(reply_count_raw or 0)
+    except Exception:
+        reply_count = 0
+
+    return {
+        "post_id": post_id,
+        "comment_id": comment_id,
+        "comment_text": comment_text,
+        "account_id": account_id,
+        "author_name": str(
+            _zernio_get(payload, "senderName", "author", "from.name", "data.author", "data.senderName", default="")
+        ).strip(),
+        "reply_count": max(0, reply_count),
+        "platform": str(_zernio_get(payload, "platform", "data.platform", default="unknown")).strip() or "unknown",
+        "event_name": event_name,
+    }
+
+def _pick_comment_autoreply_message(settings: dict, comment_text: str, author_name: str = "") -> str:
+    text = (comment_text or "").lower()
+    chosen = ""
+    for rule in (settings.get("keyword_rules") or []):
+        if not isinstance(rule, dict):
+            continue
+        keyword = str(rule.get("keyword") or "").strip().lower()
+        message = str(rule.get("message") or "").strip()
+        if keyword and message and keyword in text:
+            chosen = message
+            break
+    if not chosen:
+        chosen = str(settings.get("default_message") or "").strip()
+    if not chosen:
+        return ""
+    first = (author_name or "").strip().split(" ")[0]
+    return chosen.replace("{name}", first or "there")
+
+def _build_native_comment_reply(comment_text: str, author_name: str = "") -> str:
+    first = (author_name or "there").split(" ")[0] or "there"
+    text = (comment_text or "").lower()
+    if "?" in text:
+        return f"Hi {first}, thanks for your question. Please share a bit more detail and we will assist right away."
+    if "price" in text or "how much" in text or "cost" in text:
+        return f"Hi {first}, thanks for checking in. Please DM us the item you want and we will share the latest price and options."
+    if "thank" in text:
+        return f"You are welcome {first}. We appreciate your support."
+    return f"Hi {first}, thanks for your comment. We have seen it and we will follow up shortly."
+
+def _pick_comment_steps(settings: dict, comment_event: dict) -> list:
+    mode = str(settings.get("engine_mode") or "hybrid").strip().lower()
+    if mode not in {"native_ai_all_posts", "manychat_per_post", "hybrid"}:
+        mode = "hybrid"
+    post_id = str(comment_event.get("post_id") or "").strip()
+    manychat_posts = {str(x).strip() for x in (settings.get("manychat_post_ids") or []) if str(x).strip()}
+    manychat_for_post = (not manychat_posts) or (post_id in manychat_posts)
+    use_manychat = mode == "manychat_per_post" or (mode == "hybrid" and manychat_for_post)
+
+    if use_manychat:
+        chain = settings.get("chain_steps") or []
+        valid = []
+        for step in chain:
+            if not isinstance(step, dict):
+                continue
+            stype = str(step.get("type") or "text").strip().lower()
+            if stype not in {"text", "image", "video", "file"}:
+                stype = "text"
+            msg = str(step.get("message") or "").strip()
+            media_url = str(step.get("media_url") or "").strip()
+            delay_seconds = int(step.get("delay_seconds") or 0)
+            if stype == "text" and not msg:
+                continue
+            if stype != "text" and not media_url:
+                continue
+            valid.append(
+                {
+                    "type": stype,
+                    "message": msg,
+                    "media_url": media_url,
+                    "delay_seconds": max(0, min(delay_seconds, 120)),
+                }
+            )
+        if valid:
+            return valid
+        msg = _pick_comment_autoreply_message(
+            settings=settings,
+            comment_text=str(comment_event.get("comment_text") or ""),
+            author_name=str(comment_event.get("author_name") or ""),
+        )
+        if msg:
+            return [{"type": "text", "message": msg, "delay_seconds": 0}]
+        return []
+
+    msg = _build_native_comment_reply(
+        comment_text=str(comment_event.get("comment_text") or ""),
+        author_name=str(comment_event.get("author_name") or ""),
+    )
+    return [{"type": "text", "message": msg, "delay_seconds": 0}] if msg else []
+
+async def _send_zernio_comment_reply(post_id: str, account_id: str, comment_id: str, message: str, step: Optional[dict] = None) -> bool:
+    key = os.environ.get("ZERNIO_API_KEY", "").strip()
+    if not key:
+        logging.warning("[Zernio] comment auto-reply skipped: missing ZERNIO_API_KEY")
+        return False
+    if not (post_id and account_id and comment_id):
+        return False
+    step = step or {"type": "text", "message": message}
+    stype = str(step.get("type") or "text").strip().lower()
+    text = str(step.get("message") or message or "").strip()
+    media_url = str(step.get("media_url") or "").strip()
+    if stype == "text" and not text:
+        return False
+    if stype != "text" and not media_url and not text:
+        return False
+    try:
+        payloads = []
+        if stype == "text":
+            payloads.append({"accountId": account_id, "commentId": comment_id, "message": text[:900]})
+        else:
+            payloads.append(
+                {
+                    "accountId": account_id,
+                    "commentId": comment_id,
+                    "message": text[:900] if text else "",
+                    "mediaUrl": media_url,
+                    "mediaType": stype,
+                }
+            )
+            payloads.append(
+                {
+                    "accountId": account_id,
+                    "commentId": comment_id,
+                    "message": text[:900] if text else "",
+                    "attachment": {"type": stype, "url": media_url},
+                }
+            )
+            if text:
+                payloads.append({"accountId": account_id, "commentId": comment_id, "message": text[:900]})
+        async with httpx.AsyncClient(timeout=20) as client:
+            for body in payloads:
+                resp = await client.post(
+                    "https://zernio.com/api/v1/inbox/comments/" + post_id,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    json=body,
+                )
+                if resp.status_code in (200, 201):
+                    return True
+                logging.warning(f"[Zernio] comment auto-reply failed {resp.status_code}: {resp.text[:300]}")
+        return False
+    except Exception as exc:
+        logging.warning(f"[Zernio] comment auto-reply error: {exc}")
+        return False
+
 @app.post("/webhook/zernio")
 async def zernio_webhook(request: Request):
     """Zernio Unified Inbox Webhook"""
@@ -12986,6 +13222,42 @@ async def zernio_webhook(request: Request):
         logging.warning(f"[Zernio] No CRM user found for profile {profile_id}")
         return {"status": "ok"}
 
+    comment_event = _extract_zernio_comment_event(payload)
+    if comment_event:
+        settings = ((user.get("settings") or {}).get("zernio_comment_autoreply") or {}
+                    if isinstance(user.get("settings"), dict)
+                    else {})
+        if not bool(settings.get("enabled", False)):
+            return {"status": "ok"}
+        post_id = comment_event["post_id"]
+        if not bool(settings.get("apply_all_posts", True)):
+            allowed_posts = {str(x).strip() for x in (settings.get("post_ids") or []) if str(x).strip()}
+            if post_id not in allowed_posts:
+                return {"status": "ok"}
+        if bool(settings.get("reply_only_unreplied", True)) and int(comment_event.get("reply_count", 0)) > 0:
+            return {"status": "ok"}
+        dedup_key = f"zernio:comment:{profile_id}:{comment_event['comment_id']}"
+        if not await _dedup_check_and_set(dedup_key, 6 * 60 * 60):
+            return {"status": "ok"}
+        steps = _pick_comment_steps(settings, comment_event)
+        if not steps:
+            return {"status": "ok"}
+        for step in steps:
+            _delay = int(step.get("delay_seconds") or 0)
+            if _delay > 0:
+                await asyncio.sleep(max(0, min(_delay, 120)))
+            await _send_zernio_comment_reply(
+                post_id=post_id,
+                account_id=comment_event["account_id"],
+                comment_id=comment_event["comment_id"],
+                message=str(step.get("message") or ""),
+                step=step,
+            )
+        logging.info(
+            f"[Zernio] comment auto-replied user={user.get('_id')} post={post_id} comment={comment_event['comment_id']} steps={len(steps)}"
+        )
+        return {"status": "ok"}
+
     platform = payload.get("platform", "unknown")
     sender_id = payload.get("senderId", "")
     sender_name = payload.get("senderName", "")
@@ -12999,6 +13271,9 @@ async def zernio_webhook(request: Request):
     customer = await get_or_create_zernio_customer(db, user["_id"], sender_id, sender_name, platform, conversation_id)
     await save_incoming_zernio_message(db, user["_id"], customer["_id"], text, message_id, platform)
 
+    asyncio.create_task(
+        _apply_inbound_routing_bg(user["_id"], customer["_id"], text, None, "social")
+    )
     asyncio.create_task(
         _process_zernio_message(user, customer, text, conversation_id, platform)
     )

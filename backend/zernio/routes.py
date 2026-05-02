@@ -11,10 +11,7 @@ from collaboration.access import require_social_channel_level
 
 logger = logging.getLogger(__name__)
 
-ZERNIO_BASES = (
-    "https://zernio.com/v1",
-    "https://zernio.com/api/v1",
-)
+ZERNIO_BASE = "https://zernio.com/api/v1"
 
 DEPRECATED_MESSAGE_TAGS = {
     "CONFIRMED_EVENT_UPDATE",
@@ -77,34 +74,18 @@ async def _request(
     if extra_headers:
         hdrs.update(extra_headers)
 
-    last_error: Optional[httpx.HTTPStatusError] = None
+    url = f"{ZERNIO_BASE}{path}"
     async with httpx.AsyncClient(timeout=20) as client:
-        for base in ZERNIO_BASES:
-            url = f"{base}{path}"
-            try:
-                if method == "GET":
-                    r = await client.get(url, headers=hdrs, params=params or {})
-                elif method == "POST":
-                    r = await client.post(url, headers=hdrs, json=body or {})
-                elif method == "DELETE":
-                    r = await client.delete(url, headers=hdrs)
-                else:
-                    raise HTTPException(500, f"Unsupported method: {method}")
-                # Detect HTML response (wrong base path returns the Zernio website)
-                content_type = (r.headers.get("content-type") or "").lower()
-                is_html = "text/html" in content_type or (r.text or "").lstrip().lower().startswith("<!doctype")
-                if is_html:
-                    logger.warning(f"[zernio] {method} {url} returned HTML (status {r.status_code}); trying next base")
-                    continue
-                r.raise_for_status()
-                return r.json()
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                raise
-
-    if last_error is not None:
-        raise last_error
-    raise HTTPException(503, "Failed to reach Zernio API")
+        if method == "GET":
+            r = await client.get(url, headers=hdrs, params=params or {})
+        elif method == "POST":
+            r = await client.post(url, headers=hdrs, json=body or {})
+        elif method == "DELETE":
+            r = await client.delete(url, headers=hdrs)
+        else:
+            raise HTTPException(500, f"Unsupported method: {method}")
+        r.raise_for_status()
+        return r.json()
 
 
 async def _get(path: str, params: dict = None, extra_headers: Optional[Dict[str, str]] = None):

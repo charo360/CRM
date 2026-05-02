@@ -22,6 +22,8 @@ export default function AssistantLauncher() {
   // Hide on the dedicated page to avoid two chats on screen
   if (pathname?.startsWith("/dashboard/assistant")) return null;
   if (pathname === "/login" || pathname === "/") return null;
+  const liftOnInbox = pathname?.startsWith("/dashboard/social-inbox");
+  const launcherPosClass = liftOnInbox ? "bottom-28 right-5" : "bottom-5 right-5";
 
   return (
     <>
@@ -29,14 +31,14 @@ export default function AssistantLauncher() {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="fixed bottom-5 right-5 z-40 flex items-center justify-center rounded-xl border border-slate-200 bg-white p-2 shadow-lg transition hover:border-slate-300 hover:shadow-xl"
+          className={`fixed ${launcherPosClass} z-40 flex items-center justify-center rounded-xl border border-slate-200 bg-white p-2 shadow-lg transition hover:border-slate-300 hover:shadow-xl`}
           aria-label="Open assistant"
         >
           <ZiloLogo size={40} />
         </button>
       )}
       {open && (
-        <div className="fixed bottom-5 right-5 z-40 flex h-[560px] w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className={`fixed ${launcherPosClass} z-40 flex h-[560px] w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl`}>
           <div className="flex items-center justify-between bg-gradient-to-r from-brand-dark to-brand px-3 py-2 text-white">
             <div className="flex items-center gap-1">
               <ZiloLogo size={28} className="shrink-0 rounded-md bg-white/15 p-0.5" />

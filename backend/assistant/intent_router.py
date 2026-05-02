@@ -1,8 +1,9 @@
 """Lightweight intent router for Zilo Chat.
 
-Pipeline (v2-style, mirrors agents/router.py):
-  1. Keyword pre-filter — covers most requests at zero cost.
-  2. LLM single-call fallback — only for genuinely ambiguous messages.
+Pipeline (v3):
+  1. Hard safety/sticky overrides (session continuity, explicit exits).
+  2. LLM intent routing first (AutoReply-v2 style).
+  3. Deterministic keyword fallback for low-confidence / failures.
 
 Scoring uses word-count of matched phrases so that sub-agent keywords
 (e.g. "shopify order" = 2 words) always beat parent keywords
@@ -18,6 +19,8 @@ import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_LLM_ROUTE_CONFIDENCE_MIN = 0.72
 
 # Routed here only when the user clearly means the Shopify *store*, not generic catalog work.
 _SHOPIFY_AGENT_IDS = frozenset(
@@ -566,6 +569,135 @@ def _is_explicit_design_exit(msg_lower: str) -> bool:
     return any(m in msg_lower for m in _DESIGN_EXIT_MARKERS)
 
 
+def _is_social_connection_status_intent(msg_lower: str) -> bool:
+    """True for account-count/status questions that should not start creative flows."""
+    needles = (
+        "how many social",
+        "how many connected",
+        "social connected",
+        "social accounts connected",
+        "connected accounts",
+        "which social account",
+        "what social account",
+        "social integration",
+        "integrations connected",
+    )
+    return any(n in msg_lower for n in needles)
+
+
+def _is_social_inbox_intent(msg_lower: str) -> bool:
+    needles = (
+        "social inbox", "inbox", "dm", "direct message", "conversation history",
+        "reply to message", "social conversation", "message thread", "unread social",
+    )
+    return any(n in msg_lower for n in needles)
+
+
+def _is_social_scheduler_intent(msg_lower: str) -> bool:
+    needles = (
+        "schedule post", "content calendar", "publish time", "when to post",
+        "scheduled post", "plan post", "posting schedule",
+    )
+    return any(n in msg_lower for n in needles)
+
+
+def _is_social_monitor_intent(msg_lower: str) -> bool:
+    needles = (
+        "social analytics", "engagement rate", "post performance", "social roi",
+        "likes and shares", "which post performed", "social metrics", "reach and impressions",
+        "my likes", "my comments", "my shares", "my reach", "my engagement",
+        "how many likes", "how many comments", "how many shares",
+        "see my post", "see the post", "can't see", "cannot see",
+        "post engagement", "engagement on my", "engagement on the",
+        "post stats", "post data", "post results", "post insights",
+        "live post", "latest post", "recent post", "my post",
+        "top post", "best post", "performing post",
+        "social inbox engagement", "comment count", "like count", "share count",
+    )
+    return any(n in msg_lower for n in needles)
+
+
+async def _llm_route_choice(
+    message: str,
+    history: List[Dict[str, Any]],
+    agent_registry: Dict[str, Any],
+    msg_lower: str,
+) -> Optional[tuple[str, float]]:
+    """Ask the model to choose an agent. Returns (agent, confidence) or None."""
+    try:
+        from .models import chat_with_tools as _chat_with_tools
+
+        agent_menu = "\n".join(
+            f"  {aid}: {cfg.get('description', '')}"
+            for aid, cfg in agent_registry.items()
+        )
+
+        context_lines: List[str] = []
+        for m in history[-4:]:
+            role = m.get("role", "user")
+            content = str(m.get("content", ""))[:120]
+            context_lines.append(f"{role}: {content}")
+        recent = "\n".join(context_lines) if context_lines else "(new conversation)"
+
+        prompt = (
+            "You are the routing layer of a CRM assistant. "
+            "Pick the single best specialist agent for this message.\n\n"
+            "Agent boundaries (strict):\n"
+            "- social_inbox: DMs, inbox conversations, replies, message history\n"
+            "- social_scheduler: scheduling, calendar, publishing plans\n"
+            "- social_monitor: post metrics, engagement analytics, social ROI\n"
+            "- creative: generating/refining visuals and creative assets\n"
+            "- general: integrations/account status, cross-domain and fallback\n\n"
+            "Rules: If the user is adding or editing products in general (catalog, prices, SKUs) but does NOT mention "
+            "Shopify or a Shopify store, prefer **inventory** or **shop** — NOT shopify / shopify_products / shopify_orders. "
+            "Shopify agents are only for explicit Shopify store/admin/sync questions.\n\n"
+            "**Critical:** If the user wants **ad graphics, social posts, social media content, captions, hashtags, "
+            "flyers/posters, PDF layouts, PowerPoint/slide decks, template-based renders, or any visual creative**, "
+            "route to **creative** when it appears in the list — never **inventory** or **shop**.\n\n"
+            "**Critical:** Questions about connected integrations/accounts (e.g. \"how many social accounts connected\") "
+            "should route to **general** unless a dedicated integration status agent is clearly better.\n\n"
+            f"Available agents:\n{agent_menu}\n\n"
+            f"Recent context:\n{recent}\n\n"
+            f"User message: \"{message}\"\n\n"
+            "Reply ONLY with valid JSON on one line: "
+            "{\"agent\": \"<agent_id>\", \"confidence\": <0.0-1.0>, \"reason\": \"<one sentence>\"}\n"
+            "confidence: 1.0 = unambiguously clear, 0.5 = could go either way. "
+            "Choose the most specific agent. Use 'general' only if nothing else fits."
+        )
+
+        resp = await _chat_with_tools(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            model_id=None,
+            temperature=0.0,
+            timeout=8.0,
+        )
+        raw = resp.get("content", "")
+        match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
+        if not match:
+            return None
+        data = json.loads(match.group())
+        chosen = data.get("agent", "general")
+        confidence = float(data.get("confidence", 0.0))
+
+        # Override: visual/social intent must never land on catalog/stock agents
+        if _design_or_creative_document_intent(msg_lower):
+            if chosen in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
+                chosen = _prefer_creative_agent(msg_lower, agent_registry)
+                logger.info(f"[IntentRouter] LLM → {chosen} (override: creative intent; was catalog agent)")
+            elif chosen in {"social_media", "design"} and "creative" in agent_registry:
+                chosen = "creative"
+
+        if chosen in agent_registry:
+            logger.info(
+                f"[IntentRouter] LLM candidate → {chosen} (confidence={confidence:.2f}): {data.get('reason', '')}"
+            )
+            return chosen, confidence
+    except Exception as exc:
+        logger.warning(f"[IntentRouter] LLM routing failed: {exc}")
+    return None
+
+
 async def route_to_agent(
     message: str,
     history: List[Dict[str, Any]],
@@ -578,8 +710,9 @@ async def route_to_agent(
     Strategy:
       0. Sticky routing — short continuation messages stay with prev_agent.
          Design sessions are extra-sticky (they are multi-turn and stateful).
-      1. Keyword pre-filter (free, instant) with word-count scoring.
-      2. LLM single-call fallback (cheap, only when keywords don't match).
+      1. Hard intent overrides (document, integration-status, explicit creative).
+      2. LLM route first (confidence-gated).
+      3. Keyword fallback.
     Always returns a valid agent_id that exists in agent_registry.
     """
     msg_lower = message.lower()
@@ -588,10 +721,10 @@ async def route_to_agent(
     # Creative is multi-turn and heavily stateful (product / platform / template /
     # copy / staged image / render). Bouncing out mid-flow loses all context.
     # Two signals trigger stickiness:
-    #   a) prev_agent resolves to "creative" (handles legacy "design"/"social_media" aliases)
+    #   a) prev_agent resolves to "creative" (handles legacy "design" alias)
     #   b) design_flow_active == True (DB confirms flow_step is set and not done)
     # Only leave when the user EXPLICITLY asks.
-    _AGENT_ALIASES_LOCAL = {"design": "creative", "social_media": "creative"}
+    _AGENT_ALIASES_LOCAL = {"design": "creative"}
     prev_agent_resolved = _AGENT_ALIASES_LOCAL.get(prev_agent or "", prev_agent or "")
     is_active_creative = (
         "creative" in agent_registry
@@ -635,12 +768,42 @@ async def route_to_agent(
         logger.info("[IntentRouter] forced → document (text document/proposal intent)")
         return "document"
 
+    # Integration/account status questions should not trigger creative session routing.
+    if _is_social_connection_status_intent(msg_lower):
+        logger.info("[IntentRouter] forced → general (social/integration status intent)")
+        return "general" if "general" in agent_registry else next(iter(agent_registry.keys()))
+
+    if _is_social_inbox_intent(msg_lower) and "social_inbox" in agent_registry:
+        logger.info("[IntentRouter] forced → social_inbox")
+        return "social_inbox"
+
+    if _is_social_scheduler_intent(msg_lower) and "social_scheduler" in agent_registry:
+        logger.info("[IntentRouter] forced → social_scheduler")
+        return "social_scheduler"
+
+    if _is_social_monitor_intent(msg_lower) and "social_monitor" in agent_registry:
+        logger.info("[IntentRouter] forced → social_monitor")
+        return "social_monitor"
+
     # Visual / creative intent → creative agent (only for pure graphics/social posts)
     if "creative" in agent_registry and _design_or_creative_document_intent(msg_lower) and not _is_text_document_intent(msg_lower):
         logger.info("[IntentRouter] forced → creative (visual/layout/deck intent)")
         return "creative"
 
-    # ── 1. Keyword scoring (word-count weighted) ──────────────────────────────
+    # ── 1. LLM route first (AutoReply-v2 style), confidence gated ────────────
+    llm_choice = await _llm_route_choice(message, history, agent_registry, msg_lower)
+    if llm_choice is not None:
+        chosen, confidence = llm_choice
+        if confidence >= _LLM_ROUTE_CONFIDENCE_MIN:
+            logger.info(
+                f"[IntentRouter] LLM → {chosen} (accepted; confidence={confidence:.2f} >= {_LLM_ROUTE_CONFIDENCE_MIN:.2f})"
+            )
+            return chosen
+        logger.info(
+            f"[IntentRouter] LLM low-confidence ({confidence:.2f} < {_LLM_ROUTE_CONFIDENCE_MIN:.2f}); falling back to keywords"
+        )
+
+    # ── 2. Keyword scoring fallback (word-count weighted) ─────────────────────
     # Score = total word count of all matched phrases.
     # "shopify order" (2 words) beats "shopify" (1 word) automatically.
     scores: Dict[str, int] = {}
@@ -652,113 +815,34 @@ async def route_to_agent(
             scores[agent_id] = score
 
     if scores:
-        sorted_scores = sorted(scores.values(), reverse=True)
         best = max(scores, key=lambda k: scores[k])
-        top_score = sorted_scores[0]
-        second_score = sorted_scores[1] if len(sorted_scores) > 1 else 0
-
-        # Confidence check: if top two agents are tied or within 1 word of each other,
-        # the keyword signal is ambiguous — fall through to the LLM for a better call.
-        # Exception: sticky/forced overrides already resolved above, so this only fires
-        # when no override applied and the message genuinely matches multiple domains.
-        _ambiguous = (top_score > 0) and (top_score - second_score <= 1) and (second_score > 0)
-        if _ambiguous:
+        # Prefer CRM catalog agents when the user did not mention Shopify but is clearly
+        # doing catalog / stock work — avoids mis-routing to Shopify specialists.
+        if (
+            best in _SHOPIFY_AGENT_IDS
+            and not _explicit_shopify_intent(msg_lower)
+            and _crm_catalog_intent(msg_lower)
+        ):
+            for preferred in ("inventory", "shop", "sales"):
+                if preferred in scores:
+                    best = preferred
+                    logger.info(
+                        f"[IntentRouter] keyword → {best} (override: CRM catalog, not Shopify; was shopify-tied; scores={scores})"
+                    )
+                    return best
+            best = "inventory"
             logger.info(
-                f"[IntentRouter] keyword ambiguous (scores={scores}) — deferring to LLM fallback"
+                f"[IntentRouter] keyword → {best} (override: CRM catalog default; scores={scores})"
             )
-            # Fall through to LLM section below (do not return here)
-        else:
-            # Prefer CRM catalog agents when the user did not mention Shopify but is clearly
-            # doing catalog / stock work — avoids mis-routing to Shopify specialists.
-            if (
-                best in _SHOPIFY_AGENT_IDS
-                and not _explicit_shopify_intent(msg_lower)
-                and _crm_catalog_intent(msg_lower)
-            ):
-                for preferred in ("inventory", "shop", "sales"):
-                    if preferred in scores:
-                        best = preferred
-                        logger.info(
-                            f"[IntentRouter] keyword → {best} (override: CRM catalog, not Shopify; was shopify-tied; scores={scores})"
-                        )
-                        return best
-                best = "inventory"
-                logger.info(
-                    f"[IntentRouter] keyword → {best} (override: CRM catalog default; scores={scores})"
-                )
-                return best
-            # Catalog/stock agents have no graphic/PDF/deck tools — do not answer design/PDF/PPT there.
-            if _design_or_creative_document_intent(msg_lower) and best in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
-                alt = _prefer_creative_agent(msg_lower, agent_registry)
-                logger.info(
-                    f"[IntentRouter] keyword → {alt} (override: creative/doc intent; was {best}; scores={scores})"
-                )
-                return alt
-            logger.info(f"[IntentRouter] keyword → {best} (confidence=high; scores={scores})")
             return best
-
-    # ── 2. LLM fallback ───────────────────────────────────────────────────────
-    # Uses chat_with_tools (respects AI_PROVIDER env var, normalized across all
-    # providers) instead of the private ai_service._call_openai method.
-    try:
-        from .models import chat_with_tools as _chat_with_tools
-
-        agent_menu = "\n".join(
-            f"  {aid}: {cfg.get('description', '')}"
-            for aid, cfg in agent_registry.items()
-        )
-
-        context_lines: List[str] = []
-        for m in history[-4:]:
-            role = m.get("role", "user")
-            content = str(m.get("content", ""))[:120]
-            context_lines.append(f"{role}: {content}")
-        recent = "\n".join(context_lines) if context_lines else "(new conversation)"
-
-        prompt = (
-            "You are the routing layer of a CRM assistant. "
-            "Pick the single best specialist agent for this message.\n\n"
-            "Rules: If the user is adding or editing products in general (catalog, prices, SKUs) but does NOT mention "
-            "Shopify or a Shopify store, prefer **inventory** or **shop** — NOT shopify / shopify_products / shopify_orders. "
-            "Shopify agents are only for explicit Shopify store/admin/sync questions.\n\n"
-            "**Critical:** If the user wants **ad graphics, social posts, social media content, captions, hashtags, "
-            "flyers/posters, PDF layouts, PowerPoint/slide decks, template-based renders, or any visual creative**, "
-            "route to **creative** when it appears in the list — never **inventory** or **shop**.\n\n"
-            f"Available agents:\n{agent_menu}\n\n"
-            f"Recent context:\n{recent}\n\n"
-            f"User message: \"{message}\"\n\n"
-            "Reply ONLY with valid JSON on one line: "
-            "{\"agent\": \"<agent_id>\", \"confidence\": <0.0-1.0>, \"reason\": \"<one sentence>\"}\n"
-            "confidence: 1.0 = unambiguously clear, 0.5 = could go either way. "
-            "Choose the most specific agent. Use 'general' only if nothing else fits."
-        )
-
-        resp = await _chat_with_tools(
-            messages=[{"role": "user", "content": prompt}],
-            tools=[],
-            model_id=None,
-            temperature=0.0,
-            timeout=8.0,
-        )
-        raw = resp.get("content", "")
-        match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            chosen = data.get("agent", "general")
-            confidence = float(data.get("confidence", 1.0))
-            # Override: visual/social intent must never land on catalog/stock agents
-            if _design_or_creative_document_intent(msg_lower):
-                if chosen in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
-                    chosen = _prefer_creative_agent(msg_lower, agent_registry)
-                    logger.info(f"[IntentRouter] LLM → {chosen} (override: creative intent; was catalog agent)")
-                elif chosen in {"social_media", "design"} and "creative" in agent_registry:
-                    chosen = "creative"
-            if chosen in agent_registry:
-                logger.info(
-                    f"[IntentRouter] LLM → {chosen} (confidence={confidence:.2f}): {data.get('reason', '')}"
-                )
-                return chosen
-    except Exception as exc:
-        logger.warning(f"[IntentRouter] LLM fallback failed: {exc}")
+        # Catalog/stock agents have no graphic/PDF/deck tools — do not answer design/PDF/PPT there.
+        if _design_or_creative_document_intent(msg_lower) and best in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
+            alt = _prefer_creative_agent(msg_lower, agent_registry)
+            logger.info(
+                f"[IntentRouter] keyword → {alt} (override: creative/doc intent; was {best}; scores={scores})"
+            )
+            return alt
+        logger.info(f"[IntentRouter] keyword → {best} (fallback; scores={scores})")
+        return best
 
     return "general"

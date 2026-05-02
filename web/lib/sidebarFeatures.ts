@@ -23,6 +23,7 @@ export const SIDEBAR_FEATURE_DEFAULTS: Record<string, boolean> = {
   nav_team_analytics: false,
   nav_whatsapp: false,
   nav_team: false,
+  nav_collaboration: false,
   nav_shop: false,
   nav_imports: false,
   nav_kds: false,
@@ -64,6 +65,7 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
   "/dashboard/team-analytics": "nav_team_analytics",
   "/dashboard/whatsapp": "nav_whatsapp",
   "/dashboard/team": "nav_team",
+  "/dashboard/collaboration": "nav_collaboration",
   "/dashboard/shop": "nav_shop",
   "/dashboard/imports": "nav_imports",
   "/dashboard/kds": "nav_kds",
@@ -85,13 +87,24 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
 export function mergeSidebarFeatures(raw: unknown): Record<string, boolean> {
   const out = { ...SIDEBAR_FEATURE_DEFAULTS };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+  const r = raw as Record<string, unknown>;
+  for (const [k, v] of Object.entries(r)) {
     if (k in out && typeof v === "boolean") out[k] = v;
+  }
+  if (!out.nav_team && out.nav_collaboration) {
+    out.nav_collaboration = false;
+  }
+  // Legacy: Team covered collaboration before nav_collaboration existed — keep both on.
+  if (out.nav_team && !("nav_collaboration" in r)) {
+    out.nav_collaboration = true;
   }
   return out;
 }
 
 export function isSidebarHrefEnabled(href: string, features: Record<string, boolean>): boolean {
+  if (href === "/dashboard/collaboration") {
+    return features.nav_team === true && features.nav_collaboration === true;
+  }
   const key = HREF_TO_FEATURE_KEY[href];
   if (!key) return true;
   return features[key] === true;
@@ -145,7 +158,12 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_analytics", label: "Analytics", description: "Dashboard metrics" },
       { key: "nav_team_analytics", label: "Team analytics", description: "Team performance" },
       { key: "nav_whatsapp", label: "WhatsApp", description: "WA tools" },
-      { key: "nav_team", label: "Team", description: "Members & roles" },
+      { key: "nav_team", label: "Team", description: "Members, roles, and team settings" },
+      {
+        key: "nav_collaboration",
+        label: "Collaboration",
+        description: "Workspaces, channel access, and routing — turns on automatically when Team is on",
+      },
       { key: "nav_shop", label: "Shop / catalog", description: "Storefront (label varies by type)" },
       { key: "nav_imports", label: "Imports", description: "Bulk upload" },
       { key: "nav_inventory", label: "Inventory / Stock", description: "Track products and stock levels" },
@@ -194,6 +212,7 @@ export const PRESET_BUSINESS: Partial<Record<string, boolean>> = {
   nav_team_analytics: false,
   nav_whatsapp: true,
   nav_team: false,
+  nav_collaboration: false,
   nav_shop: false,
   nav_imports: false,
   nav_inventory: false,
@@ -225,6 +244,7 @@ export const PRESET_PERSONAL: Partial<Record<string, boolean>> = {
   nav_team_analytics: false,
   nav_whatsapp: true,
   nav_team: false,
+  nav_collaboration: false,
   nav_shop: false,
   nav_imports: false,
   nav_inventory: false,
@@ -254,6 +274,7 @@ export const PRESET_STARTER: Partial<Record<string, boolean>> = {
   nav_team_analytics: false,
   nav_whatsapp: true,
   nav_team: false,
+  nav_collaboration: false,
   nav_shop: false,
   nav_imports: false,
   nav_kds: false,
@@ -264,6 +285,12 @@ export function applyAllFromPartial(preset: Partial<Record<string, boolean>>, de
   const out = { ...SIDEBAR_FEATURE_DEFAULTS };
   for (const k of Object.keys(out)) {
     out[k] = k in preset ? Boolean(preset[k]) : defaultValue;
+  }
+  if (out.nav_team && !("nav_collaboration" in preset)) {
+    out.nav_collaboration = true;
+  }
+  if (!out.nav_team) {
+    out.nav_collaboration = false;
   }
   return out;
 }

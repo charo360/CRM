@@ -20,6 +20,12 @@ from .models import DEFAULT_MODEL, list_available_models, stream_reply
 from .orchestrator import run_turn, run_turn_stream
 from .titler import generate_title
 from .agent_workspace import load_workspace, update_workspace, workspace_to_context_line
+from .conversation_access import (
+    can_access_conversation_row,
+    conversation_list_filter,
+    serialize_conversation_meta,
+    tenant_user_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +111,13 @@ def _extract_workspace_updates(result: Dict[str, Any]) -> Dict[str, Any]:
 def _mk_router(db, get_current_user):
     """Factory — binds db + auth dep into the router. Call this from server.py."""
 
+    async def _load_accessible_conv(conv_id: str, user) -> Dict[str, Any]:
+        bid = tenant_user_id(user)
+        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        if not row or not can_access_conversation_row(row, user):
+            raise HTTPException(404, "Conversation not found")
+        return row
+
     @router.get("/models")
     async def models(user=Depends(get_current_user)):
         payload = {"default": DEFAULT_MODEL, "models": list_available_models()}
@@ -135,7 +148,7 @@ def _mk_router(db, get_current_user):
         try:
             recent_convs, owner_prefs_raw = await _asyncio.gather(
                 db.assistant_conversations.find(
-                    {"user_id": user_id}
+                    conversation_list_filter(user)
                 ).sort("updated_at", -1).to_list(5),
                 _get_all_owner_prefs_safe(user_id),
             )
@@ -225,9 +238,8 @@ def _mk_router(db, get_current_user):
 
     @router.get("/conversations")
     async def list_conversations(user=Depends(get_current_user)):
-        user_id = user.get("business_id", user["_id"])
         rows = await db.assistant_conversations.find(
-            {"user_id": user_id}
+            conversation_list_filter(user)
         ).sort("updated_at", -1).to_list(50)
         return [{
             "id": r["_id"],
@@ -235,26 +247,28 @@ def _mk_router(db, get_current_user):
             "updated_at": r.get("updated_at"),
             "message_count": len(r.get("messages") or []),
             "agent": r.get("agent") or "general",
+            **serialize_conversation_meta(r),
         } for r in rows]
 
     @router.get("/conversations/{conv_id}")
     async def get_conversation(conv_id: str, user=Depends(get_current_user)):
-        user_id = user.get("business_id", user["_id"])
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
-        if not row:
-            raise HTTPException(404, "Conversation not found")
+        row = await _load_accessible_conv(conv_id, user)
         return {
             "id": row["_id"],
             "title": row.get("title") or "New chat",
             "model": row.get("model"),
             "messages": row.get("messages") or [],
             "agent": row.get("agent") or "general",
+            **serialize_conversation_meta(row),
         }
 
     @router.delete("/conversations/{conv_id}")
     async def delete_conversation(conv_id: str, user=Depends(get_current_user)):
-        user_id = user.get("business_id", user["_id"])
-        await db.assistant_conversations.delete_one({"_id": conv_id, "user_id": user_id})
+        bid = tenant_user_id(user)
+        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        if not row or not can_access_conversation_row(row, user):
+            raise HTTPException(404, "Conversation not found")
+        await db.assistant_conversations.delete_one({"_id": conv_id, "user_id": bid})
         return {"status": "deleted"}
 
     @router.post("/chat")
@@ -279,11 +293,12 @@ def _mk_router(db, get_current_user):
         conv_id = body.get("conversation_id")
         conv: Dict[str, Any]
         if conv_id:
-            conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
-            if not conv:
-                raise HTTPException(404, "Conversation not found")
+            conv = await _load_accessible_conv(conv_id, user)
         else:
             conv_id = str(uuid.uuid4())
+            vis = (body.get("visibility") or "team").strip().lower()
+            if vis not in ("team", "private"):
+                vis = "team"
             conv = {
                 "_id": conv_id,
                 "user_id": user_id,
@@ -293,6 +308,9 @@ def _mk_router(db, get_current_user):
                 "agent": "general",
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow(),
+                "created_by": str(user["_id"]),
+                "visibility": vis,
+                "shared_with": [str(user["_id"])] if vis == "private" else [],
             }
             await db.assistant_conversations.insert_one(conv)
 
@@ -433,16 +451,22 @@ def _mk_router(db, get_current_user):
             conv: Dict[str, Any]
             if conv_id:
                 conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
-                if not conv:
+                if not conv or not can_access_conversation_row(conv, user):
                     yield "data: " + json.dumps({"type": "error", "message": "Conversation not found"}) + "\n\n"
                     return
             else:
                 conv_id = str(uuid.uuid4())
+                vis = (body.get("visibility") or "team").strip().lower()
+                if vis not in ("team", "private"):
+                    vis = "team"
                 conv = {
                     "_id": conv_id, "user_id": user_id, "title": msg[:60],
                     "model": body.get("model") or DEFAULT_MODEL,
                     "messages": [], "agent": "general",
                     "created_at": datetime.utcnow(), "updated_at": datetime.utcnow(),
+                    "created_by": str(user["_id"]),
+                    "visibility": vis,
+                    "shared_with": [str(user["_id"])] if vis == "private" else [],
                 }
                 await db.assistant_conversations.insert_one(conv)
 
@@ -590,21 +614,66 @@ def _mk_router(db, get_current_user):
         return StreamingResponse(_generate(), media_type="text/event-stream")
 
     @router.patch("/conversations/{conv_id}")
-    async def rename_conversation(conv_id: str, req: Request, user=Depends(get_current_user)):
+    async def patch_conversation(conv_id: str, req: Request, user=Depends(get_current_user)):
         body = await req.json()
-        title = (body.get("title") or "").strip()
-        if not title:
-            raise HTTPException(400, "title is required")
-        if len(title) > 120:
+        title_raw = body.get("title")
+        title = (title_raw or "").strip() if title_raw is not None else None
+        if title is not None and not title:
+            raise HTTPException(400, "title cannot be empty")
+        if title is not None and len(title) > 120:
             title = title[:120]
-        user_id = user.get("business_id", user["_id"])
+        visibility = body.get("visibility")
+        if visibility is not None and visibility not in ("team", "private"):
+            raise HTTPException(400, "visibility must be 'team' or 'private'")
+        if title is None and visibility is None:
+            raise HTTPException(400, "Provide title and/or visibility")
+        bid = tenant_user_id(user)
+        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        if not row or not can_access_conversation_row(row, user):
+            raise HTTPException(404, "Conversation not found")
+        updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
+        if title is not None:
+            updates["title"] = title
+        if visibility is not None:
+            updates["visibility"] = visibility
+            if visibility == "team":
+                updates["shared_with"] = []
         res = await db.assistant_conversations.update_one(
-            {"_id": conv_id, "user_id": user_id},
-            {"$set": {"title": title, "updated_at": datetime.utcnow()}},
+            {"_id": conv_id, "user_id": bid},
+            {"$set": updates},
         )
         if res.matched_count == 0:
             raise HTTPException(404, "Conversation not found")
-        return {"status": "renamed", "id": conv_id, "title": title}
+        return {"status": "ok", "id": conv_id, **updates}
+
+    @router.post("/conversations/{conv_id}/share")
+    async def share_conversation(conv_id: str, req: Request, user=Depends(get_current_user)):
+        """Add team login user_ids so they can open this Zilo thread (sets private visibility)."""
+        body = await req.json()
+        raw_ids = body.get("user_ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise HTTPException(400, "user_ids array is required")
+        bid = tenant_user_id(user)
+        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        if not row or not can_access_conversation_row(row, user):
+            raise HTTPException(404, "Conversation not found")
+        creator = str(row.get("created_by") or user["_id"])
+        shared = {creator, str(user["_id"])}
+        for x in raw_ids:
+            if x:
+                shared.add(str(x))
+        await db.assistant_conversations.update_one(
+            {"_id": conv_id, "user_id": bid},
+            {
+                "$set": {
+                    "visibility": "private",
+                    "shared_with": list(shared),
+                    "created_by": creator,
+                    "updated_at": datetime.utcnow(),
+                }
+            },
+        )
+        return {"status": "ok", "shared_with": list(shared)}
 
     # ── Document upload / management ──────────────────────────────────────────
     @router.post("/upload")
@@ -630,12 +699,15 @@ def _mk_router(db, get_current_user):
                 "agent": resolve_agent_id("general"),
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow(),
+                "created_by": str(user["_id"]),
+                "visibility": "team",
+                "shared_with": [],
             })
         else:
             conv = await db.assistant_conversations.find_one(
                 {"_id": conversation_id, "user_id": user_id}
             )
-            if not conv:
+            if not conv or not can_access_conversation_row(conv, user):
                 raise HTTPException(404, "Conversation not found")
 
         content = await file.read()
@@ -655,6 +727,7 @@ def _mk_router(db, get_current_user):
     @router.get("/conversations/{conv_id}/documents")
     async def list_documents(conv_id: str, user=Depends(get_current_user)):
         user_id = user.get("business_id", user["_id"])
+        await _load_accessible_conv(conv_id, user)
         docs = await list_for_conversation(db, user_id, conv_id)
         return {"documents": docs}
 
@@ -778,6 +851,30 @@ def _mk_router(db, get_current_user):
         )
         reply = (result.get("content") or "").strip()
         return {"reply": reply}
+
+    @router.get("/context")
+    async def business_context(days: int = 7, user=Depends(get_current_user)):
+        """Return quick business stats for the command bar (customers, orders, top product, revenue)."""
+        from .tools import get_business_context, ToolContext
+        
+        # Create a mock tool context
+        ctx = ToolContext(
+            db=db,
+            user={
+                "user_id": user.get("business_id", user["_id"]),
+                "business_id": user.get("business_id"),
+            },
+        )
+        
+        result = await get_business_context(ctx, {"days": days})
+        stats = result.get("quick_stats", {})
+        
+        return {
+            "new_customers": stats.get("new_customers"),
+            "orders": stats.get("orders"),
+            "top_product": stats.get("top_product"),
+            "total_revenue_window": stats.get("total_revenue_window"),
+        }
 
     return router
 

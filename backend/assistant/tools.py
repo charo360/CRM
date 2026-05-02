@@ -960,9 +960,12 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "accounts_by_platform": {},
         "window_days": None,
         "recent_inbox_conversations": 0,
+        "recent_comments": 0,
+        "comments_by_platform_recent": {},
         "recent_posts": 0,
         "recent_unread_conversations": 0,
         "total_inbox_conversations_fetched": 0,
+        "total_comments_fetched": 0,
         "total_posts_fetched": 0,
         "inbox_by_platform_recent": {},
         "posts_by_platform_recent": {},
@@ -986,7 +989,16 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "latest_conversations": [],
         "latest_posts": [],
         "last_message_at": None,
+        "last_comment_at": None,
         "last_post_at": None,
+        "post_data_source": "zernio_posts",
+        "fetch_diagnostics": {
+            "accounts": {"status_code": None, "ok": False, "error": None},
+            "inbox": {"status_code": None, "ok": False, "error": None},
+            "comments": {"status_code": None, "ok": False, "error": None},
+            "posts": {"status_code": None, "ok": False, "error": None},
+            "analytics": {"status_code": None, "ok": False, "error": None},
+        },
         "checked_at": datetime.utcnow().isoformat(),
     }
     try:
@@ -997,15 +1009,27 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         )
         zernio_profile_id = (user_doc or {}).get("zernio_profile_id")
         zernio_api_key = (os.getenv("ZERNIO_API_KEY") or "").strip()
-        zernio_api_base = (os.getenv("ZERNIO_API_BASE") or "https://zernio.com/api/v1").rstrip("/")
+        configured_base = (os.getenv("ZERNIO_API_BASE") or "https://zernio.com/api/v1").rstrip("/")
+        zernio_api_bases = list(dict.fromkeys([configured_base, "https://zernio.com/api/v1"]))
         if zernio_profile_id and zernio_api_key:
             async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(
-                    f"{zernio_api_base}/accounts",
-                    params={"profileId": zernio_profile_id},
-                    headers={"Authorization": f"Bearer {zernio_api_key}"},
-                )
+                async def _get_first_ok(paths: list[str], *, params: Optional[Dict[str, Any]] = None) -> tuple[Optional[httpx.Response], Optional[str]]:
+                    last_resp: Optional[httpx.Response] = None
+                    for base in zernio_api_bases:
+                        for path in paths:
+                            url = f"{base}{path}"
+                            r = await client.get(url, params=params, headers={"Authorization": f"Bearer {zernio_api_key}"})
+                            last_resp = r
+                            if r.status_code == 200:
+                                return r, path
+                    return last_resp, None
+
+                resp, _ = await _get_first_ok(["/accounts"], params={"profileId": zernio_profile_id})
+                if resp is None:
+                    return out
+                social_activity["fetch_diagnostics"]["accounts"]["status_code"] = resp.status_code
                 if resp.status_code == 200:
+                    social_activity["fetch_diagnostics"]["accounts"]["ok"] = True
                     data = resp.json()
                     rows = data.get("accounts") or data.get("data") or []
                     if isinstance(rows, list):
@@ -1035,12 +1059,15 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
 
                     # Pull lightweight inbox + posts snapshots so the assistant has
                     # immediate context about what is happening on connected pages.
-                    conv_resp = await client.get(
-                        f"{zernio_api_base}/conversations",
+                    conv_resp, conv_path = await _get_first_ok(
+                        ["/inbox/conversations", "/conversations"],
                         params={"profileId": zernio_profile_id, "limit": 50},
-                        headers={"Authorization": f"Bearer {zernio_api_key}"},
                     )
+                    if conv_resp is None:
+                        conv_resp = resp
+                    social_activity["fetch_diagnostics"]["inbox"]["status_code"] = conv_resp.status_code
                     if conv_resp.status_code == 200:
+                        social_activity["fetch_diagnostics"]["inbox"]["ok"] = True
                         conv_data = conv_resp.json()
                         conversations = conv_data.get("conversations") or conv_data.get("data") or []
                         if isinstance(conversations, list):
@@ -1087,12 +1114,28 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                 if not conv_id:
                                     continue
                                 try:
-                                    conv_detail_resp = await client.get(
-                                        f"{zernio_api_base}/conversations/{conv_id}",
-                                        headers={"Authorization": f"Bearer {zernio_api_key}"},
-                                    )
-                                    if conv_detail_resp.status_code != 200:
+                                    account_id = (c or {}).get("accountId") or (c or {}).get("account_id")
+                                    detail_params = {
+                                        "limit": 50,
+                                        "sortOrder": "asc",
+                                        **({"accountId": account_id} if account_id else {}),
+                                    }
+                                    detail_paths = [f"/inbox/conversations/{conv_id}/messages", f"/conversations/{conv_id}"]
+                                    if conv_path == "/conversations":
+                                        detail_paths = [f"/conversations/{conv_id}", f"/inbox/conversations/{conv_id}/messages"]
+                                    conv_detail_resp, _ = await _get_first_ok(detail_paths, params=detail_params)
+                                    if conv_detail_resp is None:
                                         continue
+                                    if conv_detail_resp.status_code != 200:
+                                        # Backward-compat fallback for connectors that still expose conversation detail.
+                                        conv_detail_resp, _ = await _get_first_ok(
+                                            [f"/inbox/conversations/{conv_id}", f"/conversations/{conv_id}"],
+                                            params=None,
+                                        )
+                                        if conv_detail_resp is None:
+                                            continue
+                                        if conv_detail_resp.status_code != 200:
+                                            continue
                                     conv_detail = conv_detail_resp.json()
                                     msgs = conv_detail.get("messages") or conv_detail.get("data") or []
                                     if not isinstance(msgs, list):
@@ -1161,12 +1204,18 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                     "common_openers": top_openers,
                                 }
 
-                    post_resp = await client.get(
-                        f"{zernio_api_base}/posts",
+                    elif conv_resp.status_code >= 400:
+                        social_activity["fetch_diagnostics"]["inbox"]["error"] = conv_resp.text[:300]
+
+                    post_resp, _ = await _get_first_ok(
+                        ["/posts"],
                         params={"profileId": zernio_profile_id, "limit": 50},
-                        headers={"Authorization": f"Bearer {zernio_api_key}"},
                     )
+                    if post_resp is None:
+                        post_resp = resp
+                    social_activity["fetch_diagnostics"]["posts"]["status_code"] = post_resp.status_code
                     if post_resp.status_code == 200:
+                        social_activity["fetch_diagnostics"]["posts"]["ok"] = True
                         post_data = post_resp.json()
                         posts = post_data.get("posts") or post_data.get("data") or []
                         if isinstance(posts, list):
@@ -1226,6 +1275,177 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
                                         "clicks": clicks,
                                         "engagement_score": score,
                                     }
+                    elif post_resp.status_code >= 400:
+                        social_activity["fetch_diagnostics"]["posts"]["error"] = post_resp.text[:300]
+
+                    # Pull comments snapshot so we always report comment activity.
+                    comments_resp, _ = await _get_first_ok(
+                        ["/inbox/comments", "/comments"],
+                        params={"profileId": zernio_profile_id, "limit": 100},
+                    )
+                    if comments_resp is not None:
+                        social_activity["fetch_diagnostics"]["comments"]["status_code"] = comments_resp.status_code
+                        if comments_resp.status_code == 200:
+                            social_activity["fetch_diagnostics"]["comments"]["ok"] = True
+                            comments_data = comments_resp.json()
+                            comments_rows = comments_data.get("comments") or comments_data.get("data") or []
+                            if isinstance(comments_rows, list):
+                                social_activity["total_comments_fetched"] = len(comments_rows)
+                                recent_comments = [c for c in comments_rows if isinstance(c, dict)]
+                                social_activity["recent_comments"] = len(recent_comments)
+                                comments_by_platform: Dict[str, int] = {}
+                                for c in recent_comments:
+                                    platform = str((c or {}).get("platform") or "").lower() or "unknown"
+                                    comments_by_platform[platform] = comments_by_platform.get(platform, 0) + 1
+                                social_activity["comments_by_platform_recent"] = comments_by_platform
+                                comment_times = [
+                                    str((c or {}).get("createdAt") or (c or {}).get("created_at"))
+                                    for c in recent_comments
+                                    if (c or {}).get("createdAt") or (c or {}).get("created_at")
+                                ]
+                                if comment_times:
+                                    social_activity["last_comment_at"] = comment_times[0]
+                        elif comments_resp.status_code >= 400:
+                            social_activity["fetch_diagnostics"]["comments"]["error"] = comments_resp.text[:300]
+
+                    # Pull analytics snapshot for likes/shares/comments/reach/clicks with endpoint fallback.
+                    analytics_resp, _ = await _get_first_ok(
+                        ["/analytics"],
+                        params={"profileId": zernio_profile_id, "limit": 100},
+                    )
+                    if analytics_resp is not None:
+                        social_activity["fetch_diagnostics"]["analytics"]["status_code"] = analytics_resp.status_code
+                        if analytics_resp.status_code == 200:
+                            social_activity["fetch_diagnostics"]["analytics"]["ok"] = True
+                            analytics_data = analytics_resp.json()
+                            analytics_rows = analytics_data.get("analytics") or analytics_data.get("data") or []
+                            if isinstance(analytics_rows, list) and analytics_rows:
+                                # Keep additive behavior but avoid double counting if posts already had rich metrics.
+                                if not any(int((social_activity.get("performance_totals") or {}).get(k) or 0) > 0 for k in ("likes", "comments", "shares", "reach", "clicks")):
+                                    for a in analytics_rows:
+                                        if not isinstance(a, dict):
+                                            continue
+                                        social_activity["performance_totals"]["likes"] += int(
+                                            a.get("likes") or a.get("likeCount") or a.get("like_count") or 0
+                                        )
+                                        social_activity["performance_totals"]["comments"] += int(
+                                            a.get("comments") or a.get("commentCount") or a.get("comments_count") or 0
+                                        )
+                                        social_activity["performance_totals"]["shares"] += int(
+                                            a.get("shares") or a.get("shareCount") or a.get("share_count") or 0
+                                        )
+                                        social_activity["performance_totals"]["reach"] += int(
+                                            a.get("reach") or a.get("impressions") or 0
+                                        )
+                                        social_activity["performance_totals"]["clicks"] += int(
+                                            a.get("clicks") or a.get("clickCount") or a.get("click_count") or 0
+                                        )
+                        elif analytics_resp.status_code >= 400:
+                            social_activity["fetch_diagnostics"]["analytics"]["error"] = analytics_resp.text[:300]
+
+                    # Fallback 1: derive active post IDs from comment streams.
+                    if social_activity["recent_posts"] == 0:
+                        comments_resp, _ = await _get_first_ok(
+                            ["/inbox/comments", "/comments"],
+                            params={"profileId": zernio_profile_id, "limit": 100},
+                        )
+                        if comments_resp is not None and comments_resp.status_code == 200:
+                            comments_data = comments_resp.json()
+                            comments_rows = comments_data.get("comments") or comments_data.get("data") or []
+                            if isinstance(comments_rows, list) and comments_rows:
+                                def _comment_post_id(row: Dict[str, Any]) -> str:
+                                    post_obj = row.get("post") if isinstance(row.get("post"), dict) else {}
+                                    media_obj = row.get("media") if isinstance(row.get("media"), dict) else {}
+                                    parent_obj = row.get("parent") if isinstance(row.get("parent"), dict) else {}
+                                    candidates = (
+                                        row.get("postId"),
+                                        row.get("post_id"),
+                                        row.get("postID"),
+                                        row.get("latePostId"),
+                                        row.get("late_post_id"),
+                                        row.get("external_post_id"),
+                                        row.get("zernio_post_id"),
+                                        row.get("object_id"),
+                                        row.get("objectId"),
+                                        row.get("parentId"),
+                                        row.get("parent_id"),
+                                        row.get("mediaId"),
+                                        row.get("media_id"),
+                                        post_obj.get("id"),
+                                        post_obj.get("postId"),
+                                        post_obj.get("post_id"),
+                                        media_obj.get("id"),
+                                        media_obj.get("postId"),
+                                        media_obj.get("post_id"),
+                                        parent_obj.get("id"),
+                                    )
+                                    for c in candidates:
+                                        if c is None:
+                                            continue
+                                        s = str(c).strip()
+                                        if s:
+                                            return s
+                                    return ""
+
+                                by_post: Dict[str, Dict[str, Any]] = {}
+                                for c in comments_rows:
+                                    if not isinstance(c, dict):
+                                        continue
+                                    post_id = _comment_post_id(c)
+                                    if not post_id:
+                                        continue
+                                    if post_id not in by_post:
+                                        by_post[post_id] = {
+                                            "platform": str(c.get("platform") or "").lower(),
+                                            "post_id": post_id,
+                                            "status": "active_via_comments",
+                                            "title": c.get("postTitle") or c.get("caption") or None,
+                                            "scheduled_at": None,
+                                            "published_at": c.get("createdAt") or c.get("created_at"),
+                                        }
+                                if by_post:
+                                    social_activity["total_posts_fetched"] = len(by_post)
+                                    social_activity["recent_posts"] = len(by_post)
+                                    social_activity["latest_posts"] = list(by_post.values())[:20]
+                                    social_activity["post_data_source"] = "comments_fallback"
+                                    post_times = [
+                                        str(item.get("published_at") or item.get("scheduled_at"))
+                                        for item in social_activity["latest_posts"]
+                                        if item.get("published_at") or item.get("scheduled_at")
+                                    ]
+                                    if post_times:
+                                        social_activity["last_post_at"] = post_times[0]
+
+                    # Fallback 2: use internal scheduled/published posts saved in CRM.
+                    if social_activity["recent_posts"] == 0:
+                        internal_rows = await ctx.db.scheduled_posts.find(
+                            {"user_id": ctx.business_id, "status": {"$in": ["published", "scheduled"]}}
+                        ).sort("scheduled_at", -1).to_list(100)
+                        if internal_rows:
+                            latest_internal = [p for p in internal_rows if isinstance(p, dict)]
+                            social_activity["total_posts_fetched"] = len(latest_internal)
+                            social_activity["recent_posts"] = len(latest_internal)
+                            social_activity["latest_posts"] = [
+                                {
+                                    "platform": str((p or {}).get("platform") or "").lower(),
+                                    "post_id": (p or {}).get("_id") or (p or {}).get("id"),
+                                    "status": (p or {}).get("status"),
+                                    "title": (p or {}).get("title") or (p or {}).get("caption") or (p or {}).get("content"),
+                                    "scheduled_at": (p or {}).get("scheduled_at"),
+                                    "published_at": (p or {}).get("published_at"),
+                                }
+                                for p in latest_internal[:20]
+                            ]
+                            social_activity["post_data_source"] = "internal_scheduled_posts"
+                            post_times = [
+                                str(item.get("published_at") or item.get("scheduled_at"))
+                                for item in social_activity["latest_posts"]
+                                if item.get("published_at") or item.get("scheduled_at")
+                            ]
+                            if post_times:
+                                social_activity["last_post_at"] = post_times[0]
+                elif resp.status_code >= 400:
+                    social_activity["fetch_diagnostics"]["accounts"]["error"] = resp.text[:300]
     except Exception as e:
         logger.warning(f"[integrations_status] Zernio social lookup failed: {e}")
     out["social"] = social_accounts
@@ -1291,12 +1511,36 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
     out["social_overview"] = social_labels
     social_gaps: list[str] = []
     social_actions: list[str] = []
+    fetch_diag = social_activity.get("fetch_diagnostics") or {}
+    inbox_diag = fetch_diag.get("inbox") or {}
+    posts_diag = fetch_diag.get("posts") or {}
+    inbox_status = int(inbox_diag.get("status_code") or 0) if str(inbox_diag.get("status_code") or "").isdigit() else None
+    posts_status = int(posts_diag.get("status_code") or 0) if str(posts_diag.get("status_code") or "").isdigit() else None
+    inbox_error_txt = str(inbox_diag.get("error") or "").lower()
+    posts_error_txt = str(posts_diag.get("error") or "").lower()
+    inbox_perm_denied = inbox_status in (401, 403) or ("permission" in inbox_error_txt)
+    posts_perm_denied = posts_status in (401, 403) or ("permission" in posts_error_txt)
+
     if social_activity["accounts_count"] > 0 and social_activity["recent_inbox_conversations"] == 0:
-        social_gaps.append("No recent inbox conversations returned for connected social accounts.")
-        social_actions.append("Verify messaging permissions/scopes for connected accounts and test by sending a new DM.")
+        if inbox_perm_denied:
+            social_gaps.append("Connected social channels cannot read inbox data due to platform permission denial.")
+            social_actions.append("Reconnect affected channels and grant inbox/message read permissions, then run a fresh inbox sync.")
+        elif inbox_status == 404:
+            social_gaps.append("Connected social channels returned 404 on inbox fetch (likely connector path or sync mismatch).")
+            social_actions.append("Run a full Social Inbox refresh first; if still failing, contact Zilo support with this diagnostic.")
+        else:
+            social_gaps.append("No recent inbox conversations returned for connected social channels.")
+            social_actions.append("Send a new test DM to a connected page/account and trigger inbox refresh to verify live sync.")
     if social_activity["accounts_count"] > 0 and social_activity["recent_posts"] == 0:
-        social_gaps.append("No recent posts returned for connected social accounts.")
-        social_actions.append("Confirm posting history exists on connected pages and that post-read scopes are granted.")
+        if posts_perm_denied:
+            social_gaps.append("Connected social channels cannot read post history due to platform permission denial.")
+            social_actions.append("Reconnect affected channels and grant post/page read permissions, then run a social refresh.")
+        elif posts_status == 404:
+            social_gaps.append("Connected social channels returned 404 on post fetch (likely connector path or sync mismatch).")
+            social_actions.append("Run a social data refresh; if it persists, contact Zilo support with diagnostics.")
+        else:
+            social_gaps.append("No recent posts returned for connected social channels.")
+            social_actions.append("Confirm posting history exists and run a refresh to pull latest posts.")
     if social_activity["accounts_count"] == 0:
         social_gaps.append("No connected social accounts were found.")
         social_actions.append("Connect at least one social account in Integrations to unlock social insights.")
@@ -1304,8 +1548,24 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         "status": "healthy" if not social_gaps else "attention_needed",
         "gaps": social_gaps,
         "recommended_actions": social_actions,
+        # Keep normal responses conversational: only expose technical evidence when attention is needed.
+        **(
+            {
+                "evidence": {
+                    "accounts_fetch_status": (fetch_diag.get("accounts") or {}).get("status_code"),
+                    "inbox_fetch_status": (fetch_diag.get("inbox") or {}).get("status_code"),
+                    "comments_fetch_status": (fetch_diag.get("comments") or {}).get("status_code"),
+                    "posts_fetch_status": (fetch_diag.get("posts") or {}).get("status_code"),
+                    "analytics_fetch_status": (fetch_diag.get("analytics") or {}).get("status_code"),
+                    "post_data_source": social_activity.get("post_data_source"),
+                }
+            }
+            if social_gaps
+            else {}
+        ),
         "checked_at": social_activity.get("checked_at"),
         "last_message_at": social_activity.get("last_message_at"),
+        "last_comment_at": social_activity.get("last_comment_at"),
         "last_post_at": social_activity.get("last_post_at"),
     }
 
@@ -1330,6 +1590,7 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
         out["summary"] += (
             f" | Social activity: {social_activity['recent_inbox_conversations']} inbox threads "
             f"({social_activity['recent_unread_conversations']} unread), "
+            f"{social_activity['recent_comments']} comments, "
             f"{social_activity['recent_posts']} recent posts"
         )
         perf = social_activity.get("performance_totals") or {}
@@ -1384,7 +1645,8 @@ async def get_social_conversation_history(ctx: ToolContext, args: Dict[str, Any]
         return {"error": "No social profile linked yet. Connect a social account first."}
 
     zernio_api_key = (os.getenv("ZERNIO_API_KEY") or "").strip()
-    zernio_api_base = (os.getenv("ZERNIO_API_BASE") or "https://zernio.com/api/v1").rstrip("/")
+    configured_base = (os.getenv("ZERNIO_API_BASE") or "https://zernio.com/api/v1").rstrip("/")
+    zernio_api_bases = list(dict.fromkeys([configured_base, "https://zernio.com/v1", "https://zernio.com/api/v1"]))
     if not zernio_api_key:
         return {"error": "ZERNIO_API_KEY is not configured on the server."}
 
@@ -1393,12 +1655,40 @@ async def get_social_conversation_history(ctx: ToolContext, args: Dict[str, Any]
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
+            async def _get_with_base_fallback(path: str, *, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+                last_exc: Optional[httpx.HTTPStatusError] = None
+                for base in zernio_api_bases:
+                    url = f"{base}{path}"
+                    try:
+                        resp = await client.get(url, params=params, headers=headers)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        return data if isinstance(data, dict) else {}
+                    except httpx.HTTPStatusError as e:
+                        last_exc = e
+                        # 404 on one base/path can mean wrong connector path; try next candidate.
+                        if e.response.status_code == 404:
+                            continue
+                        raise
+                if last_exc is not None and last_exc.response.status_code == 404:
+                    return None
+                if last_exc is not None:
+                    raise last_exc
+                return None
+
             params: Dict[str, Any] = {"profileId": zernio_profile_id, "limit": 50}
             if platform_filter:
                 params["platform"] = platform_filter
-            conv_resp = await client.get(f"{zernio_api_base}/conversations", params=params, headers=headers)
-            conv_resp.raise_for_status()
-            conv_data = conv_resp.json()
+            conv_data = await _get_with_base_fallback("/inbox/conversations", params=params)
+            if conv_data is None:
+                # No synced conversation endpoint for this account/base yet: return empty state.
+                return {
+                    "count": 0,
+                    "platform_filter": platform_filter or None,
+                    "query": query or None,
+                    "conversations": [],
+                    "notice": "No social conversations available yet (account connected, inbox not synced or endpoint unavailable).",
+                }
             rows = conv_data.get("conversations") or conv_data.get("data") or []
             if not isinstance(rows, list):
                 rows = []
@@ -1411,11 +1701,20 @@ async def get_social_conversation_history(ctx: ToolContext, args: Dict[str, Any]
                     continue
                 platform = str(c.get("platform") or "").lower()
                 username = c.get("username") or c.get("senderName") or c.get("name")
+                account_id = str(c.get("accountId") or c.get("account_id") or "").strip()
                 try:
-                    detail_resp = await client.get(f"{zernio_api_base}/conversations/{conv_id}", headers=headers)
-                    if detail_resp.status_code != 200:
+                    detail_params: Dict[str, Any] = {"limit": 100, "sortOrder": "asc"}
+                    if account_id:
+                        detail_params["accountId"] = account_id
+                    detail = await _get_with_base_fallback(
+                        f"/inbox/conversations/{conv_id}/messages",
+                        params=detail_params,
+                    )
+                    if detail is None:
+                        # Backward compatibility path if message endpoint is unavailable.
+                        detail = await _get_with_base_fallback(f"/inbox/conversations/{conv_id}")
+                    if detail is None:
                         continue
-                    detail = detail_resp.json()
                     msgs = detail.get("messages") or detail.get("data") or []
                     if not isinstance(msgs, list):
                         msgs = []
@@ -1452,6 +1751,7 @@ async def get_social_conversation_history(ctx: ToolContext, args: Dict[str, Any]
 
                     conversations.append({
                         "conversation_id": str(conv_id),
+                        "account_id": account_id or None,
                         "platform": platform,
                         "username": username,
                         "unread_count": c.get("unreadCount") or c.get("unread_count") or (1 if c.get("unread") else 0),
@@ -1580,6 +1880,146 @@ async def get_social_conversation_insights(ctx: ToolContext, args: Dict[str, Any
 
 
 @tool(
+    name="configure_social_comment_autoreply",
+    description=(
+        "Create or update Social Inbox comment auto-reply setup. "
+        "Supports Native AI all-post mode, ManyChat per-post mode, and hybrid mode "
+        "with keyword rules and chained media/text steps."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "enabled": {"type": "boolean", "description": "Turn comment auto-reply on/off."},
+            "engine_mode": {
+                "type": "string",
+                "description": "native_ai_all_posts | manychat_per_post | hybrid",
+            },
+            "apply_all_posts": {"type": "boolean", "description": "Whether rules apply to all posts."},
+            "manychat_post_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Post IDs to run ManyChat-style flows on when not using all posts.",
+            },
+            "default_message": {
+                "type": "string",
+                "description": "Fallback ManyChat text reply. Supports {name}.",
+            },
+            "reply_only_unreplied": {
+                "type": "boolean",
+                "description": "Only auto-reply when post/comment has no existing replies.",
+            },
+            "keyword_rules": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                },
+                "description": "Ordered keyword->message rules.",
+            },
+            "chain_steps": {
+                "type": "array",
+                "description": "ManyChat-style chained replies. Supports text/image/video/file.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string"},
+                        "message": {"type": "string"},
+                        "media_url": {"type": "string"},
+                        "delay_seconds": {"type": "integer"},
+                    },
+                },
+            },
+        },
+    },
+)
+async def configure_social_comment_autoreply(ctx: ToolContext, args: Dict[str, Any]):
+    user_doc = await ctx.db.users.find_one({"_id": ctx.business_id}, {"settings.zernio_comment_autoreply": 1})
+    saved = (((user_doc or {}).get("settings") or {}).get("zernio_comment_autoreply") or {})
+
+    def _clean_mode(v: Any) -> str:
+        mode = str(v or saved.get("engine_mode") or "hybrid").strip().lower()
+        return mode if mode in ("native_ai_all_posts", "manychat_per_post", "hybrid") else "hybrid"
+
+    def _clean_rules(value: Any) -> list[dict]:
+        out: list[dict] = []
+        for item in (value if value is not None else saved.get("keyword_rules") or []):
+            if not isinstance(item, dict):
+                continue
+            keyword = str(item.get("keyword") or "").strip()
+            message = str(item.get("message") or "").strip()
+            if keyword and message:
+                out.append({"keyword": keyword, "message": message})
+        return out[:25]
+
+    def _clean_steps(value: Any) -> list[dict]:
+        out: list[dict] = []
+        for item in (value if value is not None else saved.get("chain_steps") or []):
+            if not isinstance(item, dict):
+                continue
+            stype = str(item.get("type") or "text").strip().lower()
+            if stype not in {"text", "image", "video", "file"}:
+                stype = "text"
+            message = str(item.get("message") or "").strip()
+            media_url = str(item.get("media_url") or "").strip()
+            delay_seconds = max(0, min(int(item.get("delay_seconds") or 0), 120))
+            if stype == "text" and not message:
+                continue
+            if stype != "text" and not media_url and not message:
+                continue
+            out.append(
+                {
+                    "type": stype,
+                    "message": message or None,
+                    "media_url": media_url or None,
+                    "delay_seconds": delay_seconds,
+                }
+            )
+        return out[:12]
+
+    settings = {
+        "enabled": bool(args.get("enabled", saved.get("enabled", False))),
+        "engine_mode": _clean_mode(args.get("engine_mode")),
+        "apply_all_posts": bool(args.get("apply_all_posts", saved.get("apply_all_posts", True))),
+        "post_ids": [str(x).strip() for x in (saved.get("post_ids") or []) if str(x).strip()],
+        "manychat_post_ids": [
+            str(x).strip()
+            for x in (args.get("manychat_post_ids") if "manychat_post_ids" in args else saved.get("manychat_post_ids", []) or [])
+            if str(x).strip()
+        ],
+        "default_message": str(
+            args.get(
+                "default_message",
+                saved.get("default_message", "Thanks for your comment. We have seen it and will follow up shortly."),
+            )
+            or ""
+        ).strip() or "Thanks for your comment. We have seen it and will follow up shortly.",
+        "keyword_rules": _clean_rules(args.get("keyword_rules") if "keyword_rules" in args else None),
+        "chain_steps": _clean_steps(args.get("chain_steps") if "chain_steps" in args else None),
+        "reply_only_unreplied": bool(args.get("reply_only_unreplied", saved.get("reply_only_unreplied", True))),
+    }
+
+    await ctx.db.users.update_one(
+        {"_id": ctx.business_id},
+        {"$set": {"settings.zernio_comment_autoreply": settings}},
+        upsert=False,
+    )
+    return {
+        "status": "ok",
+        "settings": settings,
+        "summary": (
+            f"Comment auto-reply {'enabled' if settings['enabled'] else 'disabled'} | "
+            f"mode={settings['engine_mode']} | "
+            f"manychat_posts={len(settings['manychat_post_ids'])} | "
+            f"keywords={len(settings['keyword_rules'])} | "
+            f"steps={len(settings['chain_steps'])}"
+        ),
+    }
+
+
+@tool(
     name="audit_social_integrations",
     description=(
         "Run a health audit for connected social integrations and report data freshness, gaps, and fixes."
@@ -1591,12 +2031,22 @@ async def audit_social_integrations(ctx: ToolContext, args: Dict[str, Any]):
     diagnostics = status.get("social_diagnostics") if isinstance(status, dict) else None
     activity = status.get("social_activity") if isinstance(status, dict) else None
     overview = status.get("social_overview") if isinstance(status, dict) else None
+    diag_status = (diagnostics or {}).get("status", "unknown")
+    is_healthy = diag_status == "healthy"
+    conversational_summary = (
+        "Social channels are connected and syncing normally."
+        if is_healthy
+        else "Social channels are connected, but some data checks need attention."
+    )
     return {
-        "status": (diagnostics or {}).get("status", "unknown"),
+        "status": diag_status,
+        "summary": conversational_summary,
         "connected_pages": overview or [],
         "activity": activity or {},
         "gaps": (diagnostics or {}).get("gaps", []),
         "recommended_actions": (diagnostics or {}).get("recommended_actions", []),
+        # Technical details only when there's an issue.
+        **({"technical_evidence": (diagnostics or {}).get("evidence", {})} if not is_healthy else {}),
         "checked_at": (diagnostics or {}).get("checked_at"),
     }
 
@@ -1814,6 +2264,124 @@ async def run_competitor_benchmark(ctx: ToolContext, args: Dict[str, Any]):
         "competitors": competitors,
         "opportunities": opportunities,
         "recommended_actions": actions,
+    }
+
+
+@tool(
+    name="run_weekly_operator_digest",
+    description=(
+        "Generate a weekly execution digest: key metrics, integration health, market context, "
+        "and a concrete 3-item action plan with owners and success metrics."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def run_weekly_operator_digest(ctx: ToolContext, args: Dict[str, Any]):
+    owner = await get_owner_info(ctx, {})
+    analytics = await get_analytics_summary(ctx, {})
+    trends = await get_revenue_trends(ctx, {"months": 3})
+    social_audit = await audit_social_integrations(ctx, {})
+    brand_audit = await run_brand_audit(ctx, {})
+    benchmark = await run_competitor_benchmark(ctx, {})
+    team_data = await list_team(ctx, {})
+
+    team_members = team_data.get("members") if isinstance(team_data, dict) else []
+    if not isinstance(team_members, list):
+        team_members = []
+
+    owner_name = str(owner.get("owner_name") or owner.get("business_name") or "Owner")
+    sales_owner = owner_name
+    marketing_owner = owner_name
+    ops_owner = owner_name
+
+    for m in team_members:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "").lower()
+        name = str(m.get("name") or "").strip() or owner_name
+        if any(k in role for k in ("sales", "bd", "account")):
+            sales_owner = name
+        if any(k in role for k in ("marketing", "social", "growth")):
+            marketing_owner = name
+        if any(k in role for k in ("ops", "operation", "support")):
+            ops_owner = name
+
+    total_customers = int(analytics.get("total_customers") or 0) if isinstance(analytics, dict) else 0
+    sales_today = float(analytics.get("sales_today") or 0) if isinstance(analytics, dict) else 0.0
+    revenue_trend = trends.get("trend") if isinstance(trends, dict) else None
+    trend_label = str((revenue_trend or {}).get("direction") or "unknown") if isinstance(revenue_trend, dict) else "unknown"
+
+    social_status = str(social_audit.get("status") or "unknown") if isinstance(social_audit, dict) else "unknown"
+    social_gaps = social_audit.get("gaps") if isinstance(social_audit, dict) else []
+    if not isinstance(social_gaps, list):
+        social_gaps = []
+
+    competitor_actions = benchmark.get("recommended_actions") if isinstance(benchmark, dict) else []
+    if not isinstance(competitor_actions, list):
+        competitor_actions = []
+
+    # Confidence and freshness scoring (simple, transparent heuristics).
+    freshness_points = 0
+    if isinstance(social_audit, dict) and social_audit.get("checked_at"):
+        freshness_points += 1
+    if isinstance(brand_audit, dict) and (brand_audit.get("social_health") or {}).get("checked_at"):
+        freshness_points += 1
+    if isinstance(analytics, dict):
+        freshness_points += 1
+    confidence = "high" if freshness_points >= 3 else ("medium" if freshness_points == 2 else "low")
+
+    top_actions = [
+        {
+            "priority": 1,
+            "owner": ops_owner,
+            "task": "Close social data gaps and verify channel health",
+            "why": social_gaps[0] if social_gaps else "Maintain healthy social signal quality for AI decisions.",
+            "success_metric": "Social audit status is healthy and at least one active inbox thread is visible.",
+        },
+        {
+            "priority": 2,
+            "owner": marketing_owner,
+            "task": "Ship one offer/positioning update and 3 social posts this week",
+            "why": "Improve trust and conversion from profile/traffic touchpoints.",
+            "success_metric": "3 posts published and measurable uplift in engagement vs prior week.",
+        },
+        {
+            "priority": 3,
+            "owner": sales_owner,
+            "task": "Follow up top opportunities from recent conversations",
+            "why": "Turn active demand signals into revenue quickly.",
+            "success_metric": "At least 10 high-intent follow-ups sent and conversion outcomes tracked.",
+        },
+    ]
+
+    if competitor_actions:
+        ca = competitor_actions[0]
+        if isinstance(ca, dict):
+            top_actions[1]["why"] = str(ca.get("detail") or top_actions[1]["why"])
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "data_freshness": {
+            "confidence": confidence,
+            "sources": {
+                "analytics": bool(isinstance(analytics, dict) and analytics),
+                "social_audit_checked_at": (social_audit.get("checked_at") if isinstance(social_audit, dict) else None),
+                "brand_audit_checked_at": ((brand_audit.get("social_health") or {}).get("checked_at") if isinstance(brand_audit, dict) else None),
+            },
+        },
+        "snapshot": {
+            "business": owner.get("business_name") or owner.get("owner_name"),
+            "total_customers": total_customers,
+            "sales_today": sales_today,
+            "revenue_trend_direction": trend_label,
+            "social_status": social_status,
+            "team_count": len(team_members),
+        },
+        "top_actions": top_actions,
+        "supporting_context": {
+            "social_gaps": social_gaps,
+            "competitor_opportunities": benchmark.get("opportunities") if isinstance(benchmark, dict) else [],
+            "brand_scorecard": brand_audit.get("scorecard") if isinstance(brand_audit, dict) else {},
+        },
     }
 
 
@@ -3035,6 +3603,7 @@ async def create_automation(ctx: ToolContext, args: Dict[str, Any]):
     if not description or len(description) < 10:
         return {"error": "Description is too short. Describe what the automation should do."}
 
+    build_warning: Optional[str] = None
     try:
         from workflows.ai_builder import build_workflow_from_description
         wf_dict = await build_workflow_from_description(
@@ -3042,10 +3611,16 @@ async def create_automation(ctx: ToolContext, args: Dict[str, Any]):
             user=ctx.user,
         )
     except ValueError as exc:
-        return {"error": f"Could not generate automation: {exc}"}
+        # Do not fail the user flow when the AI parser/output is imperfect.
+        # Create a valid starter automation they can run/edit immediately.
+        from workflows.ai_builder import fallback_workflow_create
+        wf_dict = fallback_workflow_create(description)
+        build_warning = f"AI builder fallback used: {exc}"
     except Exception as exc:
         logger.exception("[create_automation] AI builder failed")
-        return {"error": f"Automation builder error: {exc}"}
+        from workflows.ai_builder import fallback_workflow_create
+        wf_dict = fallback_workflow_create(description)
+        build_warning = "AI builder error; starter automation created instead."
 
     # Save to DB
     wf_id = str(uuid.uuid4())
@@ -3075,6 +3650,7 @@ async def create_automation(ctx: ToolContext, args: Dict[str, Any]):
         "steps": steps_summary,
         "step_count": len(steps_summary),
         "enabled": True,
+        **({"warning": build_warning} if build_warning else {}),
     }
 
 
@@ -7527,6 +8103,523 @@ async def get_social_post_analytics(ctx: ToolContext, args: Dict[str, Any]):
             round((totals["likes"] + totals["comments"] + totals["shares"]) / totals["reach"] * 100, 2)
             if totals["reach"] > 0 else 0
         ),
+    }
+
+
+@tool(
+    name="get_live_social_posts",
+    description=(
+        "Fetch live posts and real-time engagement metrics (likes, comments, shares, reach, clicks) "
+        "directly from connected social media accounts via Zernio. "
+        "Unlike get_social_post_analytics (which only shows CRM-scheduled posts), this returns ALL posts "
+        "from connected accounts — including posts published directly on Facebook, Instagram, etc. "
+        "Use this whenever the user asks about their latest posts, current engagement, or says they "
+        "can't see a post. Also returns posts that have received comments in the social inbox."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "platform": {
+                "type": "string",
+                "description": "Filter by platform: facebook, instagram, twitter, linkedin. Omit for all.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 20,
+                "description": "Max number of posts to return (1–50).",
+            },
+        },
+    },
+)
+async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
+    import httpx as _httpx
+
+    zernio_base = os.environ.get("ZERNIO_API_BASE", "https://zernio.com/api/v1").rstrip("/")
+    zernio_bases = list(dict.fromkeys([zernio_base, "https://zernio.com/api/v1"]))
+
+    api_key = os.environ.get("ZERNIO_API_KEY", "").strip()
+    if not api_key:
+        return {"error": "Zernio is not connected. ZERNIO_API_KEY is not configured."}
+
+    platform_filter = (args.get("platform") or "").strip().lower()
+    limit = max(1, min(int(args.get("limit") or 20), 50))
+
+    hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    async def _zernio_get(path: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Try each Zernio base URL until one succeeds."""
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            for base in zernio_bases:
+                try:
+                    r = await client.get(f"{base}{path}", headers=hdrs, params=params)
+                    if r.status_code == 404 and "text/html" in (r.headers.get("content-type") or ""):
+                        continue
+                    r.raise_for_status()
+                    return r.json()
+                except _httpx.HTTPStatusError:
+                    continue
+                except Exception:
+                    continue
+        return None
+
+    # ── 1. Resolve profile ID from DB ─────────────────────────────────────────
+    user_doc = await ctx.db.users.find_one(
+        {"_id": ctx.business_id}, {"zernio_profile_id": 1}
+    )
+    profile_id = str((user_doc or {}).get("zernio_profile_id") or "").strip()
+    if not profile_id:
+        return {
+            "error": "No Zernio profile found for this account. Connect a social account first.",
+            "posts": [],
+        }
+
+    params_base: Dict[str, Any] = {"profileId": profile_id, "limit": limit}
+    if platform_filter:
+        params_base["platform"] = platform_filter
+
+    # ── helpers (defined early so they can be used in async fetch steps) ────────
+    def _all_ids(row: Dict[str, Any]) -> List[str]:
+        candidates = [
+            row.get("id"), row.get("_id"), row.get("postId"), row.get("post_id"),
+            row.get("platformPostId"), row.get("externalPostId"),
+        ]
+        return [str(c).strip() for c in candidates if c and str(c).strip()]
+
+    def _extract_int(*values) -> int:
+        for v in values:
+            try:
+                n = int(v)
+                if n >= 0:
+                    return n
+            except (TypeError, ValueError):
+                pass
+        return 0
+
+    def _get_account_id(row: Dict[str, Any]) -> str:
+        for key in ("accountId", "account_id", "accountID", "pageId", "page_id"):
+            v = row.get(key)
+            if v and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    # ── 2. Fetch live posts + accounts in parallel ─────────────────────────────
+    import asyncio as _asyncio
+
+    posts_data, accounts_data, comments_data = await _asyncio.gather(
+        _zernio_get("/posts", params_base),
+        _zernio_get("/accounts", {"profileId": profile_id}),
+        _zernio_get("/inbox/comments", {**params_base, "minComments": 1}),
+        return_exceptions=True,
+    )
+
+    raw_posts: List[Dict[str, Any]] = []
+    if isinstance(posts_data, dict):
+        for key in ("posts", "data", "results"):
+            candidate = posts_data.get(key)
+            if isinstance(candidate, list):
+                raw_posts = candidate
+                break
+        if not raw_posts and isinstance(posts_data, list):
+            raw_posts = posts_data
+
+    # Collect all account IDs as fallback when a post doesn't carry its own
+    fallback_account_ids: List[str] = []
+    if isinstance(accounts_data, dict):
+        acc_list = accounts_data.get("accounts") or accounts_data.get("data") or []
+        if isinstance(acc_list, list):
+            for acc in acc_list:
+                if isinstance(acc, dict):
+                    aid = _get_account_id(acc)
+                    if aid:
+                        fallback_account_ids.append(aid)
+
+    commented_posts: List[Dict[str, Any]] = []
+    if isinstance(comments_data, dict):
+        for key in ("posts", "data", "results"):
+            candidate = comments_data.get(key)
+            if isinstance(candidate, list):
+                commented_posts = candidate
+                break
+
+    # ── 3. Per-post analytics with accountId (the only way Zernio returns likes/shares) ──
+    METRICS = "likes,comments,shares,reach,clicks,saves,impressions"
+
+    async def _fetch_post_engagement(post: Dict[str, Any]) -> Optional[Dict[str, int]]:
+        """Fetch engagement for one post using postId + accountId."""
+        post_ids = _all_ids(post)
+        if not post_ids:
+            return None
+        account_id = _get_account_id(post) or (fallback_account_ids[0] if fallback_account_ids else "")
+        plat = str(post.get("platform") or platform_filter or "").lower()
+
+        params: Dict[str, Any] = {
+            "profileId": profile_id,
+            "metrics": METRICS,
+            "postId": post_ids[0],
+        }
+        if account_id:
+            params["accountId"] = account_id
+        if plat:
+            params["platform"] = plat
+
+        data = await _zernio_get("/analytics", params)
+        if not data:
+            return None
+
+        # Zernio may return: {data: [...]} or {analytics: {...}} or the row directly
+        row: Optional[Dict[str, Any]] = None
+        for key in ("data", "posts", "analytics", "results"):
+            candidate = data.get(key)
+            if isinstance(candidate, list) and candidate:
+                row = candidate[0]
+                break
+            if isinstance(candidate, dict):
+                row = candidate
+                break
+        if row is None:
+            # The response itself might be the metrics object
+            if any(k in data for k in ("likes", "like_count", "reactions", "shares", "share_count")):
+                row = data
+
+        return row  # caller will run through _extract_engagement
+
+    # Combine raw_posts + commented_posts so analytics run even when /posts returns empty
+    _seen_for_analytics: set = set()
+    _posts_for_analytics: List[Dict[str, Any]] = []
+    for _p in raw_posts + commented_posts:
+        if not isinstance(_p, dict):
+            continue
+        _ids = _all_ids(_p)
+        _canon = _ids[0] if _ids else None
+        if _canon and _canon not in _seen_for_analytics:
+            _posts_for_analytics.append(_p)
+            _seen_for_analytics.add(_canon)
+
+    # Limit per-post calls to first 25 posts to keep latency reasonable
+    per_post_results = await _asyncio.gather(
+        *[_fetch_post_engagement(p) for p in _posts_for_analytics[:25]],
+        return_exceptions=True,
+    )
+    # Keep alignment: per_post_results[i] corresponds to _posts_for_analytics[i]
+    _analytics_source = _posts_for_analytics
+
+    # ── 4. Build engagement lookup keyed by post id ───────────────────────────
+    analytics_rows: List[Dict[str, Any]] = [
+        r for r in per_post_results
+        if isinstance(r, dict)
+    ]
+
+    def _extract_engagement(row: Dict[str, Any]) -> Dict[str, int]:
+        # Zernio nests engagement under several possible keys depending on endpoint
+        a = row.get("analytics") or row.get("metrics") or row.get("insights") or row.get("engagement") or {}
+        if not isinstance(a, dict):
+            a = {}
+        # platformAnalytics is an array; take first element
+        pa_list = row.get("platformAnalytics") or []
+        pa = (pa_list[0] if isinstance(pa_list, list) and pa_list and isinstance(pa_list[0], dict) else {})
+
+        def _best(*sources) -> int:
+            return _extract_int(*sources)
+
+        likes = _best(
+            row.get("likes"), row.get("likeCount"), row.get("like_count"),
+            row.get("reactions"), row.get("reactionCount"), row.get("reaction_count"),
+            a.get("likes"), a.get("likeCount"), a.get("like_count"),
+            a.get("reactions"), a.get("reactionCount"), a.get("reaction_count"), a.get("reactions_count"),
+            pa.get("likes"), pa.get("likeCount"), pa.get("like_count"),
+            pa.get("reactions"), pa.get("reactionCount"), pa.get("reaction_count"),
+        )
+        shares = _best(
+            row.get("shares"), row.get("shareCount"), row.get("share_count"), row.get("sharesCount"),
+            a.get("shares"), a.get("shareCount"), a.get("share_count"), a.get("sharesCount"), a.get("shares_count"),
+            pa.get("shares"), pa.get("shareCount"), pa.get("share_count"), pa.get("sharesCount"),
+        )
+        comments = _best(
+            row.get("commentCount"), row.get("comments_count"), row.get("comments"), row.get("total_comments"),
+            a.get("comments"), a.get("commentCount"), a.get("comment_count"), a.get("comments_count"),
+            pa.get("comments"), pa.get("commentCount"), pa.get("comment_count"),
+        )
+        reach = _best(
+            row.get("reach"), row.get("impressions"),
+            a.get("reach"), a.get("impressions"),
+            pa.get("reach"), pa.get("impressions"),
+        )
+        clicks = _best(
+            row.get("clicks"), row.get("clickCount"), row.get("click_count"),
+            row.get("linkClicks"), row.get("link_clicks"),
+            a.get("clicks"), a.get("clickCount"), a.get("click_count"),
+            a.get("linkClicks"), a.get("link_clicks"),
+            pa.get("clicks"), pa.get("clickCount"),
+        )
+        saves = _best(
+            row.get("saves"), row.get("saveCount"), row.get("save_count"),
+            a.get("saves"), a.get("saveCount"), a.get("save_count"),
+            pa.get("saves"), pa.get("saveCount"),
+        )
+        return {
+            "likes": likes, "comments": comments, "shares": shares,
+            "reach": reach, "clicks": clicks, "saves": saves,
+        }
+
+    # Key by original post IDs — per_post_results is index-aligned with _analytics_source[:25]
+    engagement_by_id: Dict[str, Dict[str, int]] = {}
+    for i, result in enumerate(per_post_results):
+        if not isinstance(result, dict):
+            continue
+        original_post = _analytics_source[i] if i < len(_analytics_source) else None
+        if not original_post:
+            continue
+        eng = _extract_engagement(result)
+        # Store under all known IDs of the original post so merging always hits
+        for pid in _all_ids(original_post):
+            engagement_by_id[pid] = eng
+        # Also try IDs from the analytics row itself (some endpoints do echo them)
+        for pid in _all_ids(result):
+            if pid not in engagement_by_id:
+                engagement_by_id[pid] = eng
+
+    comment_count_by_id: Dict[str, int] = {}
+    for row in commented_posts:
+        if not isinstance(row, dict):
+            continue
+        cnt = _extract_int(row.get("commentCount"), row.get("comments_count"), row.get("comments"))
+        for pid in _all_ids(row):
+            comment_count_by_id[pid] = cnt
+
+    # ── 6. Merge and format output ────────────────────────────────────────────
+    def _post_text(row: Dict[str, Any]) -> str:
+        for key in ("content", "caption", "message", "text", "title"):
+            v = row.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()[:300]
+        return "(no caption)"
+
+    seen_ids: set = set()
+    result_posts: List[Dict[str, Any]] = []
+
+    for row in raw_posts:
+        if not isinstance(row, dict):
+            continue
+        ids = _all_ids(row)
+        canonical = ids[0] if ids else None
+        if not canonical or canonical in seen_ids:
+            continue
+        seen_ids.add(canonical)
+
+        # Find best engagement match
+        eng: Dict[str, int] = {}
+        for pid in ids:
+            if pid in engagement_by_id:
+                eng = engagement_by_id[pid]
+                break
+        if not eng:
+            eng = _extract_engagement(row)
+
+        # Prefer comment count from inbox (more accurate)
+        for pid in ids:
+            if pid in comment_count_by_id:
+                eng["comments"] = max(eng.get("comments", 0), comment_count_by_id[pid])
+                break
+
+        created = row.get("createdTime") or row.get("created_at") or row.get("createdAt") or ""
+        result_posts.append({
+            "id":        canonical,
+            "platform":  str(row.get("platform") or platform_filter or "unknown").lower(),
+            "text":      _post_text(row),
+            "permalink": row.get("permalink") or row.get("url") or "",
+            "created_at": created,
+            "engagement": eng,
+            "engagement_score": eng.get("likes", 0) + eng.get("comments", 0) * 2 + eng.get("shares", 0) * 3 + eng.get("clicks", 0),
+        })
+
+    # Also surface commented posts not already in the list
+    for row in commented_posts:
+        if not isinstance(row, dict):
+            continue
+        ids = _all_ids(row)
+        canonical = ids[0] if ids else None
+        if not canonical or canonical in seen_ids:
+            continue
+        seen_ids.add(canonical)
+        # Use analytics-fetched engagement first, fall back to inbox-level data
+        eng: Dict[str, int] = {}
+        for pid in ids:
+            if pid in engagement_by_id:
+                eng = engagement_by_id[pid]
+                break
+        if not eng:
+            eng = _extract_engagement(row)
+        cnt = max(
+            eng.get("comments", 0),
+            *[comment_count_by_id.get(pid, 0) for pid in ids],
+        )
+        eng["comments"] = cnt
+        created = row.get("createdTime") or row.get("created_at") or row.get("createdAt") or ""
+        result_posts.append({
+            "id":        canonical,
+            "platform":  str(row.get("platform") or platform_filter or "unknown").lower(),
+            "text":      _post_text(row),
+            "permalink": row.get("permalink") or row.get("url") or "",
+            "created_at": created,
+            "engagement": eng,
+            "engagement_score": eng.get("likes", 0) + eng.get("comments", 0) * 2 + eng.get("shares", 0) * 3 + eng.get("clicks", 0),
+        })
+
+    result_posts.sort(key=lambda x: x["engagement_score"], reverse=True)
+
+    totals = {"likes": 0, "comments": 0, "shares": 0, "reach": 0, "clicks": 0, "saves": 0}
+    for p in result_posts:
+        for k in totals:
+            totals[k] += p["engagement"].get(k, 0)
+
+    return {
+        "source": "zernio_live",
+        "note": "This data is fetched live from Zernio and includes ALL posts from connected accounts, not just CRM-scheduled ones.",
+        "total_posts": len(result_posts),
+        "totals": totals,
+        "posts": result_posts[:limit],
+    }
+
+
+@tool(
+    name="get_business_context",
+    description=(
+        "Pulls unified business context across all modules so Zilo can remember everything. "
+        "Use this before drafting personalized messages, follow-ups, or posts. "
+        "Returns recent customers, orders, social engagement, broadcasts, follow-ups, and top products. "
+        "If a customer name/email is provided, returns that customer's full history."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "customer_name_or_email": {
+                "type": "string",
+                "description": "Optional: name or email of a specific customer to fetch their full history. Omit for business-wide snapshot.",
+            },
+            "days": {
+                "type": "integer",
+                "default": 7,
+                "description": "How many days of recent activity to include (1–30).",
+            },
+        },
+    },
+)
+async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
+    days = max(1, min(int(args.get("days") or 7), 30))
+    customer_query = (args.get("customer_name_or_email") or "").strip()
+    limit = 20
+
+    # ── Helper: match customer by name/email ─────────────────────────────────────
+    async def _find_customer(query: str):
+        if not query:
+            return None
+        # Try email exact match first
+        email_match = await ctx.db.customers.find_one({
+            "business_id": ctx.business_id,
+            "email": {"$regex": f"^{query}$", "$options": "i"},
+        })
+        if email_match:
+            return email_match
+        # Try name contains
+        name_match = await ctx.db.customers.find_one({
+            "business_id": ctx.business_id,
+            "name": {"$regex": query, "$options": "i"},
+        })
+        return name_match
+
+    # ── 1. Customer snapshot (or specific customer) ───────────────────────────────
+    target_customer = await _find_customer(customer_query)
+    if target_customer:
+        # Full history for this customer
+        customer_id = str(target_customer["_id"])
+        orders = await ctx.db.orders.find({
+            "business_id": ctx.business_id,
+            "customer_id": customer_id,
+            "created_at": {"$gte": f"{datetime.utcnow() - timedelta(days=days):.0f}"}
+        }).to_list(length=limit)
+        followups = await ctx.db.followups.find({
+            "business_id": ctx.business_id,
+            "customer_id": customer_id,
+            "created_at": {"$gte": f"{datetime.utcnow() - timedelta(days=days):.0f}"}
+        }).to_list(length=limit)
+        # Social inbox mentions (via Zernio conversations)
+        social_refs = []
+        # Note: would need to index Zernio conversations by customer name/email for true cross-ref
+        customers = [target_customer]
+    else:
+        # Recent customers
+        customers = await ctx.db.customers.find({
+            "business_id": ctx.business_id,
+            "created_at": {"$gte": f"{datetime.utcnow() - timedelta(days=days):.0f}"}
+        }).sort("created_at", -1).to_list(length=limit)
+        orders = await ctx.db.orders.find({
+            "business_id": ctx.business_id,
+            "created_at": {"$gte": f"{datetime.utcnow() - timedelta(days=days):.0f}"}
+        }).sort("created_at", -1).to_list(length=limit)
+        followups = await ctx.db.followups.find({
+            "business_id": ctx.business_id,
+            "created_at": {"$gte": f"{datetime.utcnow() - timedelta(days=days):.0f}"}
+        }).sort("created_at", -1).to_list(length=limit)
+        social_refs = []
+
+    # ── 2. Recent broadcasts ─────────────────────────────────────────────────────
+    broadcasts = await ctx.db.broadcasts.find({
+        "business_id": ctx.business_id,
+        "created_at": {"$gte": f"{datetime.utcnow() - timedelta(days=days):.0f}"}
+    }).sort("created_at", -1).to_list(length=limit)
+
+    # ── 3. Top products (by order count in window) ────────────────────────────────
+    product_counts = {}
+    for o in orders:
+        for item in o.get("items", []):
+            pid = item.get("product_id")
+            if pid:
+                product_counts[pid] = product_counts.get(pid, 0) + (item.get("quantity") or 1)
+    top_product_ids = sorted(product_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    top_products = []
+    if top_product_ids:
+        product_docs = await ctx.db.products.find({
+            "_id": {"$in": [ObjectId(pid) for pid, _ in top_product_ids]}
+        }).to_list(length=None)
+        product_map = {str(doc["_id"]): doc for doc in product_docs}
+        top_products = [
+            {
+                "product": product_map.get(pid),
+                "order_count": cnt,
+            }
+            for pid, cnt in top_product_ids
+            if pid in product_map
+        ]
+
+    # ── 4. Social engagement summary ─────────────────────────────────────────────
+    # Reuse existing tools for consistency
+    from . import get_live_social_posts, get_social_post_analytics
+    social_live = await get_live_social_posts(ctx, {"platform": None, "limit": 10})
+    social_analytics = await get_social_post_analytics(ctx, {"days": days})
+
+    # ── 5. Business quick stats ───────────────────────────────────────────────────
+    quick_stats = {
+        "new_customers": len(customers),
+        "orders": len(orders),
+        "broadcasts": len(broadcasts),
+        "followups": len(followups),
+        "top_product": top_products[0]["product"]["name"] if top_products else None,
+        "total_revenue_window": sum(o.get("total", 0) for o in orders),
+    }
+
+    # ── 6. Assemble response ─────────────────────────────────────────────────────
+    return {
+        "scope": "customer" if target_customer else "business",
+        "customer": target_customer,
+        "customers": customers,
+        "orders": orders,
+        "followups": followups,
+        "broadcasts": broadcasts,
+        "top_products": top_products,
+        "social_live": social_live.get("posts", [])[:5],
+        "social_analytics": social_analytics,
+        "quick_stats": quick_stats,
+        "window_days": days,
     }
 
 

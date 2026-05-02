@@ -44,6 +44,7 @@ import {
   Hash,
   MapPinned,
   Search,
+  FolderKanban,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -75,6 +76,7 @@ const BUSINESS_NAV_BASE = [
   { href: "/dashboard/team-analytics", label: "Team Analytics", icon: Radio },
   { href: "/dashboard/whatsapp", label: "WhatsApp", icon: MessageSquare },
   { href: "/dashboard/team", label: "Team", icon: Users },
+  { href: "/dashboard/collaboration", label: "Collaboration", icon: FolderKanban },
   { href: "/dashboard/shop", label: "Shop", icon: Store },
   { href: "/dashboard/imports", label: "Imports", icon: Upload },
 ] as const;
@@ -206,6 +208,19 @@ export default function Sidebar() {
           </div>
         ))}
       </nav>
+
+      {/* ⌘K hint */}
+      <div className="px-3 pb-2">
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true }))}
+          className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-left text-xs text-slate-400 transition hover:bg-white/10 hover:text-slate-200"
+        >
+          <Search size={12} className="shrink-0" />
+          <span className="flex-1">Ask Zilo anything…</span>
+          <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">⌘K</kbd>
+        </button>
+      </div>
 
       {/* Logout */}
       <div className="px-3 pb-4 border-t border-white/10 pt-3">

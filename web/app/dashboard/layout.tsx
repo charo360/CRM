@@ -7,6 +7,7 @@ import { isAuthenticated } from "@/lib/auth";
 import { BusinessProvider } from "@/contexts/BusinessContext";
 import Sidebar from "@/components/Sidebar";
 import AssistantLauncher from "@/components/AssistantLauncher";
+import CommandBar from "@/components/CommandBar";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 
 /**
@@ -44,6 +45,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <main className="flex-1 overflow-auto bg-slate-50 text-slate-900">{children}</main>
       </div>
       {mounted && <AssistantLauncher />}
+      {mounted && <CommandBar />}
       {mounted && <OnboardingWizard />}
       <Toaster richColors position="top-center" />
     </BusinessProvider>

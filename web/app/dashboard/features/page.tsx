@@ -59,6 +59,15 @@ export default function FeaturesPage() {
 
   async function toggle(key: string, value: boolean) {
     const next = { ...features, [key]: value };
+    if (key === "nav_team") {
+      if (value) {
+        next.nav_collaboration = true;
+      } else {
+        next.nav_collaboration = false;
+      }
+    } else if (key === "nav_collaboration" && value && !next.nav_team) {
+      next.nav_team = true;
+    }
     setSavingKey(key);
     try {
       await persist(next);

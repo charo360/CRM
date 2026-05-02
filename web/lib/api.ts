@@ -614,6 +614,89 @@ export const teamApi = {
   delete: (id: string) => api.delete<void>(`/team/members/${id}`),
 };
 
+export interface CollaborationWorkspace {
+  id: string;
+  name: string;
+  description: string;
+  member_user_ids: string[];
+  linked_conversation_id?: string | null;
+  assets?: Array<{
+    id: string;
+    type: string;
+    title: string;
+    url: string;
+    note: string;
+    created_at?: string;
+    created_by?: string;
+  }>;
+  created_by?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ChannelAccessGrant {
+  user_id: string;
+  channel: string;
+  level: string;
+}
+
+export interface InboundRoutingRule {
+  id?: string;
+  name: string;
+  enabled?: boolean;
+  keywords: string[];
+  channels: string[];
+  assignee_user_id: string;
+}
+
+export const collaborationApi = {
+  listWorkspaces: () => api.get<{ workspaces: CollaborationWorkspace[] }>("/business/collaboration/workspaces"),
+  createWorkspace: (body: {
+    name: string;
+    description?: string;
+    member_user_ids?: string[];
+    linked_conversation_id?: string | null;
+  }) => api.post<Record<string, unknown>>("/business/collaboration/workspaces", body),
+  getWorkspace: (id: string) => api.get<CollaborationWorkspace>(`/business/collaboration/workspaces/${id}`),
+  patchWorkspace: (
+    id: string,
+    body: Partial<{
+      name: string;
+      description: string;
+      member_user_ids: string[];
+      linked_conversation_id: string | null;
+    }>,
+  ) => api.patch<{ status: string }>(`/business/collaboration/workspaces/${id}`, body),
+  deleteWorkspace: (id: string) => api.delete<{ status: string }>(`/business/collaboration/workspaces/${id}`),
+  addWorkspaceAsset: (id: string, body: { type?: string; title?: string; url?: string; note?: string }) =>
+    api.post<{ asset: Record<string, unknown> }>(`/business/collaboration/workspaces/${id}/assets`, body),
+  getChannelAccess: () =>
+    api.get<{ channels: string[]; grants: ChannelAccessGrant[]; hint?: string }>(
+      "/business/collaboration/channel-access",
+    ),
+  putChannelAccess: (grants: ChannelAccessGrant[]) =>
+    api.put<{ status: string; count: number }>("/business/collaboration/channel-access", { grants }),
+  getInboundRouting: () =>
+    api.get<{
+      enabled: boolean;
+      replace_existing: boolean;
+      default_assignee: string;
+      rules: InboundRoutingRule[];
+    }>("/business/collaboration/inbound-routing"),
+  putInboundRouting: (body: {
+    enabled: boolean;
+    replace_existing?: boolean;
+    default_assignee?: string;
+    rules: InboundRoutingRule[];
+  }) => api.put<{ status: string }>("/business/collaboration/inbound-routing", body),
+  previewInboundRouting: (body: { text: string; subject?: string; channel?: string }) =>
+    api.post<{
+      assignee_user_id: string;
+      matched_rule: string | null;
+      used_default: boolean;
+    }>("/business/collaboration/inbound-routing/preview", body),
+};
+
 export const authApi = {
   whatsappStart: (phoneNumber: string) =>
     api.post<{ session_token?: string; pairing_code?: string; access_token?: string; token?: string; user?: Record<string, unknown> }>(
@@ -811,6 +894,9 @@ export interface AssistantConversationSummary {
   message_count: number;
   /** Specialist agent for this thread (`general` = default Zilo) */
   agent?: string;
+  visibility?: "team" | "private";
+  shared_with?: string[];
+  created_by?: string;
 }
 
 export interface AssistantConversation {
@@ -819,6 +905,9 @@ export interface AssistantConversation {
   model: string | null;
   messages: AssistantMessage[];
   agent?: string;
+  visibility?: "team" | "private";
+  shared_with?: string[];
+  created_by?: string;
 }
 
 export interface AssistantChatResponse {
@@ -872,16 +961,25 @@ export const assistantApi = {
   deleteConversation: (id: string) =>
     api.delete<{ status: string }>(`/assistant/conversations/${id}`),
   renameConversation: (id: string, title: string) =>
-    api.patch<{ status: string; id: string; title: string }>(
+    api.patch<{ status: string; id: string; title?: string }>(
       `/assistant/conversations/${id}`,
       { title }
     ),
+  patchConversation: (
+    id: string,
+    body: { title?: string; visibility?: "team" | "private" },
+  ) => api.patch<{ status: string; id: string }>(`/assistant/conversations/${id}`, body),
+  shareConversation: (id: string, userIds: string[]) =>
+    api.post<{ status: string; shared_with: string[] }>(`/assistant/conversations/${id}/share`, {
+      user_ids: userIds,
+    }),
   chat: (body: {
     message: string;
     conversation_id?: string | null;
     model?: string;
     auto_approve?: boolean;
     agent?: string;
+    visibility?: "team" | "private";
   }) => api.post<AssistantChatResponse>("/assistant/chat", body),
 
   /** Streaming version — returns a ReadableStream of SSE events. */
@@ -891,6 +989,7 @@ export const assistantApi = {
     model?: string;
     auto_approve?: boolean;
     agent?: string;
+    visibility?: "team" | "private";
   }): ReadableStream<string> => {
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     let controller!: ReadableStreamDefaultController<string>;
@@ -1445,6 +1544,30 @@ export const feedbackApi = {
   nps: (surveyId?: string) => api.get<Record<string, unknown>>(`/feedback/nps${surveyId ? `?survey_id=${surveyId}` : ""}`),
 };
 
+export interface ZernioCommentAutoReplyRule {
+  keyword: string;
+  message: string;
+}
+
+export interface ZernioCommentAutoReplyStep {
+  type: "text" | "image" | "video" | "file";
+  message?: string | null;
+  media_url?: string | null;
+  delay_seconds?: number;
+}
+
+export interface ZernioCommentAutoReplySettings {
+  enabled: boolean;
+  engine_mode: "native_ai_all_posts" | "manychat_per_post" | "hybrid";
+  apply_all_posts: boolean;
+  post_ids: string[];
+  manychat_post_ids: string[];
+  default_message: string;
+  keyword_rules: ZernioCommentAutoReplyRule[];
+  chain_steps: ZernioCommentAutoReplyStep[];
+  reply_only_unreplied: boolean;
+}
+
 // ── Zernio Social Inbox ───────────────────────────────────────────────────────
 export const zernioApi = {
   status: () => api.get<{ connected: boolean; profile_id?: string; accounts?: unknown[] }>("/zernio/status"),
@@ -1469,10 +1592,75 @@ export const zernioApi = {
   }) => api.post<{ connected: boolean; account?: Record<string, unknown> }>("/zernio/connect/facebook/headless/complete", body),
   disconnect: (accountId: string) => api.delete<Record<string, unknown>>(`/zernio/accounts/${accountId}`),
   inbox: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/inbox${platform ? `?platform=${platform}` : ""}`),
-  conversation: (id: string) => api.get<Record<string, unknown>>(`/zernio/inbox/${id}`),
-  send: (conversation_id: string, message: string) => api.post<Record<string, unknown>>("/zernio/inbox/send", { conversation_id, message }),
+  conversation: (id: string, accountId?: string) =>
+    api.get<Record<string, unknown>>(`/zernio/inbox/${id}${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`),
+  send: (
+    conversation_id: string,
+    message: string,
+    account_id?: string,
+    platform?: string,
+    messaging_type?: "RESPONSE" | "UPDATE" | "MESSAGE_TAG",
+    message_tag?: "HUMAN_AGENT"
+  ) =>
+    api.post<Record<string, unknown>>("/zernio/inbox/send", {
+      conversation_id,
+      message,
+      ...(account_id ? { account_id } : {}),
+      ...(platform ? { platform } : {}),
+      ...(messaging_type ? { messaging_type } : {}),
+      ...(message_tag ? { message_tag } : {}),
+    }),
   newConversation: (platform: string, recipient: string, message: string) => api.post<Record<string, unknown>>("/zernio/inbox/new", { platform, recipient, message }),
   posts: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/posts${platform ? `?platform=${platform}` : ""}`),
+  analytics: (opts?: {
+    platform?: string;
+    account_id?: string;
+    post_id?: string;
+    metrics?: string;
+    limit?: number;
+    page?: number;
+    from_date?: string;
+    to_date?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (opts?.platform) q.set("platform", opts.platform);
+    if (opts?.account_id) q.set("account_id", opts.account_id);
+    if (opts?.post_id) q.set("post_id", opts.post_id);
+    if (opts?.metrics) q.set("metrics", opts.metrics);
+    if (typeof opts?.limit === "number") q.set("limit", String(opts.limit));
+    if (typeof opts?.page === "number") q.set("page", String(opts.page));
+    if (opts?.from_date) q.set("from_date", opts.from_date);
+    if (opts?.to_date) q.set("to_date", opts.to_date);
+    return api.get<Record<string, unknown>>(`/zernio/analytics${q.toString() ? `?${q.toString()}` : ""}`);
+  },
+  analyticsByPostId: (post_id: string, opts?: { platform?: string; account_id?: string; profile_id?: string; metrics?: string }) => {
+    const q = new URLSearchParams();
+    if (opts?.platform) q.set("platform", opts.platform);
+    if (opts?.account_id) q.set("account_id", opts.account_id);
+    if (opts?.profile_id) q.set("profile_id", opts.profile_id);
+    if (opts?.metrics) q.set("metrics", opts.metrics);
+    return api.get<Record<string, unknown>>(`/zernio/analytics/${encodeURIComponent(post_id)}${q.toString() ? `?${q.toString()}` : ""}`);
+  },
+  commentedPosts: (opts?: { platform?: string; account_id?: string; min_comments?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.platform) q.set("platform", opts.platform);
+    if (opts?.account_id) q.set("account_id", opts.account_id);
+    if (typeof opts?.min_comments === "number") q.set("min_comments", String(opts.min_comments));
+    if (typeof opts?.limit === "number") q.set("limit", String(opts.limit));
+    return api.get<Record<string, unknown>>(`/zernio/comments${q.toString() ? `?${q.toString()}` : ""}`);
+  },
+  postComments: (post_id: string, account_id: string, opts?: { platform?: string; limit?: number }) => {
+    const q = new URLSearchParams({ account_id });
+    if (opts?.platform) q.set("platform", opts.platform);
+    if (typeof opts?.limit === "number") q.set("limit", String(opts.limit));
+    return api.get<Record<string, unknown>>(`/zernio/comments/${encodeURIComponent(post_id)}?${q.toString()}`);
+  },
+  replyToComment: (post_id: string, body: { account_id: string; comment_id: string; message: string }) =>
+    api.post<Record<string, unknown>>(`/zernio/comments/${encodeURIComponent(post_id)}/reply`, body),
+  getCommentAutoReplySettings: () =>
+    api.get<ZernioCommentAutoReplySettings>("/zernio/comments/autoreply/settings"),
+  updateCommentAutoReplySettings: (body: Partial<ZernioCommentAutoReplySettings>) =>
+    api.put<ZernioCommentAutoReplySettings>("/zernio/comments/autoreply/settings", body),
 };
 
 // ── SEO + Auto-Blogging ───────────────────────────────────────────────────────
