@@ -39,6 +39,7 @@ export async function openNangoConnect(
 
   const { default: Nango } = await import("@nangohq/frontend");
   const nango = new Nango();
+  // openConnectUI already calls open() internally — do NOT call ui.open() again
   const ui = nango.openConnectUI({
     sessionToken: data.sessionToken,
     apiURL: NANGO_PUBLIC_API_URL,
@@ -60,5 +61,4 @@ export async function openNangoConnect(
       }
     },
   });
-  ui.open();
 }
