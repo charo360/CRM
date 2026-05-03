@@ -125,6 +125,13 @@ const TOOL_LABELS: Record<string, string> = {
   get_kling_video_status:    "Rendering video…",
   create_video:              "Creating video…",
   get_video_status:          "Rendering video…",
+  // Design generation
+  generate_social_post:      "Generating design…",
+  generate_ad_creative:      "Generating ad creative…",
+  generate_carousel_cover:   "Generating carousel…",
+  refine_design:             "Refining design…",
+  generate_creative_image:   "Generating image…",
+  generate_design_background:"Generating background…",
 };
 
 function friendlyToolLabel(tool: string): string {
@@ -797,6 +804,10 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                     {/* Video rendering skeleton — shown while Kling is generating */}
                     {streamingTools.some(t => t === "create_kling_video" || t === "get_kling_video_status" || t === "create_video" || t === "get_video_status") && (
                       <VideoRenderingCard />
+                    )}
+                    {/* Design canvas skeleton — shown while social/ad design is generating */}
+                    {streamingTools.some(t => ["generate_social_post","generate_ad_creative","generate_carousel_cover","refine_design","generate_creative_image"].includes(t)) && (
+                      <DesignRenderingCard />
                     )}
                     {/* Streaming reply text */}
                     {streamingText ? (
@@ -1751,6 +1762,44 @@ function MarkdownBody({ content }: { content: string }) {
       >
         {content}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+const _DESIGN_PHRASES = [
+  "Composing layout…",
+  "Applying brand colours…",
+  "Setting typography…",
+  "Placing visual elements…",
+  "Adding finishing touches…",
+  "Rendering final image…",
+];
+
+function DesignRenderingCard() {
+  const [phraseIdx, setPhraseIdx] = React.useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setPhraseIdx(i => (i + 1) % _DESIGN_PHRASES.length), 1800);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div className="w-full max-w-[320px] rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+      {/* Canvas skeleton */}
+      <div className="relative h-[200px] bg-gradient-to-br from-slate-100 via-slate-50 to-white overflow-hidden">
+        {/* Shimmer overlay */}
+        <div className="absolute inset-0 animate-pulse">
+          <div className="absolute top-6 left-6 right-6 h-7 rounded-md bg-slate-200/80" />
+          <div className="absolute top-16 left-10 right-10 h-4 rounded bg-slate-200/60" />
+          <div className="absolute top-24 left-14 right-14 h-4 rounded bg-slate-200/50" />
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-28 h-9 rounded-full bg-slate-200/80" />
+        </div>
+        {/* Brand colour accent bar */}
+        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-brand via-brand/60 to-transparent animate-pulse" />
+      </div>
+      {/* Status bar */}
+      <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-100 bg-slate-50">
+        <Loader2 size={11} className="animate-spin text-brand shrink-0" />
+        <span className="text-[11px] text-slate-500 transition-all duration-500">{_DESIGN_PHRASES[phraseIdx]}</span>
+      </div>
     </div>
   );
 }

@@ -584,6 +584,27 @@ _DESIGN_EXIT_MARKERS = (
     "write a document", "create a document", "draft a document",
     "write a report", "business plan", "business proposal",
     "partnership proposal", "pitch deck", "presentation",
+    # Creative/visual requests always exit document sticky
+    "use creative", "creative agent", "creative specialist",
+    "i want the design", "i want the visual", "i want the graphic",
+    "want a design", "want the design", "need the design",
+    "want a visual", "want a graphic", "want an image",
+    "make the visual", "create the visual", "generate the visual",
+    "make the graphic", "create the graphic", "generate the graphic",
+    "make the image", "create the image", "generate the image",
+    "the actual design", "actual visual", "real design",
+    "creative design", "visual design",
+    # Natural language variants users actually say
+    "need design", "need a design", "need the design", "need a visual",
+    "need the visual", "need a graphic", "need the graphic",
+    "design to post", "design for the post", "design for my post",
+    "design the post", "design this post", "design for instagram",
+    "design for facebook", "design for tiktok",
+    "i need design", "i need a design", "i need the design",
+    "i need the visual", "i need a visual",
+    "just the design", "just the visual", "just the graphic",
+    "show me the design", "show the design", "get the design",
+    "do the design", "do the visual", "do the graphic",
 )
 
 
@@ -731,121 +752,59 @@ async def route_to_agent(
 ) -> str:
     """Return the best agent_id for this message.
 
-    Strategy:
-      0. Optional explicit agent from UI/API (user locked or picked a specialist).
-      0a/0a-2. Sticky creative / document sessions (multi-turn).
-      0b. Sticky continuation — short replies stay with prev_agent **only after**
-          there is prior conversation (never on the first user message of a thread).
-      1. Hard intent overrides (document, integration-status, explicit creative).
-      2. LLM route (confidence-gated).
-      3. Keyword fallback.
+    Strategy (LLM-first):
+      0.  Explicit agent from UI/API — user locked or picked a specialist.
+      0a. Sticky creative — active multi-turn design flow (stateful, never interrupt).
+      1.  LLM routing — primary decision maker, runs before any keyword checks.
+      2.  Keyword scoring — last-resort fallback only if LLM fails or returns
+          low confidence.
     Always returns a valid agent_id that exists in agent_registry.
     """
     msg_lower = message.lower()
 
-    # ── Explicit specialist from client (agent picker / lock) ─────────────────
+    # ── 0. Explicit specialist from client (agent picker / lock) ──────────────
     if explicit_agent:
         from .agents import resolve_agent_id
-
         rid = resolve_agent_id(explicit_agent.strip())
         if rid in agent_registry:
             logger.info("[IntentRouter] explicit client agent → %s", rid)
             return rid
 
-    has_prior_turns = bool(history)
-
-    # ── 0a. Extra-sticky routing for active creative sessions ────────────────
-    # Creative is multi-turn and heavily stateful (product / platform / template /
-    # copy / staged image / render). Bouncing out mid-flow loses all context.
-    # Two signals trigger stickiness:
-    #   a) prev_agent resolves to "creative" (handles legacy "design" alias)
-    #   b) design_flow_active == True (DB confirms flow_step is set and not done)
-    # Only leave when the user EXPLICITLY asks.
     _AGENT_ALIASES_LOCAL = {"design": "creative"}
     prev_agent_resolved = _AGENT_ALIASES_LOCAL.get(prev_agent or "", prev_agent or "")
+
+    # ── 0a. Sticky creative — only for active stateful design flows ───────────
+    # Creative is heavily stateful (template / platform / staged image / render).
+    # Keep it sticky ONLY when the design flow is genuinely in progress.
+    # Always exit if user explicitly asks to leave OR wants a text document.
     is_active_creative = (
         "creative" in agent_registry
         and (prev_agent_resolved == "creative" or design_flow_active)
     )
     if is_active_creative:
-        # Never trap document/proposal requests inside a sticky creative flow.
         if "document" in agent_registry and _is_text_document_intent(msg_lower):
-            logger.info(
-                "[IntentRouter] leaving creative → document (text document intent during active creative session)"
-            )
+            logger.info("[IntentRouter] leaving creative → document (text document intent)")
             return "document"
         if not _is_explicit_design_exit(msg_lower):
             logger.info(
-                "[IntentRouter] sticky → creative (active creative session; "
-                "prev=%r flow_active=%s; message: %r)",
-                prev_agent, design_flow_active, message[:60],
+                "[IntentRouter] sticky → creative (active design flow; prev=%r flow_active=%s)",
+                prev_agent, design_flow_active,
             )
             return "creative"
-        logger.info(f"[IntentRouter] leaving creative (explicit exit: {message!r})")
+        logger.info("[IntentRouter] leaving creative (explicit exit: %r)", message[:60])
 
-    # ── 0a-2. Sticky routing for document agent ──────────────────────────────
-    # Document sessions (e.g. template cloning) are multi-turn — don't bounce
-    # the user to creative/general just because keywords like "template" match.
-    if prev_agent_resolved == "document" and "document" in agent_registry:
-        if not _is_explicit_design_exit(msg_lower):
-            logger.info(
-                "[IntentRouter] sticky → document (active document session; message: %r)",
-                message[:60],
-            )
-            return "document"
-        logger.info(f"[IntentRouter] leaving document (explicit exit: {message!r})")
-
-    # ── 0b. Sticky routing — don't break mid-flow on ambiguous replies ────────
-    # New threads default conv.agent to "general"; without this guard, the *first*
-    # short user message (e.g. "create an instagram post") was treated as a
-    # "continuation" of general and never reached creative routing.
-    if (
-        has_prior_turns
-        and prev_agent_resolved
-        and prev_agent_resolved in agent_registry
-        and _is_continuation_message(msg_lower)
-    ):
-        logger.info(f"[IntentRouter] sticky → {prev_agent_resolved} (continuation: {message!r})")
-        return prev_agent_resolved
-
-    # Text document intent → document agent (must check BEFORE creative override)
-    if "document" in agent_registry and _is_text_document_intent(msg_lower):
-        logger.info("[IntentRouter] forced → document (text document/proposal intent)")
-        return "document"
-
-    # Integration/account status questions should not trigger creative session routing.
-    if _is_social_connection_status_intent(msg_lower):
-        logger.info("[IntentRouter] forced → general (social/integration status intent)")
-        return "general" if "general" in agent_registry else next(iter(agent_registry.keys()))
-
-    if _is_social_inbox_intent(msg_lower) and "social_inbox" in agent_registry:
-        logger.info("[IntentRouter] forced → social_inbox")
-        return "social_inbox"
-
-    if _is_social_scheduler_intent(msg_lower) and "social_scheduler" in agent_registry:
-        logger.info("[IntentRouter] forced → social_scheduler")
-        return "social_scheduler"
-
-    if _is_social_monitor_intent(msg_lower) and "social_monitor" in agent_registry:
-        logger.info("[IntentRouter] forced → social_monitor")
-        return "social_monitor"
-
-    # Visual / creative intent → creative agent (only for pure graphics/social posts)
-    if "creative" in agent_registry and _design_or_creative_document_intent(msg_lower) and not _is_text_document_intent(msg_lower):
-        logger.info("[IntentRouter] forced → creative (visual/layout/deck intent)")
-        return "creative"
-
-    # ── 1. LLM route first (AutoReply-v2 style), confidence gated ────────────
+    # ── 1. LLM route — PRIMARY decision maker ────────────────────────────────
+    # Runs before any keyword checks. LLM understands meaning, not just words.
     llm_choice = await _llm_route_choice(message, history, agent_registry, msg_lower)
     if llm_choice is not None:
         chosen, confidence = llm_choice
         if confidence >= _LLM_ROUTE_CONFIDENCE_MIN:
             logger.info(
-                f"[IntentRouter] LLM → {chosen} (accepted; confidence={confidence:.2f} >= {_LLM_ROUTE_CONFIDENCE_MIN:.2f})"
+                "[IntentRouter] LLM → %s (confidence=%.2f)", chosen, confidence
             )
             return chosen
         logger.info(
-            f"[IntentRouter] LLM low-confidence ({confidence:.2f} < {_LLM_ROUTE_CONFIDENCE_MIN:.2f}); falling back to keywords"
+            "[IntentRouter] LLM low-confidence (%.2f); falling back to keywords", confidence
         )
 
     # ── 2. Keyword scoring fallback (word-count weighted) ─────────────────────

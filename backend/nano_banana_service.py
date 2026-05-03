@@ -8,8 +8,29 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Load all available API keys: OPENROUTER_KEY, OPENROUTER_KEY_2, OPENROUTER_KEY_3, ...
+# Add more keys in .env to increase reliability and throughput.
+def _load_openrouter_keys() -> list[str]:
+    keys = []
+    primary = os.getenv("OPENROUTER_KEY", "").strip()
+    if primary:
+        keys.append(primary)
+    i = 2
+    while True:
+        k = os.getenv(f"OPENROUTER_KEY_{i}", "").strip()
+        if not k:
+            break
+        keys.append(k)
+        i += 1
+    return keys
+
+_OPENROUTER_KEYS: list[str] = _load_openrouter_keys()
+# Keep a single-key alias for legacy references
+OPENROUTER_KEY = _OPENROUTER_KEYS[0] if _OPENROUTER_KEYS else ""
+
+_MAX_RETRIES_PER_KEY = 2  # attempts per key before moving to the next
 
 # Model IDs on OpenRouter
 NANO_BANANA_2   = "google/gemini-3.1-flash-image-preview"   # fastest, best quality/speed
@@ -171,22 +192,15 @@ async def generate_creative_image(
     quality: str = "fast",
     logo_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Call Nano Banana via OpenRouter to generate a creative/lifestyle image.
-    Returns {"success": True, "image_url": <s3_url>} or {"error": ...}
-
-    quality: "fast" uses Nano Banana 2 (Flash), "pro" uses Nano Banana Pro.
-    logo_url: optional brand logo — passed as a multimodal reference so Gemini
-              can incorporate the brand's colour palette and aesthetic.
-    """
-    if not OPENROUTER_KEY:
+    """Call Nano Banana via OpenRouter to generate a creative image.
+    Auto-retries across all available OPENROUTER_KEY_* env vars."""
+    if not _OPENROUTER_KEYS:
         return {"error": "OPENROUTER_KEY not configured in .env"}
 
     model = NANO_BANANA_PRO if quality == "pro" else NANO_BANANA_2
     aspect_ratio = _ASPECT_MAP.get(format, "1:1")
 
-    # Build multimodal content: if a logo is provided, include it as a reference
-    # image with explicit composition-aware placement instructions.
+    # Build multimodal content — include logo as reference if provided
     if logo_url:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -198,17 +212,14 @@ async def generate_creative_image(
                     "\n\nBRAND LOGO PLACEMENT:\n"
                     "The image above is the brand logo. You MUST place it in the final design.\n"
                     "Rules:\n"
-                    "1. Find the corner or edge with the most visual breathing room — where there is no focal point, no subject, and the least visual weight.\n"
-                    "2. Size it at roughly 12–16% of the canvas width — large enough to read, small enough to not compete with the hero.\n"
-                    "3. If the background behind the logo area is dark, keep the logo light (white/transparent). If light, keep it dark or coloured. Never let it get lost.\n"
-                    "4. It must look DESIGNED-IN — not stamped on top. Integrate it with the composition.\n"
+                    "1. Find the corner or edge with the most visual breathing room.\n"
+                    "2. Size it at roughly 12\u201316% of the canvas width.\n"
+                    "3. Match contrast to background: light logo on dark areas, dark on light.\n"
+                    "4. It must look DESIGNED-IN \u2014 not stamped on top.\n"
                     "5. Do NOT distort, recolour, rotate, or crop the logo shape."
                 )
                 message_content = [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{content_type};base64,{logo_b64}"},
-                    },
+                    {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{logo_b64}"}},
                     {"type": "text", "text": prompt + logo_instruction},
                 ]
         except Exception as e:
@@ -219,70 +230,62 @@ async def generate_creative_image(
 
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": message_content,
-            }
-        ],
+        "messages": [{"role": "user", "content": message_content}],
         "modalities": ["image", "text"],
-        "image_config": {
-            "aspect_ratio": aspect_ratio,
-        },
+        "image_config": {"aspect_ratio": aspect_ratio},
     }
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+    base_headers = {
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as e:
-        logger.error("[nano_banana] OpenRouter request failed: %s", e)
-        return {"error": str(e)}
+    last_error = "Unknown error"
+    for key in _OPENROUTER_KEYS:
+        for attempt in range(_MAX_RETRIES_PER_KEY):
+            try:
+                headers = {**base_headers, "Authorization": f"Bearer {key}"}
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
 
-    # Extract base64 image from response
-    try:
-        choices = data.get("choices", [])
-        if not choices:
-            return {"error": "No choices returned from Nano Banana"}
+                choices = data.get("choices", [])
+                if not choices:
+                    last_error = "No choices returned"
+                    logger.warning("[nano_banana] key=...%s attempt=%d no choices", key[-6:], attempt + 1)
+                    continue
+                message = choices[0].get("message", {})
+                images = message.get("images") or []
+                if not images:
+                    content = message.get("content", "")
+                    if isinstance(content, str) and content.startswith("data:image"):
+                        b64_data = content
+                    else:
+                        last_error = "No image data in response"
+                        logger.warning("[nano_banana] key=...%s attempt=%d no image: %s", key[-6:], attempt + 1, str(data)[:200])
+                        continue
+                else:
+                    b64_data = images[0]["image_url"]["url"]
 
-        message = choices[0].get("message", {})
+                from image_handler import S3Handler
+                filename = f"creative-{uuid.uuid4()}.png"
+                public_url = await S3Handler.upload_file(b64_data, filename, content_type="image/png")
+                if not public_url:
+                    last_error = "S3 upload returned empty URL"
+                    continue
+                logger.info("[nano_banana] generate_creative_image ok key=...%s attempt=%d", key[-6:], attempt + 1)
+                return {"success": True, "image_url": public_url}
 
-        # Images come back in message["images"] as list of {image_url: {url: "data:image/png;base64,..."}}
-        images = message.get("images") or []
-        if not images:
-            # Fallback: sometimes content contains the data URL inline
-            content = message.get("content", "")
-            if isinstance(content, str) and content.startswith("data:image"):
-                b64_data = content
-            else:
-                logger.warning("[nano_banana] Unexpected response shape: %s", str(data)[:400])
-                return {"error": "No image data in response"}
-        else:
-            b64_data = images[0]["image_url"]["url"]
+            except httpx.HTTPStatusError as e:
+                last_error = f"HTTP {e.response.status_code}"
+                logger.warning("[nano_banana] key=...%s attempt=%d HTTP error: %s", key[-6:], attempt + 1, last_error)
+            except Exception as e:
+                last_error = str(e)
+                logger.warning("[nano_banana] key=...%s attempt=%d error: %s", key[-6:], attempt + 1, last_error)
 
-    except (KeyError, IndexError, TypeError) as e:
-        logger.error("[nano_banana] Failed to parse response: %s | data: %s", e, str(data)[:400])
-        return {"error": f"Failed to parse Nano Banana response: {e}"}
-
-    # Upload base64 image to S3
-    try:
-        from image_handler import S3Handler
-        filename = f"creative-{uuid.uuid4()}.png"
-        public_url = await S3Handler.upload_file(b64_data, filename, content_type="image/png")
-        if not public_url:
-            return {"error": "S3 upload returned empty URL"}
-        return {"success": True, "image_url": public_url}
-    except Exception as e:
-        logger.error("[nano_banana] S3 upload failed: %s", e)
-        return {"error": f"S3 upload failed: {e}"}
+    logger.error("[nano_banana] generate_creative_image exhausted all keys. last=%s", last_error)
+    return {"error": f"Design generation failed after trying all API keys. Last error: {last_error}"}
 
 
 async def recreate_design_from_reference(
