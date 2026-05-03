@@ -7,25 +7,22 @@ import {
   X,
   MessageSquare,
   Sparkles,
-  Bell,
-  LayoutDashboard,
-  Layers,
   BarChart2,
   Megaphone,
-  Shield,
   ArrowRight,
   Check,
   ChevronDown,
-  Workflow,
-  Plug,
   Store,
   Mail,
-  Terminal,
-  Blocks,
-  Cpu,
-  ExternalLink,
   Share2,
   ShoppingBag,
+  AtSign,
+  PlayCircle,
+  Layers,
+  Blocks,
+  Terminal,
+  Cpu,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ZiloLogo } from "@/components/ZiloLogo";
@@ -42,48 +39,52 @@ const NAV = [
   { href: "#faq", label: "FAQ" },
 ];
 
-const FEATURES = [
+const OPERATOR_ROWS: { handle: string; avoid: string }[] = [
   {
-    icon: Share2,
-    title: "Sell on every channel",
-    description:
-      "WhatsApp, social DMs, email, and ad surfaces in one workspace — respond, close, and plan campaigns so attention turns into revenue, not another tab.",
-    accent: "from-emerald-500/15 to-emerald-600/5",
+    handle: "Auto-replies across every channel",
+    avoid: "Manually respond to the same questions on WhatsApp, Instagram, email, and DMs",
   },
   {
-    icon: Sparkles,
-    title: "Zilo Chat & AI drafts",
-    description:
-      "Draft replies that sound like you and move deals forward — across chat, email, and campaigns — so your team spends time selling, not typing.",
-    accent: "from-brand/15 to-brand/5",
+    handle: "Follow-ups that close deals",
+    avoid: "Chase leads and pray they come back",
   },
   {
-    icon: Bell,
-    title: "Smart follow-ups",
-    description:
-      "Prioritized queues and reminders so hot leads do not go cold — tuned to help you close, not just clear an inbox.",
-    accent: "from-amber-500/15 to-orange-500/5",
+    handle: "Payment links, invoices, reconciliation",
+    avoid: "Track who paid, who didn't, and what your books look like",
   },
   {
-    icon: LayoutDashboard,
-    title: "One web workspace",
-    description:
-      "The browser is home base: orders, bookings, invoices, analytics — sell and operate from the dashboard your team opens every day.",
-    accent: "from-sky-500/15 to-blue-500/5",
+    handle: "Social posts, carousels, ad creative",
+    avoid: "Stare at a blank content calendar",
   },
   {
-    icon: Workflow,
-    title: "Automations",
-    description:
-      "Trigger follow-ups and handoffs across channels — less manual chasing, more conversations that convert.",
-    accent: "from-fuchsia-500/15 to-pink-500/5",
+    handle: "Meta, Google, and X Ads campaigns",
+    avoid: "Learn three ad platforms on top of running a business",
   },
   {
-    icon: Plug,
-    title: "Integrations",
-    description:
-      "Shopify connects deep — store sync, orders, abandoned carts, discounts — then AI + automations keep pipelines moving. Plus calendar, email, Meta, Google & X Ads, social tools, and GBP in one flow.",
-    accent: "from-teal-500/15 to-cyan-500/5",
+    handle: "Abandoned cart recovery",
+    avoid: "Watch revenue walk out the door",
+  },
+  {
+    handle: "Orders, bookings, inventory",
+    avoid: "Juggle Shopify, a booking tool, and a spreadsheet",
+  },
+];
+
+const STEPS = [
+  {
+    step: "1",
+    title: "Open your workspace",
+    body: "Sign in on the web. This is your command center — but you won't need to live here.",
+  },
+  {
+    step: "2",
+    title: "Connect your channels",
+    body: "Link WhatsApp, Instagram, email, Shopify, Stripe, your ad accounts, your calendar. Once.",
+  },
+  {
+    step: "3",
+    title: "Write your prompt or set an automation",
+    body: '"Follow up with anyone who added to cart but didn\'t buy, offer 10% off, send payment link." Done. Zilo runs this forever.',
   },
 ];
 
@@ -109,95 +110,85 @@ const MODULE_GROUPS = [
   },
 ];
 
-const STEPS = [
+const CHANNEL_ROWS: { channel: string; does: string }[] = [
   {
-    step: "01",
-    title: "Open the web workspace",
-    body: "Sign in on the web (email or WhatsApp). That is your home for selling — full screen, full modules, built for daily focus.",
+    channel: "WhatsApp",
+    does: "Auto-replies, broadcast campaigns, payment links, order updates",
   },
   {
-    step: "02",
-    title: "Turn on how you sell and grow",
-    body: "Use Features to enable pipeline tools (Messages, Customers) and growth surfaces (Broadcast, Ads, Social) — only what your team will run weekly.",
+    channel: "Instagram & social DMs",
+    does: "Unified inbox, suggested replies, comment-to-DM conversion",
   },
   {
-    step: "03",
-    title: "Connect every channel",
-    body: "Link WhatsApp plus social, email, calendar, Shopify, and ad accounts. Your agents and AI drafts work across all media.",
+    channel: "Email",
+    does: "Full Gmail/Outlook inbox, AI drafts, follow-up sequences",
+  },
+  {
+    channel: "Ads",
+    does: "Meta, Google, X — creative drafts, campaign planning, performance surface",
+  },
+  {
+    channel: "Shopify",
+    does: "Full autopilot: orders, inventory, carts, discounts",
+  },
+  {
+    channel: "Stripe",
+    does: "Payments, invoices, reconciliation, finance/P&L",
   },
 ];
 
-const PLANS = [
+const ANYWHERE_ROWS: { app: string; response: string }[] = [
   {
-    id: "starter",
-    name: "Starter",
-    usd: 10,
-    blurb: "Solo operators getting started",
-    features: ["2,500 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"],
-    highlighted: false,
+    app: "WhatsApp",
+    response: '"Today\'s sales: KES 124,500. 3 orders in progress. 5 follow-ups due."',
   },
   {
-    id: "growth",
-    name: "Growth",
-    usd: 18,
-    blurb: "Teams that need room to scale",
-    features: [
-      "5,000 messages/month",
-      "Unlimited customers",
-      "Follow-ups & broadcasts",
-      "AI replies",
-      "Priority support",
-    ],
-    highlighted: true,
+    app: "Instagram DM",
+    response: '"Campaign draft ready. Want me to launch?"',
   },
   {
-    id: "pro",
-    name: "Pro",
-    usd: 28,
-    blurb: "High volume & advanced needs",
-    features: [
-      "10,000 messages/month",
-      "Unlimited customers",
-      "Advanced analytics",
-      "Custom templates",
-      "Dedicated support",
-    ],
-    highlighted: false,
+    app: "Email",
+    response: "Full P&L attached. Inventory alert flagged.",
   },
+];
+
+const REVENUE_LOOP = [
+  { title: "Sell", body: "Customer inquires on Instagram" },
+  { title: "Auto-reply", body: "Zilo answers, checks inventory, suggests products" },
+  { title: "Close", body: "Follow-up sequence if they go quiet" },
+  { title: "Pay", body: "Payment link sent, Stripe processed" },
+  { title: "Reconcile", body: "Payment matched to order, P&L updated" },
+  { title: "Grow", body: "Customer tagged for loyalty, future campaigns" },
 ];
 
 const FAQS = [
   {
-    q: "How is Zilo different from Twin or OpenClaw?",
-    a: "Twin is a broad no-code platform for building autonomous agents across many domains. OpenClaw is a developer-oriented agent gateway you run yourself. Zilo is built for teams whose job is to sell: a hosted web workspace with agents, follow-ups, orders, and omnichannel tools (social, email, ads, WhatsApp) — no terminal, packaged for operators who want revenue outcomes, not infrastructure projects.",
+    q: "Do I need to know how to code?",
+    a: "No. You connect accounts and write prompts in plain language — or use pre-built automation templates.",
   },
   {
-    q: "Is Zilo only for WhatsApp?",
-    a: "No. WhatsApp is one important channel, but Zilo is designed for selling across media — Social Inbox, Messages, Email, Broadcast, Meta & Google Ads, and more. The web dashboard is where your team focuses; mobile is optional for the field.",
+    q: "Does it really work forever from one setup?",
+    a: "Yes. Your automations run until you change them. Prompts persist. Zilo operates continuously.",
   },
   {
-    q: "Do I need WhatsApp to use Zilo?",
-    a: "No. Sign in on the web with email and use the full workspace. Add WhatsApp under Integrations when you want chat commerce — alongside social, email, and ads as you connect them.",
+    q: "What if I want to step in manually?",
+    a: "Always. You're in charge. Zilo handles the repeat work; you jump in for strategy, edge cases, and personal touches.",
   },
   {
-    q: "Can I hide modules I do not use?",
-    a: "Yes. Open Features in your workspace and choose a preset (e.g. Starter, Business, Personal) or toggle individual sidebar items. Your workspace always keeps core tools like Overview, Zilo Chat, Automations, and Settings.",
+    q: "Can my team use it too?",
+    a: "Yes. Assign roles, control access, route conversations — all from the workspace.",
   },
   {
-    q: "What does “Shopify 100% autopilot” mean?",
-    a: "Connect your Shopify store once in Zilo. Orders, products, customers, and abandoned carts sync into your workspace — then AI drafts, follow-ups, recovery flows, and automations keep selling motions running without you living in five tabs. You still own pricing, brand, and approvals; we built the rails so commerce and outreach stay on autopilot while you chill and focus on what only you can do.",
+    q: "What channels does it support?",
+    a: "WhatsApp, Instagram, Facebook, email (Gmail/Outlook), Meta Ads, Google Ads, X Ads, Google Business Profile, Shopify, Stripe, and more via integrations.",
   },
   {
-    q: "Is pricing the same in every country?",
-    a: "We use regional pricing so amounts match local markets. USD amounts on this page are indicative; your exact plans and currency appear in the app after sign-in.",
+    q: "How is this different from a chatbot?",
+    a: "Chatbots answer questions. Zilo runs your revenue — it sells, recovers carts, sends invoices, reconciles payments, creates and publishes content, and manages campaigns. It's an operator, not a responder.",
   },
   {
-    q: "What is Zilo Chat?",
-    a: "Zilo Chat is your in-workspace copilot — ask how to use the product, summarize activity, and steer your agents without leaving Zilo.",
-  },
-  {
-    q: "Can my team use the same account?",
-    a: "Yes. Invite team members, use roles where available, and use Team Analytics to track performance when you enable those modules.",
+    q: "How is this different from Twin or OpenClaw?",
+    a: "Twin is a no-code agent builder — you build the agent yourself. OpenClaw is for developers. Zilo is the finished product: an operator built for selling, pre-integrated, ready on Monday — hosted with no terminal, follow-ups and omnichannel tools packaged for revenue outcomes.",
   },
 ];
 
@@ -215,7 +206,6 @@ export function LandingPage() {
 
   return (
     <div className="min-h-screen bg-[#fafbfc] text-slate-900 antialiased">
-      {/* Subtle mesh */}
       <div
         className="pointer-events-none fixed inset-0 -z-10 opacity-[0.4]"
         style={{
@@ -233,12 +223,12 @@ export function LandingPage() {
             <span>Zilo</span>
           </a>
 
-          <nav className="hidden items-center gap-8 md:flex" aria-label="Primary">
+          <nav className="hidden items-center gap-4 xl:flex" aria-label="Primary">
             {NAV.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
-                className="text-sm font-medium text-slate-600 transition-colors hover:text-brand-dark"
+                className="whitespace-nowrap text-sm font-medium text-slate-600 transition-colors hover:text-brand-dark"
               >
                 {item.label}
               </a>
@@ -263,7 +253,7 @@ export function LandingPage() {
 
           <button
             type="button"
-            className="rounded-lg p-2 text-slate-600 md:hidden"
+            className="rounded-lg p-2 text-slate-600 xl:hidden"
             onClick={() => setOpen(true)}
             aria-label="Open menu"
           >
@@ -272,7 +262,7 @@ export function LandingPage() {
         </div>
 
         {open && (
-          <div className="fixed inset-0 z-[60] md:hidden">
+          <div className="fixed inset-0 z-[60] xl:hidden">
             <button type="button" className="absolute inset-0 bg-slate-900/40" onClick={() => setOpen(false)} aria-label="Close menu" />
             <div className="absolute right-0 top-0 flex h-full w-[min(100%,20rem)] flex-col bg-white shadow-xl">
               <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4">
@@ -281,12 +271,12 @@ export function LandingPage() {
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <nav className="flex flex-1 flex-col gap-1 p-4" aria-label="Mobile">
+              <nav className="flex max-h-[calc(100vh-5rem)] flex-1 flex-col gap-0.5 overflow-y-auto p-4" aria-label="Mobile">
                 {NAV.map((item) => (
                   <a
                     key={item.href}
                     href={item.href}
-                    className="rounded-lg px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
                     onClick={() => setOpen(false)}
                   >
                     {item.label}
@@ -311,49 +301,39 @@ export function LandingPage() {
 
       <main>
         {/* Hero */}
-        <section id="product" className="relative overflow-hidden px-4 pb-20 pt-14 sm:px-6 sm:pt-20 lg:pb-28">
+        <section id="product" className="relative overflow-hidden px-4 pb-16 pt-14 sm:px-6 sm:pt-20 lg:pb-24">
           <div className="mx-auto max-w-6xl">
             <div className="mx-auto max-w-3xl text-center">
               <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#4CD137]/35 bg-[#4CD137]/12 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[#065a24]">
                 <Sparkles className="h-3.5 w-3.5 text-[#009B3A]" />
-                Web-first · Sell and grow · AI
+                Zilo
               </p>
               <h1 className="text-balance text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl lg:text-[3.25rem] lg:leading-[1.1]">
-                Help your team sell and grow on every channel — from one web workspace
+                One prompt runs your entire revenue engine. Forever.
               </h1>
               <p className="mx-auto mt-5 max-w-2xl text-lg text-slate-600 sm:text-xl">
-                Zilo is not a WhatsApp-only tool. Run DMs, email, social, ads, and chat commerce in one place — with AI
-                specialists for campaigns and copy, plus follow-ups built to close deals, not just store contacts. Your
-                primary experience is the browser; mobile is there when you are on the move.
-              </p>
-              <p className="mx-auto mt-4 max-w-xl text-base font-medium text-[#0a2614]/90">
-                One focus: pipeline and revenue — with growth tools beside sales so marketing is not a separate product.
+                Connect your channels once. Tell Zilo what to do. Then run your business from WhatsApp, Instagram, or wherever you
+                already are — while it handles sales, payments, content, ads, and reconciliation around the clock.
               </p>
               <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
                 <Link
                   href="/login"
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#007a2e] bg-[#009B3A] px-8 py-3.5 text-base font-semibold text-white shadow-lg transition hover:bg-[#4CD137] hover:text-[#0a2614] sm:w-auto"
                 >
-                  Start free — web workspace
+                  Get Started
                   <ArrowRight className="h-5 w-5" />
                 </Link>
                 <a
                   href="#how"
-                  className="inline-flex w-full items-center justify-center rounded-xl border border-slate-300 bg-white px-8 py-3.5 text-base font-semibold text-slate-900 shadow-sm transition hover:border-[#009B3A]/40 hover:bg-[#f0fdf4] sm:w-auto"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-8 py-3.5 text-base font-semibold text-slate-900 shadow-sm transition hover:border-[#009B3A]/40 hover:bg-[#f0fdf4] sm:w-auto"
                 >
-                  See how it works
+                  <PlayCircle className="h-5 w-5 text-[#009B3A]" aria-hidden />
+                  Watch Zilo in Action
                 </a>
               </div>
-              <p className="mt-4 text-sm text-slate-500">
-                The full product lives on web —{" "}
-                <Link href="/login" className="font-medium text-[#009B3A] underline-offset-2 hover:underline">
-                  open your workspace in the browser
-                </Link>
-                . Mobile app? Same account when you need it on the go.
-              </p>
+              <p className="mt-6 text-sm font-medium text-slate-500">No code. No terminal. No babysitting.</p>
             </div>
 
-            {/* Hero mock */}
             <div className="relative mx-auto mt-16 max-w-5xl">
               <div className="absolute -inset-4 rounded-3xl bg-gradient-to-br from-brand/20 via-transparent to-emerald-500/15 blur-2xl" />
               <div className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xl shadow-slate-900/5">
@@ -384,7 +364,7 @@ export function LandingPage() {
                       {["Follow-ups due", "Orders in progress", "AI drafts ready"].map((label, i) => (
                         <div key={label} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 text-sm">
                           <span className="text-slate-600">{label}</span>
-                          <span className="font-semibold tabular-nums text-slate-900">{[8, 3, 5][i]}</span>
+                          <span className="font-semibold tabular-nums text-slate-900">{[5, 3, 5][i]}</span>
                         </div>
                       ))}
                     </div>
@@ -397,16 +377,11 @@ export function LandingPage() {
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-medium text-slate-500">Suggested reply</p>
                         <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                          Thanks for your message! Yes, we have that in stock — I can reserve one for you today. Would
-                          delivery tomorrow work?
+                          Yes, we have the blue one in stock — want me to reserve it for you today?
                         </p>
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800">
-                            Your tone
-                          </span>
-                          <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                            Catalog aware
-                          </span>
+                          <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800">Inventory-aware</span>
+                          <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">Your tone</span>
                         </div>
                       </div>
                     </div>
@@ -417,7 +392,7 @@ export function LandingPage() {
                       </div>
                       <div className="rounded-xl border border-white/80 bg-white/80 p-3 shadow-sm">
                         <Layers className="h-5 w-5 text-brand" />
-                        <p className="mt-2 text-xs font-medium text-slate-500">Features</p>
+                        <p className="mt-2 text-xs font-medium text-slate-500">Automations</p>
                       </div>
                     </div>
                   </div>
@@ -427,30 +402,90 @@ export function LandingPage() {
           </div>
         </section>
 
-        {/* Logos / trust */}
-        <section className="border-y border-slate-200/80 bg-white py-10">
+        {/* Channel touchpoints — visual trust strip */}
+        <section className="border-y border-slate-200/80 bg-white py-10" aria-label="Channels you can run from Zilo">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <p className="text-center text-xs font-semibold uppercase tracking-wider text-slate-400">
               Sell through every touchpoint — focus work on the web
             </p>
             <div className="mt-6 flex flex-wrap items-center justify-center gap-x-10 gap-y-4 text-slate-400">
               <span className="flex items-center gap-2 text-sm font-medium text-slate-500">
-                <MessageSquare className="h-5 w-5" /> Chat & WhatsApp
+                <MessageSquare className="h-5 w-5 shrink-0 text-slate-400" aria-hidden /> Chat &amp; WhatsApp
               </span>
               <span className="flex items-center gap-2 text-sm font-medium text-slate-500">
-                <Megaphone className="h-5 w-5" /> Social & ads
+                <Megaphone className="h-5 w-5 shrink-0 text-slate-400" aria-hidden /> Social &amp; ads
               </span>
               <span className="flex items-center gap-2 text-sm font-medium text-slate-500">
-                <Mail className="h-5 w-5" /> Email & broadcast
+                <Mail className="h-5 w-5 shrink-0 text-slate-400" aria-hidden /> Email &amp; broadcast
               </span>
               <span className="flex items-center gap-2 text-sm font-medium text-slate-500">
-                <Store className="h-5 w-5" /> Shops & bookings
+                <Store className="h-5 w-5 shrink-0 text-slate-400" aria-hidden /> Shops &amp; bookings
               </span>
             </div>
           </div>
         </section>
 
-        {/* Shopify autopilot */}
+        <section className="border-y border-slate-200/80 bg-white px-4 py-12 sm:px-6">
+          <div className="mx-auto max-w-3xl text-center">
+            <p className="text-xl font-semibold text-slate-900 sm:text-2xl">You don&apos;t need a bigger team. You need an operator.</p>
+          </div>
+        </section>
+
+        {/* What Zilo actually does */}
+        <section id="operator" className="scroll-mt-20 px-4 py-20 sm:px-6">
+          <div className="mx-auto max-w-6xl">
+            <div className="mx-auto max-w-2xl text-center">
+              <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">What Zilo actually does</h2>
+              <p className="mt-4 text-lg text-slate-600">
+                Not a chatbot. Not another dashboard to babysit. An AI revenue team that works while you live your life.
+              </p>
+            </div>
+            <div className="mt-12 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="grid grid-cols-1 md:grid-cols-2">
+                <div className="border-b border-slate-200 bg-slate-900 px-4 py-3 text-sm font-semibold text-white md:border-b-0 md:border-r">
+                  Zilo handles
+                </div>
+                <div className="border-b border-slate-200 bg-slate-900 px-4 py-3 text-sm font-semibold text-white">So you don&apos;t have to</div>
+              </div>
+              {OPERATOR_ROWS.map((row) => (
+                <div key={row.handle} className="grid grid-cols-1 border-b border-slate-100 last:border-0 md:grid-cols-2">
+                  <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-800 md:border-b-0 md:border-r md:border-slate-100">
+                    {row.handle}
+                  </div>
+                  <div className="px-4 py-3 text-sm text-slate-600">{row.avoid}</div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-8 text-center text-base font-medium text-[#0a2614]/90">You set the strategy. Zilo does the work.</p>
+          </div>
+        </section>
+
+        {/* How it works */}
+        <section id="how" className="scroll-mt-20 border-y border-slate-200/80 bg-slate-50/80 px-4 py-20 sm:px-6">
+          <div className="mx-auto max-w-6xl">
+            <h2 className="text-center text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
+              How it works: three steps, no code, never again
+            </h2>
+            <div className="mt-14 grid gap-8 md:grid-cols-3">
+              {STEPS.map((s) => (
+                <div key={s.step} className="relative rounded-2xl border border-slate-200/80 bg-white p-8 shadow-sm">
+                  <span className="text-4xl font-bold text-brand-light">{s.step}</span>
+                  <h3 className="mt-4 text-lg font-semibold text-slate-900">{s.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-600">{s.body}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mx-auto mt-16 max-w-3xl rounded-2xl border border-brand/20 bg-white p-8 text-center shadow-sm">
+              <h3 className="text-xl font-semibold text-slate-900">Then talk to Zilo from anywhere</h3>
+              <p className="mt-3 text-lg leading-relaxed text-slate-600">
+                Message it on WhatsApp to check today&apos;s sales. Tell it on Instagram to launch a flash campaign. Email it to
+                generate this month&apos;s P&amp;L. Same Zilo. Same business. Any app you&apos;re already on.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* Shopify */}
         <section id="shopify" className="scroll-mt-20 px-4 py-12 sm:px-6 sm:py-16">
           <div className="mx-auto max-w-6xl">
             <div className="overflow-hidden rounded-3xl border border-emerald-500/30 bg-gradient-to-br from-emerald-950 via-slate-900 to-brand-ink shadow-2xl shadow-emerald-950/40">
@@ -458,34 +493,29 @@ export function LandingPage() {
                 <div>
                   <div className="inline-flex items-center gap-2 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-300">
                     <ShoppingBag className="h-3.5 w-3.5" aria-hidden />
-                    Shopify · built for hands-off revenue
+                    The Shopify autopilot: proof this isn&apos;t a toy
                   </div>
                   <h2 className="mt-5 text-3xl font-bold leading-tight tracking-tight text-white sm:text-4xl lg:text-[2.35rem] lg:leading-[1.15]">
-                    Shopify 100% on autopilot. Selling 100% on autopilot.
+                    Connect your store once. The operator takes over.
                   </h2>
                   <p className="mt-5 text-lg leading-relaxed text-emerald-50/90">
-                    Connect your store once. Orders, inventory signals, customers, abandoned carts, and discounts flow into
-                    Zilo — then AI follow-ups, recovery, broadcasts, and workflows keep the money motion running. You chill,
-                    tweak strategy when you want, and let the system sell around the clock.
+                    Orders, inventory, customers, and abandoned carts flow into Zilo automatically.
                   </p>
-                  <p className="mt-4 text-sm font-medium text-white/90">
-                    That is what we built — commerce and outreach on rails, not another tab to babysit.
-                  </p>
+                  <p className="mt-4 text-sm font-medium text-white/90">Then the operator takes over:</p>
                   <Link
                     href="/login"
                     className="mt-8 inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-emerald-950 shadow-lg transition hover:bg-emerald-50"
                   >
-                    Connect Shopify in Zilo
+                    See Shopify Autopilot
                     <ArrowRight className="h-4 w-4" />
                   </Link>
                 </div>
                 <ul className="space-y-4 text-sm leading-relaxed text-emerald-50/95">
                   {[
-                    "Store sync: products, orders, and customers without manual exports",
-                    "Abandoned carts & recovery plays — nudges while you are offline",
-                    "Discounts and growth levers tied to real Shopify data",
-                    "AI + automations so replies and follow-ups match your catalog and orders",
-                    "One web HQ — selling stays on autopilot; you step in when you choose",
+                    "Abandoned cart recovery — nudges while you're offline",
+                    "Inventory-aware replies — \"Yes, we have the blue one in stock — want me to reserve it?\"",
+                    "Discounts tied to real data — not guesswork",
+                    "Post-purchase follow-ups — reviews, referrals, repeat orders",
                   ].map((line) => (
                     <li key={line} className="flex gap-3">
                       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/25 text-emerald-200">
@@ -496,14 +526,14 @@ export function LandingPage() {
                   ))}
                 </ul>
               </div>
-              <p className="border-t border-white/10 px-6 py-4 text-center text-xs text-white/45 sm:px-10 lg:px-14">
-                You stay in charge of pricing, policies, and brand voice — automation handles the repeat selling work.
+              <p className="border-t border-white/10 px-6 py-5 text-center text-base italic text-white/90 sm:px-10 lg:px-14">
+                &ldquo;You chill, tweak strategy when you want, and let the system sell around the clock.&rdquo;
               </p>
             </div>
           </div>
         </section>
 
-        {/* Benchmark: Twin vs OpenClaw vs Zilo */}
+        {/* Compare — Twin vs OpenClaw vs Zilo */}
         <section id="benchmark" className="scroll-mt-20 border-y border-slate-200/80 bg-gradient-to-b from-slate-50 to-white px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-6xl">
             <div className="mx-auto max-w-2xl text-center">
@@ -530,8 +560,7 @@ export function LandingPage() {
                 >
                   OpenClaw
                 </a>
-                , here is where <strong className="text-slate-800">Zilo</strong> fits — same agent wave, different job
-                to be done.
+                , here is where <strong className="text-slate-800">Zilo</strong> fits — same agent wave, different job to be done.
               </p>
             </div>
 
@@ -543,8 +572,8 @@ export function LandingPage() {
                 </div>
                 <h3 className="mt-3 text-lg font-semibold text-slate-900">No-code company agents</h3>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  Broad autonomous agents: describe outcomes in plain language, connect APIs and the browser, ship
-                  interfaces and workflows across many domains — a horizontal &quot;AI company builder.&quot;
+                  Broad autonomous agents: describe outcomes in plain language, connect APIs and the browser, ship interfaces and
+                  workflows across many domains — a horizontal &quot;AI company builder.&quot;
                 </p>
                 <p className="mt-4 text-xs text-slate-500">
                   Best when you want to automate almost anything and build custom agent surfaces from scratch.
@@ -566,12 +595,10 @@ export function LandingPage() {
                 </div>
                 <h3 className="mt-3 text-lg font-semibold text-slate-900">Dev-first agent gateway</h3>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  Open-source stack: a gateway, many chat channels, tools (files, shell, browser), memory and skills —
-                  powerful for builders who are happy on a machine, in config, and in the repo.
+                  Open-source stack: a gateway, many chat channels, tools (files, shell, browser), memory and skills — powerful for
+                  builders who are happy on a machine, in config, and in the repo.
                 </p>
-                <p className="mt-4 text-xs text-slate-500">
-                  Best when you want maximum control and you speak developer.
-                </p>
+                <p className="mt-4 text-xs text-slate-500">Best when you want maximum control and you speak developer.</p>
                 <a
                   href="https://openclaw.ai"
                   target="_blank"
@@ -592,9 +619,8 @@ export function LandingPage() {
                 </div>
                 <h3 className="mt-3 text-lg font-semibold text-slate-900">Selling-first agents on the web</h3>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  We host the workspace — no daemon, no terminal. Your team sells from the browser across WhatsApp,
-                  social, email, and ads: follow-ups, orders, broadcasts, Zilo Chat, automations — built for revenue, not
-                  for hacking the OS.
+                  We host the workspace — no daemon, no terminal. Your team sells from the browser across WhatsApp, social, email, and
+                  ads: follow-ups, orders, broadcasts, Zilo Chat, automations — built for revenue, not for hacking the OS.
                 </p>
                 <p className="mt-4 text-xs font-medium text-brand-ink/80">
                   Same agent direction as OpenClaw (channels + tools), packaged so sellers can ship Monday — on every medium you use.
@@ -610,55 +636,105 @@ export function LandingPage() {
           </div>
         </section>
 
-        {/* Features grid */}
-        <section className="px-4 py-20 sm:px-6" aria-labelledby="features-heading">
+        {/* Every channel */}
+        <section id="channels" className="scroll-mt-20 border-y border-slate-200/80 bg-white px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-6xl">
             <div className="mx-auto max-w-2xl text-center">
-              <h2 id="features-heading" className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-                Built to help you sell — not juggle fifteen tabs
-              </h2>
-              <p className="mt-4 text-lg text-slate-600">
-                One web workspace for conversations, campaigns, and closing — whether the lead came from Instagram, email,
-                an ad click, or WhatsApp.
-              </p>
+              <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Every channel. One operator.</h2>
+              <p className="mt-4 text-lg text-slate-600">Stop logging into fifteen things.</p>
             </div>
-            <div className="mt-14 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {FEATURES.map((f) => (
-                <article
-                  key={f.title}
-                  className={cn(
-                    "group relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm transition hover:border-brand/30 hover:shadow-md",
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "mb-4 inline-flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br text-[#009B3A]",
-                      f.accent,
-                    )}
-                  >
-                    <f.icon className="h-6 w-6" strokeWidth={1.75} />
+            <div className="mt-12 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="grid grid-cols-1 bg-slate-900 md:grid-cols-[minmax(0,1fr)_2fr]">
+                <div className="border-b border-white/10 px-4 py-3 text-sm font-semibold text-white md:border-b-0 md:border-r md:border-white/10">
+                  Channel
+                </div>
+                <div className="px-4 py-3 text-sm font-semibold text-white">What Zilo does there</div>
+              </div>
+              {CHANNEL_ROWS.map((row) => (
+                <div key={row.channel} className="grid grid-cols-1 border-b border-slate-100 last:border-0 md:grid-cols-[minmax(0,1fr)_2fr]">
+                  <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-900 md:border-b-0 md:border-r md:border-slate-100">
+                    {row.channel}
                   </div>
-                  <h3 className="text-lg font-semibold text-slate-900">{f.title}</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-600">{f.description}</p>
-                </article>
+                  <div className="px-4 py-3 text-sm text-slate-600">{row.does}</div>
+                </div>
               ))}
+            </div>
+            <p className="mt-8 text-center text-base font-medium text-slate-700">You don&apos;t open each app. Zilo works across all of them.</p>
+          </div>
+        </section>
+
+        {/* Content & ads */}
+        <section id="content" className="scroll-mt-20 px-4 py-20 sm:px-6">
+          <div className="mx-auto max-w-6xl">
+            <div className="grid gap-12 lg:grid-cols-[1fr_1.1fr] lg:items-center">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  <Megaphone className="h-3.5 w-3.5 text-brand-dark" aria-hidden />
+                  Content &amp; ads
+                </div>
+                <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Content and ads: from blank page to published</h2>
+                <p className="mt-4 text-lg text-slate-600">
+                  Tell Zilo: &ldquo;Create three Instagram posts about our new summer menu, make a carousel for Facebook, and draft a
+                  Google Ad for the same campaign.&rdquo;
+                </p>
+                <p className="mt-4 text-base text-slate-700">It generates. You approve. It publishes and schedules.</p>
+              </div>
+              <ul className="space-y-3 rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+                {[
+                  "Social posts, carousels, reels concepts",
+                  "Ad creative across Meta, Google, X",
+                  "Brand-aware copy that matches your tone",
+                  "Video flows via Shotstack + Kling",
+                ].map((line) => (
+                  <li key={line} className="flex gap-3 text-sm text-slate-700">
+                    <Check className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
+                    {line}
+                  </li>
+                ))}
+                <li className="pt-2 text-sm font-semibold text-slate-900">Your creative team. In one prompt.</li>
+              </ul>
             </div>
           </div>
         </section>
 
-        {/* Modules */}
+        {/* Revenue loop */}
+        <section id="loop" className="scroll-mt-20 border-y border-slate-200/80 bg-gradient-to-b from-slate-50 to-white px-4 py-20 sm:px-6">
+          <div className="mx-auto max-w-6xl">
+            <div className="mx-auto max-w-2xl text-center">
+              <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">The full revenue loop: sell → get paid → know your numbers</h2>
+              <p className="mt-4 text-lg text-slate-600">Most tools stop at &ldquo;message sent.&rdquo; Zilo closes the loop.</p>
+            </div>
+            <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {REVENUE_LOOP.map((step, i) => (
+                <div key={step.title} className="relative rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                  <span className="text-xs font-bold uppercase tracking-wide text-brand-dark">
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <h3 className="mt-2 text-lg font-semibold text-slate-900">{step.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-600">{step.body}</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-10 text-center text-base font-medium text-slate-700">No manual steps. No missed money.</p>
+          </div>
+        </section>
+
+        {/* Modules — workspace + grouped features */}
         <section id="modules" className="scroll-mt-20 border-y border-slate-200/80 bg-white px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-6xl">
-            <div className="grid gap-12 lg:grid-cols-2 lg:items-center">
+            <div className="grid gap-12 lg:grid-cols-2 lg:items-start">
               <div>
                 <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Your workspace, your channels</h2>
                 <p className="mt-4 text-lg text-slate-600">
                   Turn on only the surfaces you sell through — Social Inbox, Ads, Email, Broadcast, WhatsApp — from{" "}
-                  <strong className="text-slate-800">Features</strong>. The web dashboard stays fast and focused on helping
-                  you convert.
+                  <strong className="text-slate-800">Features</strong>. The web dashboard stays fast and focused on helping you convert.
                 </p>
                 <ul className="mt-8 space-y-4">
-                  {["Presets: Starter, Business, Personal — match how you sell", "Industry-aware labels (shop, menu, services…)", "Core workspace: Overview, Zilo Chat, Automations, Integrations"].map((t) => (
+                  {[
+                    "Presets: Starter, Business, Personal — match how you sell",
+                    "Industry-aware labels (shop, menu, services…)",
+                    "Core workspace: Overview, Zilo Chat, Automations, Integrations",
+                  ].map((t) => (
                     <li key={t} className="flex gap-3 text-slate-700">
                       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
                         <Check className="h-3.5 w-3.5" />
@@ -667,7 +743,7 @@ export function LandingPage() {
                     </li>
                   ))}
                 </ul>
-                <Link href="/login" className="mt-10 inline-flex items-center gap-2 font-semibold text-brand-dark hover:text-brand-dark">
+                <Link href="/login" className="mt-10 inline-flex items-center gap-2 font-semibold text-brand-dark hover:text-brand-ink">
                   Open the web workspace
                   <ArrowRight className="h-4 w-4" />
                 </Link>
@@ -693,7 +769,40 @@ export function LandingPage() {
           </div>
         </section>
 
-        {/* Industries we support */}
+        {/* Works for how you work */}
+        <section id="work" className="scroll-mt-20 px-4 py-20 sm:px-6">
+          <div className="mx-auto max-w-6xl">
+            <div className="mx-auto max-w-2xl text-center">
+              <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Works for how you work</h2>
+              <p className="mt-4 text-lg text-slate-600">Zilo adapts to your business, not the other way around.</p>
+            </div>
+            <ul className="mx-auto mt-12 max-w-3xl space-y-6 text-left">
+              <li className="flex gap-3">
+                <Check className="mt-1 h-5 w-5 shrink-0 text-emerald-500" />
+                <p className="text-slate-700">
+                  <strong className="text-slate-900">Choose your type at signup</strong> — labels, catalog, and defaults shift to your
+                  world: Retail gets &ldquo;Shop.&rdquo; Restaurants get &ldquo;Menu.&rdquo; Salons get &ldquo;Services&rdquo; and &ldquo;Bookings.&rdquo;
+                </p>
+              </li>
+              <li className="flex gap-3">
+                <Check className="mt-1 h-5 w-5 shrink-0 text-emerald-500" />
+                <p className="text-slate-700">
+                  <strong className="text-slate-900">Enable only what you use</strong> — toggle modules from Features. Your workspace stays
+                  fast and focused. No clutter.
+                </p>
+              </li>
+              <li className="flex gap-3">
+                <Check className="mt-1 h-5 w-5 shrink-0 text-emerald-500" />
+                <p className="text-slate-700">
+                  <strong className="text-slate-900">20+ industries supported</strong> — Retail, wholesale, restaurants, hotels, salons,
+                  clinics, freelancers, creators, and more.
+                </p>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        {/* Industries */}
         <section id="industries" className="scroll-mt-20 border-y border-slate-200/80 bg-slate-50/80 px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-6xl">
             <div className="mx-auto max-w-2xl text-center">
@@ -701,13 +810,9 @@ export function LandingPage() {
                 <Store className="h-3.5 w-3.5 text-brand-dark" aria-hidden />
                 Business types
               </div>
-              <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-                Every industry we support
-              </h2>
+              <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Every industry we support</h2>
               <p className="mt-4 text-lg text-slate-600">
-                Pick your type at signup — the app adjusts labels (Shop vs Menu vs Services), bookings, catalog, and
-                defaults so the workspace feels built for you. Same list on{" "}
-                <strong className="text-slate-800">web and mobile</strong>.
+                Pick your type at signup — the app adjusts labels, bookings, catalog, and defaults so the workspace feels built for you.
               </p>
             </div>
             <div className="mt-12 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -727,106 +832,186 @@ export function LandingPage() {
               ))}
             </div>
             <p className="mx-auto mt-10 max-w-2xl text-center text-sm text-slate-500">
-              Don&apos;t see a perfect fit? Choose <strong className="text-slate-700">General / other</strong> — you can
-              still enable every module (Shopify, bookings, social, email, and more).
+              Don&apos;t see a perfect fit? Choose <strong className="text-slate-700">General / other</strong> — you can still enable every
+              module.
             </p>
           </div>
         </section>
 
-        {/* How */}
-        <section id="how" className="scroll-mt-20 px-4 py-20 sm:px-6">
+        {/* Talk from anywhere */}
+        <section id="anywhere" className="scroll-mt-20 px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-6xl">
-            <h2 className="text-center text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">How it works</h2>
-            <p className="mx-auto mt-4 max-w-2xl text-center text-lg text-slate-600">
-              From first login in the browser to selling across all your channels in three steps.
-            </p>
-            <div className="mt-14 grid gap-8 md:grid-cols-3">
-              {STEPS.map((s) => (
-                <div key={s.step} className="relative rounded-2xl border border-slate-200/80 bg-white p-8 shadow-sm">
-                  <span className="text-4xl font-bold text-brand-light">{s.step}</span>
-                  <h3 className="mt-4 text-lg font-semibold text-slate-900">{s.title}</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-600">{s.body}</p>
+            <div className="mx-auto max-w-2xl text-center">
+              <div className="inline-flex items-center gap-2 text-brand-dark">
+                <AtSign className="h-5 w-5" aria-hidden />
+                <Share2 className="h-5 w-5" aria-hidden />
+              </div>
+              <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Talk to Zilo from wherever you already are</h2>
+              <p className="mt-4 text-lg font-medium text-slate-700">This is the part that changes everything.</p>
+            </div>
+            <div className="mt-12 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="grid grid-cols-1 bg-slate-900 md:grid-cols-[minmax(0,1fr)_2fr]">
+                <div className="border-b border-white/10 px-4 py-3 text-sm font-semibold text-white md:border-b-0 md:border-r md:border-white/10">
+                  You message Zilo on
+                </div>
+                <div className="px-4 py-3 text-sm font-semibold text-white">Zilo responds with</div>
+              </div>
+              {ANYWHERE_ROWS.map((row) => (
+                <div key={row.app} className="grid grid-cols-1 border-b border-slate-100 last:border-0 md:grid-cols-[minmax(0,1fr)_2fr]">
+                  <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-900 md:border-b-0 md:border-r md:border-slate-100">
+                    {row.app}
+                  </div>
+                  <div className="px-4 py-3 text-sm text-slate-600">{row.response}</div>
                 </div>
               ))}
             </div>
+            <p className="mt-8 text-center text-base text-slate-600">
+              You don&apos;t learn a new platform. You don&apos;t sit at a dashboard. You talk to your business like you talk to your best
+              employee.
+            </p>
           </div>
         </section>
 
-        {/* Security strip */}
-        <section className="border-y border-slate-200/80 bg-slate-900 px-4 py-12 text-white sm:px-6">
-          <div className="mx-auto flex max-w-6xl flex-col items-center gap-4 text-center md:flex-row md:justify-between md:text-left">
-            <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/10">
-                <Shield className="h-6 w-6 text-emerald-400" />
-              </div>
-              <div>
-                <p className="font-semibold">Built for real businesses</p>
-                <p className="text-sm text-slate-400">Roles, audit-friendly workflows, and integrations you control.</p>
-              </div>
+        {/* Built for real businesses */}
+        <section id="built" className="scroll-mt-20 border-y border-slate-200/80 bg-slate-900 px-4 py-16 text-white sm:px-6">
+          <div className="mx-auto max-w-6xl">
+            <h2 className="text-center text-2xl font-bold sm:text-3xl">Built for real businesses</h2>
+            <ul className="mx-auto mt-10 grid max-w-4xl gap-4 text-sm text-slate-300 sm:grid-cols-2">
+              <li className="flex gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+                Team roles &amp; permissions — control who does what
+              </li>
+              <li className="flex gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+                Audit-friendly — every action logged
+              </li>
+              <li className="flex gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+                Imports — bring your existing data
+              </li>
+              <li className="flex gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+                Integrations that matter — Shopify, Stripe, Gmail/Outlook, Klaviyo, Mailchimp, Slack, Notion, Telegram, and more
+              </li>
+            </ul>
+            <div className="mt-10 flex justify-center">
+              <Link
+                href="/login"
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
+              >
+                Create account
+                <ArrowRight className="h-4 w-4" />
+              </Link>
             </div>
-            <Link
-              href="/login"
-              className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
-            >
-              Create account
-              <ArrowRight className="h-4 w-4" />
-            </Link>
           </div>
         </section>
 
-        {/* Pricing */}
+        {/* Pricing — screenshot: Starter $49/5k, Growth $79/10k, Pro $200/25k */}
         <section id="pricing" className="scroll-mt-20 px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-6xl">
             <div className="text-center">
-              <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Simple, transparent plans</h2>
+              <h2 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Plans</h2>
               <p className="mx-auto mt-4 max-w-2xl text-lg text-slate-600">
-                Indicative USD pricing. Regional pricing applies at checkout — amounts are tailored to your market.
+                Simple pricing. Regional-adjusted. No surprises.
               </p>
             </div>
-            <div className="mt-14 grid gap-6 lg:grid-cols-3">
-              {PLANS.map((plan) => (
-                <div
-                  key={plan.id}
-                  className={cn(
-                    "relative flex flex-col rounded-2xl border p-8",
-                    plan.highlighted
-                      ? "border-[#4CD137]/50 bg-white shadow-xl shadow-[#009B3A]/10 ring-2 ring-[#4CD137]/30"
-                      : "border-slate-200 bg-white shadow-sm",
-                  )}
-                >
-                  {plan.highlighted && (
-                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-[#009B3A] px-3 py-0.5 text-xs font-semibold text-white ring-1 ring-[#007a2e]">
-                      Most popular
-                    </span>
-                  )}
-                  <h3 className="text-lg font-semibold text-slate-900">{plan.name}</h3>
-                  <p className="mt-1 text-sm text-slate-500">{plan.blurb}</p>
-                  <p className="mt-6 flex items-baseline gap-1">
-                    <span className="text-4xl font-bold tracking-tight text-slate-900">${plan.usd}</span>
-                    <span className="text-slate-500">/month</span>
-                  </p>
-                  <p className="mt-1 text-xs text-slate-400">USD · indicative</p>
-                  <ul className="mt-8 flex-1 space-y-3">
-                    {plan.features.map((f) => (
-                      <li key={f} className="flex gap-2 text-sm text-slate-600">
-                        <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
-                        {f}
-                      </li>
-                    ))}
-                  </ul>
-                  <Link
-                    href="/login"
-                    className={cn(
-                      "mt-8 block w-full rounded-xl py-3 text-center text-sm font-semibold transition",
-                      plan.highlighted
-                        ? "border border-[#007a2e] bg-[#009B3A] text-white hover:bg-[#4CD137] hover:text-[#0a2614]"
-                        : "border border-slate-300 bg-white text-slate-900 hover:border-[#009B3A]/35 hover:bg-[#f0fdf4]",
-                    )}
-                  >
-                    Get started
-                  </Link>
-                </div>
-              ))}
+            <div className="mt-12 overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                <thead>
+                  <tr className="bg-[#0f172a] text-white">
+                    <th className="px-4 py-4 font-semibold"> </th>
+                    <th className="px-4 py-4 font-semibold">Starter</th>
+                    <th className="bg-sky-900/60 px-4 py-4 font-semibold">Growth</th>
+                    <th className="px-4 py-4 font-semibold">Pro</th>
+                  </tr>
+                </thead>
+                <tbody className="text-slate-700">
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">Price</td>
+                    <td className="px-4 py-3">$49/mo</td>
+                    <td className="bg-sky-50 px-4 py-3 font-medium">$79/mo</td>
+                    <td className="px-4 py-3">$200/mo</td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">Messages</td>
+                    <td className="px-4 py-3">5,000</td>
+                    <td className="bg-sky-50 px-4 py-3">10,000</td>
+                    <td className="px-4 py-3">25,000</td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">Customers</td>
+                    <td className="px-4 py-3">Unlimited</td>
+                    <td className="bg-sky-50 px-4 py-3">Unlimited</td>
+                    <td className="px-4 py-3">Unlimited</td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">AI replies</td>
+                    <td className="px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                    <td className="bg-sky-50 px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">Follow-ups &amp; broadcasts</td>
+                    <td className="px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                    <td className="bg-sky-50 px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">Priority support</td>
+                    <td className="px-4 py-3 text-slate-400">—</td>
+                    <td className="bg-sky-50 px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">—</td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">Dedicated support</td>
+                    <td className="px-4 py-3 text-slate-400">—</td>
+                    <td className="bg-sky-50 px-4 py-3 text-slate-400">—</td>
+                    <td className="px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="px-4 py-3 font-medium text-slate-900">Advanced analytics</td>
+                    <td className="px-4 py-3 text-slate-400">—</td>
+                    <td className="bg-sky-50 px-4 py-3 text-slate-400">—</td>
+                    <td className="px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-3 font-medium text-slate-900">Custom templates</td>
+                    <td className="px-4 py-3 text-slate-400">—</td>
+                    <td className="bg-sky-50 px-4 py-3 text-slate-400">—</td>
+                    <td className="px-4 py-3">
+                      <Check className="inline h-4 w-4 text-emerald-500" aria-label="Yes" />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-4 text-center text-xs text-slate-500">USD shown as reference; regional pricing applies at checkout.</p>
+            <div className="mt-10 flex justify-center">
+              <Link
+                href="/login"
+                className="inline-flex items-center gap-2 rounded-xl border border-[#007a2e] bg-[#009B3A] px-8 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-[#4CD137] hover:text-[#0a2614]"
+              >
+                View all plans
+                <ArrowRight className="h-4 w-4" />
+              </Link>
             </div>
           </div>
         </section>
@@ -834,9 +1019,7 @@ export function LandingPage() {
         {/* FAQ */}
         <section id="faq" className="scroll-mt-20 border-t border-slate-200/80 bg-white px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-3xl">
-            <h2 className="text-center text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-              Frequently asked questions
-            </h2>
+            <h2 className="text-center text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Frequently asked questions</h2>
             <div className="mt-12 space-y-2">
               {FAQS.map((item, i) => (
                 <div key={item.q} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50/50">
@@ -863,25 +1046,24 @@ export function LandingPage() {
         {/* Final CTA */}
         <section className="px-4 pb-24 pt-4 sm:px-6">
           <div className="mx-auto max-w-4xl overflow-hidden rounded-3xl border border-[#007a2e] bg-gradient-to-br from-[#009B3A] via-[#067c30] to-[#4CD137] px-8 py-16 text-center shadow-xl shadow-[#0a2614]/20">
-            <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
-              Ready to sell smarter across every channel?
-            </h2>
+            <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">One prompt runs your entire revenue engine.</h2>
             <p className="mx-auto mt-4 max-w-xl text-[15px] leading-relaxed text-white/95">
-              Join teams using the Zilo web workspace — AI agents, follow-ups, and omnichannel selling without the sprawl.
+              Connect your channels. Tell Zilo what to do. Run your business from any app you&apos;re already on.
             </p>
+            <p className="mt-3 text-sm text-white/85">No code. No terminal. No babysitting.</p>
             <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row sm:gap-6">
               <Link
                 href="/login"
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/30 bg-white px-8 py-3.5 text-base font-semibold text-[#0a2614] shadow-lg transition hover:bg-[#f0fdf4] sm:w-auto"
               >
-                Get started free
+                Get Started Free
                 <ArrowRight className="h-5 w-5 shrink-0" />
               </Link>
               <a
-                href="#product"
-                className="text-sm font-semibold text-white underline decoration-white/70 underline-offset-4 hover:decoration-white"
+                href="#how"
+                className="inline-flex w-full items-center justify-center rounded-xl border border-white/40 bg-white/10 px-8 py-3.5 text-base font-semibold text-white backdrop-blur-sm transition hover:bg-white/20 sm:w-auto"
               >
-                Back to top
+                See How It Works
               </a>
             </div>
           </div>
@@ -896,7 +1078,7 @@ export function LandingPage() {
               <span>Zilo</span>
             </div>
             <p className="mt-3 max-w-xs text-center text-sm text-slate-500 md:text-left">
-              Web-first agent workspace for teams that sell on chat, social, email, and ads — one place to focus and close.
+              One prompt runs your revenue engine — from WhatsApp, Instagram, email, and the channels you already use.
             </p>
           </div>
           <div className="flex flex-wrap justify-center gap-8 text-sm md:justify-end">
@@ -914,13 +1096,18 @@ export function LandingPage() {
                   </a>
                 </li>
                 <li>
-                  <a href="#industries" className="hover:text-brand-dark">
-                    Industries we support
+                  <a href="#modules" className="hover:text-brand-dark">
+                    Modules
                   </a>
                 </li>
                 <li>
-                  <a href="#modules" className="hover:text-brand-dark">
-                    Modules
+                  <a href="#loop" className="hover:text-brand-dark">
+                    Revenue loop
+                  </a>
+                </li>
+                <li>
+                  <a href="#industries" className="hover:text-brand-dark">
+                    Industries
                   </a>
                 </li>
                 <li>

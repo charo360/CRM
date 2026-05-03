@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import { LandingPage } from "@/components/landing/LandingPage";
 
 export const metadata: Metadata = {
-  title: "Zilo — Sell on every channel from one web workspace",
+  title: "Zilo — One prompt runs your entire revenue engine",
   description:
-    "Web-first agent workspace: Shopify on autopilot — store sync, carts, recovery — plus social, email, ads & WhatsApp. AI drafts and follow-ups so selling stays on autopilot; mobile optional.",
+    "Connect your channels once. Tell Zilo what to do. Run your business from WhatsApp, Instagram, or wherever you already are — sales, payments, content, ads, and reconciliation around the clock.",
   openGraph: {
-    title: "Zilo — Sell on every channel from one web workspace",
+    title: "Zilo — One prompt runs your entire revenue engine",
     description:
-      "Shopify 100% on autopilot, selling on autopilot — omnichannel AI agents. Chill while Zilo runs the grind.",
+      "Not a chatbot. An AI revenue team that works while you live your life. Connect once, automate forever.",
     type: "website",
   },
 };

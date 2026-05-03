@@ -7118,6 +7118,161 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
     }
 
 
+def _public_http_url(url: str) -> Optional[str]:
+    """Return normalized https? URL or None if not a safe public fetch target (SSRF guard)."""
+    from urllib.parse import urlparse
+
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    try:
+        p = urlparse(raw if "://" in raw else f"https://{raw}")
+    except Exception:
+        return None
+    if p.scheme not in ("http", "https"):
+        return None
+    host = (p.hostname or "").lower()
+    if not host:
+        return None
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return None
+    if host.endswith(".localhost") or host.endswith(".local"):
+        return None
+    if host in ("metadata.google.internal", "metadata", "169.254.169.254"):
+        return None
+    if host.startswith("169.254."):
+        return None
+    if host.startswith("10.") or host.startswith("192.168."):
+        return None
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) >= 2 and parts[0] == "172":
+            try:
+                second = int(parts[1])
+                if 16 <= second <= 31:
+                    return None
+            except ValueError:
+                pass
+    if "[" in host:
+        return None
+    netloc = p.netloc
+    path = p.path or "/"
+    query = f"?{p.query}" if p.query else ""
+    frag = f"#{p.fragment}" if p.fragment else ""
+    return f"{p.scheme}://{netloc}{path}{query}{frag}"
+
+
+def _html_to_plain_text(html: str, max_chars: int = 120_000) -> str:
+    import html as html_module
+
+    s = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", html)
+    s = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", s)
+    s = re.sub(r"(?is)<noscript[^>]*>.*?</noscript>", " ", s)
+    s = re.sub(r"(?is)<[^>]+>", " ", s)
+    s = html_module.unescape(s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:max_chars]
+
+
+@tool(
+    name="fetch_url",
+    description=(
+        "Fetch and read the main text content of a specific web page the user linked or pasted "
+        "(full https URL). Use when the user provides a URL and wants a summary, facts, or "
+        "content from that exact page. Do NOT use this for open-ended research — use `web_search` "
+        "for keyword searches. Returns extracted markdown or plain text (truncated if very long)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Full page URL (https://...) exactly as the user shared or from a cited link.",
+            },
+        },
+        "required": ["url"],
+    },
+)
+async def fetch_url(ctx: ToolContext, args: Dict[str, Any]):
+    import os
+    import httpx
+
+    normalized = _public_http_url((args.get("url") or "").strip())
+    if not normalized:
+        return {"error": "Invalid or non-public URL — provide an http(s) link to a public page."}
+
+    tavily_key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    if tavily_key:
+        try:
+            async with httpx.AsyncClient(timeout=45) as client:
+                resp = await client.post(
+                    "https://api.tavily.com/extract",
+                    json={
+                        "api_key": tavily_key,
+                        "urls": [normalized],
+                        "format": "markdown",
+                        "extract_depth": "basic",
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    results = data.get("results") or []
+                    failed = data.get("failed_results") or []
+                    if results:
+                        r0 = results[0]
+                        content = (r0.get("raw_content") or "").strip()
+                        if content:
+                            return {
+                                "url": normalized,
+                                "title": r0.get("title") or "",
+                                "content": content[:120_000],
+                                "source": "tavily_extract",
+                            }
+                    if failed:
+                        err = (failed[0].get("error") or "extraction failed")[:500]
+                        logger.warning("[fetch_url] Tavily extract failed for %s: %s", normalized, err)
+                else:
+                    logger.warning(
+                        "[fetch_url] Tavily HTTP %s: %s",
+                        resp.status_code,
+                        resp.text[:300],
+                    )
+        except Exception as e:
+            logger.warning("[fetch_url] Tavily extract error: %s — falling back to direct fetch", e)
+
+    max_bytes = 2_000_000
+    try:
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+            headers={"User-Agent": "ZiloAI/1.0 (assistant; +https://zilo.pro)"},
+        ) as client:
+            resp = await client.get(normalized)
+            resp.raise_for_status()
+            body = resp.content
+            if len(body) > max_bytes:
+                body = body[:max_bytes]
+            ctype = (resp.headers.get("content-type") or "").lower()
+            text = body.decode("utf-8", errors="replace")
+            if "html" in ctype or text.lstrip().lower().startswith("<!doctype") or "<html" in text[:2000].lower():
+                plain = _html_to_plain_text(text)
+            else:
+                plain = text.strip()[:120_000]
+            if not plain:
+                return {"error": "Page returned no readable text (may require JavaScript or login).", "url": normalized}
+            return {
+                "url": str(resp.url),
+                "content": plain,
+                "source": "direct_http",
+                "note": "Raw fetch; for heavy JS sites set TAVILY_API_KEY for better extraction." if not tavily_key else None,
+            }
+    except httpx.HTTPStatusError as e:
+        return {"error": f"HTTP {e.response.status_code}", "url": normalized}
+    except Exception as e:
+        logger.warning("[fetch_url] direct fetch failed: %s", e)
+        return {"error": str(e)[:500], "url": normalized}
+
+
 @tool(
     name="get_document_style",
     description=(
@@ -8351,8 +8506,8 @@ async def get_social_post_analytics(ctx: ToolContext, args: Dict[str, Any]):
         "explain why a freshly-connected platform (e.g. LinkedIn just added) shows 0 posts — that "
         "typically means our first sync hasn't completed yet (takes 30–60 min), NOT that the "
         "integration failed. The follower count is real even when post-level data is still pending.\n\n"
-        "Audience demographics (age, gender, geography, peak audience hours) are NOT exposed by the "
-        "API and intentionally absent — say so plainly if asked."
+        "Audience demographics (age, gender, geography, industry, seniority) are NOT returned by THIS tool. "
+        "If the user asks for demographic data, you MUST call the `get_audience_insights` tool instead."
     ),
     parameters={
         "type": "object",
@@ -8389,26 +8544,36 @@ async def get_social_post_analytics(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_audience_insights(ctx: ToolContext, args: Dict[str, Any]):
-    import httpx as _httpx
-    base_url = _os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
     refresh = bool(args.get("refresh", False))
     try:
-        async with _httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{base_url}/api/social/audience-insights",
-                params={"refresh": "true" if refresh else "false"},
-                headers={"Authorization": f"Bearer {ctx.token}"},
-            )
-        if resp.status_code != 200:
-            return {"error": f"Could not fetch audience insights ({resp.status_code})"}
-        data = resp.json()
-        insights = data.get("insights") or {}
+        from audience_insights_service import get_audience_insights_for_user
+        db = ctx.db
+        user_id = ctx.user_id
+
+        if refresh:
+            # bust the 24-hour cache so fresh data is pulled
+            await db.audience_insights_cache.delete_one({"user_id": user_id})
+
+        insights = await get_audience_insights_for_user(db, user_id)
+
         if not insights:
+            # Provide a specific, helpful message rather than a generic Facebook one
             return {
                 "has_data": False,
-                "message": "No audience demographics available yet. Reconnect your Facebook Page through Integrations to enable this feature.",
+                "message": (
+                    "No audience demographics could be fetched right now. "
+                    "Make sure your LinkedIn and/or Facebook Page are connected under Integrations. "
+                    "If you just connected them, try again with refresh=true."
+                ),
             }
-        return {"has_data": True, "insights": insights}
+
+        # Summarise what platforms returned data so the AI knows what it has
+        platforms_with_data = list(insights.keys())
+        return {
+            "has_data": True,
+            "platforms": platforms_with_data,
+            "insights": insights,
+        }
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -8669,7 +8834,15 @@ async def get_live_social_posts(ctx: ToolContext, args: Dict[str, Any]):
                     aid = _get_account_id(acc)
                     if aid:
                         fallback_account_ids.append(aid)
-                        plat = str(acc.get("platform") or "").strip().lower()
+                        # Zernio may return platform as 'platform', 'type', 'channelType', 'network', or 'channel'
+                        plat = str(
+                            acc.get("platform")
+                            or acc.get("type")
+                            or acc.get("channelType")
+                            or acc.get("network")
+                            or acc.get("channel")
+                            or ""
+                        ).strip().lower()
                         if plat:
                             account_platform_by_id[aid] = plat
 

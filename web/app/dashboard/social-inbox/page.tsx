@@ -1355,7 +1355,10 @@ export default function SocialInboxPage() {
           <div className="grid grid-cols-1 gap-2">
             <select
               value={platformFilter}
-              onChange={(e) => setPlatformFilter(e.target.value)}
+              onChange={(e) => {
+                setPlatformFilter(e.target.value);
+                setAccountFilter("");
+              }}
               className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
             >
               <option value="">All platforms</option>
@@ -1371,7 +1374,9 @@ export default function SocialInboxPage() {
               className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
             >
               <option value="">All accounts</option>
-              {accounts.map((a) => (
+              {accounts
+                .filter(a => platformFilter ? String(a.platform || "").toLowerCase() === platformFilter.toLowerCase() : true)
+                .map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name || a.username || a.platform}
                 </option>

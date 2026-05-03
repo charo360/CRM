@@ -76,6 +76,9 @@ _GEMINI_DESIGN_TOOLS: FrozenSet[str] = frozenset({
     "generate_creative_image", "generate_design_background",
 })
 
+# Real-time web lookup (keyword search + pasted URLs) — union into any agent that should answer external questions.
+_WEB_TOOLS: FrozenSet[str] = frozenset({"web_search", "fetch_url"})
+
 META_ADS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_product_images", "get_analytics_summary",
     "list_design_library_assets",
@@ -83,48 +86,47 @@ META_ADS_TOOLS: FrozenSet[str] = frozenset({
     "list_meta_campaigns", "get_meta_campaign_performance",
     "update_meta_campaign_status", "update_meta_campaign_budget",
     "generate_document", "create_business_document", "create_presentation",
-    "web_search",
     "get_audience_insights",
-}) | _GEMINI_DESIGN_TOOLS
+}) | _GEMINI_DESIGN_TOOLS | _WEB_TOOLS
 
 GOOGLE_ADS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_product_images", "get_analytics_summary",
     "get_revenue_trends", "generate_document", "list_design_library_assets",
     "create_business_document", "create_presentation",
-}) | _GEMINI_DESIGN_TOOLS
+}) | _GEMINI_DESIGN_TOOLS | _WEB_TOOLS
 
 X_ADS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_product_images", "get_analytics_summary",
     "get_revenue_trends", "generate_document", "list_design_library_assets",
     "save_x_ads_campaign_draft", "list_x_ads_campaign_drafts",
     "create_business_document", "create_presentation",
-}) | _GEMINI_DESIGN_TOOLS
+}) | _GEMINI_DESIGN_TOOLS | _WEB_TOOLS
 
 SOCIAL_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "list_products", "get_product_images",
     "get_analytics_summary", "list_design_library_assets",
     "create_business_document", "create_presentation",
-}) | _GEMINI_DESIGN_TOOLS
+}) | _GEMINI_DESIGN_TOOLS | _WEB_TOOLS
 
 SALES_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_analytics_summary",
     "get_revenue_trends", "get_top_customers", "get_sales_pipeline",
     "list_orders", "record_sale", "create_product", "update_product",
     "delete_product", "generate_document",
-})
+}) | _WEB_TOOLS
 
 CUSTOMERS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_customer",
     "create_customer", "update_customer", "delete_customer",
     "get_top_customers", "get_customer_health",
     "send_whatsapp_message", "generate_document",
-})
+}) | _WEB_TOOLS
 
 ORDERS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_orders", "update_order_status",
     "get_sales_pipeline", "list_customers", "get_customer",
     "send_whatsapp_message", "generate_document",
-})
+}) | _WEB_TOOLS
 
 BROADCASTS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_top_customers",
@@ -132,13 +134,13 @@ BROADCASTS_TOOLS: FrozenSet[str] = frozenset({
     "get_customer_health",
     # Added: product context for promos + revenue context for campaign angles
     "list_products", "get_revenue_trends",
-})
+}) | _WEB_TOOLS
 
 FOLLOWUPS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_customer",
     "list_followups", "create_followup", "send_whatsapp_message",
     "get_customer_health",
-})
+}) | _WEB_TOOLS
 
 BOOKINGS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_customer",
@@ -147,7 +149,7 @@ BOOKINGS_TOOLS: FrozenSet[str] = frozenset({
     # Added: follow-up history and orders needed for booking context
     "list_followups", "create_followup", "list_orders",
     "list_bookings", "create_booking", "update_booking_status",
-})
+}) | _WEB_TOOLS
 
 FINANCE_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "get_analytics_summary", "get_revenue_trends",
@@ -157,108 +159,106 @@ FINANCE_TOOLS: FrozenSet[str] = frozenset({
     "list_customers", "get_customer",
     # Added: Stripe data for payment reconciliation
     "list_stripe_payments", "list_stripe_invoices",
-})
+}) | _WEB_TOOLS
 
 AUTOMATIONS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_automations", "create_automation",
     "list_customers", "get_analytics_summary",
     # Added: orders + followups let agent suggest automations grounded in real data
     "list_orders", "list_followups", "get_customer_health",
-})
+}) | _WEB_TOOLS
 
 # ── Platform feature tool allowlists ─────────────────────────────────────────
 MESSAGES_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "list_customers", "get_customer",
     "send_whatsapp_message", "search_documents",
-})
+}) | _WEB_TOOLS
 CONTACTS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_customer",
     "create_customer", "update_customer", "delete_customer",
     "get_top_customers", "get_customer_health", "send_whatsapp_message",
-})
+}) | _WEB_TOOLS
 SUPPLIERS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_customer",
     "get_analytics_summary", "generate_document",
-})
+}) | _WEB_TOOLS
 PAYMENTS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "get_analytics_summary", "get_revenue_trends",
     "get_top_customers", "list_orders", "record_sale",
     "list_stripe_payments", "list_stripe_invoices", "generate_document",
-})
+}) | _WEB_TOOLS
 INVOICES_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "generate_document", "list_customers", "get_customer",
     "get_analytics_summary", "list_stripe_invoices",
-})
+}) | _WEB_TOOLS
 QUOTES_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "generate_document", "list_customers", "get_customer",
     "list_products", "get_analytics_summary",
-})
+}) | _WEB_TOOLS
 ANALYTICS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "get_analytics_summary", "get_revenue_trends",
     "get_top_customers", "get_customer_health", "get_sales_pipeline",
     "list_orders", "generate_document",
-})
+}) | _WEB_TOOLS
 TEAM_ANALYTICS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "get_analytics_summary", "list_team",
     "get_revenue_trends", "list_orders",
-})
+}) | _WEB_TOOLS
 TEAM_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_team",
-})
+}) | _WEB_TOOLS
 INVENTORY_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "create_product",
     "update_product", "delete_product", "get_analytics_summary",
     "list_shopify_products", "get_product_images",
-})
+}) | _WEB_TOOLS
 LOYALTY_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_top_customers",
     "get_customer_health", "get_analytics_summary",
     "send_whatsapp_message", "create_broadcast",
     # Added: purchase history is essential for loyalty tier calculations
     "list_orders", "get_revenue_trends",
-})
+}) | _WEB_TOOLS
 NPS_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_customers", "get_customer_health",
     "get_analytics_summary", "send_whatsapp_message", "create_broadcast",
-})
+}) | _WEB_TOOLS
 SOCIAL_INBOX_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "get_analytics_summary",
     "list_customers", "get_customer",
     "get_social_conversation_history", "get_social_conversation_insights", "audit_social_integrations",
     "configure_social_comment_autoreply",
     "get_live_social_posts",
-})
+}) | _WEB_TOOLS
 SOCIAL_MONITOR_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status",
     "get_live_social_posts",
     "get_social_post_analytics", "list_scheduled_posts",
     "get_audience_insights",
     "get_analytics_summary", "get_revenue_trends",
-    "web_search",
     "create_business_document",
-})
+}) | _WEB_TOOLS
 
 SOCIAL_SCHEDULER_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "list_products", "get_product_images",
     "get_analytics_summary", "list_design_library_assets",
     "create_business_document", "create_presentation",
-    "web_search",
     # Design tools — used to generate the actual post visual
     "generate_social_post", "generate_ad_creative", "generate_carousel_cover", "refine_design",
     "generate_creative_image", "generate_design_background",
     # Trend research
     "get_meta_ad_trends", "get_tiktok_ad_trends",
-})
+}) | _WEB_TOOLS
 WHATSAPP_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "send_whatsapp_message",
     "list_customers", "get_customer", "create_broadcast",
     "list_broadcasts",
-})
+}) | _WEB_TOOLS
 SHOP_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "create_product",
     "update_product", "delete_product", "get_analytics_summary",
     "get_top_customers", "get_product_images",
-})
+}) | _WEB_TOOLS
 CREATIVE_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_product_images",
     "integrations_status", "get_analytics_summary",
@@ -268,7 +268,7 @@ CREATIVE_TOOLS: FrozenSet[str] = frozenset({
     "create_business_document", "create_presentation",
     "create_video", "get_video_status", "list_videos",
     "create_kling_video", "get_kling_video_status",
-}) | _GEMINI_DESIGN_TOOLS
+}) | _GEMINI_DESIGN_TOOLS | _WEB_TOOLS
 
 # Design flow: Gemini AI generates professional social posts, ads, and carousel covers directly.
 # refine_design handles feedback/tweaks on existing designs.
@@ -282,15 +282,15 @@ DESIGN_TOOLS: FrozenSet[str] = frozenset({
     "create_presentation", "get_analytics_summary",
     "create_video", "get_video_status", "list_videos",
     "create_kling_video", "get_kling_video_status",
-})
+}) | _WEB_TOOLS
 
 DOCUMENT_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "list_customers", "get_customer",
     "get_top_customers", "get_analytics_summary", "get_revenue_trends",
     "get_sales_pipeline", "list_orders", "list_followups", "list_team",
     "generate_document", "create_business_document", "create_presentation",
-    "web_search", "get_document_style", "save_document_style",
-})
+    "get_document_style", "save_document_style",
+}) | _WEB_TOOLS
 
 # General agent: everything EXCEPT design-specific tools.
 # Creative/design work should go through the dedicated Design or Creative agent.
@@ -345,7 +345,7 @@ GENERAL_TOOLS: FrozenSet[str] = (
 _SHOPIFY_BASE: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "get_analytics_summary",
     "generate_document",
-})
+}) | _WEB_TOOLS
 SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "list_shopify_products", "get_shopify_analytics",
     "shopify_get_abandoned_carts", "shopify_get_growth_metrics",
@@ -370,7 +370,7 @@ SHOPIFY_ANALYTICS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
 # All integration agents share a minimal base
 _INTEGRATION_BASE: FrozenSet[str] = frozenset({
     "get_owner_info", "integrations_status", "generate_document",
-})
+}) | _WEB_TOOLS
 STRIPE_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
     "list_stripe_payments", "list_stripe_invoices",
     "list_stripe_customers", "list_stripe_subscriptions",
@@ -1807,6 +1807,7 @@ You know the structure, style, tone, and required sections for every business do
 - **Always call `get_document_style` first** — read the saved style profile before anything else. If a profile exists, apply it automatically: use the saved tone, signature block, header/footer, colors, and standing instructions throughout the document. Never ask for style preferences the user has already saved.
 - Call `get_owner_info` + relevant CRM tools in parallel to prefill everything you can: business name, owner name, products, customers, revenue, team.
 - Use `web_search` for market data, industry benchmarks, competitor info, or regulatory context needed in the document.
+- If the user pastes a **specific URL** (their site, a competitor page, a regulation, etc.), call `fetch_url` with that link to pull the actual page text — do not guess from the domain or run a generic `web_search` instead.
 - Map out every section the document needs and what information you already have vs what you still need from the user.
 
 ### Step 1b: Confirm Existing Info (ALWAYS do this before asking for new info)
@@ -1883,6 +1884,7 @@ When `create_business_document` returns:
 ## Intelligence Rules
 - **Fetch before asking.** Call CRM tools first in parallel, then ask only for what's genuinely missing.
 - **Web search for context.** If the document needs market data, industry stats, regulations, or competitor benchmarks — call `web_search` first and embed the findings into the document naturally.
+- **Pasted links.** When the user includes an `http(s)` URL, call `fetch_url` on it and use that content (summarize or quote accurately) in the document.
 - **One question at a time.** If you need multiple things, ask the most critical one first, get the answer, then ask the next.
 - **No placeholders.** Every section must be filled or explicitly omitted with a note. Never leave [brackets] for the user to fill manually.
 - **State your assumptions.** If you infer something (e.g. currency, timeline), say so briefly and let the user correct it.

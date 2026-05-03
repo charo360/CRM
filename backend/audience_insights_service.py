@@ -132,17 +132,28 @@ async def get_linkedin_audience_insights(account_id: str) -> Dict[str, Any]:
             else:
                 data = resp.json()
 
+        # If fallback endpoint wrapped metrics in 'analytics' or 'data'
+        if "analytics" in data and isinstance(data["analytics"], dict):
+            data = data["analytics"]
+        elif "data" in data and isinstance(data["data"], dict):
+            data = data["data"]
+
         demographics = data.get("demographics") or data.get("followerDemographics") or {}
         geo          = data.get("geo") or data.get("followersByGeo") or {}
         industry     = data.get("industry") or data.get("followersByIndustry") or {}
         seniority    = data.get("seniority") or data.get("followersBySeniority") or {}
 
+        # Default empty dicts for standard keys if missing
+        if not isinstance(geo, dict): geo = {}
+        if not isinstance(industry, dict): industry = {}
+        if not isinstance(seniority, dict): seniority = {}
+
         return {
             "source": "linkedin",
             "account_id": account_id,
-            "top_countries": _top_n(geo, 8) if isinstance(geo, dict) else geo,
-            "top_industries": _top_n(industry, 8) if isinstance(industry, dict) else industry,
-            "seniority": _top_n(seniority, 6) if isinstance(seniority, dict) else seniority,
+            "top_countries": _top_n(geo, 8) if geo else [],
+            "top_industries": _top_n(industry, 8) if industry else [],
+            "seniority": _top_n(seniority, 6) if seniority else [],
             "demographics": demographics,
             "fetched_at": datetime.utcnow().isoformat(),
         }
@@ -186,10 +197,25 @@ async def get_audience_insights_for_user(db, user_id: str) -> Dict[str, Any]:
                     params={"profileId": user_doc["zernio_profile_id"]},
                 )
             if accs_resp.status_code == 200:
-                accounts = accs_resp.json().get("accounts") or []
+                acc_payload = accs_resp.json()
+                accounts = acc_payload.get("accounts") or acc_payload.get("data") or []
+                if not isinstance(accounts, list):
+                    accounts = []
                 for acc in accounts:
-                    if str(acc.get("platform", "")).lower() == "linkedin":
-                        li_data = await get_linkedin_audience_insights(str(acc.get("_id") or acc.get("id", "")))
+                    # Zernio may use 'platform', 'type', 'channelType', 'network', or 'channel'
+                    acc_platform = str(
+                        acc.get("platform")
+                        or acc.get("type")
+                        or acc.get("channelType")
+                        or acc.get("network")
+                        or acc.get("channel")
+                        or ""
+                    ).strip().lower()
+                    if acc_platform == "linkedin":
+                        acc_id = str(acc.get("_id") or acc.get("id") or acc.get("accountId") or "")
+                        if not acc_id:
+                            continue
+                        li_data = await get_linkedin_audience_insights(acc_id)
                         if not li_data.get("error"):
                             results["linkedin"] = li_data
                         break
