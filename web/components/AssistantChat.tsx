@@ -15,6 +15,7 @@ import {
   type Customer,
   type TeamMember,
 } from "@/lib/api";
+import { getAgentPersona, personaBadgeLabel, personaHandoffLine, personaThinkingLabel } from "@/lib/agentPersonas";
 import {
   Loader2,
   Send,
@@ -50,60 +51,6 @@ interface Props {
   initialMessage?: string;
 }
 
-// Agent colour coding shown in the live badge
-const AGENT_COLORS: Record<string, string> = {
-  // Core workspace agents
-  general: "bg-brand/15 text-brand-dark",
-  sales: "bg-emerald-100 text-emerald-700",
-  customers: "bg-brand/15 text-brand-dark",
-  orders: "bg-orange-100 text-orange-700",
-  broadcasts: "bg-cyan-100 text-cyan-700",
-  follow_ups: "bg-amber-100 text-amber-700",
-  bookings: "bg-teal-100 text-teal-700",
-  finance: "bg-green-100 text-green-700",
-  automations: "bg-brand/15 text-brand-dark",
-  // Advertising
-  meta_ads: "bg-blue-100 text-blue-700",
-  google_ads: "bg-yellow-100 text-yellow-700",
-  x_ads: "bg-slate-800 text-white",
-  // Social
-  social_media: "bg-pink-100 text-pink-700",
-  // Shopify
-  shopify: "bg-[#96BF48]/20 text-[#5A8E00]",
-  shopify_orders: "bg-[#96BF48]/20 text-[#3a6000]",
-  shopify_products: "bg-lime-100 text-lime-700",
-  shopify_analytics: "bg-green-100 text-green-800",
-  // Payments
-  stripe: "bg-[#635BFF]/10 text-[#635BFF]",
-  // Email marketing
-  klaviyo: "bg-[#00A500]/10 text-[#008000]",
-  mailchimp: "bg-yellow-50 text-yellow-800",
-  brevo: "bg-[#0B996E]/10 text-[#0B996E]",
-  // Productivity
-  slack: "bg-[#4A154B]/10 text-[#4A154B]",
-  gmail: "bg-red-50 text-red-700",
-  microsoft: "bg-[#0078D4]/10 text-[#0078D4]",
-  google_calendar: "bg-emerald-50 text-emerald-700",
-  // Messaging
-  telegram: "bg-sky-100 text-sky-700",
-  // Platform features
-  messages: "bg-blue-100 text-blue-700",
-  contacts: "bg-brand/15 text-brand-dark",
-  suppliers: "bg-stone-100 text-stone-700",
-  payments: "bg-emerald-100 text-emerald-800",
-  invoices: "bg-teal-100 text-teal-700",
-  quotes: "bg-cyan-100 text-cyan-800",
-  analytics: "bg-brand/15 text-brand-dark",
-  team_analytics: "bg-brand/15 text-brand-dark",
-  team: "bg-slate-200 text-slate-700",
-  inventory: "bg-orange-100 text-orange-700",
-  loyalty: "bg-rose-100 text-rose-700",
-  nps: "bg-fuchsia-100 text-fuchsia-700",
-  social_inbox: "bg-pink-100 text-pink-700",
-  social_scheduler: "bg-brand/10 text-brand-dark",
-  whatsapp: "bg-green-100 text-green-700",
-  shop: "bg-amber-100 text-amber-700",
-};
 
 /** Maps raw tool names → friendly activity labels shown during streaming and in steps trail */
 const TOOL_LABELS: Record<string, string> = {
@@ -286,8 +233,8 @@ const BASE_PROMPTS = [
 export default function AssistantChat({ conversationId, onConversationChange, compact, initialMessage }: Props) {
   const [models, setModels] = useState<AssistantModel[]>([]);
   const [modelId, setModelId] = useState<string>("");
+  /** Last resolved agent id (for specialist persona badge). */
   const [activeAgent, setActiveAgent] = useState<string>("general");
-  const [activeAgentLabel, setActiveAgentLabel] = useState<string>("Zilo");
   const [connectedIntegrations, setConnectedIntegrations] = useState<string[]>([]);
   const [quickPrompts, setQuickPrompts] = useState<string[]>(BASE_PROMPTS.slice(0, 8));
   const [promptsPersonalized, setPromptsPersonalized] = useState(false);
@@ -299,7 +246,8 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   // Streaming state
   const [streamingText, setStreamingText] = useState("");
   const [streamingTools, setStreamingTools] = useState<string[]>([]);
-  const [streamingAgent, setStreamingAgent] = useState<string | null>(null);
+  /** Agent id from stream "thinking" event — drives named specialist label while waiting. */
+  const [streamingAgentId, setStreamingAgentId] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<
     null | { tool: string; arguments: Record<string, unknown>; reason: string }
   >(null);
@@ -391,15 +339,9 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       setMessages(msgs);
       setConvVisibility(conv.visibility === "private" ? "private" : "team");
       // Model choice persists via localStorage; do not override with conv.model when switching threads.
-      // Restore active agent from the last assistant message
       const lastAsst = [...msgs].reverse().find((m) => m.role === "assistant" && m.agent);
-      if (lastAsst?.agent) {
-        setActiveAgent(lastAsst.agent);
-        const meta = AGENT_COLORS[lastAsst.agent];
-        if (meta) setActiveAgentLabel(
-          lastAsst.agent.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
-        );
-      }
+      if (lastAsst?.agent) setActiveAgent(lastAsst.agent);
+      else setActiveAgent("general");
       const docs = await assistantApi.listDocuments(id).catch(() => ({ documents: [] }));
       setDocuments(docs.documents || []);
     } catch {
@@ -488,7 +430,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     setSending(true);
     setStreamingText("");
     setStreamingTools([]);
-    setStreamingAgent(null);
+    setStreamingAgentId(null);
 
     // Optimistic user bubble
     setMessages((prev) => [...prev, { role: "user", content: msg }]);
@@ -505,8 +447,6 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         conversation_id: convId,
         model: modelId || undefined,
         auto_approve: autoApprove,
-        // Specialist from the agent picker; backend honors non-"general" as explicit UI intent.
-        agent: activeAgent !== "general" ? activeAgent : undefined,
       });
       const reader = stream.getReader();
       streamReaderRef.current = reader;
@@ -536,7 +476,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           };
 
           if (event.type === "thinking") {
-            setStreamingAgent(event.agent_label ?? event.agent ?? null);
+            if (event.agent) setStreamingAgentId(event.agent);
           } else if (event.type === "tool_start") {
             setStreamingTools((prev) => [...prev, event.tool ?? ""]);
           } else if (event.type === "token") {
@@ -549,8 +489,8 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               steps: event.steps ?? [],
               model: event.model ?? null,
               needs_confirmation: event.needs_confirmation ?? null,
-              active_agent: event.active_agent ?? activeAgent,
-              active_agent_label: event.active_agent_label ?? activeAgentLabel,
+              active_agent: event.active_agent ?? "general",
+              active_agent_label: event.active_agent_label ?? "Zilo",
               reply_suggestions: event.reply_suggestions,
             };
           } else if (event.type === "error") {
@@ -567,7 +507,6 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           onConversationChange?.(donePayload.conversation_id);
         }
         if (donePayload.active_agent) setActiveAgent(donePayload.active_agent);
-        if (donePayload.active_agent_label) setActiveAgentLabel(donePayload.active_agent_label);
         setMessages((prev) => [
           ...prev,
           {
@@ -590,7 +529,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       setSending(false);
       setStreamingText("");
       setStreamingTools([]);
-      setStreamingAgent(null);
+      setStreamingAgentId(null);
       streamReaderRef.current = null;
     }
   }
@@ -608,6 +547,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   })();
 
   const empty = messages.length === 0 && !loadingConv;
+  const headerPersona = getAgentPersona(activeAgent);
 
   return (
     <div className="flex h-full flex-col bg-white">
@@ -618,19 +558,22 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           <div>
             <div className="text-sm font-semibold text-slate-900">Zilo Chat</div>
             <div className="text-[10px] text-slate-400">
-              {compact ? "Ask me anything" : "Specialists route automatically · attach documents"}
+              {compact ? "Ask me anything" : "Named specialists for each area — Zilo picks who fits best"}
             </div>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {/* Live agent badge — updates per reply */}
+          {/* Which named specialist is active (router picks; user always sees a person + specialty). */}
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${AGENT_COLORS[activeAgent] ?? "bg-slate-100 text-slate-600"
-              }`}
-            title={`Currently handled by the ${activeAgentLabel} specialist`}
+            className={`inline-flex max-w-[14rem] items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
+            title={
+              activeAgent === "general"
+                ? "Zilo is your main guide. A named specialist will join when your question needs one."
+                : `${headerPersona.firstName} — ${headerPersona.role}. Zilo chose this expert for this part of the chat.`
+            }
           >
             <Bot size={10} />
-            {activeAgentLabel}
+            <span className="truncate">{personaBadgeLabel(activeAgent)}</span>
           </span>
           {convId ? (
             <span
@@ -752,7 +695,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               <div>
                 <p className="text-2xl font-semibold text-slate-900">How can I help today?</p>
                 <p className="mx-auto mt-2 max-w-lg text-sm text-slate-500">
-                  Ask anything — I'll automatically route to the right specialist. Attach a document and I'll read it with you.
+                  Ask anything — I&apos;ll bring in the right context and tools as we go. Attach a document and I&apos;ll read it with you.
                 </p>
               </div>
 
@@ -805,15 +748,15 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                   m.agent !== prevAsst.agent;
                 return (
                   <React.Fragment key={i}>
-                    {agentChanged && (
+                    {agentChanged && m.agent && (
                       <div className="flex items-center gap-2 py-1">
                         <div className="h-px flex-1 bg-slate-100" />
                         <span
-                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${AGENT_COLORS[m.agent!] ?? "bg-slate-100 text-slate-500"
-                            }`}
+                          className={`inline-flex max-w-[min(100%,20rem)] items-center gap-1 rounded-full px-2 py-0.5 text-center text-[10px] font-medium ${getAgentPersona(m.agent).cls}`}
+                          title={getAgentPersona(m.agent).role}
                         >
                           <Bot size={9} />
-                          {m.agent!.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                          <span className="truncate">{personaHandoffLine(m.agent)}</span>
                         </span>
                         <div className="h-px flex-1 bg-slate-100" />
                       </div>
@@ -864,12 +807,13 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                     ) : (
                       <div className="flex items-center gap-2 text-xs text-slate-400">
                         <Loader2 className="animate-spin" size={12} />
-                        {streamingAgent ? (
-                          <span>
-                            <span className={`mr-1 inline-flex items-center gap-0.5 rounded-full px-1.5 py-px text-[9px] font-semibold ${
-                              AGENT_COLORS[activeAgent] ?? "bg-slate-100 text-slate-600"
-                            }`}>
-                              <Bot size={8} />{streamingAgent}
+                        {streamingAgentId ? (
+                          <span title={getAgentPersona(streamingAgentId).role}>
+                            <span
+                              className={`mr-1 inline-flex max-w-[18rem] items-center gap-0.5 truncate rounded-full px-1.5 py-px text-[9px] font-semibold ${getAgentPersona(streamingAgentId).cls}`}
+                            >
+                              <Bot size={8} />
+                              {personaThinkingLabel(streamingAgentId)}
                             </span>
                             is thinking…
                           </span>
@@ -997,7 +941,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             </button>
           </form>
           <p className="mt-2 text-center text-[10.5px] text-slate-400">
-            Zilo routes to the right specialist automatically. Confirm destructive actions before they run.
+            Zilo brings in a named specialist for the task (e.g. Elena for Meta Ads, Stephen for sales). You&apos;ll confirm anything sensitive before it runs.
           </p>
         </div>
       </div>

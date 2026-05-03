@@ -22,10 +22,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     setMounted(true);
-    if (!isAuthenticated()) {
+  }, []);
+
+  // Defer auth redirect to the next macrotask so the App Router action queue is ready
+  // (avoids "Router action dispatched before initialization" during dev / HMR).
+  useEffect(() => {
+    if (!mounted) return;
+    if (isAuthenticated()) return;
+    const id = window.setTimeout(() => {
       router.replace("/login");
-    }
-  }, [router]);
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [mounted, router]);
 
   if (mounted && !isAuthenticated()) {
     return null;

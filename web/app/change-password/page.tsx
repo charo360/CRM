@@ -23,7 +23,9 @@ export default function ChangePasswordPage() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    if (!getToken()) router.replace("/login");
+    if (getToken()) return;
+    const id = window.setTimeout(() => router.replace("/login"), 0);
+    return () => window.clearTimeout(id);
   }, [router]);
 
   const allMet = REQUIREMENTS.every(r => r.test(password));

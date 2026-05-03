@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
+
+def _explicit_agent_from_body(body: Dict[str, Any]) -> Optional[str]:
+    """If the client pinned a specialist, return the raw id string; else None = use intent router only."""
+    raw = (body.get("agent") or "").strip()
+    if not raw:
+        return None
+    al = raw.lower()
+    if al in ("auto", "router", "automatic"):
+        return None
+    if resolve_agent_id(raw) == "general":
+        return None
+    return raw
+
 # ── Rate limit: 30 turns per 60 seconds per user ─────────────────────────────
 _RATE_WINDOW_SEC = 60
 _RATE_MAX = 30
@@ -329,9 +342,12 @@ def _mk_router(db, get_current_user):
             except Exception:
                 pass
         agent_resolved = await route_to_agent(
-            msg, history, AGENT_REGISTRY,
+            msg,
+            history,
+            AGENT_REGISTRY,
             prev_agent=prev_agent,
             design_flow_active=design_flow_active,
+            explicit_agent=_explicit_agent_from_body(body),
         )
 
         # Load shared agent workspace — inject as context when agent switches
@@ -483,8 +499,12 @@ def _mk_router(db, get_current_user):
                 except Exception:
                     pass
             agent_resolved = await route_to_agent(
-                msg, history, AGENT_REGISTRY,
-                prev_agent=prev_agent, design_flow_active=design_flow_active,
+                msg,
+                history,
+                AGENT_REGISTRY,
+                prev_agent=prev_agent,
+                design_flow_active=design_flow_active,
+                explicit_agent=_explicit_agent_from_body(body),
             )
             agent_label = AGENT_REGISTRY.get(agent_resolved, {}).get("label", "Zilo")
 

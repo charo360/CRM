@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_LLM_ROUTE_CONFIDENCE_MIN = 0.72
+_LLM_ROUTE_CONFIDENCE_MIN = 0.68
 
 # Routed here only when the user clearly means the Shopify *store*, not generic catalog work.
 _SHOPIFY_AGENT_IDS = frozenset(
@@ -507,8 +507,31 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
 }
 
 
+def _looks_like_agent_switch_request(msg_lower: str) -> bool:
+    """True when the user is asking to change specialist — never treat as a bland continuation."""
+    needles = (
+        "switch to ",
+        "transfer to ",
+        "hand off",
+        "handoff",
+        "talk to creative",
+        "use creative",
+        "use document",
+        "document writer",
+        "creative specialist",
+        "creative agent",
+        "wrong agent",
+        "different agent",
+        "route me to",
+        "open ",
+    )
+    return any(n in msg_lower for n in needles)
+
+
 def _is_continuation_message(msg_lower: str) -> bool:
     """True for short, ambiguous follow-ups that are clearly continuing the same flow."""
+    if _looks_like_agent_switch_request(msg_lower):
+        return False
     words = msg_lower.split()
     if len(words) > 6:
         return False
@@ -704,18 +727,32 @@ async def route_to_agent(
     agent_registry: Dict[str, Any],
     prev_agent: Optional[str] = None,
     design_flow_active: bool = False,
+    explicit_agent: Optional[str] = None,
 ) -> str:
     """Return the best agent_id for this message.
 
     Strategy:
-      0. Sticky routing — short continuation messages stay with prev_agent.
-         Design sessions are extra-sticky (they are multi-turn and stateful).
+      0. Optional explicit agent from UI/API (user locked or picked a specialist).
+      0a/0a-2. Sticky creative / document sessions (multi-turn).
+      0b. Sticky continuation — short replies stay with prev_agent **only after**
+          there is prior conversation (never on the first user message of a thread).
       1. Hard intent overrides (document, integration-status, explicit creative).
-      2. LLM route first (confidence-gated).
+      2. LLM route (confidence-gated).
       3. Keyword fallback.
     Always returns a valid agent_id that exists in agent_registry.
     """
     msg_lower = message.lower()
+
+    # ── Explicit specialist from client (agent picker / lock) ─────────────────
+    if explicit_agent:
+        from .agents import resolve_agent_id
+
+        rid = resolve_agent_id(explicit_agent.strip())
+        if rid in agent_registry:
+            logger.info("[IntentRouter] explicit client agent → %s", rid)
+            return rid
+
+    has_prior_turns = bool(history)
 
     # ── 0a. Extra-sticky routing for active creative sessions ────────────────
     # Creative is multi-turn and heavily stateful (product / platform / template /
@@ -759,7 +796,15 @@ async def route_to_agent(
         logger.info(f"[IntentRouter] leaving document (explicit exit: {message!r})")
 
     # ── 0b. Sticky routing — don't break mid-flow on ambiguous replies ────────
-    if prev_agent_resolved and prev_agent_resolved in agent_registry and _is_continuation_message(msg_lower):
+    # New threads default conv.agent to "general"; without this guard, the *first*
+    # short user message (e.g. "create an instagram post") was treated as a
+    # "continuation" of general and never reached creative routing.
+    if (
+        has_prior_turns
+        and prev_agent_resolved
+        and prev_agent_resolved in agent_registry
+        and _is_continuation_message(msg_lower)
+    ):
         logger.info(f"[IntentRouter] sticky → {prev_agent_resolved} (continuation: {message!r})")
         return prev_agent_resolved
 
