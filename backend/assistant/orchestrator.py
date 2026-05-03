@@ -499,6 +499,7 @@ async def run_turn(
     auto_approve_destructive: bool = False,
     conversation_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    _handoff_depth: int = 0,
 ) -> Dict[str, Any]:
     """Run a single conversational turn."""
     trace_id = str(uuid.uuid4())[:8]
@@ -554,7 +555,8 @@ async def run_turn(
     # Mirror AutoReply v2's mini-state pattern: when running the design agent,
     # inject a compact snapshot of locked template / platform / staged image so
     # the model can't silently drift onto a different template across turns.
-    if active_agent_id in ("design", "creative", "social_media") and conversation_id:
+    # Note: social_media is excluded — it uses its own STEP 0-8 session flow.
+    if active_agent_id in ("design", "creative") and conversation_id:
         try:
             from .design_state import (
                 load_design_state,
@@ -634,6 +636,7 @@ async def run_turn(
     pending_confirmation: Optional[Dict[str, Any]] = None
     model_used = model_id or ""
     _tokens_used = 0  # running total for circuit breaker
+    _handoff_agent: Optional[str] = None
 
     for step_idx in range(MAX_STEPS):
         # Circuit breaker: abort before the next LLM call if we've already spent
@@ -790,6 +793,15 @@ async def run_turn(
             capped = _limit_tool_result_size(result)
             steps.append({"tool": name, "arguments": args, "result": capped})
 
+            # ── Handoff signal detection ──────────────────────────────────────
+            if isinstance(capped, dict) and "__handoff__" in capped:
+                _handoff_agent = str(capped["__handoff__"])
+                logger.info(
+                    "[orchestrator.handoff] agent=%s → %s (reason: %s)",
+                    active_agent_id, _handoff_agent, capped.get("reason", ""),
+                )
+                break  # break inner loop
+
             if isinstance(result, dict) and result.get("error"):
                 try:
                     logger.error(
@@ -834,6 +846,19 @@ async def run_turn(
                 "content": tool_payload,
             })
 
+        if _handoff_agent:
+            break  # break outer step_idx loop
+
+    # ── Handoff re-run (max 1 hop to prevent loops) ─────────────────────────
+    if _handoff_agent and _handoff_depth < 1:
+        logger.info("[orchestrator.handoff] re-running turn with agent=%s", _handoff_agent)
+        return await run_turn(
+            db=db, user=user, history=history, user_message=user_message,
+            model_id=model_id, auto_approve_destructive=auto_approve_destructive,
+            conversation_id=conversation_id, agent_id=_handoff_agent,
+            _handoff_depth=_handoff_depth + 1,
+        )
+
     # Hit step limit without a final answer
     _tlog.warning("[turn.step_limit] hit MAX_STEPS=%d without final answer", MAX_STEPS)
     fallback = "I've gathered a lot of info but couldn't finish the task in one go. Ask me to narrow it down or try again."
@@ -865,6 +890,7 @@ async def run_turn_stream(
     auto_approve_destructive: bool = False,
     conversation_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    _handoff_depth: int = 0,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Like run_turn but yields SSE-style dicts during execution.
 
@@ -911,7 +937,8 @@ async def run_turn_stream(
     if _workspace_ctx_s:
         messages.append({"role": "system", "content": _workspace_ctx_s})
 
-    if active_agent_id in ("design", "creative", "social_media") and conversation_id:
+    # Note: social_media is excluded — it uses its own STEP 0-8 session flow.
+    if active_agent_id in ("design", "creative") and conversation_id:
         try:
             from .design_state import load_design_state, format_design_state_for_prompt, update_design_state
             ds = await load_design_state(db, conversation_id, ctx.business_id)
@@ -966,6 +993,7 @@ async def run_turn_stream(
     pending_confirmation: Optional[Dict[str, Any]] = None
     model_used = model_id or ""
     _tokens_used = 0  # running total for circuit breaker
+    _stream_handoff_agent: Optional[str] = None
 
     for step_idx in range(MAX_STEPS):
         if _tokens_used >= _MAX_TOKENS_PER_TURN:
@@ -1095,6 +1123,15 @@ async def run_turn_stream(
             capped = _limit_tool_result_size(result_data)
             steps.append({"tool": name, "arguments": args, "result": capped})
 
+            # ── Handoff signal detection (stream) ─────────────────────────────
+            if isinstance(capped, dict) and "__handoff__" in capped:
+                _stream_handoff_agent = str(capped["__handoff__"])
+                logger.info(
+                    "[run_turn_stream.handoff] agent=%s → %s (reason: %s)",
+                    active_agent_id, _stream_handoff_agent, capped.get("reason", ""),
+                )
+                break  # break inner loop
+
             if isinstance(result_data, dict) and result_data.get("error"):
                 logger.error("[run_turn_stream.tool_error] tool=%s error=%r", name, result_data.get("error"))
 
@@ -1118,6 +1155,21 @@ async def run_turn_stream(
             except Exception:
                 tool_payload = json.dumps({"error": "Tool output could not be serialized."}, default=str)
             messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_payload})
+
+        if _stream_handoff_agent:
+            break  # break outer step_idx loop
+
+    # ── Handoff re-run for streaming (max 1 hop to prevent loops) ─────────────
+    if _stream_handoff_agent and _handoff_depth < 1:
+        logger.info("[run_turn_stream.handoff] re-streaming turn with agent=%s", _stream_handoff_agent)
+        async for event in run_turn_stream(
+            db=db, user=user, history=history, user_message=user_message,
+            model_id=model_id, auto_approve_destructive=auto_approve_destructive,
+            conversation_id=conversation_id, agent_id=_stream_handoff_agent,
+            _handoff_depth=_handoff_depth + 1,
+        ):
+            yield event
+        return
 
     # Step limit fallback
     fallback = "I've gathered a lot of info but couldn't finish the task in one go. Ask me to narrow it down or try again."

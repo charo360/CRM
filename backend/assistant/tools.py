@@ -10615,3 +10615,39 @@ async def set_ad_alert_rule(ctx: ToolContext, args: Dict[str, Any]):
         "name": doc["name"],
         "description": f"When {doc['condition']} is {operator_label} {doc['value']} (with ≥${doc['min_spend']} spend): {action_label}",
     }
+
+
+# ── Smart agent handoff ────────────────────────────────────────────────────────
+@tool(
+    name="switch_to_agent",
+    description=(
+        "Hand off this conversation to a specialist agent when the user's request is outside your scope. "
+        "Call this IMMEDIATELY — do NOT apologise or explain first, just switch. "
+        "The handoff is transparent: the target agent will handle the same message as if it was always theirs."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["target_agent"],
+        "properties": {
+            "target_agent": {
+                "type": "string",
+                "enum": [
+                    "creative", "general", "document", "meta_ads",
+                    "social_scheduler", "social_monitor", "social_inbox",
+                    "sales", "customers", "orders", "finance",
+                ],
+                "description": "Agent to hand off to.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "One-line reason for the handoff (logged only, never shown to user).",
+            },
+        },
+    },
+)
+async def switch_to_agent(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Signal the orchestrator to re-run this turn with a different agent."""
+    target = (args.get("target_agent") or "general").strip()
+    reason = (args.get("reason") or "").strip()
+    logger.info("[switch_to_agent] handoff → %s (reason: %s)", target, reason or "(none)")
+    return {"__handoff__": target, "reason": reason}

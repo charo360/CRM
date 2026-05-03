@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_LLM_ROUTE_CONFIDENCE_MIN = 0.72
+_LLM_ROUTE_CONFIDENCE_MIN = 0.68
 
 # Routed here only when the user clearly means the Shopify *store*, not generic catalog work.
 _SHOPIFY_AGENT_IDS = frozenset(
@@ -507,8 +507,31 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
 }
 
 
+def _looks_like_agent_switch_request(msg_lower: str) -> bool:
+    """True when the user is asking to change specialist — never treat as a bland continuation."""
+    needles = (
+        "switch to ",
+        "transfer to ",
+        "hand off",
+        "handoff",
+        "talk to creative",
+        "use creative",
+        "use document",
+        "document writer",
+        "creative specialist",
+        "creative agent",
+        "wrong agent",
+        "different agent",
+        "route me to",
+        "open ",
+    )
+    return any(n in msg_lower for n in needles)
+
+
 def _is_continuation_message(msg_lower: str) -> bool:
     """True for short, ambiguous follow-ups that are clearly continuing the same flow."""
+    if _looks_like_agent_switch_request(msg_lower):
+        return False
     words = msg_lower.split()
     if len(words) > 6:
         return False
@@ -561,6 +584,27 @@ _DESIGN_EXIT_MARKERS = (
     "write a document", "create a document", "draft a document",
     "write a report", "business plan", "business proposal",
     "partnership proposal", "pitch deck", "presentation",
+    # Creative/visual requests always exit document sticky
+    "use creative", "creative agent", "creative specialist",
+    "i want the design", "i want the visual", "i want the graphic",
+    "want a design", "want the design", "need the design",
+    "want a visual", "want a graphic", "want an image",
+    "make the visual", "create the visual", "generate the visual",
+    "make the graphic", "create the graphic", "generate the graphic",
+    "make the image", "create the image", "generate the image",
+    "the actual design", "actual visual", "real design",
+    "creative design", "visual design",
+    # Natural language variants users actually say
+    "need design", "need a design", "need the design", "need a visual",
+    "need the visual", "need a graphic", "need the graphic",
+    "design to post", "design for the post", "design for my post",
+    "design the post", "design this post", "design for instagram",
+    "design for facebook", "design for tiktok",
+    "i need design", "i need a design", "i need the design",
+    "i need the visual", "i need a visual",
+    "just the design", "just the visual", "just the graphic",
+    "show me the design", "show the design", "get the design",
+    "do the design", "do the visual", "do the graphic",
 )
 
 
@@ -704,103 +748,63 @@ async def route_to_agent(
     agent_registry: Dict[str, Any],
     prev_agent: Optional[str] = None,
     design_flow_active: bool = False,
+    explicit_agent: Optional[str] = None,
 ) -> str:
     """Return the best agent_id for this message.
 
-    Strategy:
-      0. Sticky routing — short continuation messages stay with prev_agent.
-         Design sessions are extra-sticky (they are multi-turn and stateful).
-      1. Hard intent overrides (document, integration-status, explicit creative).
-      2. LLM route first (confidence-gated).
-      3. Keyword fallback.
+    Strategy (LLM-first):
+      0.  Explicit agent from UI/API — user locked or picked a specialist.
+      0a. Sticky creative — active multi-turn design flow (stateful, never interrupt).
+      1.  LLM routing — primary decision maker, runs before any keyword checks.
+      2.  Keyword scoring — last-resort fallback only if LLM fails or returns
+          low confidence.
     Always returns a valid agent_id that exists in agent_registry.
     """
     msg_lower = message.lower()
 
-    # ── 0a. Extra-sticky routing for active creative sessions ────────────────
-    # Creative is multi-turn and heavily stateful (product / platform / template /
-    # copy / staged image / render). Bouncing out mid-flow loses all context.
-    # Two signals trigger stickiness:
-    #   a) prev_agent resolves to "creative" (handles legacy "design" alias)
-    #   b) design_flow_active == True (DB confirms flow_step is set and not done)
-    # Only leave when the user EXPLICITLY asks.
+    # ── 0. Explicit specialist from client (agent picker / lock) ──────────────
+    if explicit_agent:
+        from .agents import resolve_agent_id
+        rid = resolve_agent_id(explicit_agent.strip())
+        if rid in agent_registry:
+            logger.info("[IntentRouter] explicit client agent → %s", rid)
+            return rid
+
     _AGENT_ALIASES_LOCAL = {"design": "creative"}
     prev_agent_resolved = _AGENT_ALIASES_LOCAL.get(prev_agent or "", prev_agent or "")
+
+    # ── 0a. Sticky creative — only for active stateful design flows ───────────
+    # Creative is heavily stateful (template / platform / staged image / render).
+    # Keep it sticky ONLY when the design flow is genuinely in progress.
+    # Always exit if user explicitly asks to leave OR wants a text document.
     is_active_creative = (
         "creative" in agent_registry
         and (prev_agent_resolved == "creative" or design_flow_active)
     )
     if is_active_creative:
-        # Never trap document/proposal requests inside a sticky creative flow.
         if "document" in agent_registry and _is_text_document_intent(msg_lower):
-            logger.info(
-                "[IntentRouter] leaving creative → document (text document intent during active creative session)"
-            )
+            logger.info("[IntentRouter] leaving creative → document (text document intent)")
             return "document"
         if not _is_explicit_design_exit(msg_lower):
             logger.info(
-                "[IntentRouter] sticky → creative (active creative session; "
-                "prev=%r flow_active=%s; message: %r)",
-                prev_agent, design_flow_active, message[:60],
+                "[IntentRouter] sticky → creative (active design flow; prev=%r flow_active=%s)",
+                prev_agent, design_flow_active,
             )
             return "creative"
-        logger.info(f"[IntentRouter] leaving creative (explicit exit: {message!r})")
+        logger.info("[IntentRouter] leaving creative (explicit exit: %r)", message[:60])
 
-    # ── 0a-2. Sticky routing for document agent ──────────────────────────────
-    # Document sessions (e.g. template cloning) are multi-turn — don't bounce
-    # the user to creative/general just because keywords like "template" match.
-    if prev_agent_resolved == "document" and "document" in agent_registry:
-        if not _is_explicit_design_exit(msg_lower):
-            logger.info(
-                "[IntentRouter] sticky → document (active document session; message: %r)",
-                message[:60],
-            )
-            return "document"
-        logger.info(f"[IntentRouter] leaving document (explicit exit: {message!r})")
-
-    # ── 0b. Sticky routing — don't break mid-flow on ambiguous replies ────────
-    if prev_agent_resolved and prev_agent_resolved in agent_registry and _is_continuation_message(msg_lower):
-        logger.info(f"[IntentRouter] sticky → {prev_agent_resolved} (continuation: {message!r})")
-        return prev_agent_resolved
-
-    # Text document intent → document agent (must check BEFORE creative override)
-    if "document" in agent_registry and _is_text_document_intent(msg_lower):
-        logger.info("[IntentRouter] forced → document (text document/proposal intent)")
-        return "document"
-
-    # Integration/account status questions should not trigger creative session routing.
-    if _is_social_connection_status_intent(msg_lower):
-        logger.info("[IntentRouter] forced → general (social/integration status intent)")
-        return "general" if "general" in agent_registry else next(iter(agent_registry.keys()))
-
-    if _is_social_inbox_intent(msg_lower) and "social_inbox" in agent_registry:
-        logger.info("[IntentRouter] forced → social_inbox")
-        return "social_inbox"
-
-    if _is_social_scheduler_intent(msg_lower) and "social_scheduler" in agent_registry:
-        logger.info("[IntentRouter] forced → social_scheduler")
-        return "social_scheduler"
-
-    if _is_social_monitor_intent(msg_lower) and "social_monitor" in agent_registry:
-        logger.info("[IntentRouter] forced → social_monitor")
-        return "social_monitor"
-
-    # Visual / creative intent → creative agent (only for pure graphics/social posts)
-    if "creative" in agent_registry and _design_or_creative_document_intent(msg_lower) and not _is_text_document_intent(msg_lower):
-        logger.info("[IntentRouter] forced → creative (visual/layout/deck intent)")
-        return "creative"
-
-    # ── 1. LLM route first (AutoReply-v2 style), confidence gated ────────────
+    # ── 1. LLM route — PRIMARY decision maker ────────────────────────────────
+    # Runs before any keyword checks. LLM understands meaning, not just words.
     llm_choice = await _llm_route_choice(message, history, agent_registry, msg_lower)
     if llm_choice is not None:
         chosen, confidence = llm_choice
         if confidence >= _LLM_ROUTE_CONFIDENCE_MIN:
             logger.info(
-                f"[IntentRouter] LLM → {chosen} (accepted; confidence={confidence:.2f} >= {_LLM_ROUTE_CONFIDENCE_MIN:.2f})"
+                "[IntentRouter] LLM → %s (confidence=%.2f)", chosen, confidence
             )
             return chosen
         logger.info(
-            f"[IntentRouter] LLM low-confidence ({confidence:.2f} < {_LLM_ROUTE_CONFIDENCE_MIN:.2f}); falling back to keywords"
+            "[IntentRouter] LLM low-confidence (%.2f); falling back to keywords", confidence
         )
 
     # ── 2. Keyword scoring fallback (word-count weighted) ─────────────────────

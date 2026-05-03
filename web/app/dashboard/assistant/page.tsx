@@ -5,53 +5,7 @@ import { useSearchParams } from "next/navigation";
 import AssistantChat from "@/components/AssistantChat";
 import { assistantApi, type AssistantConversationSummary } from "@/lib/api";
 import { Plus, MessageSquare, Trash2, Loader2, Pencil, Check, X, Bot } from "lucide-react";
-
-// Agent label + colour for sidebar badges (matches AGENT_COLORS in AssistantChat.tsx)
-const AGENT_META: Record<string, { label: string; cls: string }> = {
-  general:           { label: "Zilo",             cls: "bg-brand/15 text-brand-dark" },
-  sales:             { label: "Sales",            cls: "bg-emerald-100 text-emerald-700" },
-  customers:         { label: "Customers",        cls: "bg-brand/15 text-brand-dark" },
-  orders:            { label: "Orders",           cls: "bg-orange-100 text-orange-700" },
-  broadcasts:        { label: "Broadcasts",       cls: "bg-cyan-100 text-cyan-700" },
-  follow_ups:        { label: "Follow-ups",       cls: "bg-amber-100 text-amber-700" },
-  bookings:          { label: "Bookings",         cls: "bg-teal-100 text-teal-700" },
-  finance:           { label: "Finance",          cls: "bg-green-100 text-green-700" },
-  automations:       { label: "Automations",      cls: "bg-brand/15 text-brand-dark" },
-  meta_ads:          { label: "Meta Ads",         cls: "bg-blue-100 text-blue-700" },
-  google_ads:        { label: "Google Ads",       cls: "bg-yellow-100 text-yellow-700" },
-  x_ads:             { label: "X Ads",            cls: "bg-slate-800 text-white" },
-  social_media:      { label: "Social",           cls: "bg-pink-100 text-pink-700" },
-  shopify:           { label: "Shopify",          cls: "bg-lime-100 text-lime-800" },
-  shopify_orders:    { label: "Shopify Orders",   cls: "bg-lime-100 text-lime-800" },
-  shopify_products:  { label: "Shopify Products", cls: "bg-lime-100 text-lime-800" },
-  shopify_analytics: { label: "Shopify Analytics",cls: "bg-lime-100 text-lime-800" },
-  stripe:            { label: "Stripe",           cls: "bg-brand/10 text-brand-dark" },
-  klaviyo:           { label: "Klaviyo",          cls: "bg-green-50 text-green-700" },
-  mailchimp:         { label: "Mailchimp",        cls: "bg-yellow-50 text-yellow-700" },
-  brevo:             { label: "Brevo",            cls: "bg-emerald-50 text-emerald-700" },
-  slack:             { label: "Slack",            cls: "bg-brand/10 text-brand-dark" },
-  gmail:             { label: "Gmail",            cls: "bg-red-50 text-red-600" },
-  microsoft:         { label: "Microsoft",        cls: "bg-blue-50 text-blue-700" },
-  google_calendar:   { label: "Calendar",         cls: "bg-emerald-50 text-emerald-600" },
-  telegram:          { label: "Telegram",         cls: "bg-sky-100 text-sky-700" },
-  // Platform features
-  messages:          { label: "Messages",         cls: "bg-blue-100 text-blue-700" },
-  contacts:          { label: "Contacts",         cls: "bg-brand/15 text-brand-dark" },
-  suppliers:         { label: "Suppliers",        cls: "bg-stone-100 text-stone-700" },
-  payments:          { label: "Payments",         cls: "bg-emerald-100 text-emerald-800" },
-  invoices:          { label: "Invoices",         cls: "bg-teal-100 text-teal-700" },
-  quotes:            { label: "Quotes",           cls: "bg-cyan-100 text-cyan-800" },
-  analytics:         { label: "Analytics",        cls: "bg-brand/15 text-brand-dark" },
-  team_analytics:    { label: "Team Analytics",   cls: "bg-brand/15 text-brand-dark" },
-  team:              { label: "Team",             cls: "bg-slate-200 text-slate-700" },
-  inventory:         { label: "Inventory",        cls: "bg-orange-100 text-orange-700" },
-  loyalty:           { label: "Loyalty",          cls: "bg-rose-100 text-rose-700" },
-  nps:               { label: "Feedback",         cls: "bg-fuchsia-100 text-fuchsia-700" },
-  social_inbox:      { label: "Social Inbox",     cls: "bg-pink-100 text-pink-700" },
-  social_scheduler:  { label: "Scheduler",        cls: "bg-brand/10 text-brand-dark" },
-  whatsapp:          { label: "WhatsApp",         cls: "bg-green-100 text-green-700" },
-  shop:              { label: "Shop",             cls: "bg-amber-100 text-amber-700" },
-};
+import { getAgentPersona, personaBadgeLabel } from "@/lib/agentPersonas";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function timeAgo(iso?: string): string {
@@ -296,11 +250,13 @@ function AssistantPageInner() {
                             <span className="flex-1 truncate text-[13px] font-medium leading-snug">
                               {c.title}
                             </span>
-                            {c.agent && c.agent !== "general" && AGENT_META[c.agent] && (
-                              <span className={`inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[8.5px] font-semibold ${
-                                AGENT_META[c.agent].cls
-                              }`}>
-                                <Bot size={7} />{AGENT_META[c.agent].label}
+                            {c.agent && c.agent !== "general" && (
+                              <span
+                                className={`inline-flex max-w-[9rem] shrink-0 items-center gap-0.5 truncate rounded-full px-1.5 py-px text-[8.5px] font-semibold ${getAgentPersona(c.agent).cls}`}
+                                title={getAgentPersona(c.agent).role}
+                              >
+                                <Bot size={7} />
+                                {personaBadgeLabel(c.agent)}
                               </span>
                             )}
                             {/* Actions — appear on hover */}
