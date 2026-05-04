@@ -1139,8 +1139,20 @@ export function LandingPage() {
             </div>
           </div>
         </div>
-        <div className="mx-auto mt-12 max-w-6xl border-t border-slate-100 pt-8 text-center text-xs text-slate-400">
-          © {new Date().getFullYear()} Zilo. All rights reserved.
+        <div className="mx-auto mt-12 max-w-6xl border-t border-slate-100 pt-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-left text-xs text-slate-500">
+              <Link href="/privacy-policy" className="hover:text-brand-dark">
+                Privacy Policy
+              </Link>
+              <Link href="/terms" className="hover:text-brand-dark">
+                Terms &amp; Conditions
+              </Link>
+            </div>
+            <p className="text-left text-xs text-slate-400 sm:text-right">
+              © {new Date().getFullYear()} Zilo. All rights reserved.
+            </p>
+          </div>
         </div>
       </footer>
     </div>

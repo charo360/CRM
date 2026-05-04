@@ -11,9 +11,13 @@ const BACKEND   = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"
 export async function resolveUserId(authHeader: string | null): Promise<string | null> {
   if (!authHeader) return null;
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     const res = await fetch(`${BACKEND}/auth/me`, {
       headers: { Authorization: authHeader },
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     if (!res.ok) return null;
     const me = await res.json() as { id?: string; _id?: string; business_id?: string };
     return me.business_id || me.id || me._id || null;
@@ -73,19 +77,50 @@ export async function nangoProxy(opts: {
   return fetch(url, init);
 }
 
+/** Check if Gmail is connected via Composio for this user.
+ *  Returns the composio connected account ID or null. */
+export async function getComposioGmailConnectionId(
+  userId: string,
+  authHeader: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${BACKEND}/composio/connections/gmail`, {
+      headers: { Authorization: authHeader },
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { connected?: boolean; connection_id?: string };
+    return data.connected && data.connection_id ? data.connection_id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Detect ALL email providers connected for this user */
-export async function detectAllEmailProviders(userId: string): Promise<Array<{
+export async function detectAllEmailProviders(
+  userId: string,
+  authHeader?: string,
+): Promise<Array<{
   provider: "gmail" | "microsoft";
   integrationKey: string;
   connectionId: string;
+  via?: "nango" | "composio";
 }>> {
   const [gmailId, msId] = await Promise.all([
     getNangoConnectionId(userId, "google-mail"),
     getNangoConnectionId(userId, "microsoft"),
   ]);
-  const results: Array<{ provider: "gmail" | "microsoft"; integrationKey: string; connectionId: string }> = [];
-  if (gmailId) results.push({ provider: "gmail", integrationKey: "google-mail", connectionId: gmailId });
-  if (msId)    results.push({ provider: "microsoft", integrationKey: "microsoft", connectionId: msId });
+  const results: Array<{ provider: "gmail" | "microsoft"; integrationKey: string; connectionId: string; via?: "nango" | "composio" }> = [];
+  if (gmailId) results.push({ provider: "gmail", integrationKey: "google-mail", connectionId: gmailId, via: "nango" });
+  if (msId)    results.push({ provider: "microsoft", integrationKey: "microsoft", connectionId: msId, via: "nango" });
+
+  // Fall back to Composio Gmail if Nango Gmail not connected
+  if (!gmailId && authHeader) {
+    const composioConnId = await getComposioGmailConnectionId(userId, authHeader);
+    if (composioConnId) {
+      results.unshift({ provider: "gmail", integrationKey: "composio-gmail", connectionId: composioConnId, via: "composio" });
+    }
+  }
+
   return results;
 }
 

@@ -17,8 +17,11 @@ type Thread = {
   id: string;
   subject: string;
   from: string;
+  to?: string;
   date: string;
   snippet: string;
+  body?: string;
+  messages?: Message[];
   unread: boolean;
   messageCount: number;
   provider: "gmail" | "microsoft";
@@ -122,6 +125,56 @@ function stripHtml(html: string) {
     return tmp.textContent ?? tmp.innerText ?? "";
   }
   return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Remove inline CID image references that browsers can't load from HTML emails */
+function sanitizeEmailHtml(html: string): string {
+  return html
+    .replace(/src="cid:[^"]*"/gi, 'src="" style="display:none"')
+    .replace(/src='cid:[^']*'/gi, "src='' style='display:none'");
+}
+
+/**
+ * Strip quoted reply content from an email body so only the new message shows.
+ * Handles Gmail/Outlook inline quotes and "> " style quoting.
+ */
+function stripQuotedReply(raw: string): string {
+  if (!raw) return raw;
+
+  // ── HTML emails ──────────────────────────────────────────────────────────────
+  if (raw.includes("<")) {
+    const cleaned = raw
+      .replace(/<blockquote[^>]*>[\s\S]*?<\/blockquote>/gi, "")
+      .replace(/<div[^>]*class="[^"]*gmail_quote[^"]*"[^>]*>[\s\S]*/gi, "")
+      .replace(/<div[^>]*id="[^"]*appendonsend[^"]*"[^>]*>[\s\S]*/gi, "")
+      .replace(/(<br\s*\/?>\s*)+$/gi, "")
+      .trim();
+    return cleaned || raw;
+  }
+
+  // ── Plain text ───────────────────────────────────────────────────────────────
+  let text = raw;
+
+  // Gmail: "On Mon, Jan 1, 2026, 9:00 PM Name <email> wrote:" — may be inline
+  // This pattern is specific enough (requires a 4-digit year + "wrote:") to avoid false cuts
+  text = text.replace(
+    /\s*On [A-Za-z]{2,9},?\s+[A-Za-z]{2,9}\.?\s+\d{1,2},?\s+\d{4}[\s\S]*?wrote:\s*/i,
+    ""
+  ).trim();
+
+  // Outlook / other clients
+  text = text.replace(/\s*-{3,}\s*original message\s*-{3,}[\s\S]*/i, "").trim();
+  text = text.replace(/\s*_{5,}[\s\S]*/i, "").trim();
+
+  // Strip "> " quoted lines (may appear after the separator is cut)
+  text = text
+    .split("\n")
+    .filter(l => !l.trim().startsWith(">"))
+    .join("\n")
+    .trim();
+
+  // Fallback: return original if we stripped everything accidentally
+  return text || raw.split("\n")[0].trim();
 }
 
 function initials(from: string) {
@@ -748,6 +801,10 @@ export default function EmailPage() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState<boolean | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{ status: string; total_threads?: number; last_week?: string; progress_pct?: number } | null>(null);
+  const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [provider, setProvider] = useState<"gmail" | "microsoft" | null>(null);
   const [connectedProviders, setConnectedProviders] = useState<("gmail" | "microsoft")[]>([]);
   const [activeProvider, setActiveProvider] = useState<"gmail" | "microsoft" | null>(null);
@@ -788,17 +845,22 @@ export default function EmailPage() {
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const loadThreads = useCallback(async (q = "", providerOverride?: "gmail" | "microsoft") => {
+  const [threadLimit, setThreadLimit] = useState(50);
+  const [hasMore, setHasMore] = useState(false);
+
+  const loadThreads = useCallback(async (q = "", providerOverride?: "gmail" | "microsoft", limit = 50) => {
     setLoading(true);
     try {
       const pParam = providerOverride ?? activeProvider;
-      const url = `/api/email?q=${encodeURIComponent(q)}&limit=50${pParam ? `&provider=${pParam}` : ""}`;
+      const url = `/api/email?q=${encodeURIComponent(q)}&limit=${limit}${pParam ? `&provider=${pParam}` : ""}`;
       const data = await apiGet(url);
       setConnected(data.connected);
       setProvider(data.provider ?? null);
       setConnectedProviders(data.connectedProviders ?? []);
       if (!activeProvider && data.provider) setActiveProvider(data.provider);
-      setThreads(data.threads ?? []);
+      const incoming = data.threads ?? [];
+      setThreads(incoming);
+      setHasMore(incoming.length >= limit);
     } catch {
       toast.error("Failed to load inbox");
     } finally {
@@ -937,6 +999,55 @@ export default function EmailPage() {
       .filter((f) => { const e = extractEmail(f); if (seen.has(e)) return false; seen.add(e); return true; });
   }, [threads]);
 
+  // Keep a ref to always have the freshest loadThreads inside the interval
+  const loadThreadsRef = useRef(loadThreads);
+  useEffect(() => { loadThreadsRef.current = loadThreads; }, [loadThreads]);
+
+  function startSyncPolling() {
+    if (syncPollRef.current) clearInterval(syncPollRef.current);
+    syncPollRef.current = setInterval(async () => {
+      try {
+        const token = getToken();
+        // Check sync status
+        const statusRes = await fetch("/api/email/sync-status", {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (statusRes.ok) {
+          const data = await statusRes.json() as { status: string; total_threads?: number; last_month?: string };
+          setSyncStatus(data);
+          if (data.status === "complete" || data.status === "never_synced") {
+            if (syncPollRef.current) clearInterval(syncPollRef.current);
+            setSyncStatus(null);
+          }
+        }
+        // Always refresh thread list using latest loadThreads ref
+        await loadThreadsRef.current("", undefined, threadLimit);
+      } catch { /* ignore */ }
+    }, 5000);
+  }
+
+  // Cleanup poll on unmount
+  useEffect(() => () => { if (syncPollRef.current) clearInterval(syncPollRef.current); }, []);
+
+  async function syncEmails() {
+    setSyncing(true);
+    try {
+      const res = await apiPost("/api/email", { action: "sync" }) as { synced_threads?: number; deep_sync?: string };
+      setLastSynced(new Date());
+      await loadThreads(activeSearch);
+      if (res.deep_sync === "started") {
+        toast.success("Latest emails loaded — syncing full history in background…");
+        startSyncPolling();
+      } else {
+        toast.success("Inbox synced!");
+      }
+    } catch {
+      toast.error("Sync failed — please try again.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function openThread(thread: Thread) {
     setSelected(thread);
     setMessages([]);
@@ -946,8 +1057,28 @@ export default function EmailPage() {
     setQuickReplies([]);
     setThreadLoading(true);
     try {
-      const data = await apiPost("/api/email", { action: "get_thread", threadId: thread.id, provider: activeProvider }) as { messages: Message[] };
-      const msgs = data.messages ?? [];
+      let msgs: Message[] = [];
+      // Always fetch the full thread to get all messages in the conversation.
+      // The list view only embeds the latest message, so we must re-fetch for complete history.
+      try {
+        const data = await apiPost("/api/email", { action: "get_thread", threadId: thread.id, provider: activeProvider }) as { messages: Message[] };
+        msgs = data.messages ?? [];
+      } catch {
+        // Fallback: use whatever is embedded in the thread object
+        if (thread.messages && thread.messages.length > 0) {
+          msgs = thread.messages;
+        } else if (thread.body !== undefined) {
+          msgs = [{
+            id: thread.id,
+            from: thread.from,
+            to: thread.to ?? "",
+            subject: thread.subject,
+            date: thread.date,
+            body: thread.body,
+            unread: thread.unread,
+          }];
+        }
+      }
       setMessages(msgs);
       if (thread.unread && msgs.length) {
         const last = msgs[msgs.length - 1];
@@ -1040,21 +1171,33 @@ export default function EmailPage() {
 
   async function handleSend() {
     if (!selected || !replyText.trim()) return;
+    // Use last loaded message as context; fall back to thread sender if messages aren't loaded yet
+    const latest = messages[messages.length - 1];
+    const replyTo = latest?.from ?? selected.from;
+    const replyMsgId = latest?.id;
     setSending(true);
     try {
-      const latest = messages[messages.length - 1];
       const subject = selected.subject.startsWith("Re:") ? selected.subject : `Re: ${selected.subject}`;
-      if (activeProvider === "gmail") {
-        await apiPost("/api/email", { action: "send", provider: "gmail", raw: buildRaw({ to: latest.from, subject, body: replyText, inReplyTo: latest.id }) });
-      } else {
-        await apiPost("/api/email", { action: "send", provider: activeProvider, to: latest.from, subject, replyBody: replyText });
-      }
-      toast.success("Sent!");
+      // Send explicit fields for all providers so Composio doesn't need to parse raw.
+      // Also include raw for Nango Gmail which requires it.
+      await apiPost("/api/email", {
+        action: "send",
+        provider: activeProvider,
+        to: replyTo,
+        subject,
+        replyBody: replyText,
+        raw: buildRaw({ to: replyTo, subject, body: replyText, inReplyTo: replyMsgId }),
+      });
+      toast.success("Reply sent!");
       setReplyText("");
       setShowReply(false);
-      await openThread(selected);
-    } catch { toast.error("Send failed"); }
-    finally { setSending(false); }
+      // Refresh thread
+      openThread(selected).catch(() => {});
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Send failed — please try again.");
+    } finally {
+      setSending(false);
+    }
   }
 
   function handleSearch(e: React.SyntheticEvent) {
@@ -1130,8 +1273,42 @@ export default function EmailPage() {
               <button onClick={() => loadThreads(activeSearch)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 transition-colors" title="Refresh">
                 <RefreshCw size={12} />
               </button>
+              <button
+                onClick={syncEmails}
+                disabled={syncing}
+                title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Sync inbox"}
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-brand-dark bg-brand/10 hover:bg-brand/20 border border-brand/20 transition-colors disabled:opacity-50"
+              >
+                {syncing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                {syncing ? "Syncing…" : "Sync"}
+              </button>
             </div>
           </div>
+
+          {/* Sync progress banner */}
+          {syncStatus && syncStatus.status === "running" && (
+            <div className="mx-3 mb-1 px-3 py-2 rounded-xl bg-brand/10 border border-brand/20 flex items-center gap-2">
+              <Loader2 size={12} className="animate-spin text-brand-dark shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-semibold text-brand-dark">Syncing email history…</p>
+                  {syncStatus.progress_pct !== undefined && (
+                    <span className="text-[10px] text-brand-dark font-bold">{syncStatus.progress_pct}%</span>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  {syncStatus.last_week ? `Week of ${syncStatus.last_week}` : "Starting…"}
+                  {syncStatus.total_threads ? ` · ${syncStatus.total_threads} emails saved` : ""}
+                </p>
+                <div className="w-full h-1 bg-brand/20 rounded-full overflow-hidden mt-1.5">
+                  <div
+                    className="h-full bg-brand-dark rounded-full transition-all duration-500"
+                    style={{ width: `${syncStatus.progress_pct ?? 5}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Search */}
           <form onSubmit={handleSearch}>
@@ -1301,6 +1478,22 @@ export default function EmailPage() {
           )}
         </div>
 
+        {/* Load more */}
+        {hasMore && !loading && (
+          <div className="px-3 py-2 border-t border-slate-100">
+            <button
+              onClick={() => {
+                const next = threadLimit + 50;
+                setThreadLimit(next);
+                loadThreads(activeSearch, activeProvider, next);
+              }}
+              className="w-full text-xs text-brand-dark font-medium py-2 rounded-xl hover:bg-brand/5 border border-brand/20 transition-colors"
+            >
+              Load more emails
+            </button>
+          </div>
+        )}
+
         {/* Keyboard hint */}
         <div className="px-3 py-2 border-t border-slate-100 flex items-center gap-3 flex-wrap bg-slate-50/50">
           {[["C", "Compose"], ["R", "Reply"], ["S", "Star"], ["Esc", "Close"]].map(([k, label]) => (
@@ -1368,37 +1561,72 @@ export default function EmailPage() {
             </div>
           )}
 
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+          {/* Chat bubbles */}
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1 bg-[#f0f2f5]">
             {threadLoading ? (
-              <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-slate-300" /></div>
+              <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-slate-400" /></div>
             ) : messages.length === 0 ? (
               <div className="text-center text-slate-400 text-sm py-10">No messages</div>
             ) : (
               <>
                 {messages.map((msg, i) => {
-                  const isLast = i === messages.length - 1;
+                  const isOutgoing = extractEmail(msg.from) !== extractEmail(selected.from);
+                  const showAvatar = !isOutgoing && (i === 0 || extractEmail(messages[i - 1].from) !== extractEmail(msg.from));
+
+                  // Date separator
+                  const msgDate = new Date(msg.date);
+                  const prevDate = i > 0 ? new Date(messages[i - 1].date) : null;
+                  const showDateSep = !prevDate || msgDate.toDateString() !== prevDate.toDateString();
+                  const dateLabel = (() => {
+                    const today = new Date();
+                    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+                    if (msgDate.toDateString() === today.toDateString()) return "Today";
+                    if (msgDate.toDateString() === yesterday.toDateString()) return "Yesterday";
+                    return msgDate.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
+                  })();
+
+                  const cleanBody = stripQuotedReply(msg.body);
+                  const bodyHtml = cleanBody.includes("<") ? sanitizeEmailHtml(cleanBody) : cleanBody.replace(/\n/g, "<br/>");
+                  const timeStr = msgDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
                   return (
-                    <div key={msg.id} className={cn("rounded-2xl border p-4 transition-all", isLast ? "border-slate-200 bg-white shadow-sm" : "border-slate-100 bg-slate-50")}>
-                      <div className="flex items-start justify-between gap-3 mb-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0", avatarColor(msg.from))}>
+                    <div key={msg.id}>
+                      {showDateSep && (
+                        <div className="flex justify-center my-3">
+                          <span className="text-[11px] text-slate-500 bg-white/80 px-3 py-1 rounded-full shadow-sm border border-slate-200/60">
+                            {dateLabel}
+                          </span>
+                        </div>
+                      )}
+                      <div className={cn("flex items-end gap-2 mb-1", isOutgoing ? "justify-end" : "justify-start")}>
+                        {/* Incoming avatar */}
+                        {!isOutgoing && (
+                          <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0 mb-0.5", showAvatar ? avatarColor(msg.from) : "opacity-0")}>
                             {initials(msg.from)}
                           </div>
-                          <div>
-                            <p className="text-xs font-bold text-slate-900">{msg.from.split("<")[0].trim()}</p>
-                            <p className="text-[10px] text-slate-400">To: {msg.to.split(",")[0]}</p>
+                        )}
+                        <div className={cn("max-w-[72%] flex flex-col", isOutgoing ? "items-end" : "items-start")}>
+                          {showAvatar && !isOutgoing && (
+                            <span className="text-[10px] text-slate-500 font-medium mb-0.5 ml-1">
+                              {msg.from.split("<")[0].trim() || msg.from}
+                            </span>
+                          )}
+                          <div className={cn(
+                            "rounded-2xl px-4 py-2.5 shadow-sm text-sm leading-relaxed break-words",
+                            isOutgoing
+                              ? "bg-[#005c4b] text-white rounded-br-sm"
+                              : "bg-white text-slate-800 rounded-bl-sm"
+                          )}>
+                            <div
+                              className="max-w-none [&_a]:underline [&_a]:opacity-80 [&_p]:mb-1 [&_p:last-child]:mb-0 [&_img]:max-w-full [&_img]:rounded"
+                              dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                            />
                           </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-slate-400 shrink-0">
-                          <Clock size={10} />
-                          {new Date(msg.date).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                          <span className={cn("text-[10px] mt-0.5 px-1", isOutgoing ? "text-slate-400" : "text-slate-400")}>
+                            {timeStr}
+                          </span>
                         </div>
                       </div>
-                      <div
-                        className="text-sm text-slate-700 leading-relaxed"
-                        dangerouslySetInnerHTML={{ __html: msg.body.includes("<") ? msg.body : msg.body.replace(/\n/g, "<br/>") }}
-                      />
                     </div>
                   );
                 })}
@@ -1407,105 +1635,100 @@ export default function EmailPage() {
             )}
           </div>
 
-          {/* Quick replies */}
-          {!showReply && messages.length > 0 && (
-            <div className="px-4 pb-3 flex items-center gap-2 flex-wrap border-t border-slate-100 pt-3 bg-white">
-              <span className="text-[10px] text-slate-400 shrink-0 font-medium">Quick reply:</span>
+          {/* Quick reply chips */}
+          {!showReply && (quickReplies.length > 0 || loadingQuick) && (
+            <div className="px-3 py-2 flex items-center gap-1.5 flex-wrap bg-[#f0f2f5] border-t border-slate-200/60">
               {loadingQuick ? (
-                <Loader2 size={12} className="animate-spin text-slate-400" />
+                <Loader2 size={11} className="animate-spin text-slate-400" />
               ) : (
                 quickReplies.map((qr, i) => (
                   <button
                     key={i}
                     onClick={() => { setReplyText(qr); setShowReply(true); setTimeout(() => replyRef.current?.focus(), 50); }}
-                    className="text-[11px] px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 transition-colors shadow-sm"
+                    className="text-[11px] px-3 py-1 rounded-full bg-white border border-slate-200 text-slate-600 hover:bg-brand/5 hover:border-brand/30 hover:text-brand-dark transition-colors shadow-sm"
                   >
                     {qr}
                   </button>
                 ))
               )}
-              <button
-                onClick={() => { setShowReply(true); setTimeout(() => replyRef.current?.focus(), 50); }}
-                className="flex items-center gap-1 text-[11px] px-3 py-1.5 rounded-xl bg-white hover:bg-brand/5 border border-slate-200 hover:border-brand/30 text-brand-dark transition-colors ml-auto shadow-sm font-medium"
-              >
-                <Reply size={11} /> Reply
-              </button>
             </div>
           )}
 
-          {/* Reply composer */}
-          {showReply && (
-            <div className="border-t border-slate-100 bg-white p-4 space-y-2.5">
-
-              {/* Directions bar — always visible */}
-              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                <Sparkles size={11} className="text-brand-dark shrink-0" />
-                <input
-                  value={extraContext}
-                  onChange={(e) => setExtraContext(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); generateDraft(); } }}
-                  placeholder="Give AI direction… mention discount, ask for timeline, keep it brief"
-                  className="flex-1 bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none min-w-0"
-                />
-                {/* Tone pills */}
-                <div className="flex gap-1 shrink-0">
-                  {(["professional", "friendly", "concise"] as const).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setDraftTone(t)}
-                      className={cn(
-                        "text-[9px] px-1.5 py-0.5 rounded-full capitalize font-medium transition-colors",
-                        draftTone === t ? "bg-brand-dark text-white" : "text-slate-400 hover:text-slate-700"
-                      )}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Draft textarea */}
-              <div className="relative">
-                <textarea
-                  ref={replyRef}
-                  value={replyText}
-                  onChange={(e) => setReplyText(e.target.value)}
-                  placeholder={drafting ? "Writing…" : "Write a reply or hit AI Draft →"}
-                  rows={4}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleSend(); }
-                  }}
-                  className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-xl border border-slate-200 p-3 pr-10 outline-none focus:ring-2 focus:ring-brand resize-none leading-relaxed"
-                />
-                {drafting && (
-                  <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-white/80">
-                    <div className="flex items-center gap-2 text-brand-dark text-xs font-medium">
-                      <Loader2 size={14} className="animate-spin" /> Writing draft…
-                    </div>
+          {/* WhatsApp-style compose bar — always visible when a thread is open */}
+          {(
+            <div className="bg-[#f0f2f5] border-t border-slate-200/60 px-3 py-2.5">
+              {/* AI context bar — shown when focused */}
+              {showReply && (
+                <div className="flex items-center gap-2 bg-white rounded-xl border border-slate-200 px-3 py-1.5 mb-2">
+                  <Sparkles size={11} className="text-brand-dark shrink-0" />
+                  <input
+                    value={extraContext}
+                    onChange={(e) => setExtraContext(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); generateDraft(); } }}
+                    placeholder="AI direction: mention discount, ask for timeline…"
+                    className="flex-1 bg-transparent text-xs text-slate-600 placeholder-slate-400 outline-none min-w-0"
+                  />
+                  <div className="flex gap-1 shrink-0">
+                    {(["professional", "friendly", "concise"] as const).map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => setDraftTone(t)}
+                        className={cn(
+                          "text-[9px] px-1.5 py-0.5 rounded-full capitalize font-medium transition-colors",
+                          draftTone === t ? "bg-brand-dark text-white" : "text-slate-400 hover:text-slate-700"
+                        )}
+                      >
+                        {t}
+                      </button>
+                    ))}
                   </div>
-                )}
-                <span className="absolute right-3 bottom-2 text-[9px] text-slate-400">⌘↵ send</span>
-              </div>
-
-              <div className="flex items-center gap-2">
+                </div>
+              )}
+              <div className="flex items-end gap-2">
+                {/* AI Draft button */}
                 <button
-                  onClick={() => generateDraft()}
+                  onClick={() => { setShowReply(true); generateDraft(); setTimeout(() => replyRef.current?.focus(), 50); }}
                   disabled={drafting}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-brand/10 text-brand-dark hover:bg-brand/20 border border-brand/20 disabled:opacity-50 transition-colors"
+                  title="AI Draft"
+                  className="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center shrink-0 hover:bg-brand/5 hover:border-brand/30 transition-colors shadow-sm disabled:opacity-50"
                 >
-                  <Sparkles size={12} /> AI Draft
+                  {drafting ? <Loader2 size={14} className="animate-spin text-brand-dark" /> : <Sparkles size={14} className="text-brand-dark" />}
                 </button>
-                <button onClick={() => { setShowReply(false); setReplyText(""); setExtraContext(""); }} className="px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-700 transition-colors">
-                  Cancel
-                </button>
-                <div className="flex-1" />
+                {/* Text input */}
+                <div className="relative flex-1">
+                  <textarea
+                    ref={replyRef}
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    onFocus={() => setShowReply(true)}
+                    placeholder="Type a reply…"
+                    rows={1}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleSend(); }
+                    }}
+                    style={{ maxHeight: "120px" }}
+                    className="w-full bg-white text-sm text-slate-800 placeholder-slate-400 rounded-2xl border border-slate-200 px-4 py-2.5 outline-none focus:ring-2 focus:ring-brand/30 resize-none leading-relaxed shadow-sm overflow-hidden"
+                    onInput={(e) => {
+                      const t = e.currentTarget;
+                      t.style.height = "auto";
+                      t.style.height = Math.min(t.scrollHeight, 120) + "px";
+                    }}
+                  />
+                  {drafting && (
+                    <div className="absolute inset-0 flex items-center px-4 rounded-2xl bg-white/90">
+                      <span className="text-xs text-brand-dark font-medium flex items-center gap-1.5">
+                        <Loader2 size={12} className="animate-spin" /> Writing…
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {/* Send button */}
                 <button
                   onClick={handleSend}
                   disabled={sending || !replyText.trim()}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-40 transition-colors"
+                  className="w-10 h-10 rounded-full bg-[#005c4b] hover:bg-[#017561] flex items-center justify-center shrink-0 transition-colors disabled:opacity-40 shadow-sm"
                 >
-                  {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-                  {sending ? "Sending…" : "Send"}
+                  {sending ? <Loader2 size={16} className="animate-spin text-white" /> : <Send size={16} className="text-white" />}
                 </button>
               </div>
             </div>

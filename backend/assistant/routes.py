@@ -862,7 +862,8 @@ def _mk_router(db, get_current_user):
         if not prompt:
             raise HTTPException(400, "prompt is required")
 
-        result = await chat_with_tools(
+        from .models import chat_with_tools as _chat_with_tools
+        result = await _chat_with_tools(
             messages=[{"role": "user", "content": prompt}],
             tools=[],
             model_id=body.get("model") or DEFAULT_MODEL,

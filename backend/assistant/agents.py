@@ -340,6 +340,9 @@ GENERAL_TOOLS: FrozenSet[str] = (
         "get_audience_insights",
         # Business memory (unified context across modules)
         "get_business_context",
+        # Composio: Gmail + Google Calendar
+        "read_emails", "send_email", "create_email_draft",
+        "list_calendar_events", "create_calendar_event", "delete_calendar_event",
     })
     - _DESIGN_EXCLUSIVE  # no design tools
 )

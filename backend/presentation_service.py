@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import os
+import secrets
 import uuid
 from typing import List, Dict, Any, Optional
 from pptx import Presentation
@@ -62,6 +63,52 @@ THEMES = {
 }
 
 DEFAULT_THEME = "dark"
+
+VALID_DECK_STYLES = frozenset({"ribbon", "minimal", "magazine", "split", "spotlight"})
+DEFAULT_DECK_STYLE = "ribbon"
+
+# Curated (style, theme) presets — each pair produces a visually distinct deck.
+# Different bg colours + different geometry = genuinely unique output every time.
+DECK_PRESETS: List[tuple] = [
+    ("ribbon",    "dark"),    # deep-green bg, circles, left accent bar
+    ("minimal",   "light"),   # white bg, clean centered, thin rule — completely different feel
+    ("magazine",  "navy"),    # dark-blue editorial, serif Georgia, right panel
+    ("split",     "warm"),    # amber half-hero, earth tones, bold colour block
+    ("spotlight", "dark"),    # green bg but content in a big framed card
+    ("minimal",   "navy"),    # crisp white-ish navy, sparse geometry
+    ("magazine",  "warm"),    # amber editorial serif
+    ("split",     "navy"),    # navy half-hero, strong contrast
+    ("spotlight", "light"),   # light bg with soft spotlight card
+    ("ribbon",    "warm"),    # amber ribbon + circles
+]
+
+
+def normalize_deck_style(name: Optional[str]) -> str:
+    if not name or not isinstance(name, str):
+        return DEFAULT_DECK_STYLE
+    key = name.strip().lower().replace(" ", "_").replace("-", "_")
+    return key if key in VALID_DECK_STYLES else DEFAULT_DECK_STYLE
+
+
+def pick_deck_preset() -> tuple:
+    """Return a (deck_style, theme_name) preset pair — both are randomised together
+    so successive decks differ in layout AND colour."""
+    return secrets.choice(DECK_PRESETS)
+
+
+def pick_deck_style_random() -> str:
+    return secrets.choice(tuple(VALID_DECK_STYLES))
+
+
+def _fonts_for_deck_style(deck_style: str) -> tuple:
+    """(title_font, body_font) readable pairings per layout family."""
+    if deck_style == "minimal":
+        return "Segoe UI Light", "Segoe UI"
+    if deck_style == "magazine":
+        return "Georgia", "Calibri"
+    if deck_style == "split":
+        return "Calibri", "Calibri"
+    return "Calibri Light", "Calibri"
 
 
 def _lighten(color: RGBColor, amount: int = 40) -> RGBColor:
@@ -131,211 +178,408 @@ def _add_bullet_textbox(slide, left, top, width, height, items: List[str],
 
 # ── Slide Layouts ──────────────────────────────────────────────────────────
 
-def _slide_title(prs, theme, title: str, subtitle: str):
-    """Full-bleed title slide with accent bar and decorative circle."""
-    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+def _slide_title(prs, theme, title: str, subtitle: str, deck_style: str = DEFAULT_DECK_STYLE):
+    """Title slide — layout varies strongly by deck_style (not only colors)."""
+    ds = normalize_deck_style(deck_style)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    tfont, bfont = _fonts_for_deck_style(ds)
 
-    # Left accent bar
-    _add_rect(slide, Inches(0), Inches(0), Inches(0.12), Inches(7.5), theme["accent"])
+    if ds == "minimal":
+        # ── MINIMAL title: huge centered title on clean bg, single thin rule ──
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.07), theme["accent"])
+        _add_rect(slide, Inches(0), Inches(7.43), Inches(10), Inches(0.07), theme["accent"])
+        _add_textbox(slide, Inches(0.7), Inches(2.0), Inches(8.6), Inches(2.0),
+                     title, font_size=48, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name=tfont)
+        _add_textbox(slide, Inches(1.5), Inches(4.15), Inches(7), Inches(0.9),
+                     subtitle, font_size=20, color=theme["subtitle"],
+                     alignment=PP_ALIGN.CENTER, font_name=bfont)
+        _add_rect(slide, Inches(4.0), Inches(5.1), Inches(2.0), Inches(0.07), theme["accent"])
+        return
 
-    # Decorative circle (top-right)
-    shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(8.2), Inches(-0.6), Inches(2.8), Inches(2.8))
+    if ds == "magazine":
+        # ── MAGAZINE title: thick left sidebar, oversized serif title right ──
+        SIDEBAR = Inches(2.4)
+        _add_rect(slide, Inches(0), Inches(0), SIDEBAR, Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(0.2), Inches(3.2), Inches(2.0), Inches(1.0),
+                     "PRESENTED BY", font_size=9, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name=bfont)
+        _add_textbox(slide, Inches(0.2), Inches(3.85), Inches(2.0), Inches(0.6),
+                     subtitle.split("by")[-1].strip() if "by" in subtitle.lower() else "—",
+                     font_size=13, color=RGBColor(0xEE, 0xEE, 0xEE),
+                     alignment=PP_ALIGN.CENTER, font_name=bfont)
+        _add_textbox(slide, SIDEBAR + Inches(0.45), Inches(1.5), Inches(7.0), Inches(3.5),
+                     title, font_size=52, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        _add_rect(slide, SIDEBAR + Inches(0.45), Inches(5.25), Inches(6.5), Inches(0.07), theme["divider"])
+        _add_textbox(slide, SIDEBAR + Inches(0.45), Inches(5.5), Inches(6.5), Inches(0.7),
+                     subtitle, font_size=17, color=theme["body"],
+                     alignment=PP_ALIGN.LEFT, font_name=bfont)
+        return
+
+    if ds == "split":
+        # ── SPLIT title: left 45% = solid accent fill + white title, right = clean ──
+        _add_rect(slide, Inches(0), Inches(0), Inches(4.5), Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(0.45), Inches(1.8), Inches(3.7), Inches(3.2),
+                     title, font_size=38, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        _add_rect(slide, Inches(0.45), Inches(5.1), Inches(2.8), Inches(0.07),
+                  RGBColor(0xFF, 0xFF, 0xFF))
+        _add_textbox(slide, Inches(0.45), Inches(5.3), Inches(3.7), Inches(0.9),
+                     subtitle, font_size=15, color=RGBColor(0xE8, 0xEE, 0xF2),
+                     alignment=PP_ALIGN.LEFT, font_name=bfont)
+        _add_rect(slide, Inches(4.55), Inches(0.4), Inches(0.07), Inches(6.7), theme["bg_accent"])
+        _add_textbox(slide, Inches(5.0), Inches(3.4), Inches(4.6), Inches(0.7),
+                     "DECK", font_size=72, color=theme["bg_accent"], bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        return
+
+    if ds == "spotlight":
+        # ── SPOTLIGHT title: full-bleed dark bg, large bright framed card centre ──
+        _add_rect(slide, Inches(0.6), Inches(0.9), Inches(8.8), Inches(5.7), theme["bg_accent"])
+        _add_rect(slide, Inches(0.6), Inches(0.9), Inches(8.8), Inches(0.15), theme["accent"])
+        _add_rect(slide, Inches(0.6), Inches(6.45), Inches(8.8), Inches(0.15), theme["accent"])
+        _add_textbox(slide, Inches(1.0), Inches(1.75), Inches(8.0), Inches(2.5),
+                     title, font_size=42, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name=tfont)
+        _add_rect(slide, Inches(3.5), Inches(4.35), Inches(3.0), Inches(0.07), theme["accent"])
+        _add_textbox(slide, Inches(1.0), Inches(4.6), Inches(8.0), Inches(0.9),
+                     subtitle, font_size=20, color=theme["subtitle"],
+                     alignment=PP_ALIGN.CENTER, font_name=bfont)
+        return
+
+    # ── RIBBON (default): vertical accent bar left, decorative circles ──
+    _add_rect(slide, Inches(0), Inches(0), Inches(0.18), Inches(7.5), theme["accent"])
+    shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(7.8), Inches(-0.8), Inches(3.5), Inches(3.5))
     shape.fill.solid()
     shape.fill.fore_color.rgb = _lighten(theme["accent2"], 40)
     shape.line.fill.background()
-
-    # Small decorative circle bottom-left
-    shape2 = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(-0.4), Inches(5.8), Inches(1.6), Inches(1.6))
+    shape2 = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(-0.6), Inches(5.6), Inches(2.2), Inches(2.2))
     shape2.fill.solid()
     shape2.fill.fore_color.rgb = _lighten(theme["accent2"], 30)
     shape2.line.fill.background()
-
-    # Title
-    _add_textbox(slide, Inches(0.8), Inches(2.0), Inches(8), Inches(1.5),
-                 title, font_size=40, color=theme["title"], bold=True, font_name="Calibri Light")
-
-    # Subtitle
-    _add_textbox(slide, Inches(0.8), Inches(3.6), Inches(7), Inches(0.8),
-                 subtitle, font_size=20, color=theme["subtitle"], font_name="Calibri")
-
-    # Bottom accent line
-    _add_rect(slide, Inches(0.8), Inches(4.6), Inches(2.5), Inches(0.06), theme["accent"])
+    _add_textbox(slide, Inches(0.9), Inches(1.8), Inches(8.0), Inches(1.9),
+                 title, font_size=44, color=theme["title"], bold=True, font_name=tfont)
+    _add_textbox(slide, Inches(0.9), Inches(3.8), Inches(7.0), Inches(0.9),
+                 subtitle, font_size=21, color=theme["subtitle"], font_name=bfont)
+    _add_rect(slide, Inches(0.9), Inches(4.85), Inches(3.0), Inches(0.07), theme["accent"])
 
 
-def _slide_section(prs, theme, title: str):
-    """Section divider slide — centered title on accent background panel."""
+def _slide_section(prs, theme, title: str, deck_style: str = DEFAULT_DECK_STYLE):
+    """Section divider — layout varies by deck_style."""
+    ds = normalize_deck_style(deck_style)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    tfont, _ = _fonts_for_deck_style(ds)
 
-    # Center panel
+    if ds == "minimal":
+        _add_textbox(slide, Inches(0.8), Inches(2.85), Inches(8.4), Inches(2.0),
+                     title, font_size=40, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name=tfont)
+        _add_rect(slide, Inches(3.5), Inches(5.0), Inches(3.0), Inches(0.05), theme["accent"])
+        return
+
+    if ds == "magazine":
+        _add_rect(slide, Inches(0), Inches(4.85), Inches(10), Inches(2.65), theme["accent"])
+        _add_textbox(slide, Inches(0.7), Inches(2.1), Inches(8.6), Inches(1.8),
+                     title, font_size=38, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        return
+
+    if ds == "split":
+        _add_rect(slide, Inches(0), Inches(0), Inches(3.2), Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(3.6), Inches(2.9), Inches(5.8), Inches(2.0),
+                     title, font_size=34, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        return
+
+    if ds == "spotlight":
+        _add_rect(slide, Inches(1.5), Inches(2.2), Inches(7.0), Inches(3.1), theme["bg_accent"])
+        _add_rect(slide, Inches(1.5), Inches(2.2), Inches(7.0), Inches(0.08), theme["accent"])
+        _add_textbox(slide, Inches(1.8), Inches(2.95), Inches(6.4), Inches(2.0),
+                     title, font_size=32, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name=tfont)
+        return
+
+    # ribbon + default
     _add_rect(slide, Inches(1.2), Inches(2.0), Inches(7.6), Inches(3.5), theme["bg_accent"])
-
-    # Top accent line on panel
     _add_rect(slide, Inches(1.2), Inches(2.0), Inches(7.6), Inches(0.08), theme["accent"])
-
-    # Title centered
     _add_textbox(slide, Inches(1.5), Inches(2.8), Inches(7), Inches(2.0),
                  title, font_size=36, color=theme["title"], bold=True,
-                 alignment=PP_ALIGN.CENTER, font_name="Calibri Light")
+                 alignment=PP_ALIGN.CENTER, font_name=tfont)
 
 
-def _slide_content(prs, theme, title: str, content: List[str]):
-    """Standard content slide — title top-left with accent underline, bullets below."""
+def _slide_content(prs, theme, title: str, content: List[str], deck_style: str = DEFAULT_DECK_STYLE):
+    """Content slide — header + bullets; geometry changes dramatically by deck_style."""
+    ds = normalize_deck_style(deck_style)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    tfont, bfont = _fonts_for_deck_style(ds)
 
-    # Top accent bar (full width)
-    _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+    if ds == "minimal":
+        # ── MINIMAL: white/light feel, big bold title left-flush, clean rule, no chrome ──
+        # Large title block at top with lots of breathing room
+        _add_textbox(slide, Inches(0.65), Inches(0.45), Inches(9.0), Inches(1.1),
+                     title, font_size=32, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.65), Inches(1.45), Inches(9.0), Inches(0.055), theme["accent"])
+        _add_bullet_textbox(slide, Inches(0.85), Inches(1.75), Inches(8.65), Inches(5.2),
+                            content, font_size=18, color=theme["body"], bullet_char="·",
+                            spacing=Pt(14), font_name=bfont)
 
-    # Title
-    _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
-                 title, font_size=28, color=theme["title"], bold=True, font_name="Calibri Light")
+    elif ds == "magazine":
+        # ── MAGAZINE: left sidebar = thick colour column, content right — editorial ──
+        SIDEBAR = Inches(2.4)
+        _add_rect(slide, Inches(0), Inches(0), SIDEBAR, Inches(7.5), theme["accent"])
+        # Title rotated 90° not possible in pptx easily — place it in sidebar area
+        _add_textbox(slide, Inches(0.18), Inches(1.0), Inches(2.1), Inches(5.5),
+                     title, font_size=22, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        # Main content right of sidebar
+        _add_bullet_textbox(slide, SIDEBAR + Inches(0.35), Inches(0.45), Inches(7.0), Inches(6.6),
+                            content, font_size=18, color=theme["body"], bullet_char="—",
+                            spacing=Pt(12), font_name=bfont)
+        # Thin top accent rule over content area
+        _add_rect(slide, SIDEBAR + Inches(0.35), Inches(0.42), Inches(7.0), Inches(0.05), theme["divider"])
 
-    # Accent underline
-    _add_rect(slide, Inches(0.7), Inches(1.2), Inches(1.8), Inches(0.05), theme["accent"])
+    elif ds == "split":
+        # ── SPLIT: top 40% = full-width accent band with title; bottom 60% = bullets ──
+        BAND = Inches(2.8)
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), BAND, theme["accent"])
+        _add_textbox(slide, Inches(0.6), Inches(0.55), Inches(8.8), BAND - Inches(0.8),
+                     title, font_size=34, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        _add_bullet_textbox(slide, Inches(0.7), BAND + Inches(0.25), Inches(8.6), Inches(4.2),
+                            content, font_size=18, color=theme["body"], bullet_char="▸",
+                            spacing=Pt(11), font_name=bfont)
 
-    # Bullets
-    _add_bullet_textbox(slide, Inches(0.7), Inches(1.6), Inches(8.5), Inches(5.0),
-                        content, font_size=18, color=theme["body"], bullet_char="▸",
-                        spacing=Pt(10), font_name="Calibri")
+    elif ds == "spotlight":
+        # ── SPOTLIGHT: full-width framed card, title inside card header ──
+        _add_rect(slide, Inches(0.3), Inches(0.25), Inches(9.4), Inches(6.95), theme["bg_accent"])
+        _add_rect(slide, Inches(0.3), Inches(0.25), Inches(9.4), Inches(1.25), theme["accent"])
+        _add_textbox(slide, Inches(0.65), Inches(0.4), Inches(8.8), Inches(1.0),
+                     title, font_size=28, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        _add_bullet_textbox(slide, Inches(0.65), Inches(1.65), Inches(8.8), Inches(5.15),
+                            content, font_size=18, color=theme["body"], bullet_char="▶",
+                            spacing=Pt(11), font_name=bfont)
 
-    # Page number area (bottom right subtle)
-    _add_textbox(slide, Inches(8.8), Inches(6.9), Inches(1), Inches(0.4),
-                 "", font_size=10, color=theme["subtitle"])
+    else:
+        # ── RIBBON (default): thin top accent bar, left-flush title + underline ──
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+        _add_textbox(slide, Inches(0.7), Inches(0.3), Inches(8.5), Inches(0.9),
+                     title, font_size=30, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.7), Inches(1.22), Inches(2.2), Inches(0.06), theme["accent"])
+        _add_bullet_textbox(slide, Inches(0.7), Inches(1.55), Inches(8.5), Inches(5.3),
+                            content, font_size=18, color=theme["body"], bullet_char="▸",
+                            spacing=Pt(10), font_name=bfont)
 
 
 def _slide_two_column(prs, theme, title: str, left_items: List[str], right_items: List[str],
-                      left_header: str = "", right_header: str = ""):
+                      left_header: str = "", right_header: str = "", deck_style: str = DEFAULT_DECK_STYLE):
     """Two-column content slide."""
+    ds = normalize_deck_style(deck_style)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    tfont, bfont = _fonts_for_deck_style(ds)
+    use_split_header = ds == "split"
+    use_minimal_header = ds == "minimal"
+    use_mag = ds == "magazine"
+    use_spot = ds == "spotlight"
 
-    # Top accent bar
-    _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+    if use_split_header:
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.95), theme["accent"])
+        _add_textbox(slide, Inches(0.55), Inches(0.18), Inches(8.5), Inches(0.65),
+                     title, font_size=26, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True, font_name=tfont)
+        title_y = Inches(1.25)
+    elif use_minimal_header:
+        _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=26, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.7), Inches(1.12), Inches(8.0), Inches(0.04), theme["accent"])
+        title_y = Inches(1.35)
+    elif use_mag:
+        _add_rect(slide, Inches(0), Inches(0), Inches(0.2), Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(0.45), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=28, color=theme["title"], bold=True, font_name=tfont)
+        title_y = Inches(1.3)
+    elif use_spot:
+        _add_rect(slide, Inches(0.45), Inches(0.35), Inches(9.1), Inches(6.45), theme["bg_accent"])
+        _add_rect(slide, Inches(0.45), Inches(0.35), Inches(9.1), Inches(0.08), theme["accent"])
+        _add_textbox(slide, Inches(0.75), Inches(0.52), Inches(8.5), Inches(0.75),
+                     title, font_size=27, color=theme["title"], bold=True, font_name=tfont)
+        title_y = Inches(1.25)
+    else:
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+        _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=28, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.7), Inches(1.2), Inches(1.8), Inches(0.05), theme["accent"])
+        title_y = Inches(1.6)
 
-    # Title
-    _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
-                 title, font_size=28, color=theme["title"], bold=True, font_name="Calibri Light")
+    col_top = title_y + Inches(0.15)
+    _add_rect(slide, Inches(0.5), col_top, Inches(4.3), Inches(5.0), theme["bg_accent"])
+    _add_rect(slide, Inches(5.2), col_top, Inches(4.3), Inches(5.0), theme["bg_accent"])
 
-    # Accent underline
-    _add_rect(slide, Inches(0.7), Inches(1.2), Inches(1.8), Inches(0.05), theme["accent"])
-
-    # Left column background
-    _add_rect(slide, Inches(0.5), Inches(1.6), Inches(4.3), Inches(5.0), theme["bg_accent"])
-
-    # Right column background
-    _add_rect(slide, Inches(5.2), Inches(1.6), Inches(4.3), Inches(5.0), theme["bg_accent"])
-
-    # Left header
-    y = Inches(1.8)
+    y = col_top + Inches(0.2)
     if left_header:
         _add_textbox(slide, Inches(0.7), y, Inches(3.9), Inches(0.5),
                      left_header, font_size=16, color=theme["accent"], bold=True)
-        y = Inches(2.4)
+        y = y + Inches(0.55)
 
     _add_bullet_textbox(slide, Inches(0.7), y, Inches(3.9), Inches(4.0),
                         left_items, font_size=15, color=theme["body"], bullet_char="▸",
-                        spacing=Pt(8))
+                        spacing=Pt(8), font_name=bfont)
 
-    # Right header
-    y = Inches(1.8)
+    y = col_top + Inches(0.2)
     if right_header:
         _add_textbox(slide, Inches(5.4), y, Inches(3.9), Inches(0.5),
                      right_header, font_size=16, color=theme["accent"], bold=True)
-        y = Inches(2.4)
+        y = y + Inches(0.55)
 
     _add_bullet_textbox(slide, Inches(5.4), y, Inches(3.9), Inches(4.0),
                         right_items, font_size=15, color=theme["body"], bullet_char="▸",
-                        spacing=Pt(8))
+                        spacing=Pt(8), font_name=bfont)
 
-    # Vertical divider line
-    _add_rect(slide, Inches(4.95), Inches(1.8), Inches(0.03), Inches(4.5), theme["divider"])
+    _add_rect(slide, Inches(4.95), col_top + Inches(0.15), Inches(0.03), Inches(4.5), theme["divider"])
 
 
-def _slide_quote(prs, theme, quote: str, attribution: str = ""):
-    """Quote / highlight slide — large centered text."""
+def _slide_quote(prs, theme, quote: str, attribution: str = "", deck_style: str = DEFAULT_DECK_STYLE):
+    """Quote / highlight slide — large text; framing depends on deck_style."""
+    ds = normalize_deck_style(deck_style)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    qfont = "Georgia" if ds in ("magazine", "ribbon", "spotlight") else _fonts_for_deck_style(ds)[1]
+    bfont = _fonts_for_deck_style(ds)[1]
 
-    # Large accent quote mark
+    if ds == "minimal":
+        _add_textbox(slide, Inches(1.0), Inches(2.0), Inches(8), Inches(2.8),
+                     quote, font_size=24, color=theme["title"], bold=False,
+                     alignment=PP_ALIGN.CENTER, font_name=qfont)
+        if attribution:
+            _add_textbox(slide, Inches(1.0), Inches(4.85), Inches(8), Inches(0.6),
+                         f"— {attribution}", font_size=15, color=theme["subtitle"],
+                         alignment=PP_ALIGN.CENTER, font_name=bfont)
+        return
+
+    if ds == "split":
+        _add_rect(slide, Inches(0), Inches(5.1), Inches(10), Inches(2.4), theme["accent"])
+        _add_textbox(slide, Inches(0.9), Inches(1.35), Inches(8.2), Inches(3.2),
+                     quote, font_size=24, color=theme["title"], bold=False,
+                     alignment=PP_ALIGN.LEFT, font_name=qfont)
+        if attribution:
+            _add_textbox(slide, Inches(0.9), Inches(4.55), Inches(8), Inches(0.5),
+                         f"— {attribution}", font_size=15, color=theme["subtitle"],
+                         alignment=PP_ALIGN.LEFT, font_name=bfont)
+        return
+
     _add_textbox(slide, Inches(0.5), Inches(1.0), Inches(2), Inches(2),
                  "❝", font_size=72, color=theme["accent"], bold=True,
                  alignment=PP_ALIGN.LEFT, font_name="Georgia")
-
-    # Quote text
     _add_textbox(slide, Inches(1.2), Inches(2.2), Inches(7.5), Inches(2.5),
                  quote, font_size=26, color=theme["title"], bold=False,
                  alignment=PP_ALIGN.LEFT, font_name="Georgia")
-
-    # Attribution
     if attribution:
         _add_textbox(slide, Inches(1.2), Inches(4.8), Inches(7.5), Inches(0.6),
                      f"— {attribution}", font_size=16, color=theme["subtitle"],
-                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
-
-    # Bottom accent bar
+                     alignment=PP_ALIGN.LEFT, font_name=bfont)
     _add_rect(slide, Inches(1.2), Inches(5.6), Inches(3), Inches(0.05), theme["accent"])
 
 
-def _slide_image_text(prs, theme, title: str, content: List[str], image_url: Optional[str] = None):
+def _slide_image_text(prs, theme, title: str, content: List[str], image_url: Optional[str] = None,
+                      deck_style: str = DEFAULT_DECK_STYLE):
     """Content slide with image placeholder on right, text on left."""
+    ds = normalize_deck_style(deck_style)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    tfont, bfont = _fonts_for_deck_style(ds)
+    body_top = Inches(1.55)
 
-    # Top accent bar
-    _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+    if ds == "split":
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.95), theme["accent"])
+        _add_textbox(slide, Inches(0.55), Inches(0.18), Inches(8.5), Inches(0.65),
+                     title, font_size=26, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True, font_name=tfont)
+        body_top = Inches(1.2)
+    elif ds == "minimal":
+        _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=26, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.7), Inches(1.12), Inches(7.5), Inches(0.04), theme["accent"])
+        body_top = Inches(1.38)
+    elif ds == "magazine":
+        _add_rect(slide, Inches(0), Inches(0), Inches(0.2), Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(0.45), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=28, color=theme["title"], bold=True, font_name=tfont)
+        body_top = Inches(1.32)
+    elif ds == "spotlight":
+        _add_rect(slide, Inches(0.45), Inches(0.35), Inches(9.1), Inches(6.45), theme["bg_accent"])
+        _add_rect(slide, Inches(0.45), Inches(0.35), Inches(9.1), Inches(0.08), theme["accent"])
+        _add_textbox(slide, Inches(0.75), Inches(0.52), Inches(8.5), Inches(0.75),
+                     title, font_size=27, color=theme["title"], bold=True, font_name=tfont)
+        body_top = Inches(1.22)
+    else:
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+        _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=28, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.7), Inches(1.2), Inches(1.8), Inches(0.05), theme["accent"])
+        body_top = Inches(1.6)
 
-    # Title
-    _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
-                 title, font_size=28, color=theme["title"], bold=True, font_name="Calibri Light")
-
-    # Accent underline
-    _add_rect(slide, Inches(0.7), Inches(1.2), Inches(1.8), Inches(0.05), theme["accent"])
-
-    # Left text
-    _add_bullet_textbox(slide, Inches(0.7), Inches(1.6), Inches(4.8), Inches(5.0),
+    _add_bullet_textbox(slide, Inches(0.7), body_top, Inches(4.8), Inches(5.0),
                         content, font_size=17, color=theme["body"], bullet_char="▸",
-                        spacing=Pt(10))
+                        spacing=Pt(10), font_name=bfont)
 
-    # Right image area — placeholder box
-    _add_rect(slide, Inches(5.8), Inches(1.4), Inches(3.8), Inches(4.5), theme["bg_accent"],
+    img_top = body_top
+    _add_rect(slide, Inches(5.8), img_top, Inches(3.8), Inches(4.5), theme["bg_accent"],
               line_color=theme["divider"])
-
-    # Image placeholder text
-    _add_textbox(slide, Inches(5.8), Inches(3.2), Inches(3.8), Inches(0.8),
+    _add_textbox(slide, Inches(5.8), img_top + Inches(1.75), Inches(3.8), Inches(0.8),
                  "📷  Image", font_size=16, color=theme["subtitle"],
                  alignment=PP_ALIGN.CENTER)
 
-    # Try to add actual image if URL provided
     if image_url:
         try:
-            slide.shapes.add_picture(image_url, Inches(5.9), Inches(1.5), Inches(3.6), Inches(4.3))
+            slide.shapes.add_picture(image_url, Inches(5.9), img_top + Inches(0.05), Inches(3.6), Inches(4.3))
         except Exception:
-            pass  # keep placeholder
+            pass
 
 
-def _slide_key_points(prs, theme, title: str, points: List[Dict[str, str]]):
+def _slide_key_points(prs, theme, title: str, points: List[Dict[str, str]],
+                      deck_style: str = DEFAULT_DECK_STYLE):
     """Key points / icon grid slide — up to 4 points with title + description each."""
+    ds = normalize_deck_style(deck_style)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    tfont, bfont = _fonts_for_deck_style(ds)
+    grid_y = Inches(1.6)
 
-    # Top accent bar
-    _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+    if ds == "split":
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.95), theme["accent"])
+        _add_textbox(slide, Inches(0.55), Inches(0.18), Inches(8.5), Inches(0.65),
+                     title, font_size=26, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True, font_name=tfont)
+        grid_y = Inches(1.2)
+    elif ds == "minimal":
+        _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=26, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.7), Inches(1.12), Inches(8.0), Inches(0.04), theme["accent"])
+        grid_y = Inches(1.38)
+    elif ds == "magazine":
+        _add_rect(slide, Inches(0), Inches(0), Inches(0.2), Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(0.45), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=28, color=theme["title"], bold=True, font_name=tfont)
+        grid_y = Inches(1.32)
+    elif ds == "spotlight":
+        _add_rect(slide, Inches(0.45), Inches(0.35), Inches(9.1), Inches(6.45), theme["bg_accent"])
+        _add_rect(slide, Inches(0.45), Inches(0.35), Inches(9.1), Inches(0.08), theme["accent"])
+        _add_textbox(slide, Inches(0.75), Inches(0.52), Inches(8.5), Inches(0.75),
+                     title, font_size=27, color=theme["title"], bold=True, font_name=tfont)
+        grid_y = Inches(1.22)
+    else:
+        _add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.06), theme["accent"])
+        _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
+                     title, font_size=28, color=theme["title"], bold=True, font_name=tfont)
+        _add_rect(slide, Inches(0.7), Inches(1.2), Inches(1.8), Inches(0.05), theme["accent"])
 
-    # Title
-    _add_textbox(slide, Inches(0.7), Inches(0.4), Inches(8.5), Inches(0.8),
-                 title, font_size=28, color=theme["title"], bold=True, font_name="Calibri Light")
-
-    # Accent underline
-    _add_rect(slide, Inches(0.7), Inches(1.2), Inches(1.8), Inches(0.05), theme["accent"])
-
-    # Cards grid (2x2 max)
     positions = [
-        (Inches(0.5), Inches(1.6)),
-        (Inches(5.2), Inches(1.6)),
-        (Inches(0.5), Inches(4.2)),
-        (Inches(5.2), Inches(4.2)),
+        (Inches(0.5), grid_y),
+        (Inches(5.2), grid_y),
+        (Inches(0.5), grid_y + Inches(2.6)),
+        (Inches(5.2), grid_y + Inches(2.6)),
     ]
     card_w = Inches(4.3)
     card_h = Inches(2.2)
@@ -354,40 +598,84 @@ def _slide_key_points(prs, theme, title: str, points: List[Dict[str, str]]):
                          pt_title, font_size=18, color=theme["accent"], bold=True)
         if pt_desc:
             _add_textbox(slide, px + Inches(0.3), py + Inches(0.8), card_w - Inches(0.5), Inches(1.2),
-                         pt_desc, font_size=14, color=theme["body"])
+                         pt_desc, font_size=14, color=theme["body"], font_name=bfont)
 
 
-def _slide_ending(prs, theme, business_name: str, tagline: str = ""):
-    """Thank-you / closing slide."""
+def _slide_ending(prs, theme, business_name: str, tagline: str = "", deck_style: str = DEFAULT_DECK_STYLE):
+    """Thank-you / closing slide — matches deck_style family."""
+    ds = normalize_deck_style(deck_style)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_bg(slide, theme["bg"])
+    tfont, bfont = _fonts_for_deck_style(ds)
 
-    # Decorative circle top-right
+    if ds == "minimal":
+        _add_textbox(slide, Inches(0.8), Inches(2.5), Inches(8.4), Inches(1.2),
+                     "Thank You", font_size=42, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name=tfont)
+        _add_textbox(slide, Inches(0.8), Inches(3.85), Inches(8.4), Inches(0.7),
+                     business_name, font_size=20, color=theme["subtitle"],
+                     alignment=PP_ALIGN.CENTER, font_name=bfont)
+        if tagline:
+            _add_textbox(slide, Inches(0.8), Inches(4.65), Inches(8.4), Inches(0.6),
+                         tagline, font_size=15, color=theme["body"],
+                         alignment=PP_ALIGN.CENTER, font_name=bfont)
+        _add_rect(slide, Inches(3.5), Inches(5.35), Inches(3.0), Inches(0.05), theme["accent"])
+        return
+
+    if ds == "magazine":
+        _add_rect(slide, Inches(0), Inches(0), Inches(0.25), Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(0.55), Inches(2.35), Inches(8.5), Inches(1.1),
+                     "Thank You", font_size=40, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        _add_textbox(slide, Inches(0.55), Inches(3.65), Inches(8), Inches(0.7),
+                     business_name, font_size=21, color=theme["subtitle"], font_name=bfont)
+        if tagline:
+            _add_textbox(slide, Inches(0.55), Inches(4.45), Inches(8), Inches(0.6),
+                         tagline, font_size=15, color=theme["body"], font_name=bfont)
+        return
+
+    if ds == "split":
+        _add_rect(slide, Inches(0), Inches(0), Inches(4.25), Inches(7.5), theme["accent"])
+        _add_textbox(slide, Inches(0.45), Inches(2.55), Inches(3.6), Inches(1.1),
+                     "Thank You", font_size=34, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name=tfont)
+        _add_textbox(slide, Inches(4.75), Inches(2.35), Inches(4.9), Inches(0.85),
+                     business_name, font_size=24, color=theme["title"], bold=False, font_name=bfont)
+        if tagline:
+            _add_textbox(slide, Inches(4.75), Inches(3.35), Inches(4.9), Inches(0.65),
+                         tagline, font_size=16, color=theme["subtitle"], font_name=bfont)
+        _add_rect(slide, Inches(4.55), Inches(5.5), Inches(5.2), Inches(0.08), theme["bg_accent"])
+        return
+
+    if ds == "spotlight":
+        _add_rect(slide, Inches(1.1), Inches(1.85), Inches(7.8), Inches(3.8), theme["bg_accent"])
+        _add_rect(slide, Inches(1.1), Inches(1.85), Inches(7.8), Inches(0.1), theme["accent"])
+        _add_textbox(slide, Inches(1.4), Inches(2.25), Inches(7.2), Inches(1.0),
+                     "Thank You", font_size=36, color=theme["title"], bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name=tfont)
+        _add_textbox(slide, Inches(1.4), Inches(3.45), Inches(7.2), Inches(0.65),
+                     business_name, font_size=20, color=theme["subtitle"],
+                     alignment=PP_ALIGN.CENTER, font_name=bfont)
+        if tagline:
+            _add_textbox(slide, Inches(1.4), Inches(4.2), Inches(7.2), Inches(0.55),
+                         tagline, font_size=15, color=theme["body"],
+                         alignment=PP_ALIGN.CENTER, font_name=bfont)
+        return
+
     shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(7.5), Inches(-1), Inches(4), Inches(4))
     shape.fill.solid()
     shape.fill.fore_color.rgb = _lighten(theme["accent2"], 30)
     shape.line.fill.background()
-
-    # Left accent bar
     _add_rect(slide, Inches(0), Inches(0), Inches(0.12), Inches(7.5), theme["accent"])
-
-    # Thank you
     _add_textbox(slide, Inches(0.8), Inches(2.2), Inches(8), Inches(1.2),
                  "Thank You", font_size=44, color=theme["title"], bold=True,
-                 alignment=PP_ALIGN.LEFT, font_name="Calibri Light")
-
-    # Accent line
+                 alignment=PP_ALIGN.LEFT, font_name=tfont)
     _add_rect(slide, Inches(0.8), Inches(3.5), Inches(2.5), Inches(0.06), theme["accent"])
-
-    # Business name
     _add_textbox(slide, Inches(0.8), Inches(3.9), Inches(7), Inches(0.7),
-                 business_name, font_size=22, color=theme["subtitle"],
-                 font_name="Calibri")
-
-    # Tagline
+                 business_name, font_size=22, color=theme["subtitle"], font_name=bfont)
     if tagline:
         _add_textbox(slide, Inches(0.8), Inches(4.7), Inches(7), Inches(0.6),
-                     tagline, font_size=16, color=theme["body"], font_name="Calibri")
+                     tagline, font_size=16, color=theme["body"], font_name=bfont)
 
 
 # ── Thumbnail Generator ──────────────────────────────────────────────────────
@@ -398,9 +686,24 @@ def _rgb_tuple(color: RGBColor) -> tuple:
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-def _generate_thumbnail(prs, theme, title: str, business_name: str, thumb_path: str):
-    """Generate a PNG thumbnail that mimics the title slide layout."""
-    W, H = 1280, 720  # 16:9 preview
+def _thumb_text_center_x(draw, text: str, font, W: int) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    return max(0, (W - tw) // 2)
+
+
+def _generate_thumbnail(
+    prs,
+    theme,
+    title: str,
+    business_name: str,
+    thumb_path: str,
+    deck_style: str = DEFAULT_DECK_STYLE,
+):
+    """Generate a PNG thumbnail approximating the title slide for the chosen deck_style."""
+    ds = normalize_deck_style(deck_style)
+    W, H = 1280, 720
+    bg_accent = _rgb_tuple(theme["bg_accent"])
     bg = _rgb_tuple(theme["bg"])
     accent = _rgb_tuple(theme["accent"])
     accent2 = _rgb_tuple(theme["accent2"])
@@ -410,21 +713,6 @@ def _generate_thumbnail(prs, theme, title: str, business_name: str, thumb_path: 
     img = Image.new("RGB", (W, H), bg)
     draw = ImageDraw.Draw(img)
 
-    # Left accent bar
-    draw.rectangle([0, 0, 12, H], fill=accent)
-
-    # Decorative circle top-right (lighter accent2)
-    lighter = tuple(min(255, c + 40) for c in accent2)
-    draw.ellipse([W - 280, -80, W + 200, 400], fill=lighter)
-
-    # Small decorative circle bottom-left
-    lighter2 = tuple(min(255, c + 30) for c in accent2)
-    draw.ellipse([-60, H - 180, 140, H + 40], fill=lighter2)
-
-    # Bottom accent line
-    draw.rectangle([80, H - 160, 330, H - 154], fill=accent)
-
-    # Title text
     try:
         font_title = ImageFont.truetype("calibril.ttf", 56)
     except Exception:
@@ -434,9 +722,71 @@ def _generate_thumbnail(prs, theme, title: str, business_name: str, thumb_path: 
     except Exception:
         font_sub = ImageFont.truetype("arial.ttf", 28) if os.name == "nt" else ImageFont.load_default()
 
-    # Wrap title if too long
-    draw.text((100, 260), title, fill=title_col, font=font_title)
-    draw.text((100, 380), f"Presented by {business_name}", fill=subtitle_col, font=font_sub)
+    sub = f"Presented by {business_name}"
+
+    def _wrap(text: str, max_chars: int = 36) -> str:
+        if len(text) <= max_chars:
+            return text
+        words, line, lines = text.split(), "", []
+        for w in words:
+            if len(line) + len(w) + 1 > max_chars:
+                lines.append(line.strip())
+                line = w + " "
+            else:
+                line += w + " "
+        lines.append(line.strip())
+        return "\n".join(lines[:3])
+
+    if ds == "minimal":
+        # Clean: top + bottom rule, huge centered title
+        draw.rectangle([0, 0, W, 9], fill=accent)
+        draw.rectangle([0, H - 9, W, H], fill=accent)
+        tx = _thumb_text_center_x(draw, title[:36], font_title, W)
+        draw.text((max(40, tx), 195), _wrap(title, 32), fill=title_col, font=font_title)
+        sx = _thumb_text_center_x(draw, sub, font_sub, W)
+        draw.text((max(40, sx), 390), sub, fill=subtitle_col, font=font_sub)
+        # Small accent rule under title
+        draw.rectangle([int(W * 0.38), 460, int(W * 0.62), 467], fill=accent)
+
+    elif ds == "magazine":
+        # Thick left sidebar
+        SIDE = int(W * 0.24)
+        draw.rectangle([0, 0, SIDE, H], fill=accent)
+        draw.text((50, 200), _wrap(title, 20), fill=title_col, font=font_title)
+        draw.text((SIDE + 40, 310), sub, fill=subtitle_col, font=font_sub)
+        draw.rectangle([SIDE + 40, 570, SIDE + 40 + 400, 577], fill=accent)
+
+    elif ds == "split":
+        # Left 45% solid accent, right = bg
+        split_w = int(W * 0.45)
+        draw.rectangle([0, 0, split_w, H], fill=accent)
+        draw.text((50, 195), _wrap(title, 18), fill=(255, 255, 255), font=font_title)
+        draw.rectangle([50, 510, 340, 519], fill=(255, 255, 255))
+        draw.text((50, 535), sub[:55], fill=(232, 238, 242), font=font_sub)
+        draw.rectangle([split_w + 28, 55, split_w + 35, 665], fill=bg_accent)
+
+    elif ds == "spotlight":
+        # Big framed card on background
+        m = 55
+        draw.rectangle([m, m, W - m, H - m], fill=bg_accent)
+        draw.rectangle([m, m, W - m, m + 16], fill=accent)
+        draw.rectangle([m, H - m - 16, W - m, H - m], fill=accent)
+        tx = _thumb_text_center_x(draw, title[:36], font_title, W)
+        draw.text((max(m + 30, tx), 175), _wrap(title, 32), fill=title_col, font=font_title)
+        draw.rectangle([int(W * 0.35), 440, int(W * 0.65), 449], fill=accent)
+        sx = _thumb_text_center_x(draw, sub, font_sub, W)
+        draw.text((max(m + 30, sx), 465), sub, fill=subtitle_col, font=font_sub)
+
+    else:
+        # Ribbon: left bar + circles
+        draw.rectangle([0, 0, 18, H], fill=accent)
+        lighter = tuple(min(255, c + 40) for c in accent2)
+        draw.ellipse([W - 320, -90, W + 230, 430], fill=lighter)
+        lighter2 = tuple(min(255, c + 30) for c in accent2)
+        draw.ellipse([-70, H - 210, 160, H + 50], fill=lighter2)
+        draw.text((110, 220), _wrap(title, 32), fill=title_col, font=font_title)
+        draw.text((110, 400), sub, fill=subtitle_col, font=font_sub)
+        draw.rectangle([110, H - 175, 420, H - 167], fill=accent)
 
     # Slide count badge bottom-right
     slide_count = len(prs.slides)
@@ -474,9 +824,14 @@ def generate_presentation(
     business_name: str = "My Business",
     theme_name: str = DEFAULT_THEME,
     tagline: str = "",
+    deck_style: str = DEFAULT_DECK_STYLE,
 ) -> Dict[str, Any]:
     """
     Generates a professional PowerPoint presentation (.pptx).
+
+    deck_style: visual layout family (orthogonal to theme colors): ribbon (default bar+circles),
+      minimal (clean centered), magazine (editorial split + Georgia), split (half accent hero),
+      spotlight (framed card). Invalid values fall back to ribbon.
 
     slides_data format — each slide object:
       Common keys:
@@ -496,6 +851,7 @@ def generate_presentation(
     """
     try:
         theme = THEMES.get(theme_name, THEMES[DEFAULT_THEME])
+        ds = normalize_deck_style(deck_style)
         prs = Presentation()
         prs.slide_width = Inches(10)
         prs.slide_height = Inches(7.5)
@@ -510,17 +866,17 @@ def generate_presentation(
             # Auto-add ending slide if last slide isn't already one
             if idx == len(slides_data) - 1 and layout not in ("ending", "title"):
                 # First render the current slide
-                _render_slide(prs, theme, layout, sd, business_name, tagline)
+                _render_slide(prs, theme, layout, sd, business_name, tagline, ds)
                 # Then append ending
-                _slide_ending(prs, theme, business_name, tagline)
+                _slide_ending(prs, theme, business_name, tagline, ds)
                 continue
 
-            _render_slide(prs, theme, layout, sd, business_name, tagline)
+            _render_slide(prs, theme, layout, sd, business_name, tagline, ds)
 
         # If no slides at all, add title + ending
         if not slides_data:
-            _slide_title(prs, theme, title, f"Presented by {business_name}")
-            _slide_ending(prs, theme, business_name, tagline)
+            _slide_title(prs, theme, title, f"Presented by {business_name}", ds)
+            _slide_ending(prs, theme, business_name, tagline, ds)
 
         filename = f"presentation_{uuid.uuid4().hex[:8]}.pptx"
         filepath = os.path.join(PRESENTATIONS_DIR, filename)
@@ -532,7 +888,7 @@ def generate_presentation(
         thumb_filename = f"preview_{uuid.uuid4().hex[:8]}.png"
         thumb_path = os.path.join(PRESENTATIONS_DIR, thumb_filename)
         thumb_url = f"/api/media/presentations/{thumb_filename}"
-        _generate_thumbnail(prs, theme, title, business_name, thumb_path)
+        _generate_thumbnail(prs, theme, title, business_name, thumb_path, deck_style=ds)
 
         return {
             "success": True,
@@ -540,6 +896,7 @@ def generate_presentation(
             "filepath": filepath,
             "url": download_url,
             "thumbnail_url": thumb_url,
+            "deck_style": ds,
         }
 
     except Exception as e:
@@ -555,9 +912,17 @@ async def generate_presentation_with_upload(
     style: Optional[Dict[str, Any]] = None,
     theme_name: str = DEFAULT_THEME,
     tagline: str = "",
+    deck_style: str = DEFAULT_DECK_STYLE,
 ) -> Dict[str, Any]:
     """Generate presentation and upload to S3. Returns S3 URL."""
-    result = generate_presentation(title, slides_data, business_name, theme_name=theme_name, tagline=tagline)
+    result = generate_presentation(
+        title,
+        slides_data,
+        business_name,
+        theme_name=theme_name,
+        tagline=tagline,
+        deck_style=deck_style,
+    )
     if result.get("error"):
         return result
 
@@ -588,40 +953,61 @@ async def generate_presentation_with_upload(
         "url": file_url or result.get("url"),
         "thumbnail_url": result.get("thumbnail_url"),
         "filename": result.get("filename"),
+        "deck_style": result.get("deck_style"),
     }
 
 
-def _render_slide(prs, theme, layout: str, sd: Dict[str, Any], business_name: str, tagline: str):
+def _render_slide(
+    prs,
+    theme,
+    layout: str,
+    sd: Dict[str, Any],
+    business_name: str,
+    tagline: str,
+    deck_style: str,
+):
+    ds = normalize_deck_style(deck_style)
     if layout == "title":
-        _slide_title(prs, theme,
-                     sd.get("title", "Presentation"),
-                     sd.get("subtitle", f"Presented by {business_name}"))
+        _slide_title(
+            prs,
+            theme,
+            sd.get("title", "Presentation"),
+            sd.get("subtitle", f"Presented by {business_name}"),
+            ds,
+        )
     elif layout == "section":
-        _slide_section(prs, theme, sd.get("title", "Section"))
+        _slide_section(prs, theme, sd.get("title", "Section"), ds)
     elif layout == "two_column":
-        _slide_two_column(prs, theme,
-                          sd.get("title", ""),
-                          sd.get("left_items", sd.get("left", [])),
-                          sd.get("right_items", sd.get("right", [])),
-                          sd.get("left_header", ""),
-                          sd.get("right_header", ""))
+        _slide_two_column(
+            prs,
+            theme,
+            sd.get("title", ""),
+            sd.get("left_items", sd.get("left", [])),
+            sd.get("right_items", sd.get("right", [])),
+            sd.get("left_header", ""),
+            sd.get("right_header", ""),
+            ds,
+        )
     elif layout == "quote":
-        _slide_quote(prs, theme,
-                     sd.get("quote", sd.get("content", "")),
-                     sd.get("attribution", ""))
+        _slide_quote(
+            prs,
+            theme,
+            sd.get("quote", sd.get("content", "")),
+            sd.get("attribution", ""),
+            ds,
+        )
     elif layout == "image_text":
-        _slide_image_text(prs, theme,
-                          sd.get("title", ""),
-                          sd.get("content", []),
-                          sd.get("image_url"))
+        _slide_image_text(
+            prs,
+            theme,
+            sd.get("title", ""),
+            sd.get("content", []),
+            sd.get("image_url"),
+            ds,
+        )
     elif layout == "key_points":
-        _slide_key_points(prs, theme,
-                          sd.get("title", ""),
-                          sd.get("points", []))
+        _slide_key_points(prs, theme, sd.get("title", ""), sd.get("points", []), ds)
     elif layout == "ending":
-        _slide_ending(prs, theme, business_name, tagline)
+        _slide_ending(prs, theme, business_name, tagline, ds)
     else:
-        # Default: content
-        _slide_content(prs, theme,
-                       sd.get("title", "Slide"),
-                       sd.get("content", []))
+        _slide_content(prs, theme, sd.get("title", "Slide"), sd.get("content", []), ds)

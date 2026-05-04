@@ -3,11 +3,12 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api, Customer, Message, Sale, Order, FollowUp } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import { formatCurrency, formatDate, formatDateTime, timeAgo } from "@/lib/utils";
 import {
   ArrowLeft, MessageSquare, Phone, Mail, MapPin, ShoppingBag,
   TrendingUp, Calendar, FileText, Sparkles, Loader2, Edit, Save, X,
-  CheckCircle2, Clock, Package, CreditCard
+  CheckCircle2, Clock, Package, CreditCard, Inbox, ChevronDown, ChevronUp
 } from "lucide-react";
 
 interface TimelineEvent {
@@ -28,6 +29,29 @@ interface StockAnalytics {
   in_stock_count: number;
 }
 
+interface EmailMessage {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  body: string;
+  unread: boolean;
+}
+
+interface EmailThread {
+  id: string;
+  subject: string;
+  from: string;
+  to?: string;
+  date: string;
+  snippet: string;
+  unread: boolean;
+  messageCount: number;
+  provider: "gmail" | "microsoft";
+  messages?: EmailMessage[];
+}
+
 export default function CustomerProfilePage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -39,7 +63,13 @@ export default function CustomerProfilePage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [followups, setFollowups] = useState<FollowUp[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"timeline" | "messages" | "sales" | "orders" | "followups">("timeline");
+  const [activeTab, setActiveTab] = useState<"timeline" | "messages" | "emails" | "sales" | "orders" | "followups">("timeline");
+  const [emails, setEmails] = useState<EmailThread[]>([]);
+  const [emailsLoading, setEmailsLoading] = useState(false);
+  const [emailsLoaded, setEmailsLoaded] = useState(false);
+  const [expandedThread, setExpandedThread] = useState<string | null>(null);
+  const [threadMessages, setThreadMessages] = useState<Record<string, EmailMessage[]>>({});
+  const [threadLoading, setThreadLoading] = useState<string | null>(null);
   const [aiNotes, setAiNotes] = useState<string>("");
   const [generatingNotes, setGeneratingNotes] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -110,6 +140,54 @@ export default function CustomerProfilePage() {
     }
   }
 
+  async function loadEmails(emailAddress: string) {
+    if (emailsLoaded || emailsLoading) return;
+    setEmailsLoading(true);
+    try {
+      const token = getToken();
+      const q = encodeURIComponent(`from:${emailAddress} OR to:${emailAddress}`);
+      const res = await fetch(`/api/email?q=${q}&limit=50`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("Failed to load emails");
+      const data = await res.json() as { threads?: EmailThread[] };
+      setEmails(data.threads ?? []);
+      setEmailsLoaded(true);
+    } catch {
+      setEmails([]);
+      setEmailsLoaded(true);
+    } finally {
+      setEmailsLoading(false);
+    }
+  }
+
+  async function loadThread(thread: EmailThread) {
+    if (threadMessages[thread.id]) {
+      setExpandedThread(expandedThread === thread.id ? null : thread.id);
+      return;
+    }
+    setExpandedThread(thread.id);
+    setThreadLoading(thread.id);
+    try {
+      const token = getToken();
+      const res = await fetch(`/api/email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ action: "get_thread", provider: thread.provider, threadId: thread.id }),
+      });
+      if (!res.ok) throw new Error("Failed to load thread");
+      const data = await res.json() as { messages?: EmailMessage[] };
+      setThreadMessages(prev => ({ ...prev, [thread.id]: data.messages ?? [] }));
+    } catch {
+      setThreadMessages(prev => ({ ...prev, [thread.id]: [] }));
+    } finally {
+      setThreadLoading(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -130,6 +208,7 @@ export default function CustomerProfilePage() {
   const TABS = [
     { id: "timeline", label: "Timeline", count: timeline.length },
     { id: "messages", label: "Messages", count: messages.length },
+    { id: "emails", label: "Emails", count: emails.length },
     { id: "sales", label: "Sales", count: sales.length },
     { id: "orders", label: "Orders", count: orders.length },
     { id: "followups", label: "Follow-ups", count: followups.length },
@@ -303,7 +382,12 @@ export default function CustomerProfilePage() {
         {TABS.map(({ id: tid, label, count }) => (
           <button
             key={tid}
-            onClick={() => setActiveTab(tid)}
+            onClick={() => {
+              setActiveTab(tid);
+              if (tid === "emails" && customer?.email && !emailsLoaded) {
+                loadEmails(customer.email);
+              }
+            }}
             className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
               activeTab === tid
                 ? "bg-white border-b-2 border-brand-dark text-brand-dark"
@@ -363,6 +447,77 @@ export default function CustomerProfilePage() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Emails */}
+        {activeTab === "emails" && (
+          <div className="divide-y divide-slate-100">
+            {!customer?.email && (
+              <div className="text-center text-slate-400 text-sm py-10">
+                <Mail size={24} className="mx-auto mb-2 opacity-30" />
+                No email address on file for this customer.
+              </div>
+            )}
+            {customer?.email && emailsLoading && (
+              <div className="flex items-center justify-center py-12 gap-2 text-slate-400">
+                <Loader2 size={18} className="animate-spin" />
+                <span className="text-sm">Loading emails…</span>
+              </div>
+            )}
+            {customer?.email && !emailsLoading && emailsLoaded && emails.length === 0 && (
+              <div className="text-center text-slate-400 text-sm py-10">
+                <Inbox size={24} className="mx-auto mb-2 opacity-30" />
+                No emails found for {customer.email}
+              </div>
+            )}
+            {emails.map((thread) => {
+              const isExpanded = expandedThread === thread.id;
+              const msgs = threadMessages[thread.id];
+              const isLoadingThread = threadLoading === thread.id;
+              return (
+                <div key={thread.id} className="flex flex-col">
+                  <button
+                    onClick={() => loadThread(thread)}
+                    className="flex items-start gap-3 p-4 hover:bg-slate-50 text-left w-full"
+                  >
+                    <div className={`w-2 h-2 rounded-full mt-2 shrink-0 ${thread.unread ? "bg-brand-dark" : "bg-transparent border border-slate-300"}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className={`text-sm truncate ${thread.unread ? "font-semibold text-slate-900" : "text-slate-700"}`}>
+                          {thread.subject || "(no subject)"}
+                        </p>
+                        <span className="text-xs text-slate-400 shrink-0">{timeAgo(thread.date)}</span>
+                      </div>
+                      <p className="text-xs text-slate-500 truncate mt-0.5">{thread.from}</p>
+                      <p className="text-xs text-slate-400 truncate mt-0.5">{thread.snippet}</p>
+                    </div>
+                    <div className="shrink-0 text-slate-400">
+                      {isLoadingThread
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+                      }
+                    </div>
+                  </button>
+                  {isExpanded && !isLoadingThread && msgs && (
+                    <div className="bg-slate-50 border-t border-slate-100 divide-y divide-slate-200 px-4 pb-2">
+                      {msgs.length === 0 && (
+                        <p className="text-xs text-slate-400 py-3">No message content available.</p>
+                      )}
+                      {msgs.map((msg) => (
+                        <div key={msg.id} className="py-3">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-medium text-slate-600">{msg.from || thread.from}</span>
+                            <span className="text-xs text-slate-400">{timeAgo(msg.date || thread.date)}</span>
+                          </div>
+                          <p className="text-xs text-slate-700 whitespace-pre-wrap line-clamp-6">{msg.body || thread.snippet}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 

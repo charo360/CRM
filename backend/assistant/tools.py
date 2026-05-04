@@ -923,8 +923,8 @@ async def list_team(ctx: ToolContext, args: Dict[str, Any]):
     name="integrations_status",
     description=(
         "Return the connection state of every integration: WhatsApp, Telegram, Meta, "
-        "and all Nango-connected apps (Shopify, Stripe, Klaviyo, Mailchimp, Brevo, "
-        "Slack, Gmail, Microsoft, Google Calendar)."
+        "Nango-connected apps (Shopify, Stripe, Klaviyo, Mailchimp, Brevo, Slack, "
+        "Microsoft, Google Sheets, Notion), and Composio-connected apps (Gmail, Google Calendar)."
     ),
     parameters={"type": "object", "properties": {}},
 )
@@ -1523,6 +1523,15 @@ async def integrations_status(ctx: ToolContext, args: Dict[str, Any]):
             logger.warning(f"[integrations_status] Nango lookup failed: {e}")
 
     out["nango"] = {k: {"connected": v} for k, v in nango_status.items()}
+
+    # ── Composio (Gmail + Google Calendar) ────────────────────────────────────
+    try:
+        from composio_service import get_all_connection_statuses
+        composio_statuses = await get_all_connection_statuses(ctx.business_id)
+        out["composio"] = {k: {"connected": v} for k, v in composio_statuses.items()}
+    except Exception as e:
+        logger.warning(f"[integrations_status] Composio lookup failed: {e}")
+        out["composio"] = {}
 
     # Human-friendly social account labels so the assistant can reference exact pages.
     social_labels: list[str] = []
@@ -5793,9 +5802,14 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="create_presentation",
     description=(
-        "Create a professional, beautifully designed PowerPoint presentation (.pptx) slide deck. "
-        "Supports multiple slide layouts (title, content, two_column, quote, key_points, section, image_text, ending) "
-        "and color themes (dark, light, navy, warm). The first slide auto-becomes a title slide and the last auto-gets an ending slide."
+        "Create a professional PowerPoint presentation (.pptx). "
+        "Slide layouts: title, content, two_column, quote, key_points, section, image_text, ending. "
+        "Color themes: dark (deep green), light (white), navy (blue), warm (amber). "
+        "Deck styles change the actual geometry, fonts, and structural layout — not just colour: "
+        "ribbon, minimal, magazine, split, spotlight. "
+        "IMPORTANT: Do NOT pass deck_style or theme unless the user explicitly asks for a specific look. "
+        "When omitted, the system automatically pairs a random layout+colour preset so every deck looks unique. "
+        "First slide becomes title; last slide gets an ending unless already specified."
     ),
     parameters={
         "type": "object",
@@ -5805,10 +5819,23 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "The main title of the presentation.",
             },
+            "deck_style": {
+                "type": "string",
+                "description": (
+                    "Visual layout family — changes shapes, alignment, fonts, geometry. "
+                    "Omit (or pass \"auto\") unless user asks for a specific style. "
+                    "ribbon: bar + decorative shapes. minimal: whitespace + centered. "
+                    "magazine: editorial serif + side panel. split: big colour block hero. spotlight: framed card."
+                ),
+                "enum": ["auto", "ribbon", "minimal", "magazine", "split", "spotlight"],
+            },
             "theme": {
                 "type": "string",
-                "description": 'Color theme: "dark" (deep forest green, default), "light" (white/green), "navy" (blue), "warm" (amber/brown).',
-                "enum": ["dark", "light", "navy", "warm"],
+                "description": (
+                    "Colour palette. Omit (or pass \"auto\") unless user specifies a colour. "
+                    "dark: deep forest green. light: white/cream. navy: dark blue. warm: amber/brown."
+                ),
+                "enum": ["auto", "dark", "light", "navy", "warm"],
             },
             "tagline": {
                 "type": "string",
@@ -5858,16 +5885,46 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    from presentation_service import generate_presentation_with_upload
+    from presentation_service import (
+        generate_presentation_with_upload,
+        normalize_deck_style,
+        pick_deck_preset,
+        pick_deck_style_random,
+    )
     title = args.get("title", "Presentation")
     slides_data = args.get("slides_data", [])
-    theme_name = args.get("theme", "dark")
     tagline = args.get("tagline", "")
+
+    raw_style = args.get("deck_style")
+    raw_theme = args.get("theme")
+
+    _auto_style = not raw_style or str(raw_style).strip().lower() in ("", "auto", "automatic", "random")
+    _auto_theme = not raw_theme or str(raw_theme).strip().lower() in ("", "auto", "automatic", "random")
+
+    if _auto_style and _auto_theme:
+        # Pick a fully-curated preset: BOTH layout AND colour differ each time
+        deck_style, theme_name = pick_deck_preset()
+    elif _auto_style:
+        theme_name = str(raw_theme).strip().lower()
+        deck_style = pick_deck_style_random()
+    elif _auto_theme:
+        deck_style = normalize_deck_style(str(raw_style))
+        theme_name = "dark"
+    else:
+        deck_style = normalize_deck_style(str(raw_style))
+        theme_name = str(raw_theme).strip().lower()
 
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = owner.get("business_name") or owner.get("owner_name") or "My Business" if owner else "My Business"
 
-    result = await generate_presentation_with_upload(title, slides_data, business_name, theme_name=theme_name, tagline=tagline)
+    result = await generate_presentation_with_upload(
+        title,
+        slides_data,
+        business_name,
+        theme_name=theme_name,
+        tagline=tagline,
+        deck_style=deck_style,
+    )
 
     if result.get("error"):
         return {"error": result["error"]}
@@ -5903,6 +5960,7 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
         "success": True,
         "pptx_url": url,
         "thumbnail_url": thumb_url,
+        "deck_style": result.get("deck_style") or deck_style,
         "markdown": markdown,
     }
 
@@ -10651,3 +10709,254 @@ async def switch_to_agent(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, A
     reason = (args.get("reason") or "").strip()
     logger.info("[switch_to_agent] handoff → %s (reason: %s)", target, reason or "(none)")
     return {"__handoff__": target, "reason": reason}
+
+
+# ── Composio: Gmail & Google Calendar ─────────────────────────────────────────
+
+@tool(
+    name="read_emails",
+    description=(
+        "Fetch recent emails from the user's connected Gmail inbox. "
+        "Use to check unread messages, find a specific email, or summarise recent correspondence."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of emails to return (default 10, max 50).",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional Gmail search query e.g. 'is:unread', 'from:john@example.com', 'subject:invoice'.",
+            },
+            "label": {
+                "type": "string",
+                "description": "Optional label filter e.g. 'INBOX', 'SENT', 'UNREAD'.",
+            },
+        },
+    },
+)
+async def read_emails(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_GMAIL, ACTION_GMAIL_FETCH
+    status = await get_connection_status(ctx.business_id, TOOLKIT_GMAIL)
+    if not status.get("connected"):
+        return {
+            "error": "Gmail is not connected.",
+            "action_required": "Connect Gmail in the Integrations page first.",
+        }
+    params: Dict[str, Any] = {
+        "max_results": min(int(args.get("max_results") or 10), 50),
+    }
+    if args.get("query"):
+        params["query"] = args["query"]
+    if args.get("label"):
+        params["label_ids"] = [args["label"].upper()]
+    result = await execute_action(ctx.business_id, ACTION_GMAIL_FETCH, params)
+    return result
+
+
+@tool(
+    name="send_email",
+    description="Send an email from the user's connected Gmail account.",
+    parameters={
+        "type": "object",
+        "required": ["to", "subject", "body"],
+        "properties": {
+            "to": {
+                "type": "string",
+                "description": "Recipient email address.",
+            },
+            "subject": {"type": "string", "description": "Email subject line."},
+            "body": {"type": "string", "description": "Email body text (plain text or HTML)."},
+            "cc": {"type": "string", "description": "Optional CC email address(es), comma-separated."},
+            "reply_to_message_id": {
+                "type": "string",
+                "description": "Optional message ID to reply to (keeps thread context).",
+            },
+        },
+    },
+    destructive=True,
+)
+async def send_email(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_GMAIL, ACTION_GMAIL_SEND
+    status = await get_connection_status(ctx.business_id, TOOLKIT_GMAIL)
+    if not status.get("connected"):
+        return {
+            "error": "Gmail is not connected.",
+            "action_required": "Connect Gmail in the Integrations page first.",
+        }
+    params: Dict[str, Any] = {
+        "recipient_email": args["to"],
+        "subject": args["subject"],
+        "body": args["body"],
+    }
+    if args.get("cc"):
+        params["cc"] = args["cc"]
+    if args.get("reply_to_message_id"):
+        params["message_id"] = args["reply_to_message_id"]
+    result = await execute_action(ctx.business_id, ACTION_GMAIL_SEND, params)
+    return result
+
+
+@tool(
+    name="create_email_draft",
+    description="Create a draft email in the user's Gmail account without sending it.",
+    parameters={
+        "type": "object",
+        "required": ["to", "subject", "body"],
+        "properties": {
+            "to": {"type": "string", "description": "Recipient email address."},
+            "subject": {"type": "string", "description": "Email subject line."},
+            "body": {"type": "string", "description": "Draft body text."},
+        },
+    },
+)
+async def create_email_draft(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_GMAIL, ACTION_GMAIL_DRAFT
+    status = await get_connection_status(ctx.business_id, TOOLKIT_GMAIL)
+    if not status.get("connected"):
+        return {
+            "error": "Gmail is not connected.",
+            "action_required": "Connect Gmail in the Integrations page first.",
+        }
+    result = await execute_action(ctx.business_id, ACTION_GMAIL_DRAFT, {
+        "recipient_email": args["to"],
+        "subject": args["subject"],
+        "body": args["body"],
+    })
+    return result
+
+
+@tool(
+    name="list_calendar_events",
+    description=(
+        "List upcoming events from the user's connected Google Calendar. "
+        "Use to check schedule, find free slots, or summarise upcoming meetings."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of events to return (default 10).",
+            },
+            "time_min": {
+                "type": "string",
+                "description": "Start of time range in ISO 8601 format e.g. '2025-05-01T00:00:00Z'. Defaults to now.",
+            },
+            "time_max": {
+                "type": "string",
+                "description": "End of time range in ISO 8601 format e.g. '2025-05-31T23:59:59Z'.",
+            },
+            "calendar_id": {
+                "type": "string",
+                "description": "Calendar ID to query (defaults to primary).",
+            },
+        },
+    },
+)
+async def list_calendar_events(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR, ACTION_CALENDAR_LIST
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {
+            "error": "Google Calendar is not connected.",
+            "action_required": "Connect Google Calendar in the Integrations page first.",
+        }
+    params: Dict[str, Any] = {
+        "max_results": min(int(args.get("max_results") or 10), 50),
+        "calendar_id": args.get("calendar_id") or "primary",
+    }
+    if args.get("time_min"):
+        params["time_min"] = args["time_min"]
+    if args.get("time_max"):
+        params["time_max"] = args["time_max"]
+    result = await execute_action(ctx.business_id, ACTION_CALENDAR_LIST, params)
+    return result
+
+
+@tool(
+    name="create_calendar_event",
+    description="Create a new event in the user's Google Calendar.",
+    parameters={
+        "type": "object",
+        "required": ["title", "start_datetime", "end_datetime"],
+        "properties": {
+            "title": {"type": "string", "description": "Event title/summary."},
+            "start_datetime": {
+                "type": "string",
+                "description": "Start time in ISO 8601 format e.g. '2025-05-10T14:00:00Z'.",
+            },
+            "end_datetime": {
+                "type": "string",
+                "description": "End time in ISO 8601 format e.g. '2025-05-10T15:00:00Z'.",
+            },
+            "description": {"type": "string", "description": "Optional event description/notes."},
+            "location": {"type": "string", "description": "Optional event location."},
+            "attendees": {
+                "type": "string",
+                "description": "Optional comma-separated attendee email addresses.",
+            },
+            "calendar_id": {
+                "type": "string",
+                "description": "Calendar ID to create the event in (defaults to primary).",
+            },
+        },
+    },
+    destructive=True,
+)
+async def create_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR, ACTION_CALENDAR_CREATE
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {
+            "error": "Google Calendar is not connected.",
+            "action_required": "Connect Google Calendar in the Integrations page first.",
+        }
+    params: Dict[str, Any] = {
+        "summary": args["title"],
+        "start": {"dateTime": args["start_datetime"]},
+        "end": {"dateTime": args["end_datetime"]},
+        "calendar_id": args.get("calendar_id") or "primary",
+    }
+    if args.get("description"):
+        params["description"] = args["description"]
+    if args.get("location"):
+        params["location"] = args["location"]
+    if args.get("attendees"):
+        emails = [e.strip() for e in args["attendees"].split(",") if e.strip()]
+        params["attendees"] = [{"email": e} for e in emails]
+    result = await execute_action(ctx.business_id, ACTION_CALENDAR_CREATE, params)
+    return result
+
+
+@tool(
+    name="delete_calendar_event",
+    description="Delete an event from the user's Google Calendar by event ID.",
+    parameters={
+        "type": "object",
+        "required": ["event_id"],
+        "properties": {
+            "event_id": {"type": "string", "description": "The Google Calendar event ID to delete."},
+            "calendar_id": {
+                "type": "string",
+                "description": "Calendar ID (defaults to primary).",
+            },
+        },
+    },
+    destructive=True,
+)
+async def delete_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR, ACTION_CALENDAR_DELETE
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {
+            "error": "Google Calendar is not connected.",
+            "action_required": "Connect Google Calendar in the Integrations page first.",
+        }
+    result = await execute_action(ctx.business_id, ACTION_CALENDAR_DELETE, {
+        "event_id": args["event_id"],
+        "calendar_id": args.get("calendar_id") or "primary",
+    })
+    return result

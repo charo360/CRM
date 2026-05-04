@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Privacy Policy · Zilo",
@@ -14,6 +15,11 @@ export default function PrivacyPolicyPage() {
   return (
     <main className="min-h-screen bg-white px-4 py-16">
       <div className="mx-auto max-w-3xl">
+        <p className="mb-6 text-sm text-gray-500">
+          <Link href="/" className="text-brand-dark underline hover:no-underline">
+            ← Back to home
+          </Link>
+        </p>
         <h1 className="mb-2 text-4xl font-bold text-gray-900">{appName} Privacy Policy</h1>
         <p className="mb-10 text-sm text-gray-500">Last updated: {lastUpdated}</p>
 

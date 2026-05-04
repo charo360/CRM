@@ -10,6 +10,15 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env', override=True)
 load_dotenv(ROOT_DIR / '.env.local', override=True)
 
+# Force UTF-8 for Windows console output (skip if already wrapped to avoid deadlock)
+import io
+if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+    except (AttributeError, ValueError):
+        pass  # Already wrapped or not supported
+
 import os
 # Check AWS immediately
 if os.environ.get("AWS_ACCESS_KEY_ID"):
@@ -56,31 +65,52 @@ def validate_startup_env():
     else:
         print("[INFO] Grok/xAI API Key NOT DETECTED (Grok will not work)")
 
+    if os.environ.get('COMPOSIO_API_KEY'):
+        print("[OK] Composio API Key DETECTED (Gmail + Google Calendar enabled)")
+    else:
+        print("[INFO] COMPOSIO_API_KEY not set — Gmail/Calendar integrations will not work")
+
 validate_startup_env()
+print("[DEBUG] Starting FastAPI imports...", flush=True)
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query, Response
+print("[DEBUG] FastAPI imported", flush=True)
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+print("[DEBUG] FastAPI security imported", flush=True)
 from starlette.middleware.cors import CORSMiddleware
+print("[DEBUG] CORS imported", flush=True)
 from motor.motor_asyncio import AsyncIOMotorClient
-import sys
-import io
+print("[DEBUG] Motor imported", flush=True)
 import difflib
-# Force UTF-8 for Windows console output
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import logging
 import asyncio
+print("[DEBUG] Basic imports done", flush=True)
 
 # Configure logging with rotation (10 MB per file, keep 3 backups) + stdout
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
-log_file = ROOT_DIR.parent / "server.log"
 _log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-_file_handler = _RotatingFileHandler(str(log_file), maxBytes=10*1024*1024, backupCount=3, encoding='utf-8')
-_file_handler.setFormatter(_log_formatter)
 _stream_handler = logging.StreamHandler(sys.stdout)
 _stream_handler.setFormatter(_log_formatter)
-logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
+_log_handlers: list[logging.Handler] = []
+_last_log_err: OSError | None = None
+for _log_path in (ROOT_DIR.parent / "server.log", ROOT_DIR / "server.log"):
+    try:
+        _fh = _RotatingFileHandler(
+            str(_log_path), maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        _fh.setFormatter(_log_formatter)
+        _log_handlers.append(_fh)
+        break
+    except OSError as _log_err:
+        _last_log_err = _log_err
+else:
+    print(
+        f"[WARNING] File logging disabled (could not open server.log): {_last_log_err}",
+        file=sys.stderr,
+    )
+logging.basicConfig(level=logging.INFO, handlers=[*_log_handlers, _stream_handler])
+print("[DEBUG] Logging configured...")
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
@@ -114,6 +144,7 @@ from mongo_http_client import AsyncMongoHTTPClient
 
 
 from bson import ObjectId as _ObjectId
+print("[DEBUG] Core imports done, loading CRM services...")
 from redis_client import (
     cache_get, cache_set, cache_delete, cache_delete_pattern,
     enqueue_job,
@@ -292,8 +323,10 @@ def sanitize_phone(phone: str) -> str:
     return _re.sub(r'[^\d]', '', phone)
 
 # === AGENT SYSTEM ===
+print("[DEBUG] Loading agents...")
 from agents.router import Router
 from agents.payment_verifier import PaymentScreenshotVerifier
+print("[DEBUG] Agents loaded...")
 # ====================
 
 def normalize_url(u):
@@ -345,7 +378,9 @@ else:
     )
     db = client[os.environ.get('DB_NAME', 'whatsapp_crm')]
 
+print("[DEBUG] Creating Router...")
 router = Router(db) # specific router for agents
+print("[DEBUG] Router created...")
 
 # WhatsApp via Evolution API (config in .env: EVOLUTION_API_URL, EVOLUTION_API_KEY)
 
@@ -11608,6 +11643,13 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"[ad-health-monitor] Failed to start: {e}")
 
+    # Start background email sync (polls Gmail every 10 minutes for all connected users)
+    try:
+        asyncio.create_task(_email_sync_runner(db))
+        logging.info("[email-sync] Background email sync started (every 10 min)")
+    except Exception as e:
+        logging.error(f"[email-sync] Failed to start: {e}")
+
     # Bootstrap Qdrant vector collections (customer_memories + business_knowledge).
     # Runs silently if QDRANT_URL is not configured (local dev without Qdrant).
     if os.getenv("QDRANT_URL"):
@@ -11619,6 +11661,30 @@ async def startup_tasks():
             asyncio.create_task(_reindex_all_knowledge(db))
         except Exception as e:
             logging.warning(f"[qdrant] bootstrap failed (Qdrant may not be ready yet): {e}")
+
+
+async def _email_sync_runner(db) -> None:
+    """Background task: sync emails for all users with Gmail connected every 10 minutes."""
+    import asyncio as _asyncio
+    from email_sync import sync_emails_for_user, ensure_indexes
+    await ensure_indexes(db)
+    while True:
+        try:
+            # Find all users who have Composio Gmail connected
+            users = await db.users.find(
+                {"composio_connected_apps": "gmail"},
+                {"_id": 1, "business_id": 1},
+            ).to_list(500)
+            for u in users:
+                uid = str(u.get("business_id") or u["_id"])
+                try:
+                    await sync_emails_for_user(uid, db, max_results=10)
+                except Exception as e:
+                    logging.warning(f"[email-sync] Failed for user {uid}: {e}")
+                await _asyncio.sleep(5)  # space out users to keep backend responsive
+        except Exception as e:
+            logging.warning(f"[email-sync] Runner error: {e}")
+        await _asyncio.sleep(600)  # 10 minutes
 
 
 async def _reindex_all_knowledge(db) -> None:
@@ -11959,6 +12025,298 @@ async def get_social_audience_insights(
         await db.audience_insights_cache.delete_one({"user_id": user_id})
     data = await get_audience_insights_for_user(db, user_id)
     return {"insights": data, "has_data": bool(data)}
+
+
+# ── Composio: Gmail & Google Calendar OAuth + connection management ───────────
+
+@api_router.post("/composio/connect/{toolkit}")
+async def composio_connect(toolkit: str, user=Depends(get_current_user)):
+    """Start Composio OAuth for a toolkit (gmail | googlecalendar).
+    Returns a redirect_url the frontend should open in a popup/tab."""
+    from composio_service import get_connect_url
+    user_id = str(user.get("business_id") or user["_id"])
+    frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    redirect = f"{frontend}/dashboard/integrations?connected={toolkit}"
+    result = await get_connect_url(user_id, toolkit, redirect)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result
+
+
+@api_router.get("/composio/connections")
+async def composio_connections(user=Depends(get_current_user)):
+    """Return connection status for all Composio-managed toolkits."""
+    from composio_service import get_all_connection_statuses
+    user_id = str(user.get("business_id") or user["_id"])
+    statuses = await get_all_connection_statuses(user_id)
+    return {"connected": statuses}
+
+
+@api_router.get("/composio/connections/{toolkit}")
+async def composio_connection_status(toolkit: str, user=Depends(get_current_user)):
+    """Check connection status for a specific toolkit."""
+    from composio_service import get_connection_status
+    user_id = str(user.get("business_id") or user["_id"])
+    result = await get_connection_status(user_id, toolkit)
+    return result
+
+
+@api_router.delete("/composio/connections/{toolkit}")
+async def composio_disconnect(toolkit: str, user=Depends(get_current_user)):
+    """Disconnect (revoke) a Composio toolkit connection for this user."""
+    from composio_service import disconnect
+    user_id = str(user.get("business_id") or user["_id"])
+    result = await disconnect(user_id, toolkit)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result
+
+
+def _composio_text(val: Any) -> str:
+    """Extract plain text from a Composio field that may be a str or a dict with 'body' key."""
+    import html as _html
+    if not val:
+        return ""
+    if isinstance(val, str):
+        return _html.unescape(val)[:200]
+    if isinstance(val, dict):
+        raw = str(val.get("body") or val.get("text") or "")
+        return _html.unescape(raw)[:200]
+    return _html.unescape(str(val))[:200]
+
+
+@api_router.get("/composio/gmail/threads")
+async def composio_gmail_threads(
+    q: str = "",
+    limit: int = 25,
+    user=Depends(get_current_user),
+):
+    """List Gmail threads using Composio execute_action (handles token refresh)."""
+    from composio_service import execute_action, ACTION_GMAIL_FETCH
+    user_id = str(user.get("business_id") or user["_id"])
+    params: dict[str, Any] = {"max_results": min(limit, 50)}
+    if q:
+        params["query"] = q
+    result = await execute_action(user_id, ACTION_GMAIL_FETCH, params)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+
+    # Shape raw Composio messages into thread-like objects the frontend expects
+    import html as _html
+    raw_msgs = result.get("data", {}).get("messages", [])
+
+    def _shape_msg(m: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": m.get("messageId", ""),
+            "from": _html.unescape(str(m.get("sender") or "")),
+            "to": _html.unescape(str(m.get("to") or "")),
+            "subject": _html.unescape(str(m.get("subject") or "(no subject)")),
+            "date": str(m.get("messageTimestamp") or ""),
+            "body": _html.unescape(str(m.get("messageText") or "") or _composio_text(m.get("preview"))),
+            "unread": "UNREAD" in (m.get("labelIds") or []),
+        }
+
+    # Group by threadId, collecting all messages per thread
+    thread_map: dict[str, dict[str, Any]] = {}
+    for m in raw_msgs:
+        tid = m.get("threadId") or m.get("messageId", "")
+        shaped = _shape_msg(m)
+        if tid not in thread_map:
+            thread_map[tid] = {
+                "id": str(tid),
+                "subject": shaped["subject"],
+                "from": shaped["from"],
+                "to": shaped["to"],
+                "date": shaped["date"],
+                "snippet": _composio_text(m.get("preview")) or _html.unescape(str(m.get("messageText") or ""))[:200],
+                "unread": shaped["unread"],
+                "messageCount": 1,
+                "provider": "gmail",
+                "messages": [shaped],
+            }
+        else:
+            thread_map[tid]["messageCount"] += 1
+            thread_map[tid]["messages"].append(shaped)
+            # Mark thread unread if any message is unread
+            if shaped["unread"]:
+                thread_map[tid]["unread"] = True
+
+    threads = list(thread_map.values())
+    return {"threads": threads, "provider": "gmail", "connected": True}
+
+
+@api_router.get("/composio/gmail/threads/{thread_id}")
+async def composio_gmail_get_thread(thread_id: str, user=Depends(get_current_user)):
+    """Get all messages in a Gmail thread using Composio execute_action."""
+    from composio_service import execute_action, ACTION_GMAIL_FETCH
+    user_id = str(user.get("business_id") or user["_id"])
+    # Composio doesn't support thread: query filter — fetch recent inbox and find by threadId/messageId
+    result = await execute_action(user_id, ACTION_GMAIL_FETCH, {"max_results": 50})
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+
+    raw_msgs = result.get("data", {}).get("messages", [])
+    # Match by threadId or messageId
+    msgs = [
+        m for m in raw_msgs
+        if m.get("threadId") == thread_id or m.get("messageId") == thread_id
+    ]
+    if not msgs:
+        # thread_id not in recent inbox — return empty rather than wrong messages
+        msgs = []
+
+    import html as _html
+    messages = [
+        {
+            "id": m.get("messageId", ""),
+            "from": _html.unescape(str(m.get("sender") or "")),
+            "to": _html.unescape(str(m.get("to") or "")),
+            "subject": _html.unescape(str(m.get("subject") or "(no subject)")),
+            "date": m.get("messageTimestamp") or "",
+            "body": _html.unescape(str(m.get("messageText") or "") or _composio_text(m.get("preview"))),
+            "unread": "UNREAD" in (m.get("labelIds") or []),
+        }
+        for m in msgs
+    ]
+    return {"messages": messages, "provider": "gmail"}
+
+
+@api_router.post("/composio/gmail/send")
+async def composio_gmail_send(request: Request, user=Depends(get_current_user)):
+    """Send a Gmail message via Composio execute_action."""
+    from composio_service import execute_action, ACTION_GMAIL_SEND
+    user_id = str(user.get("business_id") or user["_id"])
+    body = await request.json()
+    result = await execute_action(user_id, ACTION_GMAIL_SEND, {
+        "recipient_email": body.get("to", ""),
+        "subject": body.get("subject", ""),
+        "body": body.get("body", ""),
+    })
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return {"ok": True}
+
+
+@api_router.post("/composio/gmail/mark-read")
+async def composio_gmail_mark_read(request: Request, user=Depends(get_current_user)):
+    """Mark a Gmail message as read — best-effort via Composio."""
+    # Composio doesn't have a built-in mark-read action, silently succeed
+    return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EMAIL DB — Store emails in MongoDB for instant loading & full control
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_router.post("/email-db/sync")
+async def email_db_sync(user=Depends(get_current_user)):
+    """
+    Start email sync:
+    1. Immediately fetches the latest 10 emails (quick sync, returns fast).
+    2. Kicks off a full historical deep sync in the background (month by month).
+    """
+    from email_sync import sync_emails_for_user, deep_sync_user, ensure_indexes
+    user_id = str(user.get("business_id") or user["_id"])
+    await ensure_indexes(db)
+
+    # Quick sync — get latest emails from Gmail + Outlook
+    result = await sync_emails_for_user(user_id, db, max_results=10)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+
+    # Deep sync — runs in background, month by month, non-blocking
+    asyncio.create_task(deep_sync_user(user_id, db))
+
+    return {**result, "deep_sync": "started", "message": "Latest emails loaded. Full history syncing in background."}
+
+
+@api_router.get("/email-db/sync-status")
+async def email_db_sync_status(user=Depends(get_current_user)):
+    """Check the status of the background deep sync."""
+    user_id = str(user.get("business_id") or user["_id"])
+    status = await db.email_sync_status.find_one({"user_id": user_id})
+    if not status:
+        return {"status": "never_synced"}
+    return {
+        "status":         status.get("status", "unknown"),
+        "total_threads":  status.get("total_threads", 0),
+        "total_messages": status.get("total_messages", 0),
+        "last_week":      status.get("last_week_synced", ""),
+        "progress_pct":   status.get("progress_pct", 0),
+        "completed_at":   str(status.get("completed_at", "")),
+    }
+
+
+@api_router.get("/email-db/threads")
+async def email_db_list_threads(
+    q: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    """List email threads from MongoDB — instant, no Gmail round-trip."""
+    from email_sync import get_threads_from_db
+    user_id = str(user.get("business_id") or user["_id"])
+    threads = await get_threads_from_db(user_id, db, q=q, limit=min(limit, 100), offset=offset)
+    return {"threads": threads, "source": "db"}
+
+
+@api_router.get("/email-db/threads/{thread_id}/messages")
+async def email_db_get_messages(thread_id: str, user=Depends(get_current_user)):
+    """Get all messages for a thread from MongoDB."""
+    from email_sync import get_messages_from_db
+    user_id = str(user.get("business_id") or user["_id"])
+    messages = await get_messages_from_db(user_id, thread_id, db)
+    return {"messages": messages, "thread_id": thread_id}
+
+
+@api_router.post("/email-db/threads/{thread_id}/read")
+async def email_db_mark_read(thread_id: str, user=Depends(get_current_user)):
+    """Mark all messages in a thread as read."""
+    from email_sync import mark_thread_read
+    user_id = str(user.get("business_id") or user["_id"])
+    await mark_thread_read(user_id, thread_id, db)
+    return {"ok": True}
+
+
+@api_router.post("/email-db/import")
+async def email_db_import(request: Request, user=Depends(get_current_user)):
+    """
+    Import pre-fetched emails from any provider (e.g. Outlook via Nango).
+    Accepts: { messages: [...], provider: "microsoft" }
+    """
+    from email_sync import _store_messages, _shape_outlook_message, ensure_indexes
+    user_id = str(user.get("business_id") or user["_id"])
+    await ensure_indexes(db)
+    body = await request.json()
+    raw_msgs  = body.get("messages", [])
+    provider  = body.get("provider", "microsoft")
+    if not raw_msgs:
+        return {"synced_threads": 0, "synced_messages": 0}
+    shaped = [_shape_outlook_message(m, user_id) for m in raw_msgs if m.get("id")]
+    result = await _store_messages(user_id, db, shaped, pre_shaped=True)
+    return result
+
+
+@api_router.post("/email-db/sent")
+async def email_db_save_sent(request: Request, user=Depends(get_current_user)):
+    """Save a sent email to DB immediately so it appears in the thread."""
+    from email_sync import save_sent_message
+    user_id = str(user.get("business_id") or user["_id"])
+    body = await request.json()
+    # Derive user's email from their account
+    user_doc = await db.users.find_one({"_id": user_id}) or {}
+    from_addr = user_doc.get("email") or user.get("email") or ""
+    await save_sent_message(
+        user_id=user_id,
+        thread_id=body.get("thread_id", ""),
+        from_addr=from_addr,
+        to_addr=body.get("to", ""),
+        subject=body.get("subject", ""),
+        body=body.get("body", ""),
+        db=db,
+    )
+    return {"ok": True}
 
 
 def _operator_provision_secret() -> str:
@@ -13471,6 +13829,11 @@ async def download_proxy(
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "CRM API is running"}
 
 
 @app.on_event("shutdown")

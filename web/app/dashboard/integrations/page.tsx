@@ -179,6 +179,54 @@ function NangoTileControls({ connected, connectLabel, connectClass, onConnect, o
   );
 }
 
+// ── Composio tile controls ────────────────────────────────────────────────────
+
+type ComposioTileControlsProps = {
+  connected: boolean | null;
+  busy: boolean;
+  connectLabel: string;
+  connectClass: string;
+  onConnect: () => void;
+  onDisconnect: () => void;
+};
+
+function ComposioTileControls({ connected, busy, connectLabel, connectClass, onConnect, onDisconnect }: ComposioTileControlsProps) {
+  if (connected === null) {
+    return (
+      <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
+        <Loader2 size={11} className="animate-spin" /> Checking…
+      </div>
+    );
+  }
+  if (connected) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+          <CheckCircle size={12} /> Connected
+        </div>
+        <button
+          type="button"
+          onClick={onDisconnect}
+          disabled={busy}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onConnect}
+      disabled={busy}
+      className={`flex w-full items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 ${connectClass}`}
+    >
+      {busy ? <Loader2 size={11} className="animate-spin" /> : <><span>{connectLabel}</span><ExternalLink size={9} /></>}
+    </button>
+  );
+}
+
 // ── Telegram (free bot) ───────────────────────────────────────────────────────
 
 function TelegramStatus({ connection, onChanged }: { connection?: TelegramConnection; onChanged: () => void }) {
@@ -512,6 +560,12 @@ function IntegrationsPageInner() {
     microsoft: null, stripe: null, klaviyo: null, mailchimp: null, brevo: null,
     google_sheets: null, notion: null,
   });
+  const [composioStatus, setComposioStatus] = useState<Record<string, boolean | null>>({
+    gmail: null,
+    googlecalendar: null,
+    outlook: null,
+  });
+  const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const searchParams = useSearchParams();
 
@@ -555,7 +609,101 @@ function IntegrationsPageInner() {
     }
   }, []);
 
-  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio]);
+  const refreshComposio = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+    try {
+      const res = await fetch("/api/composio/connections", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { connected: Record<string, boolean> };
+      setComposioStatus({
+        gmail: data.connected["gmail"] ?? false,
+        googlecalendar: data.connected["googlecalendar"] ?? false,
+        outlook: data.connected["outlook"] ?? false,
+      });
+    } catch {
+      setComposioStatus({ gmail: false, googlecalendar: false });
+    }
+  }, []);
+
+  async function composioConnect(toolkit: string, silent = false) {
+    setComposioBusy(toolkit);
+    try {
+      const token = getToken();
+      const res = await fetch(`/api/composio/connect/${toolkit}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({} as { detail?: string }))) as { detail?: string };
+        if (!silent) setBanner({ type: "error", msg: err.detail || "Could not start connection. Please try again." });
+        return;
+      }
+      const data = (await res.json()) as { redirect_url?: string };
+      if (!data.redirect_url) {
+        if (!silent) setBanner({ type: "error", msg: "No redirect URL returned from Composio." });
+        return;
+      }
+      const popup = window.open(data.redirect_url, "composio-connect", "width=980,height=760,noopener,noreferrer");
+      if (!popup) { window.location.href = data.redirect_url; return; }
+
+      if (!silent) setBanner({ type: "success", msg: "Finish connecting in the popup, then return here." });
+
+      await new Promise<void>((resolve) => {
+        const poll = window.setInterval(async () => {
+          void refreshComposio();
+          if (popup.closed) {
+            window.clearInterval(poll);
+            await new Promise(r => setTimeout(r, 1200));
+            await refreshComposio();
+            resolve();
+          }
+        }, 3000);
+      });
+
+      // Auto-link Calendar when Gmail connects (same Google account)
+      if (toolkit === "gmail") {
+        const freshStatus = await fetch("/api/composio/connections", {
+          headers: { Authorization: `Bearer ${token ?? ""}` },
+        }).then(r => r.json()).catch(() => ({ connected: {} })) as { connected: Record<string, boolean> };
+
+        if (freshStatus.connected?.gmail && !freshStatus.connected?.googlecalendar) {
+          setBanner({ type: "success", msg: "Gmail connected! Now linking Google Calendar…" });
+          await composioConnect("googlecalendar", false);
+        }
+      }
+    } catch (e) {
+      if (!silent) setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect." });
+    } finally {
+      setComposioBusy(null);
+    }
+  }
+
+  async function composioDisconnect(toolkit: string, label: string) {
+    if (!confirm(`Disconnect ${label}?`)) return;
+    setComposioBusy(toolkit);
+    try {
+      const token = getToken();
+      const res = await fetch(`/api/composio/connections/${toolkit}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({} as { detail?: string }))) as { detail?: string };
+        setBanner({ type: "error", msg: err.detail || `Failed to disconnect ${label}.` });
+        return;
+      }
+      void refreshComposio();
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : `Failed to disconnect ${label}.` });
+    } finally {
+      setComposioBusy(null);
+    }
+  }
+
+  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio]);
 
   useEffect(() => {
     const platform = searchParams.get("platform");
@@ -599,7 +747,7 @@ function IntegrationsPageInner() {
     const error = searchParams.get("error");
     if (connected) {
       setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!` });
-      refreshTg(); void refreshNango(); void refreshZernio();
+      refreshTg(); void refreshNango(); void refreshZernio(); void refreshComposio();
       window.history.replaceState({}, "", window.location.pathname);
     } else if (error) {
       const msgs: Record<string, string> = {
@@ -872,15 +1020,17 @@ function IntegrationsPageInner() {
 
           <div id="integrations-gmail" className="min-w-0">
             <SmallTile
-              title="Gmail" subtitle="Google Mail &amp; inbox"
+              title="Gmail" subtitle="Read, send &amp; draft emails"
               borderClass="border-red-200 bg-red-50/50"
               icon={<Mail size={18} className="text-red-500" />}
             >
-              <NangoTileControls
-                connected={nangoStatus.email} connectLabel="Connect Gmail"
+              <ComposioTileControls
+                connected={composioStatus.gmail}
+                busy={composioBusy === "gmail"}
+                connectLabel="Connect Gmail"
                 connectClass="bg-red-500 hover:bg-red-600"
-                onConnect={() => nangoConnect("email")}
-                onDisconnect={() => nangoDisconnect("email")}
+                onConnect={() => void composioConnect("gmail")}
+                onDisconnect={() => void composioDisconnect("gmail", "Gmail")}
               />
             </SmallTile>
           </div>
@@ -902,15 +1052,41 @@ function IntegrationsPageInner() {
 
           <div id="integrations-google-calendar" className="min-w-0">
             <SmallTile
-              title="Google Calendar" subtitle="Meetings &amp; scheduling"
+              title="Google Calendar" subtitle="Events, meetings &amp; scheduling"
               borderClass="border-emerald-200 bg-emerald-50/50"
               icon={<Calendar size={18} className="text-emerald-600" />}
             >
-              <NangoTileControls
-                connected={nangoStatus.calendar} connectLabel="Connect Calendar"
+              <ComposioTileControls
+                connected={composioStatus.googlecalendar}
+                busy={composioBusy === "googlecalendar"}
+                connectLabel="Connect Calendar"
                 connectClass="bg-emerald-600 hover:bg-emerald-700"
-                onConnect={() => nangoConnect("calendar")}
-                onDisconnect={() => nangoDisconnect("calendar")}
+                onConnect={() => void composioConnect("googlecalendar")}
+                onDisconnect={() => void composioDisconnect("googlecalendar", "Google Calendar")}
+              />
+            </SmallTile>
+          </div>
+
+          <div id="integrations-outlook" className="min-w-0">
+            <SmallTile
+              title="Microsoft Outlook" subtitle="Email &amp; calendar via Composio"
+              borderClass="border-[#0078D4]/20 bg-[#0078D4]/5"
+              icon={
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+                  <rect width="24" height="24" rx="3" fill="#0078D4"/>
+                  <path d="M13 7h7v10h-7V7z" fill="white" opacity="0.9"/>
+                  <path d="M4 9.5l9-2.5v10L4 14.5V9.5z" fill="white"/>
+                  <ellipse cx="8.5" cy="12" rx="2.5" ry="3" fill="#0078D4"/>
+                </svg>
+              }
+            >
+              <ComposioTileControls
+                connected={composioStatus.outlook}
+                busy={composioBusy === "outlook"}
+                connectLabel="Connect Outlook"
+                connectClass="bg-[#0078D4] hover:bg-[#106EBE]"
+                onConnect={() => void composioConnect("outlook")}
+                onDisconnect={() => void composioDisconnect("outlook", "Outlook")}
               />
             </SmallTile>
           </div>
