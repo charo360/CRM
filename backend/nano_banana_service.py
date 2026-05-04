@@ -10,11 +10,19 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Load all available API keys: OPENROUTER_KEY, OPENROUTER_KEY_2, OPENROUTER_KEY_3, ...
-# Add more keys in .env to increase reliability and throughput.
+# Env: OPENROUTER_KEY (primary), OPENROUTER_API_KEY (common alias), OPENROUTER_KEY_2, ...
+# Keys are read at call time so local .env matches Render after restart (not cached at import).
+_OPENROUTER_KEY_MISSING = (
+    "OpenRouter is not configured. Set OPENROUTER_KEY or OPENROUTER_API_KEY in "
+    "CRM/backend/.env for local dev; on Render add the same variable in Environment."
+)
+
+
 def _load_openrouter_keys() -> list[str]:
-    keys = []
+    keys: list[str] = []
     primary = os.getenv("OPENROUTER_KEY", "").strip()
+    if not primary:
+        primary = os.getenv("OPENROUTER_API_KEY", "").strip()
     if primary:
         keys.append(primary)
     i = 2
@@ -26,9 +34,6 @@ def _load_openrouter_keys() -> list[str]:
         i += 1
     return keys
 
-_OPENROUTER_KEYS: list[str] = _load_openrouter_keys()
-# Keep a single-key alias for legacy references
-OPENROUTER_KEY = _OPENROUTER_KEYS[0] if _OPENROUTER_KEYS else ""
 
 _MAX_RETRIES_PER_KEY = 2  # attempts per key before moving to the next
 
@@ -71,8 +76,10 @@ async def edit_product_image(
     logo_url          : optional brand logo — overlaid in a corner of the final design
     brand_color       : optional hex color — used as accent in the scene
     """
-    if not OPENROUTER_KEY:
-        return {"error": "OPENROUTER_KEY not configured in .env"}
+    keys = _load_openrouter_keys()
+    if not keys:
+        return {"error": _OPENROUTER_KEY_MISSING}
+    api_key = keys[0]
 
     try:
         prod_b64, prod_mime = await _fetch_as_b64(product_image_url)
@@ -141,7 +148,7 @@ async def edit_product_image(
     }
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",
@@ -194,8 +201,9 @@ async def generate_creative_image(
 ) -> Dict[str, Any]:
     """Call Nano Banana via OpenRouter to generate a creative image.
     Auto-retries across all available OPENROUTER_KEY_* env vars."""
-    if not _OPENROUTER_KEYS:
-        return {"error": "OPENROUTER_KEY not configured in .env"}
+    keys = _load_openrouter_keys()
+    if not keys:
+        return {"error": _OPENROUTER_KEY_MISSING}
 
     model = NANO_BANANA_PRO if quality == "pro" else NANO_BANANA_2
     aspect_ratio = _ASPECT_MAP.get(format, "1:1")
@@ -241,7 +249,7 @@ async def generate_creative_image(
     }
 
     last_error = "Unknown error"
-    for key in _OPENROUTER_KEYS:
+    for key in keys:
         for attempt in range(_MAX_RETRIES_PER_KEY):
             try:
                 headers = {**base_headers, "Authorization": f"Bearer {key}"}
@@ -306,8 +314,10 @@ async def recreate_design_from_reference(
     no fabrication, leave empty when no fact). Returns
     ``{success, image_url}`` on success, or ``{error}`` otherwise.
     """
-    if not OPENROUTER_KEY:
-        return {"error": "OPENROUTER_KEY not configured in .env"}
+    keys = _load_openrouter_keys()
+    if not keys:
+        return {"error": _OPENROUTER_KEY_MISSING}
+    api_key = keys[0]
     if not reference_image_url:
         return {"error": "reference_image_url is required"}
 
@@ -354,7 +364,7 @@ async def recreate_design_from_reference(
         "image_config": {"aspect_ratio": aspect_ratio},
     }
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",

@@ -93,7 +93,10 @@ Output JSON only, one line: {{"chips": ["...", "...", "..."]}}"""
         # Use DeepSeek (same provider the assistant uses) — fast model for chips
         deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        openrouter_key = os.environ.get("OPENROUTER_KEY", "").strip()
+        openrouter_key = (
+            os.environ.get("OPENROUTER_KEY", "").strip()
+            or os.environ.get("OPENROUTER_API_KEY", "").strip()
+        )
 
         raw = None
         if deepseek_key:
