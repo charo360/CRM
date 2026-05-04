@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -47,22 +47,25 @@ import {
   FolderKanban,
   Image,
 } from "lucide-react";
-import { clearToken } from "@/lib/auth";
+import { clearToken, getToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import { useBusiness } from "@/contexts/BusinessContext";
 import { isSidebarHrefEnabled } from "@/lib/sidebarFeatures";
 
 /** Always visible for every account — channels & connections included for everyone. */
-function coreNavItems(overviewLabel: string) {
-  return [
+function coreNavItems(overviewLabel: string, showAdminUsers: boolean) {
+  const items = [
     { href: "/dashboard", label: overviewLabel, icon: LayoutDashboard, exact: true as const },
     { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
-    { href: "/dashboard/admin/users", label: "Admin Users", icon: Shield },
     { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
     { href: "/dashboard/settings", label: "Settings", icon: Settings },
-  ] as const;
+  ] as Array<{ href: string; label: string; icon: React.ElementType; exact?: true }>;
+  if (showAdminUsers) {
+    items.splice(2, 0, { href: "/dashboard/admin/users", label: "Admin Users", icon: Shield });
+  }
+  return items;
 }
 
 const MAIN_NAV = [
@@ -89,8 +92,34 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { showBookingsNav, bookingsNavLabel, bookingsNavHref, ui, sidebarFeatures } = useBusiness();
+  const [showAdminUsers, setShowAdminUsers] = useState(false);
 
-  const workspaceNav = coreNavItems(ui.overviewTitle);
+  useEffect(() => {
+    let cancelled = false;
+    async function checkAdmin() {
+      const token = getToken();
+      if (!token) {
+        if (!cancelled) setShowAdminUsers(false);
+        return;
+      }
+      try {
+        const base = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
+        const res = await fetch(`${base}/admin/access`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = (await res.json().catch(() => ({ access: false }))) as { access?: boolean };
+        if (!cancelled) setShowAdminUsers(!!data.access);
+      } catch {
+        if (!cancelled) setShowAdminUsers(false);
+      }
+    }
+    void checkAdmin();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const workspaceNav = coreNavItems(ui.overviewTitle, showAdminUsers);
 
   const mainNav = MAIN_NAV.map((item) =>
     item.href === "/dashboard/customers" ? { ...item, label: ui.customersNavLabel } : item

@@ -669,6 +669,7 @@ export const teamApi = {
 };
 
 export const adminApi = {
+  canAccess: () => api.get<{ access: boolean }>("/admin/access"),
   listUsers: (params?: { q?: string; limit?: number; skip?: number }) => {
     const qs = new URLSearchParams();
     if (params?.q) qs.set("q", params.q);

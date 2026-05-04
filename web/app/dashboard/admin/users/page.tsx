@@ -15,6 +15,8 @@ type EditForm = {
 };
 
 export default function AdminUsersPage() {
+  const [accessChecked, setAccessChecked] = useState(false);
+  const [hasAccess, setHasAccess] = useState(false);
   const [rows, setRows] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -46,9 +48,38 @@ export default function AdminUsersPage() {
   }
 
   useEffect(() => {
-    void loadUsers("");
+    (async () => {
+      try {
+        const res = await adminApi.canAccess();
+        setHasAccess(!!res.access);
+        if (res.access) {
+          await loadUsers("");
+        }
+      } catch {
+        setHasAccess(false);
+      } finally {
+        setAccessChecked(true);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  if (!accessChecked) {
+    return <div className="p-6 text-sm text-slate-500">Checking admin access…</div>;
+  }
+
+  if (!hasAccess) {
+    return (
+      <div className="p-6 max-w-3xl mx-auto">
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+          <h1 className="text-lg font-semibold text-red-700">Access denied</h1>
+          <p className="text-sm text-red-600 mt-1">
+            This dashboard is for platform admins only.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const activeCount = useMemo(
     () => rows.filter((u) => u.subscription_active).length,

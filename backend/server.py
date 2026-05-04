@@ -12099,6 +12099,15 @@ async def admin_list_users(
     return {"users": rows, "total": total, "limit": limit, "skip": skip}
 
 
+@api_router.get("/admin/access")
+async def admin_access(user=Depends(get_current_user)):
+    try:
+        _require_platform_admin(user)
+        return {"access": True}
+    except HTTPException:
+        return {"access": False}
+
+
 @api_router.patch("/admin/users/{target_user_id}")
 async def admin_update_user(target_user_id: str, body: dict, user=Depends(get_current_user)):
     _require_platform_admin(user)
