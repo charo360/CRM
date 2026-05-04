@@ -660,7 +660,11 @@ function IntegrationsPageInner() {
       const token = getToken();
       const res = await fetch(`/api/composio/connect/${toolkit}`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token ?? ""}` },
+        headers: {
+          Authorization: `Bearer ${token ?? ""}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ redirect_base: window.location.origin }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({} as { detail?: string }))) as { detail?: string };

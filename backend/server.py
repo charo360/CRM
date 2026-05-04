@@ -12275,13 +12275,52 @@ async def admin_delete_user(target_user_id: str, actor=Depends(get_admin_actor))
     await db.email_messages.delete_many({"business_id": target_user_id})
     return {"ok": True}
 
+
+def _composio_oauth_frontend_base(optional_client_origin: Optional[str]) -> str:
+    """Absolute origin for OAuth return URL. Composio rejects relative redirect_uri."""
+    from urllib.parse import urlparse
+
+    env_raw = (os.environ.get("FRONTEND_URL") or "").strip().rstrip("/")
+    default_local = "http://127.0.0.1:3000"
+
+    def _host(url: str) -> str:
+        try:
+            return (urlparse(url).hostname or "").lower()
+        except Exception:
+            return ""
+
+    o = (optional_client_origin or "").strip().rstrip("/")
+    if o:
+        try:
+            p = urlparse(o)
+            if p.scheme in ("http", "https") and p.netloc:
+                h = (p.hostname or "").lower()
+                if h in ("localhost", "127.0.0.1"):
+                    return o
+                if env_raw and h == _host(env_raw):
+                    return o
+        except Exception:
+            pass
+    if env_raw:
+        return env_raw
+    return default_local
+
+
 @api_router.post("/composio/connect/{toolkit}")
-async def composio_connect(toolkit: str, user=Depends(get_current_user)):
-    """Start Composio OAuth for a toolkit (gmail | googlecalendar).
-    Returns a redirect_url the frontend should open in a popup/tab."""
+async def composio_connect(toolkit: str, request: Request, user=Depends(get_current_user)):
+    """Start Composio OAuth for a toolkit. Returns redirect_url for the OAuth popup/tab."""
     from composio_service import get_connect_url
     user_id = str(user.get("business_id") or user["_id"])
-    frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    client_origin: Optional[str] = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            raw = body.get("redirect_base") or body.get("redirectBase")
+            if isinstance(raw, str):
+                client_origin = raw
+    except Exception:
+        pass
+    frontend = _composio_oauth_frontend_base(client_origin)
     redirect = f"{frontend}/dashboard/integrations?connected={toolkit}"
     result = await get_connect_url(user_id, toolkit, redirect)
     if "error" in result:

@@ -168,7 +168,7 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
     app_name = _APP_NAMES.get(toolkit.lower())
     if not app_name:
-        return {"error": f"Unknown toolkit '{toolkit}'. Use: gmail or googlecalendar"}
+        return {"error": f"Unknown toolkit '{toolkit}'. Supported: {', '.join(sorted(ALL_TOOLKITS))}"}
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
