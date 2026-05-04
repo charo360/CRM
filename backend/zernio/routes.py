@@ -230,105 +230,52 @@ def make_zernio_router(db, user_dep):
             logger.warning(f"[zernio] Could not list accounts for profile {profile_id}: {e}")
         return []
 
-    async def _pick_profile_with_accounts() -> Optional[str]:
-        try:
-            profiles_data = await _get("/profiles")
-            profiles = profiles_data.get("profiles") or profiles_data.get("data") or []
-            if not isinstance(profiles, list):
-                return None
-            for profile in profiles:
-                pid = _extract_profile_id(profile if isinstance(profile, dict) else {})
-                if not pid:
-                    continue
-                accounts = await _list_accounts_for_profile(pid)
-                if accounts:
-                    return pid
-        except Exception as e:
-            logger.warning(f"[zernio] Could not scan profiles for connected accounts: {e}")
-        return None
-
     async def _get_or_create_profile(user_id: str) -> str:
-        """Return the Zernio profileId for this user, creating one if needed."""
+        """Return the Zernio profileId for this user, creating one if needed.
+
+        Each user gets their own isolated profile. We never share or reassign
+        profiles between users — doing so leaks social accounts across tenants.
+        """
         user_doc = await db.users.find_one({"_id": user_id}, {"zernio_profile_id": 1, "business_name": 1})
         profile_id = user_doc.get("zernio_profile_id") if user_doc else None
 
-        # If user already has a stored profile but it has no social accounts while another
-        # profile under the same API key does, auto-heal to that active profile.
+        # User already has a profile — use it as-is (even if currently empty).
         if profile_id:
-            current_accounts = await _list_accounts_for_profile(str(profile_id))
-            if not current_accounts:
-                fallback_profile_id = await _pick_profile_with_accounts()
-                if fallback_profile_id and fallback_profile_id != profile_id:
-                    await db.users.update_one(
-                        {"_id": user_id},
-                        {"$set": {"zernio_profile_id": fallback_profile_id}},
-                    )
-                    logger.info(
-                        f"[zernio] Switched user {user_id} profile {profile_id} -> {fallback_profile_id} (found active accounts)"
-                    )
-                    return fallback_profile_id
+            return str(profile_id)
+
+        # Create a fresh, isolated profile for this user.
+        name = (user_doc or {}).get("business_name") or f"User {user_id[:8]}"
+        try:
+            data = await _post("/profiles", {"name": name, "description": "CRM Social Profile"})
+            profile = data.get("profile") or data
+            profile_id = (
+                profile.get("_id") or profile.get("id") or
+                profile.get("profileId") or profile.get("profile_id")
+            )
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:400]
+            logger.error(f"[zernio] Profile create failed HTTP {e.response.status_code}: {body}")
+            status_code = e.response.status_code
+            message = _extract_error_message(body)
+            if status_code == 403 and "profile limit reached" in message.lower():
+                message = (
+                    "Zernio profile limit reached. "
+                    "Please upgrade the Zernio plan to allow more profiles."
+                )
+            raise HTTPException(status_code, f"Zernio {status_code}: {message}")
+        except Exception as e:
+            logger.error(f"[zernio] Profile create error: {e}")
+            raise HTTPException(503, f"Zernio connection error: {e}")
 
         if not profile_id:
-            name = (user_doc or {}).get("business_name") or f"User {user_id[:8]}"
-            try:
-                data = await _post("/profiles", {"name": name, "description": "CRM Social Profile"})
-                profile = data.get("profile") or data
-                profile_id = (
-                    profile.get("_id") or profile.get("id") or
-                    profile.get("profileId") or profile.get("profile_id")
-                )
-            except httpx.HTTPStatusError as e:
-                body = e.response.text[:400]
-                logger.error(f"[zernio] Profile create failed HTTP {e.response.status_code}: {body}")
-                status_code = e.response.status_code
-                message = _extract_error_message(body)
-                if status_code == 403 and "profile limit reached" in message.lower():
-                    # Free plans can hit profile caps. Reuse an existing profile so the
-                    # integration still works instead of hard-failing connect/status.
-                    try:
-                        existing_profiles_data = await _get("/profiles")
-                        existing_profiles = (
-                            existing_profiles_data.get("profiles")
-                            or existing_profiles_data.get("data")
-                            or []
-                        )
-                        reusable_profile_id = None
-                        if isinstance(existing_profiles, list):
-                            for profile in existing_profiles:
-                                reusable_profile_id = _extract_profile_id(profile)
-                                if reusable_profile_id:
-                                    break
-                        if reusable_profile_id:
-                            await db.users.update_one(
-                                {"_id": user_id},
-                                {"$set": {"zernio_profile_id": reusable_profile_id}},
-                            )
-                            logger.info(
-                                f"[zernio] Reused existing profile {reusable_profile_id} for user {user_id} after limit reached"
-                            )
-                            return reusable_profile_id
-                    except Exception as reuse_error:
-                        logger.error(f"[zernio] Could not reuse existing profile after limit reached: {reuse_error}")
+            logger.error(f"[zernio] Profile created but no ID in response: {data}")
+            raise HTTPException(503, "Zernio profile created but ID not found in response")
 
-                    message = (
-                        "Zernio profile limit reached and no reusable profile was found. "
-                        "Upgrade the Zernio plan or remove an existing profile, then try again."
-                    )
-                raise HTTPException(status_code, f"Zernio {status_code}: {message}")
-            except Exception as e:
-                logger.error(f"[zernio] Profile create error: {e}")
-                raise HTTPException(503, f"Zernio connection error: {e}")
-
-            if not profile_id:
-                logger.error(f"[zernio] Profile created but no ID in response: {data}")
-                raise HTTPException(503, "Zernio profile created but ID not found in response")
-
-            await db.users.update_one(
-                {"_id": user_id},
-                {"$set": {"zernio_profile_id": profile_id}}
-            )
-            logger.info(f"[zernio] Created profile {profile_id} for user {user_id}")
-
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {"zernio_profile_id": profile_id}}
+        )
+        logger.info(f"[zernio] Created profile {profile_id} for user {user_id}")
         return profile_id
 
     # ── key ping (public debug — no auth required) ────────────────────────────
