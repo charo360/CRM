@@ -3056,7 +3056,7 @@ async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# STRIPE TOOLS (via Nango proxy)
+# STRIPE TOOLS (Composio packaged actions, REST proxy fallback)
 # ═════════════════════════════════════════════════════════════════════════════
 
 @tool(
@@ -3074,15 +3074,13 @@ async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_stripe_payments(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import stripe_payment_intents_via_composio_or_proxy
     limit  = min(int(args.get("limit", 20)), 100)
     status = args.get("status", "succeeded")
-    params: Dict[str, Any] = {"limit": limit}
     try:
-        data = await nango_proxy(
-            ctx.business_id, "stripe", "GET",
-            "/v1/payment_intents",
-            params=params,
+        data = await stripe_payment_intents_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -3118,17 +3116,14 @@ async def list_stripe_payments(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import stripe_invoices_via_composio_or_proxy
     status = args.get("status", "open")
     limit  = min(int(args.get("limit", 20)), 100)
-    params: Dict[str, Any] = {"limit": limit}
-    if status != "all":
-        params["status"] = status
     try:
-        data = await nango_proxy(
-            ctx.business_id, "stripe", "GET",
-            "/v1/invoices",
-            params=params,
+        data = await stripe_invoices_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
+            status=str(status),
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -3150,7 +3145,7 @@ async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# KLAVIYO TOOLS (via Nango proxy)
+# KLAVIYO TOOLS (Composio packaged actions, REST proxy fallback)
 # ═════════════════════════════════════════════════════════════════════════════
 
 @tool(
@@ -3167,16 +3162,12 @@ async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_klaviyo_flows(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import klaviyo_flows_via_composio_or_proxy
     status = args.get("status", "all")
-    params: Dict[str, Any] = {"page[size]": 50}
-    if status != "all":
-        params["filter"] = f"equals(status,'{status}')"
     try:
-        data = await nango_proxy(
-            ctx.business_id, "klaviyo", "GET",
-            "/api/flows/",
-            params=params,
+        data = await klaviyo_flows_via_composio_or_proxy(
+            ctx.business_id,
+            status=str(status),
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -3209,13 +3200,12 @@ async def list_klaviyo_flows(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_klaviyo_metrics(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import klaviyo_metrics_via_composio_or_proxy
     limit = min(int(args.get("limit", 20)), 100)
     try:
-        data = await nango_proxy(
-            ctx.business_id, "klaviyo", "GET",
-            "/api/metrics/",
-            params={"page[size]": limit},
+        data = await klaviyo_metrics_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -6703,7 +6693,7 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     return {"status": "draft_saved", "draft_id": result.get("id")}
 
 
-# ── Slack tools (Nango OAuth → Slack Web API proxy) ──────────────────────────
+# ── Slack tools (Composio packaged actions, Slack Web API proxy fallback) ────
 
 
 @tool(
@@ -6719,11 +6709,9 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def slack_workspace_info(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import slack_auth_test_via_composio_or_proxy
     try:
-        data = await nango_proxy(
-            ctx.business_id, _SLACK_KEY, "POST", "auth.test", json={}, timeout=12.0,
-        )
+        data = await slack_auth_test_via_composio_or_proxy(ctx.business_id)
     except RuntimeError as e:
         return {"error": str(e)}
     err = _slack_api_error(data)
@@ -6766,7 +6754,7 @@ async def slack_workspace_info(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import slack_conversations_list_via_composio_or_proxy
     include_private = args.get("include_private", True)
     include_archived = bool(args.get("include_archived", False))
     max_pages = min(max(int(args.get("page_limit") or 10), 1), 15)
@@ -6775,17 +6763,13 @@ async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
     channels: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
     for _ in range(max_pages):
-        payload: Dict[str, Any] = {
-            "types": types,
-            "limit": 200,
-            "exclude_archived": not include_archived,
-        }
-        if cursor:
-            payload["cursor"] = cursor
         try:
-            data = await nango_proxy(
-                ctx.business_id, _SLACK_KEY, "POST", "conversations.list",
-                json=payload, timeout=20.0,
+            data = await slack_conversations_list_via_composio_or_proxy(
+                ctx.business_id,
+                types=types,
+                limit=200,
+                exclude_archived=not include_archived,
+                cursor=cursor,
             )
         except RuntimeError as e:
             return {"error": str(e), "channels_partial": channels}
@@ -6837,19 +6821,18 @@ async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def slack_post_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import slack_post_message_via_composio_or_proxy
     channel = (args.get("channel") or "").strip()
     text = (args.get("text") or "").strip()
     if not channel or not text:
         return {"error": "channel and text are required"}
-    payload: Dict[str, Any] = {"channel": channel, "text": text}
-    ts = (args.get("thread_ts") or "").strip()
-    if ts:
-        payload["thread_ts"] = ts
+    ts = (args.get("thread_ts") or "").strip() or None
     try:
-        data = await nango_proxy(
-            ctx.business_id, _SLACK_KEY, "POST", "chat.postMessage",
-            json=payload, timeout=15.0,
+        data = await slack_post_message_via_composio_or_proxy(
+            ctx.business_id,
+            channel=channel,
+            text=text,
+            thread_ts=ts,
         )
     except RuntimeError as e:
         return {"error": str(e)}
