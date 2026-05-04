@@ -7,8 +7,20 @@ from dotenv import load_dotenv
 
 # Load env before ANY other imports
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env', override=True)
-load_dotenv(ROOT_DIR / '.env.local', override=True)
+load_dotenv(ROOT_DIR / ".env", override=True)
+
+# .env.local overrides for local dev — but blank values must NOT wipe keys already set
+# from .env (or the host). A stray `OPENROUTER_KEY=` line has cleared working keys.
+_local_env = ROOT_DIR / ".env.local"
+if _local_env.exists():
+    from dotenv import dotenv_values
+
+    for _k, _v in dotenv_values(_local_env).items():
+        if not _k or _v is None:
+            continue
+        if str(_v).strip() == "":
+            continue
+        os.environ[_k] = str(_v).strip()
 
 # Force UTF-8 for Windows console output (skip if already wrapped to avoid deadlock)
 import io
