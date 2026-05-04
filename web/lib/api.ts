@@ -668,21 +668,63 @@ export const teamApi = {
   delete: (id: string) => api.delete<void>(`/team/members/${id}`),
 };
 
+const ADMIN_PANEL_TOKEN_KEY = "admin_panel_token";
+const getAdminPanelToken = (): string | null =>
+  typeof window === "undefined" ? null : localStorage.getItem(ADMIN_PANEL_TOKEN_KEY);
+const setAdminPanelToken = (token: string) => {
+  if (typeof window !== "undefined") localStorage.setItem(ADMIN_PANEL_TOKEN_KEY, token);
+};
+const clearAdminPanelToken = () => {
+  if (typeof window !== "undefined") localStorage.removeItem(ADMIN_PANEL_TOKEN_KEY);
+};
+
 export const adminApi = {
-  canAccess: () => api.get<{ access: boolean }>("/admin/access"),
+  login: async (password: string) => {
+    const res = await fetch(`${API_BASE}/admin/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    const data = (raw ? JSON.parse(raw) : {}) as { token?: string };
+    if (!data.token) throw new Error("No admin token returned");
+    setAdminPanelToken(data.token);
+    return { ok: true };
+  },
+  logout: () => clearAdminPanelToken(),
+  canAccess: async () => {
+    const token = getAdminPanelToken();
+    if (!token) return { access: false };
+    const res = await fetch(`${API_BASE}/admin/auth/verify`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { access: false };
+    return (await res.json()) as { access: boolean };
+  },
   listUsers: (params?: { q?: string; limit?: number; skip?: number }) => {
     const qs = new URLSearchParams();
     if (params?.q) qs.set("q", params.q);
     if (typeof params?.limit === "number") qs.set("limit", String(params.limit));
     if (typeof params?.skip === "number") qs.set("skip", String(params.skip));
     const s = qs.toString();
-    return api.get<{ users: AdminUser[]; total: number; limit: number; skip: number }>(
+    const token = getAdminPanelToken();
+    return request<{ users: AdminUser[]; total: number; limit: number; skip: number }>(
       `/admin/users${s ? `?${s}` : ""}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
     );
   },
   updateUser: (id: string, body: Partial<AdminUser>) =>
-    api.patch<{ user: AdminUser }>(`/admin/users/${id}`, body),
-  deleteUser: (id: string) => api.delete<{ ok: boolean }>(`/admin/users/${id}`),
+    request<{ user: AdminUser }>(`/admin/users/${id}`, {
+      method: "PATCH",
+      headers: getAdminPanelToken() ? { Authorization: `Bearer ${getAdminPanelToken()}` } : {},
+      body: JSON.stringify(body),
+    }),
+  deleteUser: (id: string) =>
+    request<{ ok: boolean }>(`/admin/users/${id}`, {
+      method: "DELETE",
+      headers: getAdminPanelToken() ? { Authorization: `Bearer ${getAdminPanelToken()}` } : {},
+    }),
 };
 
 export interface CollaborationWorkspace {

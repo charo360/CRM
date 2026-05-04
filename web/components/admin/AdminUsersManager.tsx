@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { adminApi, type AdminUser } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Edit, Search, Shield, Trash2, Users } from "lucide-react";
-import { isAuthenticated } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
 type EditForm = {
@@ -18,7 +17,6 @@ type EditForm = {
 
 export default function AdminUsersManager() {
   const router = useRouter();
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
   const [accessChecked, setAccessChecked] = useState(false);
   const [hasAccess, setHasAccess] = useState(false);
   const [rows, setRows] = useState<AdminUser[]>([]);
@@ -53,20 +51,17 @@ export default function AdminUsersManager() {
 
   useEffect(() => {
     (async () => {
-      const authed = isAuthenticated();
-      setIsLoggedIn(authed);
-      if (!authed) {
-        router.replace("/login");
-        return;
-      }
       try {
         const res = await adminApi.canAccess();
         setHasAccess(!!res.access);
         if (res.access) {
           await loadUsers("");
+        } else {
+          router.replace("/admin/login");
         }
       } catch {
         setHasAccess(false);
+        router.replace("/admin/login");
       } finally {
         setAccessChecked(true);
       }
@@ -74,12 +69,8 @@ export default function AdminUsersManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  if (isLoggedIn === false) {
-    return <div className="p-6 text-sm text-slate-500">Redirecting to login…</div>;
-  }
-
   if (!accessChecked) {
-    return <div className="p-6 text-sm text-slate-500">Checking admin permissions…</div>;
+    return <div className="p-6 text-sm text-slate-500">Checking admin session…</div>;
   }
 
   if (!hasAccess) {

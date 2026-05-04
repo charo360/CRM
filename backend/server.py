@@ -798,6 +798,14 @@ def create_token(user_id, phone_number: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+
+def create_admin_panel_token() -> str:
+    payload = {
+        "kind": "admin_panel",
+        "exp": datetime.utcnow() + timedelta(hours=12),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
 def verify_token(token: str) -> dict:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -806,6 +814,36 @@ def verify_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def _is_platform_admin_user(user: dict) -> bool:
+    email = str(user.get("email") or "").strip().lower()
+    allowed = _platform_admin_emails()
+    if allowed and email in allowed:
+        return True
+    # Back-compat fallback if allowlist not configured
+    if not allowed and check_permission(user, TeamMemberRole.OWNER):
+        return True
+    return False
+
+
+async def get_admin_actor(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Accept either:
+    1) dedicated admin-panel token from /admin/auth/login, or
+    2) normal user JWT belonging to a platform admin user.
+    """
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = verify_token(credentials.credentials)
+    if payload.get("kind") == "admin_panel":
+        return {"auth_mode": "panel"}
+
+    user = await find_user_by_jwt_id(payload.get("user_id", ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not _is_platform_admin_user(user):
+        raise HTTPException(status_code=403, detail="Platform admin access required")
+    return {"auth_mode": "user", "user": user}
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if not credentials:
@@ -12040,12 +12078,7 @@ def _platform_admin_emails() -> set[str]:
 
 def _require_platform_admin(user: dict) -> None:
     """Allow only platform admins to access global user-management endpoints."""
-    email = str(user.get("email") or "").strip().lower()
-    allowed = _platform_admin_emails()
-    if allowed and email in allowed:
-        return
-    # Fallback for single-tenant owner accounts if env var is not configured.
-    if not allowed and check_permission(user, TeamMemberRole.OWNER):
+    if _is_platform_admin_user(user):
         return
     raise HTTPException(status_code=403, detail="Platform admin access required")
 
@@ -12068,14 +12101,29 @@ def _serialize_admin_user(u: dict) -> dict:
     }
 
 
+@api_router.post("/admin/auth/login")
+async def admin_auth_login(body: dict):
+    expected = (os.environ.get("ADMIN_PANEL_PASSWORD") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="ADMIN_PANEL_PASSWORD is not configured")
+    supplied = str(body.get("password") or "").strip()
+    if not supplied or supplied != expected:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    return {"token": create_admin_panel_token()}
+
+
+@api_router.get("/admin/auth/verify")
+async def admin_auth_verify(_actor=Depends(get_admin_actor)):
+    return {"access": True}
+
+
 @api_router.get("/admin/users")
 async def admin_list_users(
     q: str = "",
     limit: int = 100,
     skip: int = 0,
-    user=Depends(get_current_user),
+    _actor=Depends(get_admin_actor),
 ):
-    _require_platform_admin(user)
     limit = max(1, min(limit, 500))
     skip = max(0, skip)
     query: dict = {}
@@ -12100,17 +12148,15 @@ async def admin_list_users(
 
 
 @api_router.get("/admin/access")
-async def admin_access(user=Depends(get_current_user)):
+async def admin_access(_actor=Depends(get_admin_actor)):
     try:
-        _require_platform_admin(user)
         return {"access": True}
     except HTTPException:
         return {"access": False}
 
 
 @api_router.patch("/admin/users/{target_user_id}")
-async def admin_update_user(target_user_id: str, body: dict, user=Depends(get_current_user)):
-    _require_platform_admin(user)
+async def admin_update_user(target_user_id: str, body: dict, _actor=Depends(get_admin_actor)):
     existing = await db.users.find_one({"_id": target_user_id})
     if not existing:
         raise HTTPException(status_code=404, detail="User not found")
@@ -12135,9 +12181,9 @@ async def admin_update_user(target_user_id: str, body: dict, user=Depends(get_cu
 
 
 @api_router.delete("/admin/users/{target_user_id}")
-async def admin_delete_user(target_user_id: str, user=Depends(get_current_user)):
-    _require_platform_admin(user)
-    if target_user_id == user.get("_id"):
+async def admin_delete_user(target_user_id: str, actor=Depends(get_admin_actor)):
+    user_obj = actor.get("user") if isinstance(actor, dict) else None
+    if user_obj and target_user_id == user_obj.get("_id"):
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
 
     existing = await db.users.find_one({"_id": target_user_id})
